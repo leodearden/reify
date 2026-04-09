@@ -16,6 +16,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SYNC_TEST="$REPO_ROOT/tests/sync_comments_test.sh"
 SYNC_REF_HELPERS="$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
 THIS_SCRIPT="${BASH_SOURCE[0]}"
+# Exported so Sections 2 & 3 `bash -c '...'` subshells can read these paths
+# from their own environment instead of parent-shell interpolation, matching
+# the Section 1 hardening convention from Task 1322 (see task 1346).
+export SYNC_TEST SYNC_REF_HELPERS
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
@@ -233,6 +237,13 @@ assert "rejects: my_fn sanitize_value( (false-prefix before fn keyword)" \
 assert "rejects: fn sanitize_value_raw<T>( (suffixed name that is also generic)" \
     bash -c '! printf "%s\n" "fn sanitize_value_raw<T>(v: T) -> T {" | grep -qE "$PATTERN"'
 
+# S4 (narrow scoping, task 1346): now that Section 1 is done, drop PATTERN from
+# the environment so it cannot shadow any local `PATTERN` variable inside
+# scripts sourced by Section 3 subshells (e.g. tests/sync_comments_test.sh).
+# A current `grep PATTERN tests/sync_comments_test.sh` returns zero matches,
+# so this is future-proofing rather than a live bug fix.
+unset PATTERN
+
 echo ""
 echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
 
@@ -248,10 +259,10 @@ assert "sync_ref_helpers.sh uses POSIX-portable [[:space:](<] post-name class" \
 # like '# POSIX: do not use \b here' would trigger them as false positives,
 # breaking CI without any real regression.
 assert "no \\b in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
-    bash -c "! grep -E '^[^#]*grep[[:space:]].*\\\\b' '$SYNC_REF_HELPERS'"
+    bash -c '! grep -E "^[^#]*grep[[:space:]].*\\\\b" "$SYNC_REF_HELPERS"'
 
 assert "no grep -P in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
-    bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_REF_HELPERS'"
+    bash -c '! grep -E "^[^#]*grep[[:space:]]+-P" "$SYNC_REF_HELPERS"'
 
 assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC marker'" \
     grep -q '"reify-stdlib has SYNC marker referencing reify-expr::sanitize_value"' "$SYNC_TEST"
@@ -265,49 +276,54 @@ echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
 # extract_fn is defined in sync_comments_test.sh. We source it in a subshell
 # with test_summary stubbed to no-op, following the established behavioral-test
 # pattern from test_test_helpers.sh lines 301-312.
+#
+# _SECT3_HELPER is exported so the single-quoted `bash -c '...'` subshells
+# below read it from their own environment (matching the Section 1 hardening
+# convention from Task 1322). SYNC_TEST is already exported near the top.
 _SECT3_HELPER="$SCRIPT_DIR/test_helpers.sh"
+export _SECT3_HELPER
 
 # accept: regular fn — fn foo( must be extracted when fn_name=foo
 assert "extract_fn: fn foo( extracted correctly for fn_name=foo" \
-    bash -c "
-        tmp=\$(mktemp)
-        printf 'fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
-        source '$_SECT3_HELPER'
+    bash -c '
+        tmp=$(mktemp)
+        printf "fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
         test_summary() { :; }
-        source '$SYNC_TEST'
+        source "$SYNC_TEST"
         PASS=0; FAIL=0
-        out=\$(extract_fn foo \"\$tmp\")
-        rm -f \"\$tmp\"
-        [ -n \"\$out\" ] && echo \"\$out\" | grep -q '^fn foo('
-    "
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -n "$out" ] && echo "$out" | grep -q "^fn foo("
+    '
 
 # accept: generic fn — fn foo<T>( must be extracted when fn_name=foo
 assert "extract_fn: fn foo<T>( extracted correctly for fn_name=foo" \
-    bash -c "
-        tmp=\$(mktemp)
-        printf 'fn foo<T>(\n    x: T,\n) -> T {\n    x\n}\n' > \"\$tmp\"
-        source '$_SECT3_HELPER'
+    bash -c '
+        tmp=$(mktemp)
+        printf "fn foo<T>(\n    x: T,\n) -> T {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
         test_summary() { :; }
-        source '$SYNC_TEST'
+        source "$SYNC_TEST"
         PASS=0; FAIL=0
-        out=\$(extract_fn foo \"\$tmp\")
-        rm -f \"\$tmp\"
-        [ -n \"\$out\" ] && echo \"\$out\" | grep -q '^fn foo<T>('
-    "
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -n "$out" ] && echo "$out" | grep -q "^fn foo<T>("
+    '
 
 # reject: fn foobar( must NOT be extracted when fn_name=foo (prefix-collision guard)
 assert "extract_fn: fn foobar( NOT extracted when fn_name=foo (prefix collision)" \
-    bash -c "
-        tmp=\$(mktemp)
-        printf 'fn foobar(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
-        source '$_SECT3_HELPER'
+    bash -c '
+        tmp=$(mktemp)
+        printf "fn foobar(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
         test_summary() { :; }
-        source '$SYNC_TEST'
+        source "$SYNC_TEST"
         PASS=0; FAIL=0
-        out=\$(extract_fn foo \"\$tmp\")
-        rm -f \"\$tmp\"
-        [ -z \"\$out\" ]
-    "
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -z "$out" ]
+    '
 
 # reject: embedded-fn false-positive guard — "let y = fn foo(x);" must NOT be extracted.
 # Regression guard: the old loose awk pattern ^[^/]*fn foo[(<] would match this embedded
