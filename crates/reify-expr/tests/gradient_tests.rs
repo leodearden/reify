@@ -1439,26 +1439,12 @@ fn gradient_1param_constant_field() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // Gradient of a constant function should be approximately Vector3(0,0,0), NOT Undef.
-    match &sample_result {
-        Value::Vector(components) => {
-            assert_eq!(components.len(), 3, "gradient should have 3 components");
-            for (i, comp) in components.iter().enumerate() {
-                let val = comp
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
-                assert!(
-                    val.abs() < 1e-4,
-                    "gradient component {} of constant field should be ~0.0, got {}",
-                    i,
-                    val
-                );
-            }
-        }
-        _ => panic!(
-            "gradient sample should return a Vector, not Undef; got {:?}",
-            sample_result
-        ),
-    }
+    assert_gradient_vector(
+        &sample_result,
+        &[0.0, 0.0, 0.0],
+        1e-4,
+        "gradient of constant 5.0 at (1,2,3)",
+    );
 }
 
 /// Gradient of a 3D field with a 1-param lambda: |p| magnitude(p).
