@@ -1274,6 +1274,81 @@ mod tests {
         );
     }
 
+    /// Proves that `verify_uniqueness` takes the early-return path when a param
+    /// value is non-numeric (e.g. `Value::Undef`) — i.e. it does NOT call `solve_core`.
+    ///
+    /// Observable contract:
+    /// - returns false (no change)
+    /// - exactly 1 WARN event (the aggregated missing-or-non-numeric early-return warn)
+    /// - exactly 0 DEBUG events from `reify_constraints` target
+    ///
+    /// The DEBUG-count assertion is the key TDD signal: if the early-return is
+    /// absent, at least the `"verifying uniqueness via perturbation"` debug event
+    /// fires (DEBUG ≥ 1), plus additional debug events from inside `solve_core`'s
+    /// no-constraint / no-objective early-return path (DEBUG ≥ 2).  Zero DEBUG
+    /// events proves both were skipped.
+    #[test]
+    fn verify_uniqueness_skips_solve_core_when_param_non_numeric() {
+        use std::collections::HashMap;
+        use std::sync::atomic::Ordering;
+
+        use reify_test_support::CountingSubscriberBuilder;
+        use reify_types::{AutoParam, Type, Value, ValueCellId};
+
+        use super::verify_uniqueness;
+
+        let param_id = ValueCellId::new("Part", "x");
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: param_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            }],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Value::Undef: as_f64() returns None → early-return path should fire
+        let mut solved_values: HashMap<ValueCellId, Value> = HashMap::new();
+        solved_values.insert(param_id.clone(), Value::Undef);
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .count_level(tracing::Level::DEBUG)
+            .target_prefix("reify_constraints")
+            .build();
+
+        let warn_count = std::sync::Arc::clone(&counters[&tracing::Level::WARN]);
+        let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
+
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
+        });
+
+        assert!(
+            !unique,
+            "verify_uniqueness must return false when param value is non-numeric"
+        );
+
+        let warn_n = warn_count.load(Ordering::Acquire);
+        assert_eq!(
+            warn_n, 1,
+            "expected exactly 1 WARN (the aggregated missing-or-non-numeric early-return warn); \
+             got {warn_n}"
+        );
+
+        let debug_n = debug_count.load(Ordering::Acquire);
+        assert_eq!(
+            debug_n, 0,
+            "expected 0 DEBUG events (early-return skips both the \
+             'verifying uniqueness via perturbation' debug and all solve_core debug events); \
+             got {debug_n}"
+        );
+    }
+
     // ---- build_perturbation_anchors unit tests ----
 
     #[test]
