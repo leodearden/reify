@@ -25038,11 +25038,11 @@
         "description": "Two small follow-up improvements to the verify_uniqueness tests in `crates/reify-constraints/src/solver.rs` from Task 1227's review (reviewer_comprehensive S2 + S3).\n\n(S2 — symmetry) The happy-path test `verify_uniqueness_no_warn_when_param_has_valid_f64` (~line 1164) still discards the return value with `let _ = verify_uniqueness(...)`. To match the strengthened contract on the warn-emitting tests, capture the return value and add `assert!(unique, \"valid f64 should produce a unique solution\");` — or document why the unique outcome is intentionally not asserted there.\n\n(S3 — robustness comment) The new `assert!(!unique, ...)` assertions in `verify_uniqueness_warns_when_param_missing_from_solved_values` (~line 1114) and `verify_uniqueness_warns_when_param_is_non_numeric` (~line 1161) implicitly depend on `solve_core` converging on the perturbed point so that `solutions_agree` runs and returns false. If `solve_core` ever returned `Infeasible`/`NoProgress` for these trivial no-constraint problems, `verify_uniqueness` would conservatively return `true` via the early-return branch (~line 826) and the new assertion would flip to a misleading failure. Add a brief comment near each assertion noting this dependency so a future maintainer understands why the assertion is true.\n\nBoth changes are tiny, single-file, and out-of-scope for Task 1227 itself.",
         "details": "memory_hints: search \"Task 1227 verify_uniqueness review suggestions\", search \"verify_uniqueness early return solve_core conservative\", get_entity \"verify_uniqueness\"\n\nParent: Task 1227. Reviewer: reviewer_comprehensive (S2 + S3).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:17:46.654Z",
+        "updatedAt": "2026-04-09T02:40:04.345Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -25207,7 +25207,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:40:04.059Z",
+      "lastModified": "2026-04-09T02:40:04.345Z",
       "taskCount": 1244,
       "completedCount": 924,
       "tags": [
