@@ -101,6 +101,15 @@ assert "accepts: pub(crate) async fn sanitize_value( (pub+async combination)" \
 assert "accepts: pub(super) const fn sanitize_value( (pub(super)+const combination)" \
     bash -c "printf '%s\n' 'pub(super) const fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
 
+assert "accepts: pub(in crate::foo) fn sanitize_value( (pub(in path)+fn combination)" \
+    bash -c "printf '%s\n' 'pub(in crate::foo) fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: pub(super) unsafe fn sanitize_value( (pub(super)+unsafe combination)" \
+    bash -c "printf '%s\n' 'pub(super) unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: unsafe async fn sanitize_value( (unsafe+async combination)" \
+    bash -c "printf '%s\n' 'unsafe async fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
 # -- Reject cases: pattern must NOT match these strings ------------------------
 
 assert "rejects: fn sanitize_value_raw( (suffix false-positive)" \
