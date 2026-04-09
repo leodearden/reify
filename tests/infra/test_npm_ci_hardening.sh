@@ -151,4 +151,11 @@ echo "--- Test 13: script has rev-parse --is-inside-work-tree preflight ---"
 assert "script contains 'rev-parse --is-inside-work-tree' preflight" \
     grep -q 'rev-parse --is-inside-work-tree' "$SCRIPT"
 
+# -- Test 14: script defines PKG_FILES with all three package.json paths ------
+echo ""
+echo "--- Test 14: script defines PKG_FILES with all three package.json paths ---"
+
+assert "script defines PKG_FILES with all three package.json paths" \
+    bash -c "grep -qE '^PKG_FILES=.*gui/package.json.*gui/sidecar/package.json.*tree-sitter-reify/package.json' '$SCRIPT'"
+
 test_summary
