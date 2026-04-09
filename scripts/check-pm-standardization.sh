@@ -15,27 +15,36 @@ source "$SCRIPT_DIR/../tests/infra/test_helpers.sh"
 
 echo "=== check-pm-standardization ==="
 
-# ── Check 1: packageManager field in all package.json files ──────────
+# ── Preflight: required tools ────────────────────────────────────────
+assert "git is available" command -v git
+
+# ── Check 1: packageManager field set to npm in all package.json files ───────
 echo ""
-echo "Check 1: packageManager field in package.json files"
+echo "Check 1: packageManager field set to npm in package.json files"
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
-    assert "$pkg has packageManager field" grep -q '"packageManager"' "$ROOT/$pkg"
+    assert "$pkg has packageManager set to npm" grep -qE '"packageManager"\s*:\s*"npm@' "$ROOT/$pkg"
 done
 
-# ── Check 2: npm lockfiles NOT in .gitignore ────────────────────────
+# ── Check 2: packageManager version consistent across all package.json files ─
 echo ""
-echo "Check 2: npm lockfiles not gitignored"
-if ! command -v git >/dev/null 2>&1 || ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo 'WARNING: git not available or not in a git repo, skipping gitignore checks' >&2
-else
-    for lockfile in gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json; do
-        assert "$lockfile is not gitignored" bash -c "! (cd '$ROOT' && git check-ignore -q '$lockfile' 2>/dev/null)"
-    done
-fi
+echo "Check 2: packageManager version consistent across package.json files"
+assert "all package.json files agree on packageManager version" bash -c "
+    count=\$(grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \
+        '$ROOT/gui/package.json' \
+        '$ROOT/gui/sidecar/package.json' \
+        '$ROOT/tree-sitter-reify/package.json' | sort -u | wc -l | tr -d ' ')
+    [ \"\$count\" = '1' ]
+"
 
-# ── Check 3: pnpm-lock.yaml IS in .gitignore ────────────────────────
+# ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
 echo ""
-echo "Check 3: pnpm-lock.yaml gitignored"
+echo "Check 3: npm lockfiles not gitignored"
+assert "no npm lockfiles are gitignored" \
+    bash -c "! (cd '$ROOT' && git check-ignore gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json)"
+
+# ── Check 4: pnpm-lock.yaml IS in .gitignore ────────────────────────
+echo ""
+echo "Check 4: pnpm-lock.yaml gitignored"
 assert "gui/pnpm-lock.yaml in .gitignore" grep -q 'gui/pnpm-lock\.yaml' "$ROOT/.gitignore"
 
 test_summary

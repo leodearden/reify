@@ -38,8 +38,8 @@ assert "script has no grep calls referencing hooks/project-checks" \
 assert "script has no grep calls referencing orchestrator.yaml" \
     bash -c "! grep -qE 'grep.*orchestrator|orchestrator.*grep' '$SCRIPT'"
 
-assert "script has exactly 3 'Check N:' echo statements" \
-    bash -c "[ \"\$(grep -cE 'echo \"Check [0-9]' '$SCRIPT')\" = '3' ]"
+assert "script has exactly 4 'Check N:' echo statements" \
+    bash -c "[ \"\$(grep -cE 'echo \"Check [0-9]' '$SCRIPT')\" = '4' ]"
 
 # -- Test 3: orchestrator.yaml uses if/then/fi guards (not || true) ----------
 echo ""
@@ -59,9 +59,44 @@ assert "test_command uses 'if test' guard pattern for npm ci" \
 assert "lint_command uses 'if test' guard pattern for npm ci" \
     bash -c "grep 'lint_command:' '$ORCH' | grep -q 'if test'"
 
-# -- Test 4: orchestrator command placement and existence guards ---------------
+# -- Test 4: script has git preflight check ----------------------------------
 echo ""
-echo "--- Test 4: orchestrator command placement and existence guards ---"
+echo "--- Test 4: script has 'command -v git' preflight ---"
+
+assert "script contains 'command -v git' preflight check" \
+    grep -q 'command -v git' "$SCRIPT"
+
+# -- Test 5: Check 1 matches npm@ prefix, not just field presence -------------
+echo ""
+echo "--- Test 5: Check 1 grep matches npm@ prefix ---"
+
+assert "Check 1 grep pattern includes 'npm@' prefix match" \
+    bash -c "grep -qE 'grep.*npm@' '$SCRIPT'"
+
+# -- Test 6: script has cross-file consistency check -------------------------
+echo ""
+echo "--- Test 6: script has cross-file packageManager consistency check ---"
+
+assert "script contains 'sort -u' for cross-file consistency comparison" \
+    grep -q 'sort -u' "$SCRIPT"
+
+# -- Test 7: git check-ignore is NOT called inside a for loop ----------------
+echo ""
+echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
+
+assert "no 'git check-ignore' calls inside for/done loops" \
+    bash -c "! awk '/^for /,/^done/' '$SCRIPT' | grep -q 'git check-ignore'"
+
+# -- Test 8: wc -l output is stripped for cross-platform portability ----------
+echo ""
+echo "--- Test 8: wc -l output has whitespace stripped (cross-platform) ---"
+
+assert "script does not use bare 'wc -l)' without whitespace stripping" \
+    bash -c "! grep -qE 'wc -l\)' '$SCRIPT'"
+
+# -- Test 9: orchestrator command placement and existence guards ---------------
+echo ""
+echo "--- Test 9: orchestrator command placement and existence guards ---"
 
 # S1: full-path assertion (the guard-pattern assertion below also provides full-path coverage)
 assert "scripts/check-pm-standardization.sh (full path) is in lint_command" \
@@ -80,9 +115,9 @@ assert "sync_comments_test.sh uses 'if test -f' guard in test_command" \
 assert "check-pm-standardization.sh uses 'if test -f' guard in lint_command" \
     bash -c "grep 'lint_command:' '$ORCH' | grep -q 'if test -f scripts/check-pm-standardization.sh'"
 
-# -- S4: WARNING echoes when guards trigger a skip -----------------------------
+# -- Test 10: WARNING echoes when guards trigger a skip ------------------------
 echo ""
-echo "--- S4: WARNING echoes for guard skips ---"
+echo "--- Test 10: WARNING echoes for guard skips ---"
 
 assert "test_command has WARNING echo for sync_comments_test.sh skip" \
     bash -c "grep 'test_command:' '$ORCH' | grep -q 'WARNING.*sync_comments_test'"
@@ -90,28 +125,16 @@ assert "test_command has WARNING echo for sync_comments_test.sh skip" \
 assert "lint_command has WARNING echo for check-pm-standardization.sh skip" \
     bash -c "grep 'lint_command:' '$ORCH' | grep -q 'WARNING.*check-pm-standardization'"
 
-# -- S5: check-pm-standardization.sh guards git commands -----------------------
+# -- Test 11: end-to-end execution test ----------------------------------------
 echo ""
-echo "--- S5: check-pm-standardization.sh guards git check-ignore calls ---"
-
-assert "script checks git availability before git check-ignore" \
-    bash -c "grep -qE 'command -v git|git rev-parse' '$SCRIPT'"
-
-# S5 boundary fix: git rev-parse must use -C "$ROOT" to probe the repo root,
-# not the caller's CWD.
-assert "git rev-parse uses -C to target repo root" \
-    bash -c "grep -qE 'git -C.*rev-parse' '$SCRIPT'"
-
-# -- S3: end-to-end execution test --------------------------------------------
-echo ""
-echo "--- S3: check-pm-standardization.sh runs successfully ---"
+echo "--- Test 11: check-pm-standardization.sh runs successfully ---"
 
 assert "check-pm-standardization.sh runs successfully in repo context" \
     bash "$REPO_ROOT/scripts/check-pm-standardization.sh"
 
-# -- Test 7: build artifact tracking hygiene ----------------------------------
+# -- Test 12: build artifact tracking hygiene ----------------------------------
 echo ""
-echo "--- Test 7: build artifact tracking hygiene ---"
+echo "--- Test 12: build artifact tracking hygiene ---"
 
 # tree-sitter-reify/src/.grammar_hash.stamp is listed at .gitignore:34 but was
 # previously tracked (pre-dated the gitignore entry). While tracked, every
