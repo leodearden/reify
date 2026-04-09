@@ -23242,7 +23242,7 @@
         "description": "In crates/reify-lsp/src/bridge.rs:110, the initialize handler uses the inline string \"initialize params error\" in a format! call. The test file gui/src-tauri/src/tests/lsp_bridge_tests.rs:17 duplicates this as a test-side constant `INIT_PARAMS_ERR`. If the production string ever changes, the test constant silently goes stale and the substring assertion fails with a non-obvious cause.\n\n**Fix:** Define `pub const INIT_PARAMS_ERR_PREFIX: &str = \"initialize params error\";` in crates/reify-lsp/src/bridge.rs (or a constants module) and use it in the `format!` call on line 110. Then import it in lsp_bridge_tests.rs instead of the local `const INIT_PARAMS_ERR`.\n\n**Verification:** `cargo test -p reify-gui lsp_request_impl`\n\nmemory_hints: search \"INIT_PARAMS_ERR lsp_bridge_tests error prefix\" for prior context; get_entity \"reify-lsp\" for crate structure",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -23255,7 +23255,8 @@
             "crates/reify-lsp/src",
             "gui/src-tauri/src/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T08:13:55.015Z"
       },
       {
         "id": "1132",
@@ -26257,7 +26258,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:13:54.396Z",
+      "lastModified": "2026-04-09T08:13:55.015Z",
       "taskCount": 1305,
       "completedCount": 968,
       "tags": [
