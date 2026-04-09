@@ -5,6 +5,7 @@ use crate::common::*;
 
 mod complex;
 mod numeric;
+mod orientation;
 mod trig;
 mod vector;
 
