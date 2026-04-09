@@ -2627,7 +2627,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:13:34.690Z"
+        "updatedAt": "2026-04-09T16:50:39.294Z"
       },
       {
         "id": "160",
@@ -10458,7 +10458,7 @@
         "description": "Bundle of low-severity review findings:\n\n1. gui/src-tauri/src/engine.rs:571-586 — byte_offset_to_line_col may return 0-based column instead of claimed 1-based. The loop breaks before incrementing col for the character at offset. Add a test with known offsets and verify.\n\n2. gui/src/bridge.ts:107 — lspRequest sends un-stringified params (typed as unknown). This is dead code (lspClient.ts has its own copy that correctly JSON.stringifies), but fix the type or remove the dead export to prevent future use.\n\n3. gui/src-tauri/src/engine.rs:404-414 — debug_assert for unit_table ordering vanishes in release. Convert to a const assertion or move to a #[test].\n\n4. crates/reify-lsp/src/diagnostics.rs:66-95 — compute_diagnostics_with_state continues through compile/eval after parse errors, producing misleading secondary diagnostics. Add early return after parse errors (matching engine.rs behavior).\n\n5. crates/reify-eval/Cargo.toml — reify-syntax and reify-compiler appear in both [dependencies] and [dev-dependencies]. Remove from [dev-dependencies].\n\n**Memory hints:** entity names: byte_offset_to_line_col, lspRequest, unit_table, compute_diagnostics_with_state",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10476,7 +10476,8 @@
             "crates/reify-lsp",
             "crates/reify-eval"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T16:50:59.053Z"
       },
       {
         "id": "498",
@@ -10689,7 +10690,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-09T16:16:32.477Z"
+        "updatedAt": "2026-04-09T16:52:47.990Z"
       },
       {
         "id": "508",
@@ -11545,7 +11546,10 @@
             "crates/reify-runtime/src/concurrent_eval.rs"
           ],
           "modules": [
-            "crates/reify-runtime"
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests",
+            "crates/reify-runtime/src",
+            "crates/reify-runtime/tests"
           ],
           "memory_hints": {
             "entities": [],
@@ -11554,7 +11558,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-09T16:21:26.846Z"
+        "updatedAt": "2026-04-09T16:54:56.361Z"
       },
       {
         "id": "544",
@@ -12113,7 +12117,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-09T16:21:26.180Z"
+        "updatedAt": "2026-04-09T16:54:53.711Z"
       },
       {
         "id": "568",
@@ -12920,7 +12924,8 @@
           "modules": [
             "crates/reify-runtime"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T16:50:37.869Z"
       },
       {
         "id": "601",
@@ -12993,7 +12998,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-09T08:32:14.087Z"
+        "updatedAt": "2026-04-09T16:50:37.945Z"
       },
       {
         "id": "604",
@@ -18885,11 +18890,11 @@
         "description": "In crates/reify-constraints/src/solvespace.rs:\n1. Remove add_auto_coord_returns_missing_non_auto_variant (lines ~1162-1179) entirely — it is a strict subset of add_auto_coord_errors_on_missing_non_auto_value.\n2. Strip the Display sub-assertions from add_auto_coord_errors_on_missing_non_auto_value (lines ~1144-1152) — builder_error_display_contains_cell_id already covers the Display contract.\n3. Refactor the surviving match arm in add_auto_coord_errors_on_missing_non_auto_value to avoid the ref id + unwrap_err() NLL dependency: destructure to take ownership of the inner id, then assert equality directly, removing the need to call unwrap_err() on an already-matched result.\n\nmemory_hints: search(\"BuilderError test consolidation solvespace\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:25:54.397Z",
+        "updatedAt": "2026-04-09T16:51:02.400Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -19769,11 +19774,11 @@
         "description": "In tests/check-pm-standardization.sh: (1) Match npm@ prefix not just field presence. (2) Add cross-file consistency check for packageManager version. (3) Batch git check-ignore calls. (4) Add preflight command -v git check.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:20:32.722Z",
+        "updatedAt": "2026-04-09T16:51:03.192Z",
         "metadata": {
           "modules": [
             "scripts"
@@ -20307,20 +20312,28 @@
         "id": "958",
         "title": "Improve collection_sub_eval test quality: extract fixture, add coverage, tighten assertions",
         "description": "In crates/reify-eval/tests/collection_sub_eval.rs: (1) Extract shared make_bolt_parent_engine helper to eliminate ~180 lines of duplication. (2) Add Undef->Undef->Int consecutive transition test. (3) Tighten warning assertion predicates to include 'Undef' or 'unexpected'. (4) Assert instance removal in non-Int count warning test.",
-        "details": "",
+        "details": "<info added on 2026-04-09T16:38:02.070Z>\nBlocked due to dependency on task/826, which is completed but not merged into the main branch. Task/826 introduces necessary code changes that task 958 relies on, including the make_bolt_parent_engine helper, Undef transition tests, and warning assertion predicates. Current options for resolution include merging task/826, re-scoping task 958, expanding task 958 to include task/826, or canceling task 958 as subsumed. Awaiting a decision from a human or orchestrator to proceed.\n</info added on 2026-04-09T16:38:02.070Z>",
         "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
+        "status": "deferred",
+        "dependencies": [
+          "826"
+        ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:28:04.436Z",
+        "updatedAt": "2026-04-09T16:38:04.881Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
           ],
           "files": [
             "crates/reify-eval/tests/collection_sub_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Improve collection_sub_eval test quality: extract fixture, add coverage, tighten assertions"
+            ]
+          }
         }
       },
       {
@@ -21498,7 +21511,7 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:40:55.458Z",
+        "updatedAt": "2026-04-09T16:50:38.016Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -22043,7 +22056,7 @@
         "id": "1039",
         "title": "Fix incomplete CARGO_MANIFEST_DIR coverage in build_logic_tests and strengthen meta-test",
         "description": "The task 1021 diff fixed bare relative paths in two source-self-inspection tests but left `test_is_root_uses_libc_not_raw_ffi` (line ~884) still using `std::fs::read_to_string(\"tests/build_logic_tests.rs\")`. The meta-test `test_self_read_paths_use_manifest_dir` only checks the two fixed tests, not this third one.\n\n**Required changes in `tree-sitter-reify/tests/build_logic_tests.rs`:**\n\n1. Strengthen assertions from `contains(\"CARGO_MANIFEST_DIR\")` to `contains(\"env!(\\\"CARGO_MANIFEST_DIR\\\")\")` so a stray comment mentioning the env var doesn't false-pass.\n\n2. Add a blanket negative assertion: `assert!(!source.contains(\"\\\"tests/build_logic_tests.rs\\\"\"), \"found bare relative path...\")` to make the guard self-maintaining for future additions.\n\nVerification: `cargo test -p tree-sitter-reify test_self_read_paths_use_manifest_dir`\n\nmemory_hints: search \"task 1022 CARGO_MANIFEST_DIR deduplicate\" in reify project; search \"meta-test blanket scan convention\" in reify project",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "details": "",
@@ -22068,7 +22081,7 @@
             "tree-sitter-reify/tests/build_logic_tests.rs"
           ]
         },
-        "updatedAt": "2026-04-09T16:13:34.933Z"
+        "updatedAt": "2026-04-09T16:28:53.567Z"
       },
       {
         "id": "1040",
@@ -22120,7 +22133,7 @@
         "id": "1043",
         "title": "e2e_meta.rs DRY cleanup and style conformance",
         "description": "Refactor crates/reify-eval/tests/e2e_meta.rs to match project conventions:\n- Extract a module-local `parse_and_compile(source: &str) -> reify_compiler::CompiledModule` helper (mirroring m5_integration.rs:14-33) and a `make_engine()` helper, replacing the verbatim boilerplate in all three test functions (suggestions 0, 4, 5).\n- Inside the helper, replace the `collect::<Vec<_>>()` + `assert!(is_empty)` pattern with a form that only allocates on failure (suggestion 3).\n- Replace the `// step-13:`, `// step-15:`, `// step-17:` section headers with plain descriptive banners like `// --- let binding uses meta.key ---` (suggestion 1).\n- Deduplicate boilerplate across the 8+ new tests added by task 213 (e2e_meta_access_on_occurrence, e2e_meta_access_on_structure_resolves, e2e_meta_nonexistent_key_error, e2e_meta_no_meta_block_error, e2e_meta_sub_structure_child_meta, e2e_meta_let_binding_downstream, e2e_meta_string_eq_match, e2e_meta_string_eq_mismatch). Each new test repeats ~20 lines of parse→compile→filter-errors→engine-construct boilerplate (~180 lines total) that should collapse to ~40 lines via the `parse_and_compile` / `make_engine` helpers.\n- Add a `parse_compile_expect_err(source, needle)` helper for the error-diagnostic tests.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "details": "Coordinate with task 1084 to ensure no overlap or conflicts in changes.",
@@ -22133,7 +22146,8 @@
           "files": [
             "crates/reify-eval/tests/e2e_meta.rs"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T16:50:40.881Z"
       },
       {
         "id": "1044",
@@ -25335,7 +25349,7 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:17:33.915Z",
+        "updatedAt": "2026-04-09T16:53:59.162Z",
         "metadata": {
           "modules": [
             "scripts/lib_portable.sh",
@@ -25403,11 +25417,11 @@
         "description": "The non-empty guards on lines 61-62 of sync_comments_test.sh use `[ -z \"$expr_body\" ] && assert ... false` which records a FAIL but does not short-circuit execution. If both bodies are empty (e.g. function renamed), the subsequent `diff <(printf '%s' \"\") <(printf '%s' \"\")` succeeds, recording a spurious PASS for 'sanitize_value body is identical'. The overall test still fails (FAIL count > 0), but the misleading PASS in the output could confuse debugging.\n\nFix: convert the guards to early returns that also record the failure, either by calling `test_summary` after the assert (which exits non-zero due to FAIL count), or by wrapping the diff in a conditional that only runs when both bodies are non-empty.\n\nSource: review of task 1195 (esc-1195-971), suggestion S1.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T01:11:28.303Z",
+        "updatedAt": "2026-04-09T16:50:44.688Z",
         "metadata": {
           "modules": [
             "tests"
@@ -25679,11 +25693,11 @@
         "description": "Seven small follow-up improvements to the SETUP_POSIX_FALLBACK_ENV helper added in Task 1142 (tests/infra/test_portable_timeout.sh). All seven items are from the post-merge review of esc-1142-1006.\n\n## S1 — Fix helper docstring call-site list (lines 207-211, documentation_accuracy)\nThe docstring says \"(16b, 18b)\" and \"all 4 tests (16a/b, 18a/b)\" but the helper is actually used by Tests 16a/b and 21a/b — never by Test 18 (Test 18 uses POSIX_FALLBACK_SETUP for monitor-mode preservation). Replace `(16b, 18b)` with `(16b, 21b)` and `all 4 tests (16a/b, 18a/b)` with `all 4 tests (16a/b, 21a/b)`.\n\n## S2 — Fix rescue_dir cleanup contract violation (lines 234, 333, 370, 518; contract_violation)\nThe helper docstring says \"Callers must clean up rescue_dir explicitly\" but only Test 21b (line 549) actually does. The other 4 call sites — self-test (~234), Test 16a (~333), Test 16b (~370), Test 21a (~518) — leak a temp dir per run, bloating /tmp under repeated CI runs and making the contract unenforceable.\n\nPreferred fix: bake cleanup into the helper itself by exposing a sibling `CLEANUP_POSIX_FALLBACK_ENV='rm -rf \"$rescue_dir\"'` (or a single combined wrapper) so future call sites cannot forget. Alternative: add explicit `rm -rf \"$rescue_dir\"` to each of the 4 leaking sites mirroring the Test 21b pattern. If S4 is taken at the same time, fold into the unified helper instead.\n\n## S3 — Strengthen helper self-test with load-bearing assertions (lines 233-239, test_coverage)\nSelf-test currently only verifies that timeout/gtimeout are absent from PATH and rescue_dir was created. It does NOT assert the helper's two most load-bearing properties:\n1. `declare -f portable_timeout >/dev/null` — proves LIB_PORTABLE was actually sourced.\n2. `[ -z \"$(trap -p EXIT)\" ]` — proves no EXIT trap is installed (the entire reason this helper exists; a regression that re-adds an EXIT trap would silently reintroduce the false-positive bug in 16b/21b).\n\nBoth are one-liners and would catch the exact regressions the helper guards against.\n\n## S4 — Deduplicate the three setup blobs (lines 188-205 vs 212-228 vs MKTEMP_FAIL_SETUP, code_duplication)\nSETUP_POSIX_FALLBACK_ENV, POSIX_FALLBACK_SETUP, and MKTEMP_FAIL_SETUP are now three near-identical ~15-line PATH-stripping blobs. Differences are: (a) symlink command list (POSIX_FALLBACK_SETUP omits `ps`/`bash`), (b) presence of EXIT trap, (c) TMPDIR override (MKTEMP_FAIL_SETUP). It has already drifted: `bash` was added to the new helper but not to POSIX_FALLBACK_SETUP.\n\nRefactor: define a helper function `_build_posix_fallback_env()` taking the symlink command list (and trap/TMPDIR knobs) as args, and have all three SETUP variables call it. Or collapse to a single setup with environment knobs (`_PT_RESCUE_EXTRA_CMDS`, `_PT_INSTALL_EXIT_TRAP`, `_PT_OVERRIDE_TMPDIR`). This is the substantive refactor — S2 falls out of it naturally if cleanup is centralized.\n\n## S5 — Fix Test 16a polling-loop comment arithmetic (lines 319-321, documentation_accuracy)\nComment says \"polls up to 5×200ms (1s total)\" but the loop body sleeps AFTER each ps check, so the 5th iteration's sleep is wasted (loop exits next). Total realized worst-case wait is 4×0.2s = 0.8s, not 1s. Either reword the comment to \"5 checks separated by 4×200ms sleeps (~0.8s worst case)\" or move the sleep to the start of the loop (skipped on first iteration via a guard) so the worst case actually equals 1s.\n\n## S6 — Test 16a safety-net cleanup robustness (lines 361-364, robustness)\nTwo minor concerns with the safety-net `kill` block:\n1. Uses `grep -E` not `grep -qE` — match would write to stdout (harmless under assert's `>/dev/null` redirect, but inconsistent with the `-qE` form used in the polling loop above and noisy if anyone debugs by removing the redirect).\n2. Pattern matches system-wide on `[[:space:]]sleep 31337$`, so if Test 16a runs in parallel with itself (CI matrix on shared host, developer running suite twice), each instance terminates the other's sentinel and produces flaky positive-spawn checks.\n\nFix: switch to `grep -qE` for consistency, and at minimum document the \"no-parallel-runs\" assumption next to the safety-net. Per-run sentinel tagging is harder (the integer sleep duration can't easily encode `$$`) and probably not worth the complexity.\n\n## S7 — Rename SETUP_POSIX_FALLBACK_ENV to match `*_SETUP` convention (line 212, naming_consistency)\nExisting helpers use suffix `_SETUP` (`MKTEMP_FAIL_SETUP`, `POSIX_FALLBACK_SETUP`) but the new helper uses prefix `SETUP_` (`SETUP_POSIX_FALLBACK_ENV`). Rename to `POSIX_FALLBACK_SETUP_NO_TRAP` to (a) match the existing `*_SETUP` pattern and (b) telegraph the distinguishing property (\"no EXIT trap\") at every call site. Update all 5 call sites and the env-passing wrappers.\n\n## Memory hints\n- search: \"SETUP_POSIX_FALLBACK_ENV helper duplication test_portable_timeout\"\n- search: \"Task 1142 portable_timeout helper extraction\"\n- entity: \"test_portable_timeout.sh\"\n\n## Notes\n- All seven suggestions live in `tests/infra/test_portable_timeout.sh` only. No production code changes (`scripts/lib_portable.sh`) are needed.\n- S2 and S4 are coupled: a unified helper (S4) with built-in cleanup naturally satisfies S2.\n- S1, S5, S7 are pure docstring/naming fixes and could ship as a single trivial commit.\n- S3 strengthens the existing self-test added in Task 1142 — keep it minimal (two extra one-liners).\n- Existing pending Task 1214 covers `scripts/lib_portable.sh` hardening; it does NOT overlap with this test-file polish task.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:13:40.195Z",
+        "updatedAt": "2026-04-09T16:50:38.083Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -25808,7 +25822,7 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:13:41.047Z",
+        "updatedAt": "2026-04-09T16:50:48.879Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -26226,11 +26240,11 @@
         "description": "Follow-up from Task 1235 review (esc-1235-1032, S4, consistency). Curl was not updated by Tasks 1221 or 1235, creating an inconsistent story where div/lap/grad propagate dimensions under the type system but curl silently does not.\n\nLocations:\n- crates/reify-expr/src/lib.rs compute_curl (lines ~863-933): currently preserves the input codomain verbatim (`codomain_type: codomain_type.clone()`) rather than dividing the vector-component dimension by domain_dim.\n- crates/reify-expr/src/lib.rs compute_numerical_curl_at_point (~lines 1717-1725): unconditionally wraps components in Value::Real.\n- crates/reify-expr/src/lib.rs sample-handler dispatch (~lib.rs:170-176): currently does NOT forward codomain_type to compute_numerical_curl_at_point. Will need the equivalent plumbing the Divergence/Laplacian arms already have.\n\nExpected behavior: a curl of Point{3,Length} → Vector{3,Velocity} should produce per-component dimension 1/Time (same as divergence). compute_curl should stamp Vector{3, Scalar{dim = input_component_dim / domain_dim}} and compute_numerical_curl_at_point should wrap components in Value::Scalar when result_dim != DIMENSIONLESS.\n\nTests: mirror the div/lap sample-level dimensional-correctness tests in field_calculus_tests.rs — build a concrete dimensioned analytical lambda, call sample(curl(field), point), assert per-component Value::Scalar with the expected derived dimension.\n\nMemory hints:\n- search \"Task 1235 divergence laplacian dimension drift\" — the parent task that established the pattern\n- search \"compute_numerical_gradient_at_point result_dim Value::Scalar\" — canonical reference\n- get_entity \"Task 1221\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:29:16.802Z",
+        "updatedAt": "2026-04-09T16:50:39.659Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -26810,11 +26824,11 @@
         "description": "The dimension-extraction pattern (match on Scalar/Real/Int/Point→inner) is duplicated across compute_gradient, compute_divergence, and compute_laplacian with ~9 match blocks after Task 1236 added Real/Int arms. Extract two helpers:\n\n1. `fn scalar_dimension(ty: &Type) -> Option<DimensionVector>` — handles Scalar→Some(dim), Real|Int→Some(DIMENSIONLESS), _→None\n2. `fn domain_dimension(ty: &Type) -> Option<DimensionVector>` — additionally unwraps Point{quantity}\n\nReplace the repeated match blocks in all three operators with calls to these helpers.\n\nAdditionally:\n- Replace the dead `_ => Type::Real` arm at lib.rs:861 (divergence fallback for non-Vector codomain) with `unreachable!()` or `debug_assert!`, since validation already guarantees codomain is Vector at that point.\n- The structural style difference between gradient (matches scalar codomain directly) and divergence (unwraps Vector then matches quantity) is inherently resolved by the shared helpers.\n\nFrom Task 1236 review suggestions S1, S2, S5.\n\nMemory hints:\n- search \"compute_gradient gradient_quantity dimensionless fallback\" for the canonical pattern\n- search \"scalar_dimension domain_dimension helper extraction\" for this task's origin",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:13:36.487Z",
+        "updatedAt": "2026-04-09T16:50:38.238Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -26851,18 +26865,24 @@
         "description": "Follow-up from Task 1184 review (esc-1184-1064, suggestion S1). In tests/infra/test_run_all.sh line 75, `t3_rc` is captured via `&& t3_rc=0 || t3_rc=$?` but never referenced — identical to the `t2_rc` dead variable that Task 1184 already cleaned up.\n\nFix: Change line 75 from `t3_output=\"$(bash \"$RUN_ALL\" \"$TMPDIR_T3\" 2>&1)\" && t3_rc=0 || t3_rc=$?` to `t3_output=\"$(bash \"$RUN_ALL\" \"$TMPDIR_T3\" 2>&1)\" || true` (matching the t2 fix). Then add a corresponding Test 6 meta-assertion: `assert \"t3_rc dead variable removed\" bash -c \"! grep -qE 't3_rc=[0\\$]' '$THIS_FILE'\"`.\n\nmemory_hints: search for \"t2_rc dead variable test_run_all.sh\" to see how t2_rc was cleaned up in Task 1184.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:13:43.346Z",
+        "updatedAt": "2026-04-09T16:32:29.080Z",
         "metadata": {
           "modules": [
             "tests/infra"
           ],
           "files": [
             "tests/infra/test_run_all.sh"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Remove dead t3_rc variable in tests/infra/test_run_all.sh"
+            ]
+          }
         }
       },
       {
@@ -26942,11 +26962,11 @@
         "description": "Improve the `completion_items` test helper in `crates/reify-lsp/tests/in_process_bridge.rs`:\n\n1. **Empty-input edge-case tests (S2):** Add unit tests for empty Array (`json!([])`) and empty List (`json!({\"isIncomplete\": false, \"items\": []})`) to confirm the helper returns an empty slice without panicking. This documents the contract for downstream `assert!(!items.is_empty())` guards.\n\n2. **Better malformed-List panic message (S3):** When the response is an object with an `\"items\"` key whose value is not an array (e.g. `{\"items\": null}`, `{\"items\": 42}`), the current code falls through to the generic panic. Add a specific check: if `response` is an object containing `\"items\"` but the value isn't an array, panic with a message like `\"CompletionResponse::List has non-array 'items' field: {response}\"`. Add a `#[should_panic]` test for this case.\n\nmemory_hints: search \"completion_items helper LSP bridge\" for prior context on this helper.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:21:07.066Z",
+        "updatedAt": "2026-04-09T16:33:31.939Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/tests"
@@ -27176,11 +27196,11 @@
         "description": "In `tree-sitter-reify/tests/build_logic_tests.rs`, `find_bare_self_path_violations` and `find_bare_build_rs_violations` are structurally identical (~130 lines of near-duplicate code), differing only in needle strings. Their unit tests and file-level guard tests mirror the same structure.\n\n**Required changes:**\n\n1. **Fix completeness gap (S1):** `find_bare_self_path_violations` only checks `\"tests/build_logic_tests.rs\"` but not `\"./tests/build_logic_tests.rs\"`, while `find_bare_build_rs_violations` checks both `\"build.rs\"` and `\"./build.rs\"`. A contributor could use the `./`-prefixed relative path and bypass the guard.\n\n2. **Deduplicate helpers (S2):** Extract a shared `find_bare_literal_violations(source, needles: &[&str]) -> Vec<(usize, &str)>` that both call sites delegate to. Each passes its own needle list:\n   - build.rs: `&[\"\\\"build.rs\\\"\", \"\\\"./build.rs\\\"\"]`\n   - self-path: `&[\"\\\"tests/build_logic_tests.rs\\\"\", \"\\\"./tests/build_logic_tests.rs\\\"\"]`\n\n3. **Deduplicate unit tests:** Share a `assert_bare_literal_detection(finder_fn, positive_cases, negative_cases)` harness or use a table-driven approach.\n\n4. **Deduplicate file-level guards:** The two `test_no_bare_relative_*` tests could loop over a `[(finder_fn, description)]` table.\n\n5. **Add `./`-prefixed detection test cases** to the self-path test (mirroring the build.rs test which already has a `\"./build.rs\"` positive case on line 1458).\n\nmemory_hints: search \"task 1039 CARGO_MANIFEST_DIR coverage\" in reify project; search \"find_bare_literal_violations deduplication\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T09:19:02.627Z",
+        "updatedAt": "2026-04-09T16:50:51.019Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -27371,13 +27391,18 @@
         "description": "Three test-quality suggestions from Task 1276 review (crates/reify-eval/tests/test_runner.rs:148-170). The test was strengthened in commit e80c9f094 but the new assertions can be made less brittle and more aligned with the sibling pattern used in `violated_constraint_def_produces_labeled_diagnostic` (constraint_def_eval.rs:85).\n\nS1 (line 164, test_brittleness): The `d.message.contains(\"violated\")` clause couples the test to a specific word in SimpleConstraintChecker's output (\"constraint {id} violated\"). If the wording is ever localized or reworded (e.g. \"not satisfied\", \"failed\"), this assertion breaks without a real regression. Drop the \"violated\" substring clause and rely on `severity == Severity::Error` + label-substring as the meaningful signal.\n\nS2 (line 155, redundant_assertion): The `e.id.entity == \"TestA\"` filter adds no signal — the test source has only TestA, so every constraint result is by construction from TestA. The sibling test `run_tests_ignores_nontest_template_constraint_failures` (test_runner.rs:108) already covers entity isolation. Simplify to `results[0].constraint_results.iter().any(|e| e.satisfaction == Satisfaction::Violated)`.\n\nS3 (line 165, test_logic): The `contains(\"Positive\") || contains(\"TestA\")` OR branch is dead — the label is enriched to \"Positive[0]\" by `labeled_diagnostics` (crates/reify-eval/src/lib.rs:2261), so the \"TestA\" branch will never fire today. Tighten to `d.message.contains(\"Positive\")` (or better, match `\"Positive[0]\"` to align with the sibling pattern at constraint_def_eval.rs:85 which uses `\"MinWall[0]\"`).\n\nNet effect: the assertions become:\n  1. `constraint_results.any(|e| e.satisfaction == Violated)`\n  2. `diagnostics.any(|d| d.severity == Error && d.message.contains(\"Positive\"))` (or \"Positive[0]\")\n\nmemory_hints:\n- search(\"diagnostic label substring pattern constraint_def_eval\")\n- inspect crates/reify-eval/tests/constraint_def_eval.rs:60-91 for the sibling pattern\n- inspect crates/reify-eval/src/lib.rs:2261 for labeled_diagnostics enrichment",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1276"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:28:04.877Z"
+        "updatedAt": "2026-04-09T16:31:39.495Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": "1319",
@@ -27385,11 +27410,16 @@
         "description": "Review suggestions S1+S6 from task 1039 review. In tree-sitter-reify/tests/build_logic_tests.rs, `find_bare_self_path_violations` (lines 897-908) is an almost-verbatim copy of `find_bare_build_rs_violations` (lines 867-877); the only difference is the needle strings, and the doc-comments explicitly acknowledge the parallel. Any future change (multi-line awareness, comment-stripping refinement, raw-string handling) must be made in two places.\n\nAdditionally, both helpers currently miss raw-string literals — `r\"tests/build_logic_tests.rs\"` or `r#\"tests/build_logic_tests.rs\"#` would compile, perform a bare relative read, and escape the guard. `test_find_bare_self_path_violations` has no coverage for the raw-string case.\n\nRequired changes:\n1. Extract a shared helper `fn find_bare_path_violations<'a>(source: &'a str, needles: &[&str]) -> Vec<(usize, &'a str)>`; rewrite the two existing functions as thin wrappers that pass their needle arrays. Keep the public call sites unchanged.\n2. Either (a) extend the helper to also match `r\"...\"` / `r#\"...\"#` raw-string forms for each needle, OR (b) add an explicit negative test in `test_find_bare_self_path_violations` that documents the known raw-string gap so future contributors know it is out of scope. Prefer (a) if the unit-test cost is small.\n3. Verify: `cargo test -p tree-sitter-reify test_find_bare_self_path_violations test_find_bare_build_rs_violations test_self_read_paths_use_manifest_dir`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:28:05.639Z"
+        "updatedAt": "2026-04-09T16:34:33.695Z",
+        "metadata": {
+          "modules": [
+            "tree-sitter-reify/tests/build_logic_tests.rs"
+          ]
+        }
       },
       {
         "id": "1320",
@@ -27397,10 +27427,19 @@
         "description": "Follow-up from Task 1279 review (esc-1279-4, S1 + S2 + S4). Three related test-quality improvements to tests/infra/test_sync_comments_grep.sh, all touching the pub+modifier assertion block near lines 92-102.\n\n**S1 — Disambiguate duplicate label (line 101-102):**\nTask 1279 added an assertion for `pub(super) const fn sanitize_value(` with the label \"(pub+const combination)\", which is identical to the existing `pub(crate) const fn` label at line 92. Two distinct assertions with the same parenthetical label make it harder to distinguish failures in CI output.\n\nFix: Rename the line 101 label to \"(pub(super)+const combination)\" to differentiate from the existing \"pub(crate)+const\" assertion at line 92.\n\n**S2 — Mirror new accept cases with _raw reject cases (after line 102):**\nThe new accept cases at lines 98-102 exercise `pub(crate) async fn` and `pub(super) const fn`, but there is no matching reject-case coverage for the same prefixes with a suffixed identifier. The existing reject cases only cover bare `fn sanitize_value_raw(`. A bug in the modifier chain could regress prefix+suffix interactions without this being caught.\n\nAdd reject-case mirrors near the existing reject block (~line 106+):\n- `rejects: pub(crate) async fn sanitize_value_raw(`\n- `rejects: pub(super) const fn sanitize_value_raw(`\n\n**S4 — Optional: fill remaining symmetry gaps (after line 102):**\nThe underlying pattern supports `pub(in path::to::mod) fn ...` and several uncovered modifier combinations. This is explicitly flagged by the reviewer as \"optional\" and \"a minor symmetry gap rather than a bug.\" Decide during implementation whether to include:\n- `accepts: pub(in crate::foo) fn sanitize_value(`\n- `accepts: pub(super) unsafe fn sanitize_value(`\n- `accepts: unsafe async fn sanitize_value(`\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`\n\nSource: esc-1279-4 (steward-triage from Task 1279 post-merge review)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T16:50:53.403Z",
+        "metadata": {
+          "files": [
+            "tests/infra/test_sync_comments_grep.sh"
+          ],
+          "modules": [
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": "1321",
@@ -27411,7 +27450,13 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T16:34:28.892Z",
+        "metadata": {
+          "modules": [
+            "tree-sitter-reify/tests/build_logic_tests.rs"
+          ]
+        }
       },
       {
         "id": "1322",
@@ -27422,7 +27467,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T16:50:38.479Z",
+        "metadata": {
+          "files": [
+            "tests/infra/test_sync_comments_grep.sh"
+          ],
+          "modules": [
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": "1323",
@@ -27434,14 +27488,36 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:28:46.943Z"
+        "updatedAt": "2026-04-09T16:50:39.884Z",
+        "metadata": {
+          "modules": [
+            "tests/infra/test_portable_timeout.sh"
+          ]
+        }
+      },
+      {
+        "id": "1324",
+        "title": "Tighten completion_items test assertions and cover missing-items-field fallthrough",
+        "description": "Follow-up from Task 1297 review triage. Two small test-quality improvements in `crates/reify-lsp/tests/in_process_bridge.rs`:\n\n1. **Tighten `completion_items_panics_on_non_array_items_field`** (S2): The current `#[should_panic(expected = \"CompletionResponse::List has non-array 'items' field\")]` substring would still pass if a future refactor dropped the `{response}` interpolation. Tighten the expected substring to include a portion of the rendered payload (e.g. `\"items\\\": 42\"`) so a regression that loses the interpolation is caught.\n\n2. **Add `completion_items_panics_on_list_missing_items_field` test** (S3): The current tests don't cover the case where a `List` response omits the `items` field entirely (e.g. `json!({\"isIncomplete\": false})`). Under the current code this falls through to the outer `CompletionResponse::Array` panic, which is the right behavior but is not asserted. Add a `#[should_panic(expected = \"CompletionResponse::Array\")]` test to lock in the fallthrough contract.\n\nBoth changes are in the same `mod tests` block near lines 806-838.\n\nmemory_hints: search \"completion_items helper LSP bridge\" for prior context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T16:50:55.583Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp/tests"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:28:46.943Z",
-      "taskCount": 1323,
-      "completedCount": 995,
+      "lastModified": "2026-04-09T16:54:56.365Z",
+      "taskCount": 1324,
+      "completedCount": 997,
       "tags": [
         "master"
       ]

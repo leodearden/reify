@@ -136,12 +136,15 @@ fn completion_items(response: &serde_json::Value) -> &[serde_json::Value] {
     if let Some(arr) = response.as_array() {
         return arr;
     }
-    if let Some(items) = response
-        .as_object()
-        .and_then(|obj| obj.get("items"))
-        .and_then(|v| v.as_array())
+    if let Some(obj) = response.as_object()
+        && let Some(items_val) = obj.get("items")
     {
-        return items;
+        if let Some(arr) = items_val.as_array() {
+            return arr;
+        }
+        panic!(
+            "CompletionResponse::List has non-array 'items' field: {response}"
+        );
     }
     panic!(
         "completion response should be CompletionResponse::Array (JSON array) or \
@@ -801,9 +804,37 @@ mod completion_items_tests {
     }
 
     #[test]
+    fn completion_items_returns_empty_slice_for_empty_array_response() {
+        let val = json!([]);
+        let items = completion_items(&val);
+        assert!(
+            items.is_empty(),
+            "expected empty slice for json!([]), got {} items",
+            items.len()
+        );
+    }
+
+    #[test]
+    fn completion_items_returns_empty_slice_for_empty_list_response() {
+        let val = json!({"isIncomplete": false, "items": []});
+        let items = completion_items(&val);
+        assert!(
+            items.is_empty(),
+            "expected empty slice for json!({{\"isIncomplete\": false, \"items\": []}}), got {} items",
+            items.len()
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "CompletionResponse::Array")]
     fn completion_items_panics_on_unexpected_shape() {
         completion_items(&json!(42));
+    }
+
+    #[test]
+    #[should_panic(expected = "CompletionResponse::List has non-array 'items' field")]
+    fn completion_items_panics_on_non_array_items_field() {
+        completion_items(&json!({"items": 42}));
     }
 }
 
