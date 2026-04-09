@@ -83,3 +83,45 @@ fn user_unit_in_let_binding() {
         "w_thou should have a computed expression"
     );
 }
+
+// ─── step-3: user-defined unit overrides hardcoded fallback ──────────────────
+
+#[test]
+fn user_unit_overrides_hardcoded_fallback() {
+    // Redeclare `mm` with factor 0.005 (intentionally different from the
+    // hardcoded 0.001). The registry-first lookup in expr.rs should pick up
+    // the user's value, NOT the hardcoded fallback.
+    let module = parse_and_compile(
+        "unit mm : Length = 0.005\n\
+         structure S { param w : Length = 10mm }",
+    );
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
+    let w_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "w")
+        .expect("w not found");
+    if let Some(expr) = &w_cell.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
+            // registry value: 10 * 0.005 = 0.05, NOT hardcoded 10 * 0.001 = 0.01
+            assert!(
+                (si_value - 0.05).abs() < 1e-9,
+                "expected registry value 0.05 (10 * 0.005), got {} (hardcoded would be 0.01)",
+                si_value
+            );
+        } else {
+            panic!("expected scalar literal, got {:?}", expr.kind);
+        }
+    } else {
+        panic!("w has no default_expr");
+    }
+}
