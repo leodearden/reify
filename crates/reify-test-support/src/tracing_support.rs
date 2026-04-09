@@ -396,6 +396,30 @@ impl WarnCapture {
         self.fields.lock().unwrap().clone()
     }
 
+    /// Assert that at least one captured WARN message equals `expected` exactly.
+    ///
+    /// This is strict equality — not substring containment.  Use this to verify a
+    /// fixed canonical message string (e.g. `"lock poisoned, recovering"`) when
+    /// tests migrate from 1-per-site coverage to 1-per-helper coverage: collapsing
+    /// many repeated string literals into one authoritative location while still
+    /// guarding against message-text regressions.
+    ///
+    /// See [`assert_count_and_any_message_contains`](Self::assert_count_and_any_message_contains)
+    /// for substring-based matching.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no captured message equals `expected` exactly.  The panic
+    /// message includes `expected` and the full list of captured messages for
+    /// diagnostics.
+    pub fn assert_any_message_equals(&self, expected: &str) {
+        let messages = self.messages.lock().unwrap();
+        assert!(
+            messages.iter().any(|m| m == expected),
+            "no WARN message equaled {expected:?}; captured messages: {messages:?}"
+        );
+    }
+
     /// Assert that at least one captured WARN event contains **all** of the
     /// key=value pairs in `pairs`.
     ///
