@@ -433,9 +433,9 @@ echo "--- Test 20: portable_timeout header documents SIGTERM-only termination --
 assert "portable_timeout header documents SIGTERM-only termination" \
     grep -qiE 'SIGTERM.*only|SIGTERM.*no.*SIGKILL|does not escalate to SIGKILL' "$LIB_PORTABLE"
 
-# -- Test 18: behavioral: SIGKILL escalation — exit 124 and no orphan --------
+# -- Test 21: behavioral: SIGKILL escalation — exit 124 and no orphan --------
 echo ""
-echo "--- Test 18: POSIX fallback: SIGKILL escalation — exit 124 and no orphan ---"
+echo "--- Test 21: POSIX fallback: SIGKILL escalation — exit 124 and no orphan ---"
 
 # This test exercises the full SIGKILL escalation path in the POSIX fallback:
 #   1. Timer fires after 1s, sends SIGTERM to the command (bash wrapper).
@@ -456,7 +456,7 @@ echo "--- Test 18: POSIX fallback: SIGKILL escalation — exit 124 and no orphan
 # Total test time: ~1s (timer fires) + 2s (grace period) = ~3s.
 #
 # Regression guard (verified manually, step-5): temporarily commenting out the
-# 'kill -9' line in lib_portable.sh causes Test 18a to FAIL (exit 143 never
+# 'kill -9' line in lib_portable.sh causes Test 21a to FAIL (exit 143 never
 # arrives, process stays alive, flag check never triggers, returns 143 not 124).
 # This confirms the test has discriminating power and is not vacuous.
 
