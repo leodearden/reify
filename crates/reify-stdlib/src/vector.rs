@@ -69,7 +69,7 @@ pub(crate) fn dispatch(name: &str, args: &[Value]) -> Option<Value> {
         "magnitude" => unary(args, |v| {
             // Handle Complex before the Tensor fallback.
             if let Value::Complex { re, im, dimension } = v {
-                return crate::complex_abs(*re, *im, *dimension);
+                return crate::complex::complex_abs(*re, *im, *dimension);
             }
             let (vals, dim) = match tensor_components_f64(v) {
                 Some(c) => c,
