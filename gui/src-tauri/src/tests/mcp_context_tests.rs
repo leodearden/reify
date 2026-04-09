@@ -588,7 +588,8 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
         first.message
     );
 
-    // span fields must represent a valid range (catches field-swap bugs in the mapping closure)
+    // span fields must represent a valid range (catches field-swap bugs in the mapping closure);
+    // line, column, end_line, and end_column are all checked here.
     assert!(first.line >= 1, "expected line >= 1, got {}", first.line);
     assert!(
         first.end_line >= first.line,
@@ -596,6 +597,20 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
         first.end_line,
         first.line
     );
+    assert!(first.column >= 1, "expected column >= 1, got {}", first.column);
+    assert!(
+        first.end_column >= 1,
+        "expected end_column >= 1, got {}",
+        first.end_column
+    );
+    if first.end_line == first.line {
+        assert!(
+            first.end_column >= first.column,
+            "expected end_column ({}) >= column ({}) on same-line span",
+            first.end_column,
+            first.column
+        );
+    }
 
     // the mapping closure hardcodes code: None (engine.rs) — assert it stays that way
     assert!(first.code.is_none(), "expected code to be None");
