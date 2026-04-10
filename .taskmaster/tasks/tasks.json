@@ -32101,11 +32101,11 @@
         "description": "Add _has_expr_body_empty_guard_short_circuit to the self-check at lines 611-619 of tests/infra/test_test_helpers.sh, as identified by steward triage of esc-1372-292.",
         "details": "",
         "testStrategy": "",
-        "status": "done",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:05:53.132Z",
+        "updatedAt": "2026-04-10T16:32:28.859Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -32691,9 +32691,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:32:27.859Z",
+      "lastModified": "2026-04-10T16:32:28.859Z",
       "taskCount": 1606,
-      "completedCount": 1228,
+      "completedCount": 1227,
       "tags": [
         "master"
       ]
