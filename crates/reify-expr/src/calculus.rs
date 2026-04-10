@@ -1022,6 +1022,11 @@ pub(crate) fn compute_numerical_curl_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
+    debug_assert!(
+        matches!(codomain_type, Type::Vector { .. }),
+        "curl codomain must be vector, got {:?}",
+        codomain_type
+    );
     // Accept both Point and Vector — they share structural representation.
     // Only defined for 3D domains, so enforce len == 3 after extraction.
     // eval_perturbed_point re-wraps as Value::Point, so the lambda always sees a Point.
