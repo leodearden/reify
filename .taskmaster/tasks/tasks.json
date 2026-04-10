@@ -29029,11 +29029,11 @@
         "description": "The `error`-field check in `assert_poison_recovers` only verifies the key is present on *some* event, not on the event whose message equals \"lock poisoned, recovering\". Fuse the two invariants so they must hold on the same event.",
         "details": "Location: crates/reify-runtime/tests/concurrent_eval.rs:1648-1656 (the `fields_by_event` contains_key check in `assert_poison_recovers`).\n\nCurrent behavior: the helper separately checks (a) `capture.assert_any_message_equals(MSG_LOCK_POISONED)` and (b) `fbe.iter().any(|m| m.contains_key(\"error\"))`. With `expected_warns == 1` this is equivalent to a co-located check, but the helper is documented to permit multi-warn callsites (e.g. `evaluate` paths that fire multiple warns). A mis-wired future change that fires the canonical warn *without* `error` and a *separate* warn with `error` on some other lock would pass the contract while silently dropping the `error = %e` structured field from the real poison-recovery site.\n\nFix:\n1. Replace the existing two-stage check with a fused iteration. Pseudocode:\n   ```rust\n   let messages = capture.messages();\n   let fbe = capture.fields_by_event();\n   assert_eq!(messages.len(), fbe.len(), \"messages()/fields_by_event() length mismatch\");\n   let ok = messages.iter().zip(fbe.iter()).any(|(m, f)| {\n       m == poison_fields::MSG_LOCK_POISONED && f.contains_key(\"error\")\n   });\n   assert!(\n       ok,\n       \"no captured WARN event had both the canonical message and an `error` field; \\\n        messages: {messages:?}, fields_by_event: {fbe:?}\"\n   );\n   ```\n   This keeps the earlier `capture.assert_any_message_equals(...)` call as a cheap pre-check or folds it into the single assertion above. Adopt whichever reads cleaner.\n\n2. Add a brief comment noting the co-location intent so a future refactor doesn't accidentally decouple the two invariants again.\n\n3. Verify existing `assert_poison_recovers` callers still pass:\n   `cd /home/leo/src/reify && cargo test -p reify-runtime --test concurrent_eval --features test-utils poison_`\n\nDerived from Task 1350 reviewer suggestion #4 (robustness), reviewer_comprehensive.\n\nmemory_hints:\n  search: \"assert_poison_recovers error field canonical message MSG_LOCK_POISONED fields_by_event\"\n  entities: [\"WarnCapture\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:10:16.481Z",
+        "updatedAt": "2026-04-10T01:51:32.069Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests"
@@ -29875,7 +29875,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:51:30.809Z",
+      "lastModified": "2026-04-10T01:51:32.069Z",
       "taskCount": 1445,
       "completedCount": 1111,
       "tags": [
