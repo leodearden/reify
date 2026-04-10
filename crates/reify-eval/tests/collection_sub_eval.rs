@@ -511,6 +511,84 @@ fn eval_collection_aggregate_from_source() {
     }
 }
 
+// --- task-958: consecutive Undef->Undef->Int count transition regression ---
+
+#[test]
+fn edit_param_count_int_undef_undef_int_transition() {
+    // Bolt template: param diameter : Scalar = 10mm
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let n_id = ValueCellId::new("Parent", "n");
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
+        )
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Initial eval with n=4, creating 4 bolt instances
+    let _initial = engine.eval(&module);
+
+    // Transition sequence: Int(4) → Undef → Undef → Int(2)
+    // Step 1: Int(4) → Undef removes all 4 instances (new_count=0 via `_ => 0`)
+    engine
+        .edit_param(n_id.clone(), Value::Undef)
+        .expect("first edit to Undef should succeed");
+
+    // Step 2: Undef → Undef short-circuits via equality check (no-op)
+    engine
+        .edit_param(n_id.clone(), Value::Undef)
+        .expect("second edit to Undef should succeed");
+
+    // Step 3: Undef → Int(2): old_count=0 (via `_ => 0`) → creates bolts[0..2)
+    let result = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit to Int(2) should succeed");
+
+    // After Int(4)->Undef->Undef->Int(2): bolts[0..2) must exist with diameter = 10mm
+    for i in 0..2 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert_eq!(
+            result.values.get(&scoped_id),
+            Some(&Value::length(0.01)),
+            "bolts[{}].diameter should be 10mm after Int(4)->Undef->Undef->Int(2) transition",
+            i
+        );
+    }
+
+    // bolts[2..4) must be absent — no stale leak from the original Int(4) eval
+    for i in 2..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            result.values.get(&scoped_id).is_none(),
+            "bolts[{}].diameter must be absent after Int(4)->Undef->Undef->Int(2) transition",
+            i
+        );
+    }
+}
+
 // ─── step-30: count Int→Undef removes all instances (regression for unreachable!() bug) ───
 
 #[test]
