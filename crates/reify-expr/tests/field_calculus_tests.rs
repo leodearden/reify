@@ -3677,94 +3677,25 @@ fn laplacian_dimensional_correctness_result_dimensionless_returns_real() {
     );
 }
 
-/// Laplacian of a Composed Point{3,Length} → Scalar<Temperature> field has codomain
-/// dimension Temperature / Length².
-///
-/// Exercises the `FieldSourceKind::Composed` whitelist in compute_laplacian
-/// (calculus.rs:375). No existing laplacian test uses a Composed source.
-/// Mirrors gradient_tests.rs:2580 `gradient_composed_field_returns_field`.
-/// Expected to pass immediately (coverage expansion).
+/// Exercises the `FieldSourceKind::Analytical | FieldSourceKind::Composed` source
+/// whitelist in `compute_laplacian`. No other laplacian test uses a `Composed` source.
+/// Mirrors `gradient_composed_field_returns_field` in `gradient_tests.rs`.
 #[test]
 fn laplacian_dimensional_correctness_composed_source() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    let domain_type = Type::point3(Type::Scalar {
-        dimension: DimensionVector::LENGTH,
-    });
-    let codomain_type = Type::Scalar {
-        dimension: DimensionVector::TEMPERATURE,
-    };
-
-    // Lambda: |x, y, z| x + y + z — metadata-only, not sampled.
-    let body = CompiledExpr::binop(
-        BinOp::Add,
-        CompiledExpr::binop(
-            BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            Type::Real,
-        ),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
-    // source=Composed — exercises the Analytical|Composed whitelist in compute_laplacian.
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Composed,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
-    let lap_expr = make_function_call(
+    run_dim_metadata_test(
         "laplacian",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE,
+        },
+        FieldSourceKind::Composed,
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2)),
+        },
+        "laplacian_dimensional_correctness_composed_source",
     );
-
-    let values = ValueMap::new();
-    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(
-            &lap_result,
-            Value::Field {
-                source: FieldSourceKind::Laplacian,
-                ..
-            }
-        ),
-        "laplacian of Composed field must return a Laplacian Field, got {:?}",
-        lap_result
-    );
-
-    if let Value::Field { codomain_type, .. } = &lap_result {
-        let expected_dim = DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2));
-        match codomain_type {
-            Type::Scalar { dimension } => {
-                assert_eq!(
-                    *dimension, expected_dim,
-                    "laplacian of Composed field: codomain should be Temperature/Length² ({:?}), got {:?}",
-                    expected_dim, dimension
-                );
-            }
-            other => panic!(
-                "laplacian_dimensional_correctness_composed_source: expected Scalar codomain, got {:?}",
-                other
-            ),
-        }
-    }
 }
 
 /// Divergence of a 1D vector field: Point{1,Length} → Vector{1,Velocity}
