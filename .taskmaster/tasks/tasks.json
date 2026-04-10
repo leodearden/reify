@@ -28182,11 +28182,11 @@
         "description": "Harden build_logic_tests.rs raw-string detection and document known limitations in find_bare_path_violations",
         "details": "1. Extend raw-string hash coverage from 0..=2 to 0..=4 (or document the 2-hash ceiling as a known limitation with rationale) in find_bare_path_violations (tree-sitter-reify/tests/build_logic_tests.rs:872-893)\n2. Add test assertions for the r##\"...\"## form in both test_find_bare_build_rs_violations and test_find_bare_self_path_violations (lines 1500-1511, 1587-1598)\n3. Add docstring note to find_bare_path_violations about strip_line_comments being string-unaware — a preceding \"//\" in a non-raw string will truncate the line before a trailing raw-string needle is seen (pre-existing limitation, now more relevant)\n\nSource: review suggestions from task 1319 (esc-1319-45)",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:15:15.021Z",
+        "updatedAt": "2026-04-10T00:24:13.191Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/tests/build_logic_tests.rs"
@@ -29359,9 +29359,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:24:09.159Z",
+      "lastModified": "2026-04-10T00:24:13.191Z",
       "taskCount": 1421,
-      "completedCount": 1090,
+      "completedCount": 1091,
       "tags": [
         "master"
       ]
