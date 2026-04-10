@@ -29153,11 +29153,11 @@
         "description": "Two improvements in tests/infra/test_test_helpers.sh: (1) Lines 534-536: fix comment listing \"protected production sites\" — site #2 (sync_comments_test.sh:63) is protected by trigger-keyword constraint, not the -z alternation. Either move it out or clarify. (2) Lines 537-540: add positive-direction -z pin fixtures for [[ -z, test -z, and &&/|| [ -z shapes to mirror negative-direction test coverage and catch regressions that drop -z tolerance for non-single-bracket forms.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:40:18.761Z",
+        "updatedAt": "2026-04-10T17:32:25.230Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh"
@@ -32821,9 +32821,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T17:29:10.693Z",
+      "lastModified": "2026-04-10T17:32:25.233Z",
       "taskCount": 1613,
-      "completedCount": 1241,
+      "completedCount": 1242,
       "tags": [
         "master"
       ]
