@@ -2856,6 +2856,55 @@ mod poison_evaluate {
         // Verify at least one event names the correct lock via structured fields
         capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES)]);
     }
+
+    /// evaluate() emits access=write for the write_values() warn site when
+    /// the values RwLock is poisoned.
+    ///
+    /// Restores independent write-path coverage for write_values() that does not
+    /// depend on the structured_field_emission module surviving future consolidation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn evaluate_emits_access_write_for_poisoned_values() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
+
+        adapter.poison_values();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = evaluate_with_recovery(&adapter, node);
+        });
+
+        capture.assert_any_event_has_fields(&[
+            ("lock", poison_fields::LOCK_VALUES),
+            ("access", poison_fields::ACCESS_WRITE),
+        ]);
+    }
+
+    /// evaluate() emits access=write for the write_snapshot_values() warn site
+    /// when the snapshot_values RwLock is poisoned.
+    ///
+    /// Restores independent write-path coverage for write_snapshot_values() that
+    /// does not depend on the structured_field_emission module surviving future
+    /// consolidation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn evaluate_emits_access_write_for_poisoned_snapshot_values() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
+
+        adapter.poison_snapshot_values();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = evaluate_with_recovery(&adapter, node);
+        });
+
+        capture.assert_any_event_has_fields(&[
+            ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+            ("access", poison_fields::ACCESS_WRITE),
+        ]);
+    }
 }
 
 mod execute_with_config_tests {
