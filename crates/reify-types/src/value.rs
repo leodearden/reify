@@ -2831,6 +2831,24 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "expected exactly")]
+    fn test_assert_ieee754_total_order_real_wrong_count() {
+        // Meta-test: assert_ieee754_total_order_real must panic when passed a slice
+        // that does not contain exactly BOUNDARY_REALS.len() values.  Here we drop
+        // NaN so the slice has only 6 elements; the length guard should fire with a
+        // message containing "expected exactly".
+        assert_ieee754_total_order_real(&[
+            f64::NEG_INFINITY,
+            -1.0_f64,
+            -0.0_f64,
+            0.0_f64,
+            1.0_f64,
+            f64::INFINITY,
+            // NaN intentionally omitted → 6 elements instead of 7
+        ]);
+    }
+
+    #[test]
     fn value_ord_real_negative_nan() {
         // Under f64::total_cmp() (IEEE 754 totalOrder), negative NaN bit patterns
         // sort before -Infinity: neg_qNaN < neg_sNaN < -Inf < ... < +Inf < pos_sNaN < pos_qNaN.
