@@ -4552,7 +4552,7 @@
         "dependencies": [
           "242"
         ],
-        "status": "in-progress",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests",
@@ -4566,7 +4566,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:05:31.757Z"
+        "updatedAt": "2026-04-10T16:14:50.270Z"
       },
       {
         "id": "244",
@@ -32661,7 +32661,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:14:42.097Z",
+      "lastModified": "2026-04-10T16:14:50.270Z",
       "taskCount": 1605,
       "completedCount": 1225,
       "tags": [
