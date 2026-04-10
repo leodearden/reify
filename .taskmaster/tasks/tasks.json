@@ -32014,6 +32014,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1580,
+        "title": "Polish assert_extraction helper: multi-line formatting and &Value signature",
+        "description": "Polish the assert_extraction helper in crates/reify-stdlib/src/helpers.rs: improve multi-line formatting of assertion messages and ensure the &Value signature is documented consistently. Low priority cleanup.\n\nmemory_hints: search \"assert_extraction\" in helpers.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -32026,7 +32037,7 @@
       ],
       "created": "2026-04-10T06:51:02.836Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T07:02:32.809Z"
+      "updated": "2026-04-10T07:02:37.540Z"
     }
   }
 }
