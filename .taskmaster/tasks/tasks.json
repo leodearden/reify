@@ -31711,11 +31711,11 @@
         "description": "The four orientation boundary iteration-order tests (w, x, y, z) in crates/reify-types/src/value.rs are nearly identical (~25 lines each), differing only in which orient() argument receives the boundary value and which field is extracted from the match arm. Extract a helper function like `fn assert_orientation_component_order(build: fn(f64) -> Value, extract: fn(&Value) -> f64)` that encapsulates the BTreeSet insertion, extraction, and assertion logic, reducing each test body to ~3 lines. The Complex boundary tests (re, im) follow an analogous pattern and could optionally share the helper. memory_hints: search \"BOUNDARY_REALS assert_ieee754_total_order_real helper\", search \"orientation boundary iteration order tests value.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:30:43.834Z",
+        "updatedAt": "2026-04-10T07:11:58.543Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src"
@@ -31763,11 +31763,11 @@
         "description": "Deduplicate the four orientation boundary iteration-order tests (w, x, y, z) in value.rs by extracting a shared helper.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:30:47.118Z",
+        "updatedAt": "2026-04-10T07:11:59.395Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src"
@@ -32244,7 +32244,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:11:57.018Z",
+      "lastModified": "2026-04-10T07:11:59.395Z",
       "taskCount": 1584,
       "completedCount": 1198,
       "tags": [
