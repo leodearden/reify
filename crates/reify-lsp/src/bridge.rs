@@ -161,7 +161,7 @@ impl InProcessLsp {
                 Ok(Value::Null)
             }
             "textDocument/completion" => {
-                let p = parse_params::<CompletionParams>(params, "completion params error")?;
+                let p = parse_params::<CompletionParams>(params, error_prefix::COMPLETION_PARAMS)?;
                 let result = server
                     .completion(p)
                     .await
@@ -169,7 +169,7 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/hover" => {
-                let p = parse_params::<HoverParams>(params, "hover params error")?;
+                let p = parse_params::<HoverParams>(params, error_prefix::HOVER_PARAMS)?;
                 let result = server
                     .hover(p)
                     .await
@@ -177,7 +177,7 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/definition" => {
-                let p = parse_params::<GotoDefinitionParams>(params, "definition params error")?;
+                let p = parse_params::<GotoDefinitionParams>(params, error_prefix::DEFINITION_PARAMS)?;
                 let result = server
                     .goto_definition(p)
                     .await
