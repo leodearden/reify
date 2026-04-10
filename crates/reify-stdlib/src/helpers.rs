@@ -334,14 +334,7 @@ mod tests {
 
     #[test]
     fn tensor_components_f64_vector_of_reals_returns_values_and_dimensionless() {
-        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
-        let (vals, dim) =
-            tensor_components_f64(&v).expect("expected Some for Vector of Reals");
-        assert_eq!(vals.len(), 3, "should extract 3 components");
-        assert!((vals[0] - 1.0).abs() < f64::EPSILON);
-        assert!((vals[1] - 2.0).abs() < f64::EPSILON);
-        assert!((vals[2] - 3.0).abs() < f64::EPSILON);
-        assert_eq!(dim, DimensionVector::DIMENSIONLESS, "Real elements are dimensionless");
+        assert_extraction(Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]), &[1.0, 2.0, 3.0], DimensionVector::DIMENSIONLESS, "Vector of Reals");
     }
 
     #[test]
