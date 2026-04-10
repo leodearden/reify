@@ -522,7 +522,7 @@ mod tests {
         );
 
         // Invalidate dependents of x — z should become dirty (reads x)
-        store.invalidate_dependents(&[x.clone()]);
+        store.invalidate_dependents(std::slice::from_ref(&x));
         assert!(
             store.is_dirty(&z_node),
             "z depends on x via static trace, should be dirty after x changes"
@@ -531,7 +531,7 @@ mod tests {
         // Invalidate dependents of a cell z does NOT read — z should not be additionally dirtied
         let w = ValueCellId::new("A", "w");
         store.clear_dirty(&z_node); // reset for the next check
-        store.invalidate_dependents(&[w.clone()]);
+        store.invalidate_dependents(std::slice::from_ref(&w));
         assert!(
             !store.is_dirty(&z_node),
             "z does not depend on w, should not be dirtied by w changing"
