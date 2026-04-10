@@ -55,7 +55,7 @@ assert "all package.json files agree on packageManager version" bash -c "
     unique=\$(for p in $PKG_FILES; do
         grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \"$ROOT/\$p\"
     done | sort -u | wc -l | tr -d ' ')
-    [ \"\$total\" = '3' ] && [ \"\$unique\" = '1' ]
+    [ \"\$total\" = '$PKG_COUNT' ] && [ \"\$unique\" = '1' ]
 "
 
 # ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
