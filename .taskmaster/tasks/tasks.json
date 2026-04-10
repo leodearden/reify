@@ -32109,11 +32109,11 @@
         "description": "Three _test_* functions in test_sync_comments_grep.sh share identical setup boilerplate. Extract a shared helper function to reduce duplication. Source: review of task 1345 (S1).",
         "details": "Files: test_sync_comments_grep.sh\\n\\nmemory_hints:\\n- search: \"sync_comments_grep test setup\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:05:11.737Z",
+        "updatedAt": "2026-04-10T07:08:19.935Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -32224,9 +32224,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:08:06.165Z",
+      "lastModified": "2026-04-10T07:08:19.935Z",
       "taskCount": 1584,
-      "completedCount": 1186,
+      "completedCount": 1187,
       "tags": [
         "master"
       ]
