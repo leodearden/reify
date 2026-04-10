@@ -4751,6 +4751,12 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(result.is_none(), "negative scale factor should return None (inside-out geometry)");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for negative scale factor, got: {:?}",
+            diagnostics
+        );
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
