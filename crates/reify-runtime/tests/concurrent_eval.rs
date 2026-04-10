@@ -1626,6 +1626,23 @@ fn assert_poison_recovers<T: Send + 'static>(
     );
     capture.assert_count(expected_warns);
     capture.assert_any_event_has_fields(expected_fields);
+    // Co-location: the same event that satisfies expected_fields must also carry
+    // the "error" key.  All 9 poison-recovery warn sites emit `error = %e`; if
+    // the error field appears on a different event (or is absent entirely) this
+    // check catches the regression.
+    let all_fields = capture.fields_by_event();
+    let error_colocated = all_fields.iter().any(|event_fields| {
+        expected_fields
+            .iter()
+            .all(|(k, v)| event_fields.get(*k).map(|s| s.as_str()) == Some(*v))
+            && event_fields.contains_key("error")
+    });
+    assert!(
+        error_colocated,
+        "no single WARN event had all expected fields AND an \"error\" key;\n  \
+         expected_fields: {expected_fields:?}\n  \
+         fields_by_event: {all_fields:?}"
+    );
     result.unwrap()
 }
 
