@@ -1609,6 +1609,19 @@ use reify_test_support::warn_capturing_subscriber;
 ///
 /// Panics if `action` panics (i.e., `catch_unwind` returns `Err`), or if the
 /// WARN count or field checks fail.
+///
+/// # Coverage note
+///
+/// This helper's invariants (no-panic, exact warn count, structured-field match)
+/// apply only at callsites that route through it.  The following warn sites are
+/// tested outside this helper:
+///
+/// 1. `write_values` and `write_snapshot_values` via `evaluate()` in
+///    `poison_evaluate::tracing_warn_emitted_on_poison_evaluate` and
+///    `poison_evaluate::tracing_warn_emitted_on_poison_evaluate_snapshot_values`.
+/// 2. The triple-lock shared-fallback path in
+///    `all_three_locks_poisoned_shared_fallback_recovers_with_three_warns`.
+/// 3. The per-site structured-field tests in the `structured_field_observation` module.
 #[cfg(feature = "test-utils")]
 fn assert_poison_recovers<T: Send + 'static>(
     action: impl FnOnce() -> T + std::panic::UnwindSafe,
@@ -2836,8 +2849,45 @@ mod poison_evaluate {
             count >= 2,
             "expected at least 2 WARN events (read_values + write_values recovery), got {count}"
         );
-        // Verify at least one event names the correct lock via structured fields
-        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES)]);
+        // Verify at least one event names the correct lock AND access=write via structured fields
+        capture.assert_any_event_has_fields(&[
+            ("lock", poison_fields::LOCK_VALUES),
+            ("access", poison_fields::ACCESS_WRITE),
+        ]);
+    }
+
+    /// Verify that tracing::warn! is emitted when evaluate() recovers from a poisoned
+    /// snapshot_values lock.  evaluate() calls write_snapshot_values after write_values,
+    /// so poisoning only snapshot_values isolates the write_snapshot_values warn site.
+    /// The values lock remains clean, so read_values and write_values succeed silently;
+    /// exactly the snapshot_values write path fires a WARN event.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tracing_warn_emitted_on_poison_evaluate_snapshot_values() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
+
+        // Poison only snapshot_values — values lock stays clean
+        adapter.poison_snapshot_values();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let outcome = tracing::subscriber::with_default(subscriber, || {
+            evaluate_with_recovery(&adapter, node)
+        });
+        let outcome = outcome
+            .expect("evaluate() should recover from poisoned snapshot_values lock, not panic");
+        assert_eq!(outcome, EvalOutcome::Changed);
+
+        let count = capture.count();
+        assert!(
+            count >= 1,
+            "expected at least 1 WARN event (write_snapshot_values recovery), got {count}"
+        );
+        // Verify at least one event names lock=snapshot_values AND access=write
+        capture.assert_any_event_has_fields(&[
+            ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+            ("access", poison_fields::ACCESS_WRITE),
+        ]);
     }
 }
 
