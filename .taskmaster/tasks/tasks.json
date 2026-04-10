@@ -31883,6 +31883,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1569,
+        "title": "InstanceQualifiedAccess: add non-collection sub test, simplify lookup, fix comment",
+        "description": "Three fixes: (1) Add regression test for non-collection sub qualified access (sub inner = Inner() with inner.(TraitName::member)) — assert no errors and correct resolved type. (2) expr.rs:1507-1516: simplify to single sub_member_types lookup (superset of collection_sub_member_types). (3) Fix misleading \"non-collection\" comment.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -31895,7 +31906,7 @@
       ],
       "created": "2026-04-10T06:44:45.217Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T06:46:22.243Z"
+      "updated": "2026-04-10T06:46:31.843Z"
     }
   }
 }
