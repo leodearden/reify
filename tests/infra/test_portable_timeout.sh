@@ -227,6 +227,19 @@ SETUP_POSIX_FALLBACK_ENV='
     source "$LIB_PORTABLE"
 '
 
+# -- Helper self-test: POSIX_FALLBACK_SETUP (with-trap) -----------------------
+# Symmetric counterpart to the SETUP_POSIX_FALLBACK_ENV self-test below.
+# Verifies that eval'ing POSIX_FALLBACK_SETUP (a) sets an EXIT trap and
+# (b) defines portable_timeout.  Placed before Test 12 so a broken with-trap
+# helper surfaces early rather than only through indirect downstream failures.
+assert "POSIX_FALLBACK_SETUP helper sets EXIT trap and defines portable_timeout" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        trap_output=$(trap -p EXIT)
+        [ -n "$trap_output" ] &&
+        declare -f portable_timeout >/dev/null
+    '
+
 # -- Helper self-test: SETUP_POSIX_FALLBACK_ENV ----------------------------------
 # Verifies the helper correctly strips timeout/gtimeout from PATH and creates
 # rescue_dir. Placed before Test 12 so a broken helper surfaces early.
