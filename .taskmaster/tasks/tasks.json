@@ -20433,11 +20433,11 @@
         "description": "In crates/reify-eval/src/lib.rs, replace the Value::Undef => 0 safety fallback in new_count match (dead code due to guard above) with unreachable!(\"Undef new_count guarded above\") per silent-defaults convention.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:30:44.342Z",
+        "updatedAt": "2026-04-10T07:11:55.844Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -30662,11 +30662,11 @@
         "description": "The Orientation Ord impl chains w → x → y → z via total_cmp. After task 1452, only w and z have dedicated boundary iteration-order tests. Add value_set_orientation_boundary_x_iteration_order and value_set_orientation_boundary_y_iteration_order tests to fully cover all four component fallthroughs.\n\nFollow the same pattern as the existing w/z tests in crates/reify-types/src/value.rs:\n- x test: orient(0.0, v, 0.0, 0.0) — fixes w=0.0, y=0.0, z=0.0, varies x\n- y test: orient(0.0, 0.0, v, 0.0) — fixes w=0.0, x=0.0, z=0.0, varies y\n\nUse BOUNDARY_REALS for the values and assert_ieee754_total_order_real(&sorted) for the assertion.\n\n**memory_hints:** search \"BOUNDARY_REALS assert_ieee754_total_order_real helper\", search \"Orientation boundary iteration order tests\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T02:49:45.367Z"
+        "updatedAt": "2026-04-10T07:11:54.847Z"
       },
       {
         "id": "1492",
@@ -32244,9 +32244,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:11:53.150Z",
+      "lastModified": "2026-04-10T07:11:55.845Z",
       "taskCount": 1584,
-      "completedCount": 1197,
+      "completedCount": 1198,
       "tags": [
         "master"
       ]
