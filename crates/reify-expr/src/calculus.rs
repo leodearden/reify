@@ -90,6 +90,25 @@ fn dimensionless_fallback(ty: &Type) -> Type {
     }
 }
 
+/// Wrap a raw `f64` result as the appropriate `Value` variant for a scalar-valued operator.
+///
+/// - `Type::Scalar { dimension }` → `Value::Scalar { si_value: value, dimension }`
+/// - Any other type (typically `Type::Real`) → `Value::Real(value)`
+///
+/// The helper wraps blindly — callers are responsible for pre-normalising dimensionless
+/// Scalar codomains to `Type::Real` if they want `Value::Real` output in the dimensionless
+/// case.  Divergence and laplacian codomains are stamped by `compute_divergence` /
+/// `compute_laplacian` and are already normalised.
+fn wrap_scalar_result(value: f64, codomain_type: &Type) -> Value {
+    match codomain_type {
+        Type::Scalar { dimension } => Value::Scalar {
+            si_value: value,
+            dimension: *dimension,
+        },
+        _ => Value::Real(value),
+    }
+}
+
 /// Validate that a value is a differentiable field and extract its types.
 ///
 /// Performs the 3-part validation shared by all type-level differential operators:
