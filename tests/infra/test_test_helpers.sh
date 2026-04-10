@@ -399,6 +399,9 @@ fi
 
 _robust_tmpdir=$(mktemp -d)
 cleanup_robust() { rm -rf "$_robust_tmpdir"; }
+# only main-shell EXIT trap in this file — earlier EXIT traps (lines ~363, ~419)
+# are inside `bash -c` subshells and do not affect this scope.  If you need a
+# second main-shell trap, use `trap -p EXIT` stacking instead of replacing this.
 trap cleanup_robust EXIT
 mk_fixture() { mktemp -p "$_robust_tmpdir"; }
 
