@@ -29280,7 +29280,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:15:16.334Z"
+        "updatedAt": "2026-04-10T00:15:16.334Z",
+        "metadata": {
+          "modules": [
+            "tree-sitter-reify/tests/build_logic_tests.rs"
+          ]
+        }
       },
       {
         "id": 1417,
