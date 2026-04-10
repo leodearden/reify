@@ -30657,11 +30657,11 @@
         "description": "The Orientation Ord impl chains w → x → y → z via total_cmp. After task 1452, only w and z have dedicated boundary iteration-order tests. Add value_set_orientation_boundary_x_iteration_order and value_set_orientation_boundary_y_iteration_order tests to fully cover all four component fallthroughs.\n\nFollow the same pattern as the existing w/z tests in crates/reify-types/src/value.rs:\n- x test: orient(0.0, v, 0.0, 0.0) — fixes w=0.0, y=0.0, z=0.0, varies x\n- y test: orient(0.0, 0.0, v, 0.0) — fixes w=0.0, x=0.0, z=0.0, varies y\n\nUse BOUNDARY_REALS for the values and assert_ieee754_total_order_real(&sorted) for the assertion.\n\n**memory_hints:** search \"BOUNDARY_REALS assert_ieee754_total_order_real helper\", search \"Orientation boundary iteration order tests\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:05:28.414Z",
+        "updatedAt": "2026-04-10T16:05:39.115Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src"
@@ -32660,7 +32660,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:05:38.140Z",
+      "lastModified": "2026-04-10T16:05:39.115Z",
       "taskCount": 1605,
       "completedCount": 1223,
       "tags": [
