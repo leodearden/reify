@@ -74,7 +74,20 @@ fn dim_quotient_type(
     }
 }
 
-pub(crate) fn compute_gradient(field_val: &Value) -> Value {
+/// Validate that a value is a differentiable field and extract its types.
+///
+/// Performs the 3-part validation shared by all type-level differential operators:
+/// 1. `field_val` must be `Value::Field { .. }` (otherwise logs a debug message and returns None)
+/// 2. `source` must be `Analytical` or `Composed` (Gradient/Divergence/Curl/Laplacian fields
+///    store the original field in the lambda slot, not a callable Lambda)
+/// 3. `lambda` slot must be `Value::Lambda { .. }` (callable)
+///
+/// Returns `Some((domain_type, codomain_type))` if all checks pass, `None` otherwise.
+/// The `op` string is used only in the debug `eprintln!` message to identify the operator.
+fn validate_differentiable_field<'a>(
+    field_val: &'a Value,
+    op: &str,
+) -> Option<(&'a Type, &'a Type)> {
     let (domain_type, codomain_type, source, lambda) = match field_val {
         Value::Field {
             domain_type,
@@ -85,28 +98,38 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
         _ => {
             #[cfg(debug_assertions)]
             eprintln!(
-                "[reify-expr] gradient: argument is not a Field: {:?}",
+                "[reify-expr] {op}: argument is not a Field: {:?}",
                 field_val
             );
-            return Value::Undef;
+            return None;
         }
     };
 
-    // Only Analytical and Composed fields support gradient.
-    // Gradient fields are excluded: their lambda slot contains a Value::Field (the
-    // original field), not a callable Value::Lambda, so numerical differentiation
+    // Only Analytical and Composed fields support differential operators.
+    // Gradient/Divergence/Curl/Laplacian fields store the original field in the
+    // lambda slot — not a callable Value::Lambda — so numerical differentiation
     // via apply_lambda is not possible.
     if !matches!(
         source,
         FieldSourceKind::Analytical | FieldSourceKind::Composed
     ) {
-        return Value::Undef;
+        return None;
     }
 
-    // Lambda must be a callable Lambda
+    // Lambda slot must be callable.
     if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
-        return Value::Undef;
+        return None;
     }
+
+    Some((domain_type, codomain_type))
+}
+
+pub(crate) fn compute_gradient(field_val: &Value) -> Value {
+    let (domain_type, codomain_type) =
+        match validate_differentiable_field(field_val, "gradient") {
+            Some(pair) => pair,
+            None => return Value::Undef,
+        };
 
     // Determine dimensionality and validate scalar domain quantity
     let n = match domain_type {
@@ -161,33 +184,11 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
 /// - Domain must be `Point{n, scalar}` (n ≥ 1)
 /// - Codomain must be `Vector{n, scalar}` with matching dimension n
 pub(crate) fn compute_divergence(field_val: &Value) -> Value {
-    let (domain_type, codomain_type, source, lambda) = match field_val {
-        Value::Field {
-            domain_type,
-            codomain_type,
-            source,
-            lambda,
-        } => (domain_type, codomain_type, source, lambda),
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] divergence: argument is not a Field: {:?}",
-                field_val
-            );
-            return Value::Undef;
-        }
-    };
-
-    if !matches!(
-        source,
-        FieldSourceKind::Analytical | FieldSourceKind::Composed
-    ) {
-        return Value::Undef;
-    }
-
-    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
-        return Value::Undef;
-    }
+    let (domain_type, codomain_type) =
+        match validate_differentiable_field(field_val, "divergence") {
+            Some(pair) => pair,
+            None => return Value::Undef,
+        };
 
     // Domain must be a Point with scalar quantity
     let n = match domain_type {
@@ -256,33 +257,11 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
 /// - Domain must be `Point{3, scalar}`
 /// - Codomain must be `Vector{3, scalar}`
 pub(crate) fn compute_curl(field_val: &Value) -> Value {
-    let (domain_type, codomain_type, source, lambda) = match field_val {
-        Value::Field {
-            domain_type,
-            codomain_type,
-            source,
-            lambda,
-        } => (domain_type, codomain_type, source, lambda),
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] curl: argument is not a Field: {:?}",
-                field_val
-            );
-            return Value::Undef;
-        }
-    };
-
-    if !matches!(
-        source,
-        FieldSourceKind::Analytical | FieldSourceKind::Composed
-    ) {
-        return Value::Undef;
-    }
-
-    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
-        return Value::Undef;
-    }
+    let (domain_type, codomain_type) =
+        match validate_differentiable_field(field_val, "curl") {
+            Some(pair) => pair,
+            None => return Value::Undef,
+        };
 
     // Domain must be Point{3, scalar}
     match domain_type {
@@ -353,33 +332,11 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
 /// - Domain must be scalar or `Point{n, scalar}`
 /// - Codomain must be scalar (Real, Int, or Scalar)
 pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
-    let (domain_type, codomain_type, source, lambda) = match field_val {
-        Value::Field {
-            domain_type,
-            codomain_type,
-            source,
-            lambda,
-        } => (domain_type, codomain_type, source, lambda),
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] laplacian: argument is not a Field: {:?}",
-                field_val
-            );
-            return Value::Undef;
-        }
-    };
-
-    if !matches!(
-        source,
-        FieldSourceKind::Analytical | FieldSourceKind::Composed
-    ) {
-        return Value::Undef;
-    }
-
-    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
-        return Value::Undef;
-    }
+    let (domain_type, codomain_type) =
+        match validate_differentiable_field(field_val, "laplacian") {
+            Some(pair) => pair,
+            None => return Value::Undef,
+        };
 
     // Domain can be 1D scalar or nD Point
     match domain_type {
