@@ -970,6 +970,8 @@ mod tests {
         );
     }
 
+    // SYNC: sanitize_value Complex/Orientation tests mirrored in reify-expr::sanitize tests; Real/Scalar arms in crate::helpers tests — keep in sync
+
     // ── sanitize_value Complex arm tests (step-20) ────────────────────────────
 
     #[test]
