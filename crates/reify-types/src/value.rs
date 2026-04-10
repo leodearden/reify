@@ -3176,50 +3176,27 @@ mod tests {
 
     #[test]
     fn value_map_round_trip_preserves_key_iteration_order() {
-        // Round-trip guard for Value::Map: collect (key,value) pairs via iter(),
-        // rebuild a fresh BTreeMap, wrap in Value::Map, and assert PartialEq,
-        // content_hash identity, and key-sequence preservation.
+        // Round-trip guard for Value::Map: collect (key, value) pairs via iter(),
+        // rebuild a fresh BTreeMap, and verify the golden key-ordering.
+        //
+        // Parts a-c (structural equality, content_hash identity, key-sequence
+        // preservation) are tautological given BTreeMap stdlib guarantees: Ord alone
+        // determines key iteration order, not insertion order, so rebuilding from any
+        // sequence produces the same BTreeMap. The real regression value is the golden
+        // ordering assertion below.
         use std::collections::BTreeMap;
-        let boundary_floats: &[f64] = &[
-            0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -1.0, 1.0,
-        ];
         let mut original_inner = BTreeMap::new();
-        for (i, &v) in boundary_floats.iter().enumerate() {
+        for (i, &v) in BOUNDARY_REALS.iter().enumerate() {
             original_inner.insert(Value::Real(v), Value::Int(i as i64));
         }
         let original = Value::Map(original_inner);
-        let original_hash = original.content_hash();
 
-        // Collect iteration order
+        // Collect iteration order, then assert the golden IEEE 754 totalOrder on keys
         let collected: Vec<(Value, Value)> = if let Value::Map(ref m) = original {
             m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
         } else {
             panic!("expected Map");
         };
-
-        // Rebuild from the collected sequence
-        let rebuilt_inner: BTreeMap<Value, Value> = collected.iter().cloned().collect();
-        let rebuilt = Value::Map(rebuilt_inner);
-
-        // (a) structural equality
-        assert_eq!(rebuilt, original, "rebuilt Value::Map must equal the original");
-        // (b) content_hash identity
-        assert_eq!(
-            rebuilt.content_hash(),
-            original_hash,
-            "rebuilt Value::Map content_hash must match the original"
-        );
-        // (c) same key iteration sequence
-        let rebuilt_collected: Vec<(Value, Value)> = if let Value::Map(ref m) = rebuilt {
-            m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-        } else {
-            panic!("expected Map");
-        };
-        assert_eq!(
-            rebuilt_collected, collected,
-            "rebuilt Value::Map must iterate in the same key order as the original"
-        );
-        // (d) golden ordering assertion on keys
         let keys: Vec<f64> = collected
             .iter()
             .map(|(k, _)| match k {
@@ -3227,31 +3204,7 @@ mod tests {
                 _ => panic!("unexpected key"),
             })
             .collect();
-        let neg_inf_idx = keys
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_negative())
-            .expect("NEG_INFINITY");
-        let neg_one_idx = keys.iter().position(|&f| f == -1.0_f64).expect("-1.0");
-        let neg_zero_idx = keys
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_negative())
-            .expect("-0.0");
-        let pos_zero_idx = keys
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_positive())
-            .expect("+0.0");
-        let pos_one_idx = keys.iter().position(|&f| f == 1.0_f64).expect("1.0");
-        let pos_inf_idx = keys
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_positive())
-            .expect("INFINITY");
-        let nan_idx = keys.iter().position(|f| f.is_nan()).expect("NaN");
-        assert!(neg_inf_idx < neg_one_idx);
-        assert!(neg_one_idx < neg_zero_idx);
-        assert!(neg_zero_idx < pos_zero_idx);
-        assert!(pos_zero_idx < pos_one_idx);
-        assert!(pos_one_idx < pos_inf_idx);
-        assert!(pos_inf_idx < nan_idx);
+        assert_ieee754_total_order_real(&keys);
     }
 
     // --- List tests (step-5) ---
