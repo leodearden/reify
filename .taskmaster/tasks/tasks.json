@@ -32149,11 +32149,17 @@
         "description": "Two issues in sync_comments test scripts: (1) \"RED test\" label uses present tense for pre-fix behavior, which is misleading. (2) Comment claims modifiers accepted \"in any valid subset/order\" but the regex pattern enforces a specific order. Fix both to match actual behavior. Source: review of task 1309 (S1, S2).",
         "details": "Files: test_sync_comments_grep.sh, sync_comments_test.sh\\n\\nmemory_hints:\\n- search: \"sync_comments RED test\"\\n- search: \"sync_comments modifier order\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:24.237Z"
+        "updatedAt": "2026-04-10T07:08:05.934Z",
+        "metadata": {
+          "modules": [
+            "tests/infra/test_sync_comments_grep.sh",
+            "tests/sync_comments_test.sh"
+          ]
+        }
       },
       {
         "id": "1582",
@@ -32218,7 +32224,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:07:49.717Z",
+      "lastModified": "2026-04-10T07:08:05.934Z",
       "taskCount": 1584,
       "completedCount": 1185,
       "tags": [
