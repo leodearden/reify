@@ -221,6 +221,15 @@ assert "accepts: const unsafe fn sanitize_value( (const+unsafe combination — R
 assert "accepts: async unsafe fn sanitize_value( (async+unsafe combination — Rust grammar order)" \
     bash -c 'printf "%s\n" "async unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
+assert "accepts: pub const unsafe fn sanitize_value( (pub+const+unsafe triple combination)" \
+    bash -c 'printf "%s\n" "pub const unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
+assert "accepts: pub(crate) async unsafe fn sanitize_value( (pub(crate)+async+unsafe triple combination)" \
+    bash -c 'printf "%s\n" "pub(crate) async unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
+assert "accepts: pub(crate) const unsafe fn sanitize_value( (pub(crate)+const+unsafe triple combination)" \
+    bash -c 'printf "%s\n" "pub(crate) const unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
 assert "rejects: unsafe async fn sanitize_value( (invalid Rust grammar order — Rust requires async unsafe, not unsafe async)" \
     bash -c '! printf "%s\n" "unsafe async fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
