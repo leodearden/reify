@@ -88,6 +88,18 @@ fn e2e_meta_access_let_binding() {
 
     let compiled = parse_and_compile(source);
 
+    // Sanity: Widget template should be present and tagged as a Structure.
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template should be present in compiled output");
+    assert_eq!(
+        template.entity_kind,
+        reify_compiler::EntityKind::Structure,
+        "expected Widget to have entity_kind == Structure"
+    );
+
     // Eval
     let mut engine = make_engine();
     let result = engine.eval(&compiled);
@@ -180,12 +192,16 @@ fn e2e_meta_access_on_occurrence() {
 
     let compiled = parse_and_compile(source);
 
-    // Sanity: the compiled template should be tagged as an Occurrence.
-    assert_eq!(compiled.templates.len(), 1);
+    // Sanity: the Welding template should be present and tagged as an Occurrence.
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Welding")
+        .expect("Welding template should be present in compiled output");
     assert_eq!(
-        compiled.templates[0].entity_kind,
+        template.entity_kind,
         reify_compiler::EntityKind::Occurrence,
-        "expected occurrence entity kind"
+        "expected Welding to have entity_kind == Occurrence"
     );
 
     // Eval
@@ -199,88 +215,6 @@ fn e2e_meta_access_on_occurrence() {
         Some(&Value::String("TIG".to_string())),
         "Welding.label should resolve to 'TIG' via meta.method on an occurrence"
     );
-}
-
-// ---------------------------------------------------------------------------
-// --- meta.key on structure entity ---
-// ---------------------------------------------------------------------------
-
-/// Full pipeline: parse a `structure def` with a meta block + let binding, compile
-/// (assert no errors, assert entity_kind == Structure), eval, assert the let
-/// binding resolves to the expected string.  Explicitly verifies the Structure
-/// entity-kind path (as opposed to the Occurrence path in the existing test).
-#[test]
-fn e2e_meta_access_on_structure_resolves() {
-    let source = r#"
-        structure def Bracket {
-            meta {
-                part_number = "BR-001"
-            }
-            let pn : String = meta.part_number
-        }
-    "#;
-
-    let compiled = parse_and_compile(source);
-
-    // Sanity: the compiled template should be tagged as a Structure.
-    assert_eq!(compiled.templates.len(), 1);
-    assert_eq!(
-        compiled.templates[0].entity_kind,
-        reify_compiler::EntityKind::Structure,
-        "expected structure entity kind"
-    );
-
-    // Eval
-    let mut engine = make_engine();
-    let result = engine.eval(&compiled);
-
-    // Assert
-    let pn_id = ValueCellId::new("Bracket", "pn");
-    assert_eq!(
-        result.values.get(&pn_id),
-        Some(&Value::String("BR-001".to_string())),
-        "Bracket.pn should resolve to 'BR-001' via meta.part_number"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// --- nonexistent meta key produces compile error ---
-// ---------------------------------------------------------------------------
-
-/// Full pipeline: parse source with `meta.nonexistent` where only `a` is defined.
-/// After compile, diagnostics should contain at least one Error whose message
-/// includes "no key".  No eval step — the error is a compile-time rejection.
-#[test]
-fn e2e_meta_nonexistent_key_error() {
-    let source = r#"
-        structure def S {
-            meta {
-                a = "1"
-            }
-            let x : String = meta.nonexistent
-        }
-    "#;
-
-    parse_compile_expect_err(source, "no key");
-}
-
-// ---------------------------------------------------------------------------
-// --- meta access without meta block produces error ---
-// ---------------------------------------------------------------------------
-
-/// Full pipeline: parse source with `meta.foo` on a structure that has no meta block.
-/// After compile, diagnostics should contain at least one Error whose message
-/// includes "no meta block".
-#[test]
-fn e2e_meta_no_meta_block_error() {
-    let source = r#"
-        structure def S {
-            param width : Length = 10mm
-            let x : String = meta.foo
-        }
-    "#;
-
-    parse_compile_expect_err(source, "no meta block");
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +243,33 @@ fn e2e_meta_sub_structure_child_meta() {
     "#;
 
     let compiled = parse_and_compile(source);
+
+    // Assert both templates are present in compiled output.
+    let _part = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Part")
+        .expect("Part template should be present in compiled output");
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly template should be present in compiled output");
+
+    // Assert Assembly's sub-component wiring: `sub part = Part()` must compile
+    // to a SubComponentDecl with name "part" and structure_name "Part".
+    assert_eq!(
+        assembly.sub_components.len(),
+        1,
+        "Assembly should have exactly one sub-component"
+    );
+    let sub = &assembly.sub_components[0];
+    assert_eq!(sub.name, "part", "sub-component binding name should be 'part'");
+    assert_eq!(
+        sub.structure_name,
+        "Part",
+        "sub-component structure_name should be 'Part'"
+    );
 
     // Eval
     let mut engine = make_engine();
@@ -448,7 +409,7 @@ fn e2e_meta_access_missing_key() {
         }
     "#;
 
-    parse_compile_expect_err(source, "");
+    parse_compile_expect_err(source, "meta");
 }
 
 /// Regression guard (suggestion 9): accessing `meta.description` on a structure
@@ -466,7 +427,7 @@ fn e2e_meta_access_no_meta_block() {
         }
     "#;
 
-    parse_compile_expect_err(source, "");
+    parse_compile_expect_err(source, "meta");
 }
 
 // ---------------------------------------------------------------------------

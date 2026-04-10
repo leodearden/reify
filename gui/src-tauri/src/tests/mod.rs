@@ -14,7 +14,7 @@ fn public_api_types_are_accessible() {
     use crate::commands::AppState;
     use crate::engine::EngineSession;
     use crate::types::{ConstraintData, FileData, GuiState, MeshData, ValueData};
-    use reify_mcp::SourceLocationInfo;
+    use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
 
     // Verify types are Clone+Debug by using trait bounds
     fn assert_clone_debug<T: Clone + std::fmt::Debug>() {}
@@ -24,8 +24,8 @@ fn public_api_types_are_accessible() {
     assert_clone_debug::<ConstraintData>();
     assert_clone_debug::<SourceLocationInfo>();
     assert_clone_debug::<FileData>();
-    // MCP canonical types replace the removed GUI-local types
-    assert_clone_debug::<reify_mcp::DiagnosticInfo>();
+    // DiagnosticInfo is the MCP canonical replacement for the removed GUI-local type
+    assert_clone_debug::<DiagnosticInfo>();
 
     // Verify AppState and EngineSession are usable as types
     let _ = std::any::type_name::<AppState>();

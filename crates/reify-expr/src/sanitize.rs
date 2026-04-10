@@ -6,10 +6,10 @@ use reify_types::Value;
 /// returns only `Value::Real` (dimensionless) or `Value::Scalar` (dimensioned)
 /// — or a directly-constructed `Value::Scalar`.  Consequently only the
 /// `Value::Real` and `Value::Scalar` arms are reachable from current call
-/// sites; the `Value::Orientation` arm is unreachable today but is included
-/// for structural parity with `reify-stdlib::sanitize_value` (defense-in-depth:
-/// if callers evolve to pass orientation values, sanitization is already in
-/// place).
+/// sites; the `Value::Complex` and `Value::Orientation` arms are unreachable
+/// today but are included for structural parity with `reify-stdlib::sanitize_value`
+/// (defense-in-depth: if callers evolve to pass complex or orientation values,
+/// sanitization is already in place).
 ///
 /// This helper mirrors the private `sanitize_value` in `reify-stdlib` — the
 /// duplication is intentional (making stdlib's version public would widen its
@@ -182,6 +182,45 @@ mod tests {
             }
             other => panic!("expected Complex{{re:3.0, im:-4.0}}, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn sanitize_complex_nan_im_returns_undef() {
+        let v = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with NaN im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_inf_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::INFINITY,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with +Inf re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_neg_inf_im_returns_undef() {
+        let v = Value::Complex {
+            re: 0.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with -Inf im should become Undef"
+        );
     }
 
     // ── sanitize_value Orientation arm tests (task-914) ──────────────────────
