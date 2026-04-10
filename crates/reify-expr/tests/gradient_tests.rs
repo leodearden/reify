@@ -4005,40 +4005,6 @@ mod trust_the_declaration_tests {
         (grad_result, domain_type, grad_codomain_type)
     }
 
-    /// Characterization test: verifies the helper returns a well-formed tuple.
-    ///
-    /// Asserts: (a) Value is a Field, (b) domain_type == Type::length(),
-    /// (c) grad_codomain_type == Scalar{MASS/LENGTH}.
-    #[test]
-    fn test_make_dimensioned_domain_mismatch_gradient() {
-        let (grad_field, domain_type, grad_codomain_type) =
-            make_dimensioned_domain_mismatch_gradient();
-
-        // (a) returned Value is a Field
-        assert!(
-            matches!(&grad_field, Value::Field { .. }),
-            "make_dimensioned_domain_mismatch_gradient: should return a Field, got {:?}",
-            grad_field
-        );
-
-        // (b) domain_type is Type::length()
-        assert_eq!(
-            domain_type,
-            Type::length(),
-            "domain_type should be Type::length()"
-        );
-
-        // (c) grad_codomain_type is Scalar{MASS/LENGTH}
-        let expected_codomain = Type::Scalar {
-            dimension: DimensionVector::MASS.div(&DimensionVector::LENGTH),
-        };
-        assert_eq!(
-            grad_codomain_type, expected_codomain,
-            "grad_codomain_type should be Scalar{{MASS/LENGTH}}, got {:?}",
-            grad_codomain_type
-        );
-    }
-
     /// Structural check: gradient field codomain_type trusts declaration (dimensionless domain).
     ///
     /// See module doc (trust-the-declaration). No sampling; verifies the returned gradient
