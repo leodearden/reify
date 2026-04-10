@@ -29980,11 +29980,11 @@
         "description": "Two comment-quality fixes in tests/infra/test_test_helpers.sh:\n\n1. **Remove stale step references (lines ~572, ~581).** The self-check comments say \"this string is absent until step-2 adds it\" and \"this string is absent until step-3 adds it\" — but these implementation steps are already complete and the strings are present. Replace with neutral descriptions like \"Grep for the literal case-arm assignment to verify the readable-label mapping exists.\"\n\n2. **Replace drifting line numbers in trap comment (lines ~402-404).** The defensive trap comment references \"lines ~363, ~419\" for the subshell EXIT traps. These will drift as the file is edited. Replace with region/section names: \"earlier EXIT traps are inside the `bash -c` subshells (behavioral_test_block and sed-extraction-robustness sections)\".\n\nVerify: `bash tests/infra/test_test_helpers.sh` — all tests should still pass.\n\nmemory_hints: search(\"Task 1330 stale comments trap test_test_helpers\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T17:32:28.245Z",
+        "updatedAt": "2026-04-10T20:40:10.847Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh"
@@ -32851,9 +32851,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T20:37:43.699Z",
+      "lastModified": "2026-04-10T20:40:10.849Z",
       "taskCount": 1614,
-      "completedCount": 1250,
+      "completedCount": 1251,
       "tags": [
         "master"
       ]
