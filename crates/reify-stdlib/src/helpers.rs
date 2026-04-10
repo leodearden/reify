@@ -229,6 +229,26 @@ mod tests {
         );
     }
 
+    // ── tensor_components_f64 rejection: non-numeric components ──────────────
+
+    #[test]
+    fn tensor_components_f64_vector_with_string_component_returns_none() {
+        let v = Value::Vector(vec![Value::String("x".to_string())]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector containing a String component should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_tensor_with_bool_component_returns_none() {
+        let v = Value::Tensor(vec![Value::Bool(true)]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Tensor containing a Bool component should return None"
+        );
+    }
+
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
 
     // ── sanitize_value Real arm characterization tests ───────────────────────
