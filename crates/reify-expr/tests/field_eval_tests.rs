@@ -503,34 +503,9 @@ fn gradient_temperature_over_length_returns_field() {
 /// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`).
 #[test]
 fn gradient_of_field_with_non_numeric_lambda() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-
-    // Lambda: |x| "not_a_number"  (non-numeric return value)
-    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    let domain_type = Type::Real;
-    let codomain_type = Type::String;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
     // gradient(field) succeeds at construction time — domain is scalar, source
     // is Analytical, lambda is a Lambda.
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
-    );
+    let grad_expr = build_string_codomain_grad_expr();
 
     let values = ValueMap::new();
     let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
