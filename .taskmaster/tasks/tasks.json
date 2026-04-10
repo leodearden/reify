@@ -29219,15 +29219,16 @@
         "description": "Task 1390 added assert_ord_consistent helper calls in value_ord_real_negative_nan (line 2736: neg_qnan<pos_qnan) and value_ord_real_signaling_nan (lines 2778-2781: neg_snan<neg_inf and pos_snan<pos_qnan). Reviewer observed the helper now subsumes the prior explicit (b) Less cmp, (c) assert_ne, and (d) antisymmetry lines for those same pairs, leaving drift risk between explicit assertions and helper semantics.\n\nScope: in crates/reify-types/src/value.rs, for each NaN test, identify the explicit assertions that overlap with a newly added assert_ord_consistent call and delete them — leaving only the standardized helper call as the single source of truth for that pair. Specifically:\n\n- value_ord_real_negative_nan (around lines 2725, 2728, 2731): drop the explicit neg_qnan.cmp(&pos_qnan)==Less, assert_ne!(neg_qnan, pos_qnan), and antisymmetry-reverse lines for the (neg_qnan, pos_qnan) pair; the (neg_qnan, neg_inf) explicit Less at 2722 is still needed only if not already covered by the (e) helper on that pair — which it is (line 2734), so drop it too.\n- value_ord_real_signaling_nan (around lines 2761, 2762, 2766, 2771, 2772): drop the explicit Less/Greater, assert_ne, and antisymmetry-reverse lines for the (neg_snan, neg_inf), (neg_snan, neg_qnan), (pos_snan, pos_qnan) pairs that are now covered by assert_ord_consistent calls at lines 2774-2781.\n\nKeep any explicit lines whose pair is NOT covered by a helper call, and keep the overall test docstring intact. Verify with `cargo test -p reify-types value_ord_real_`.\n\nSource: Task 1390 review suggestion S2 from reviewer_comprehensive (esc-1390-135).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T00:13:59.489Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:13:58.919Z",
+      "lastModified": "2026-04-10T00:13:59.489Z",
       "taskCount": 1414,
       "completedCount": 1086,
       "tags": [
