@@ -29709,10 +29709,11 @@
         "description": "tensor_components_f64 (helpers.rs:136-155) is only tested indirectly via linalg.rs callers. Add direct unit tests covering: empty Tensor/Point/Vector → None, mixed-dimension items → None, non-numeric component → None, and valid multi-element Vector → Some(vals, dim). This documents the function's contract and catches regressions faster than indirect coverage.\n\nMemory hints: search \"tensor_components_f64 helpers\", get_entity \"tensor_components_f64\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:19:44.037Z"
       },
       {
         "id": "1438",
@@ -29728,7 +29729,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:19:43.496Z",
+      "lastModified": "2026-04-10T01:19:44.037Z",
       "taskCount": 1438,
       "completedCount": 1101,
       "tags": [
