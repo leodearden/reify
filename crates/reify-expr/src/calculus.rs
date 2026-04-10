@@ -900,14 +900,6 @@ pub(crate) fn compute_numerical_divergence_at_point(
 
     let domain_dim = extract_explicit_domain_dim(domain_type);
 
-    // Extract result dimension from the already-divided codomain_type (stamped by
-    // compute_divergence). Divergence always produces a scalar codomain, so only
-    // Type::Scalar needs the dimensioned arm — no Type::Vector arm is needed here.
-    let result_dim = match codomain_type {
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
-    };
-
     let single_point_param = detect_single_point_param(lambda, n);
 
     #[cfg(debug_assertions)]
@@ -991,14 +983,7 @@ pub(crate) fn compute_numerical_divergence_at_point(
     if !divergence.is_finite() {
         return Value::Undef;
     }
-    if result_dim != DimensionVector::DIMENSIONLESS {
-        Value::Scalar {
-            si_value: divergence,
-            dimension: result_dim,
-        }
-    } else {
-        Value::Real(divergence)
-    }
+    wrap_scalar_result(divergence, codomain_type)
 }
 
 /// Compute the numerical curl of a 3D vector field at a given point via central differences.
