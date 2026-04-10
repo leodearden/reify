@@ -809,7 +809,8 @@ fn find_self_reading_test_fns(source: &str) -> Vec<String> {
                 // the THIS_FILE assertion in test_self_read_paths_use_manifest_dir.
                 if let Some(body) = extract_test_fn_body(source, &sig)
                     && (body.contains("(THIS_FILE)")
-                        || body.contains("\"tests/build_logic_tests.rs\""))
+                        || body.contains("\"tests/build_logic_tests.rs\"")
+                        || body.contains("read_self_source()"))
                 {
                     result.push(sig);
                 }
