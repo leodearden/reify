@@ -31880,11 +31880,11 @@
         "description": "Two fixes: (1) Line 649: remove dead (^|[^-9]) prefix from kill regex. (2) Line 707: add count verification for local _pt_kill_grace=2 before substitution.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:49:56.494Z"
+        "updatedAt": "2026-04-10T07:08:54.463Z"
       },
       {
         "id": "1565",
@@ -32229,9 +32229,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:08:49.205Z",
+      "lastModified": "2026-04-10T07:08:54.463Z",
       "taskCount": 1584,
-      "completedCount": 1194,
+      "completedCount": 1195,
       "tags": [
         "master"
       ]
