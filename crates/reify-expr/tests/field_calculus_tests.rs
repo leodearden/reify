@@ -94,6 +94,64 @@ fn make_analytical_field_constructs_expected_pair() {
     assert_eq!(got_type, expected_type);
 }
 
+/// Unit test for `divergence_result_type`: scalar result field over the given domain.
+#[test]
+fn divergence_result_type_returns_field_real() {
+    let domain = Type::point3(Type::Real);
+    let got = divergence_result_type(domain.clone());
+    let expected = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(Type::Real),
+    };
+    assert_eq!(got, expected);
+}
+
+/// Unit test for `curl_result_type`: Vec3(Real) result field over the given domain.
+#[test]
+fn curl_result_type_returns_field_vec3_real() {
+    let domain = Type::point3(Type::Real);
+    let got = curl_result_type(domain.clone());
+    let expected = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+    assert_eq!(got, expected);
+}
+
+/// Unit test for `laplacian_result_type`: scalar result field over the given domain.
+#[test]
+fn laplacian_result_type_returns_field_real() {
+    let domain = Type::point3(Type::Real);
+    let got = laplacian_result_type(domain.clone());
+    let expected = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(Type::Real),
+    };
+    assert_eq!(got, expected);
+}
+
+/// Unit test for `gradient_result_type`: Vec_n(Real) result field, tested at n=2 and n=3.
+#[test]
+fn gradient_result_type_returns_field_vec_n_real() {
+    // n=2: Vector2(Real) codomain
+    let domain2 = Type::point2(Type::Real);
+    let got2 = gradient_result_type(domain2.clone(), 2);
+    let expected2 = Type::Field {
+        domain: Box::new(domain2),
+        codomain: Box::new(Type::vec2(Type::Real)),
+    };
+    assert_eq!(got2, expected2);
+
+    // n=3: Vector3(Real) codomain
+    let domain3 = Type::point3(Type::Real);
+    let got3 = gradient_result_type(domain3.clone(), 3);
+    let expected3 = Type::Field {
+        domain: Box::new(domain3),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+    assert_eq!(got3, expected3);
+}
+
 /// Assert that a `Value::Vector` has components matching `expected` within `tol`.
 fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &str) {
     match result {
