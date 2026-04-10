@@ -341,24 +341,10 @@ assert "Check 2 block references PKG_COUNT in the total assertion" \
 echo ""
 echo "--- Test 23: behavioral integration tests ---"
 
-FIXTURE_DIR="$(mktemp -d)"
-_TMPDIRS+=("$FIXTURE_DIR")
-
-# Create directory layout mirroring the repo structure expected by the script
-mkdir -p "$FIXTURE_DIR/scripts"
-mkdir -p "$FIXTURE_DIR/tests/infra"
-mkdir -p "$FIXTURE_DIR/gui/sidecar"
-mkdir -p "$FIXTURE_DIR/tree-sitter-reify"
-
-# Copy the real script and test helpers into the fixture
-cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_DIR/scripts/"
-cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_DIR/tests/infra/"
+setup_fixture_dir FIXTURE_DIR
 
 # .gitignore: pnpm-lock.yaml gitignored (Check 4); package-lock.json files NOT listed (Check 3)
 echo "gui/pnpm-lock.yaml" > "$FIXTURE_DIR/.gitignore"
-
-# Initialize a git repo so 'git check-ignore' works inside Check 3
-git -C "$FIXTURE_DIR" init -q
 
 # Write consistent packageManager versions for Test 23a
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
