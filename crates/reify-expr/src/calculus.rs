@@ -2058,4 +2058,45 @@ mod tests {
             Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH }
         );
     }
+
+    // --- wrap_scalar_result unit tests ---
+
+    /// Scalar codomain with LENGTH dimension wraps as Value::Scalar{si_value, LENGTH}.
+    #[test]
+    fn wrap_scalar_result_scalar_length_returns_scalar() {
+        let result = wrap_scalar_result(42.0, &Type::Scalar { dimension: DimensionVector::LENGTH });
+        assert_eq!(
+            result,
+            Value::Scalar {
+                si_value: 42.0,
+                dimension: DimensionVector::LENGTH,
+            }
+        );
+    }
+
+    /// Real codomain wraps as Value::Real.
+    #[test]
+    fn wrap_scalar_result_real_returns_real() {
+        let result = wrap_scalar_result(42.0, &Type::Real);
+        assert_eq!(result, Value::Real(42.0));
+    }
+
+    /// Dimensionless Scalar codomain wraps as Value::Scalar{DIMENSIONLESS}, NOT Value::Real.
+    /// The helper wraps blindly — callers pre-normalize if they want Real for dimensionless.
+    #[test]
+    fn wrap_scalar_result_dimensionless_scalar_returns_dimensionless_scalar() {
+        let result = wrap_scalar_result(
+            7.0,
+            &Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        );
+        assert_eq!(
+            result,
+            Value::Scalar {
+                si_value: 7.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }
+        );
+    }
 }
