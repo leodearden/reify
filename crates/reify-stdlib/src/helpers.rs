@@ -130,6 +130,8 @@ mod tests {
 
     use super::*;
 
+    // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
+
     // ── sanitize_value Real arm characterization tests ───────────────────────
 
     #[test]
