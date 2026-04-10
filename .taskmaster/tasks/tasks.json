@@ -20453,13 +20453,13 @@
         "description": "In crates/reify-eval/tests/collection_sub_eval.rs: (1) Extract shared make_bolt_parent_engine helper to eliminate ~180 lines of duplication. (2) Add Undef->Undef->Int consecutive transition test. (3) Tighten warning assertion predicates to include 'Undef' or 'unexpected'. (4) Assert instance removal in non-Int count warning test.",
         "details": "<info added on 2026-04-09T16:38:02.070Z>\nBlocked due to dependency on task/826, which is completed but not merged into the main branch. Task/826 introduces necessary code changes that task 958 relies on, including the make_bolt_parent_engine helper, Undef transition tests, and warning assertion predicates. Current options for resolution include merging task/826, re-scoping task 958, expanding task 958 to include task/826, or canceling task 958 as subsumed. Awaiting a decision from a human or orchestrator to proceed.\n</info added on 2026-04-09T16:38:02.070Z>",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [
           "826"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:38:04.881Z",
+        "updatedAt": "2026-04-10T07:10:40.096Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -32239,7 +32239,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:10:37.137Z",
+      "lastModified": "2026-04-10T07:10:40.097Z",
       "taskCount": 1584,
       "completedCount": 1197,
       "tags": [
