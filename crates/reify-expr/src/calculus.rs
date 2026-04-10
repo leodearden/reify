@@ -1189,14 +1189,6 @@ pub(crate) fn compute_numerical_laplacian_at_point(
 
     let domain_dim = extract_explicit_domain_dim(domain_type);
 
-    // Extract result dimension from the already-divided codomain_type (stamped by
-    // compute_laplacian). Laplacian always produces a scalar codomain, so only
-    // Type::Scalar needs the dimensioned arm.
-    let result_dim = match codomain_type {
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
-    };
-
     let single_point_param = detect_single_point_param(lambda, n);
 
     #[cfg(debug_assertions)]
@@ -1289,14 +1281,7 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     if !laplacian.is_finite() {
         return Value::Undef;
     }
-    if result_dim != DimensionVector::DIMENSIONLESS {
-        Value::Scalar {
-            si_value: laplacian,
-            dimension: result_dim,
-        }
-    } else {
-        Value::Real(laplacian)
-    }
+    wrap_scalar_result(laplacian, codomain_type)
 }
 
 #[cfg(test)]
