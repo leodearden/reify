@@ -562,3 +562,40 @@ structure def RecursiveChain {
         );
     }
 }
+
+// ── Step 17: full pipeline — all constraints satisfied ────────────────────────
+
+/// Capstone: read examples/m9_integration.ri, parse+compile+check with
+/// SimpleConstraintChecker. Assert ALL constraint results are Satisfied and
+/// total count >= 10 (covering trait-injected, constraint-def, determinacy,
+/// and recursive constraints across Widget, Bracket, Plate, RecursiveChain).
+#[test]
+fn full_pipeline_all_constraints_satisfied() {
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_integration.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.check(&compiled);
+
+    // All constraints must be Satisfied
+    let not_satisfied: Vec<_> = result
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction != Satisfaction::Satisfied)
+        .collect();
+    assert!(
+        not_satisfied.is_empty(),
+        "expected all constraints Satisfied, but {} are not: {:?}",
+        not_satisfied.len(),
+        not_satisfied
+    );
+
+    // At least 10 constraint results total (cross-feature coverage)
+    assert!(
+        result.constraint_results.len() >= 10,
+        "expected >= 10 constraint results, got {}",
+        result.constraint_results.len()
+    );
+}
