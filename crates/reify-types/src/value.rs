@@ -2820,7 +2820,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "-0.0 must come before +0.0")]
     fn test_assert_ieee754_total_order_real_wrong_order() {
         // Meta-test: assert_ieee754_total_order_real must panic when -0.0 and +0.0
         // are swapped (violating the IEEE 754 totalOrder requirement that -0.0
