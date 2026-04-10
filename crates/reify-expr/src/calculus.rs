@@ -873,8 +873,9 @@ pub(crate) fn compute_numerical_gradient_at_point(
 ///
 /// `point` may be either `Value::Point` or `Value::Vector` — both share the same
 /// structural representation and are extracted identically by `extract_point_coords`.
-/// `eval_perturbed_point` always re-wraps perturbed coordinates as `Value::Point`, so
-/// the lambda always receives a `Point` regardless of the caller's input variant.
+/// `eval_perturbed_point` re-wraps perturbed coordinates as `Value::Point` (in the
+/// single-point-param path), so the caller's `Point`-vs-`Vector` choice does not leak
+/// through to the lambda.
 ///
 /// `codomain_type` is the divergence field's already-divided codomain (stamped by
 /// `compute_divergence`). Follows the trust-the-declaration pattern established in
@@ -1003,8 +1004,9 @@ pub(crate) fn compute_numerical_divergence_at_point(
 ///
 /// `point` may be either `Value::Point` or `Value::Vector` — both share the same
 /// structural representation and are extracted identically by `extract_point_coords`.
-/// `eval_perturbed_point` always re-wraps perturbed coordinates as `Value::Point`, so
-/// the lambda always receives a `Point` regardless of the caller's input variant.
+/// `eval_perturbed_point` re-wraps perturbed coordinates as `Value::Point` (in the
+/// single-point-param path), so the caller's `Point`-vs-`Vector` choice does not leak
+/// through to the lambda.
 ///
 /// `codomain_type` is the curl field's already-divided codomain (stamped by
 /// `compute_curl`). Follows the trust-the-declaration pattern established in
@@ -1039,8 +1041,8 @@ pub(crate) fn compute_numerical_curl_at_point(
         _ => codomain_type,
     };
 
-    // n is constant 3 here, so the n > 1 branch in detect_single_point_param is always
-    // true; kept for consistency with divergence/laplacian, which derive n from coords.len().
+    // n is constant 3 here, so the n > 1 condition in detect_single_point_param is
+    // always satisfied; the result depends solely on params.len() == 1.
     let single_point_param = detect_single_point_param(lambda, n);
 
     let make_arg = |val: f64| make_domain_arg(val, domain_dim);
@@ -1152,8 +1154,9 @@ pub(crate) fn compute_numerical_curl_at_point(
 ///
 /// `point` may be `Value::Point`, `Value::Vector`, `Value::Real`, `Value::Int`, or
 /// `Value::Scalar` — the wide `extract_coords` helper accepts all of these.
-/// `eval_perturbed_point` always re-wraps perturbed coordinates as `Value::Point`, so
-/// the lambda always receives a `Point` regardless of the caller's input variant.
+/// `eval_perturbed_point` re-wraps perturbed coordinates as `Value::Point` (in the
+/// single-point-param path), so the caller's `Point`-vs-`Vector` choice does not leak
+/// through to the lambda.
 ///
 /// `codomain_type` is the Laplacian field's already-divided codomain (stamped by
 /// `compute_laplacian`). Follows the trust-the-declaration pattern established in
