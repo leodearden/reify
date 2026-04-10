@@ -607,5 +607,18 @@ assert "portable_timeout declares local _pt_kill_grace=2" \
 assert "both timer subshells reference \$_pt_kill_grace: exactly 2 occurrences" \
     bash -c 'count=$(grep -cF "sleep \"\$_pt_kill_grace\"" "$1"); [ "$count" -eq 2 ]' _ "$LIB_PORTABLE"
 
+# -- Test 25: structural: Test 16a exit variable is quoted -------------------
+echo ""
+echo "--- Test 25: structural: Test 16a exit variable is quoted ---"
+
+# Test 16a closes its subshell with 'exit $found'.  The companion orphan-check
+# subshell (Test 18b) correctly uses 'exit "$_check_rc"'.  Consistency between
+# two structurally identical exit patterns requires both to quote the variable.
+# Check the ABSENCE of the unquoted form with 8-space indentation.  The grep
+# pattern uses \$found (with backslash) so the assertion line itself is not a
+# self-referential match.
+assert "Test 16a subshell uses quoted exit \"\$found\" (no unquoted form)" \
+    bash -c '! grep -qF "        exit \$found" "$1"' _ "${BASH_SOURCE[0]}"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
