@@ -246,53 +246,32 @@ echo ""
 echo "--- sync_comments_test.sh structural checks ---"
 
 # (a) file has NO defensive non-empty guard (defensive guards removed)
-if ! _has_if_n_guard "$SYNC_FILE"; then
-    check "sync_comments_test.sh has no defensive non-empty guard" "true"
-else
-    check "sync_comments_test.sh has no defensive non-empty guard" "false"
-fi
+if ! _has_if_n_guard "$SYNC_FILE"; then ok=true; else ok=false; fi
+check "sync_comments_test.sh has no defensive non-empty guard" "$ok"
 
 # (b) extract_fn docstring uses 'naturally excluded' wording (not the misleading 'Excludes')
-if grep -q 'naturally excluded' "$SYNC_FILE" 2>/dev/null; then
-    check "extract_fn docstring uses 'naturally excluded' wording" "true"
-else
-    check "extract_fn docstring uses 'naturally excluded' wording" "false"
-fi
+if grep -q 'naturally excluded' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "extract_fn docstring uses 'naturally excluded' wording" "$ok"
 
 # (c) extract_fn awk pattern is anchored with [(<] after fn_name to prevent prefix collisions
-if grep -q 'fn_name.*\[(<\]' "$SYNC_FILE" 2>/dev/null; then
-    check "extract_fn awk pattern is anchored with [(<] after fn_name" "true"
-else
-    check "extract_fn awk pattern is anchored with [(<] after fn_name" "false"
-fi
+if grep -q 'fn_name.*\[(<\]' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "extract_fn awk pattern is anchored with [(<] after fn_name" "$ok"
 
 # (d) extract_fn output is captured to a named variable before diffing (non-empty guard)
-if grep -Fq 'expr_body' "$SYNC_FILE" 2>/dev/null; then
-    check "extract_fn output captured to expr_body variable" "true"
-else
-    check "extract_fn output captured to expr_body variable" "false"
-fi
+if grep -Fq 'expr_body' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "extract_fn output captured to expr_body variable" "$ok"
 
 # (e) sync_comments_test.sh has a non-empty guard for the captured expr_body variable
-if grep -Fq '[ -z "$expr_body"' "$SYNC_FILE" 2>/dev/null; then
-    check "extract_fn non-empty guard present for expr_body" "true"
-else
-    check "extract_fn non-empty guard present for expr_body" "false"
-fi
+if grep -Fq '[ -z "$expr_body"' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "extract_fn non-empty guard present for expr_body" "$ok"
 
 # (f) sync_comments_test.sh sources sync_ref_helpers.sh (function moved out)
-if grep -qE '(source|\.)\s+.*sync_ref_helpers\.sh' "$SYNC_FILE" 2>/dev/null; then
-    check "sync_comments_test.sh sources sync_ref_helpers.sh" "true"
-else
-    check "sync_comments_test.sh sources sync_ref_helpers.sh" "false"
-fi
+if grep -qE '(source|\.)\s+.*sync_ref_helpers\.sh' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_comments_test.sh sources sync_ref_helpers.sh" "$ok"
 
 # (g) sync_comments_test.sh does NOT define assert_sync_ref_exists() locally
-if ! _has_assert_sync_ref_exists "$SYNC_FILE"; then
-    check "sync_comments_test.sh does NOT define assert_sync_ref_exists() locally" "true"
-else
-    check "sync_comments_test.sh does NOT define assert_sync_ref_exists() locally" "false"
-fi
+if ! _has_assert_sync_ref_exists "$SYNC_FILE"; then ok=true; else ok=false; fi
+check "sync_comments_test.sh does NOT define assert_sync_ref_exists() locally" "$ok"
 
 # behavioral: extract_fn returns empty output for a non-existent function name,
 # confirming the non-empty guard would fire when a fn is renamed or missing.
@@ -353,53 +332,32 @@ echo ""
 echo "--- sync_ref_helpers.sh structural checks ---"
 
 # (a) file exists
-if [ -f "$SYNC_REF_HELPERS_FILE" ]; then
-    check "sync_ref_helpers.sh file exists" "true"
-else
-    check "sync_ref_helpers.sh file exists" "false"
-fi
+if [ -f "$SYNC_REF_HELPERS_FILE" ]; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh file exists" "$ok"
 
 # (b) file defines assert_sync_ref_exists() helper function
-if _has_assert_sync_ref_exists "$SYNC_REF_HELPERS_FILE"; then
-    check "sync_ref_helpers.sh defines assert_sync_ref_exists()" "true"
-else
-    check "sync_ref_helpers.sh defines assert_sync_ref_exists()" "false"
-fi
+if _has_assert_sync_ref_exists "$SYNC_REF_HELPERS_FILE"; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh defines assert_sync_ref_exists()" "$ok"
 
 # (c) file sources test_helpers.sh
-if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
-    check "sync_ref_helpers.sh sources test_helpers.sh" "true"
-else
-    check "sync_ref_helpers.sh sources test_helpers.sh" "false"
-fi
+if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh sources test_helpers.sh" "$ok"
 
 # (d) file has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)
-if grep -q '_REIFY_SYNC_REF_HELPERS_SH_SOURCED' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
-    check "sync_ref_helpers.sh has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)" "true"
-else
-    check "sync_ref_helpers.sh has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)" "false"
-fi
+if grep -q '_REIFY_SYNC_REF_HELPERS_SH_SOURCED' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)" "$ok"
 
 # (e) head -1 pipeline has adjacent comment documenting single-reference limitation
-if grep -B3 'head -1' "$SYNC_REF_HELPERS_FILE" 2>/dev/null | grep -qiE 'first|single|multi.?reference'; then
-    check "sync_ref_helpers.sh head -1 pipeline has single-reference documentation comment" "true"
-else
-    check "sync_ref_helpers.sh head -1 pipeline has single-reference documentation comment" "false"
-fi
+if grep -B3 'head -1' "$SYNC_REF_HELPERS_FILE" 2>/dev/null | grep -qiE 'first|single|multi.?reference'; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh head -1 pipeline has single-reference documentation comment" "$ok"
 
 # (f) assert_sync_ref_exists has an early-fail guard when ref_fn is empty
-if grep -Fq '[ -z "$ref_fn" ]' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
-    check "sync_ref_helpers.sh has early-fail guard for empty ref_fn" "true"
-else
-    check "sync_ref_helpers.sh has early-fail guard for empty ref_fn" "false"
-fi
+if grep -Fq '[ -z "$ref_fn" ]' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh has early-fail guard for empty ref_fn" "$ok"
 
 # (g) assert_sync_ref_exists uses a display_fn fallback variable
-if grep -Fq 'display_fn' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
-    check "sync_ref_helpers.sh uses display_fn fallback variable" "true"
-else
-    check "sync_ref_helpers.sh uses display_fn fallback variable" "false"
-fi
+if grep -Fq 'display_fn' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh uses display_fn fallback variable" "$ok"
 
 # ==============================================================================
 # assert_sync_ref_exists behavioral test (sourceable helper)
