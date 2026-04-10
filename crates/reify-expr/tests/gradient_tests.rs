@@ -3648,11 +3648,18 @@ fn gradient_codomain_type_with_dimensioned_domain() {
     let values = ValueMap::new();
     let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
 
-    assert!(
-        matches!(&grad_result, Value::Field { .. }),
-        "gradient of 1D field (LENGTH→MASS) should return a Field, got {:?}",
-        grad_result
-    );
+    match &grad_result {
+        Value::Field {
+            codomain_type: ct, ..
+        } => {
+            assert_eq!(
+                ct, &scalar_mass_per_length,
+                "gradient codomain_type should be Scalar{{MASS/LENGTH}}, got {:?}",
+                ct
+            );
+        }
+        _ => panic!("gradient should return a Field, got {:?}", grad_result),
+    }
 
     // Sample the gradient field at x = 1.0m
     let grad_field_type = Type::Field {
