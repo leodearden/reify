@@ -30383,11 +30383,11 @@
         "description": "Two fixes in tests/infra/test_portable_timeout.sh: (1) Line 649: remove dead `(^|[^-9])` prefix from kill regex — the `kill[[:space:]]+--` pattern already discriminates correctly. (2) Line 707: add count verification after the case-sanity-check to ensure exactly 1 occurrence of `local _pt_kill_grace=2` before parameter substitution, preventing silent partial replacement if a second occurrence is introduced.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:36:41.114Z",
+        "updatedAt": "2026-04-10T16:05:28.235Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -30485,11 +30485,11 @@
         "description": "The `build_isolated_module_preserves_shared_infrastructure` test in `crates/reify-eval/src/tests_runner.rs` verifies constraint_defs, functions, fields, type_aliases, enum_defs, and trait_defs — but the doc comment on `build_isolated_module` (line 43-44) also lists units, imports, pragmas, and module_path as shared infrastructure that should be preserved. Add assertions for these fields, enriching the inline source with appropriate syntax (unit declarations, import statements, pragmas, and a module path) so the test fully covers the documented contract.\n\nmemory_hints: search for \"CompiledModule fields units imports pragmas\", get_entity \"build_isolated_module\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T11:45:26.467Z",
+        "updatedAt": "2026-04-10T16:05:28.337Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -32660,7 +32660,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:05:28.158Z",
+      "lastModified": "2026-04-10T16:05:28.337Z",
       "taskCount": 1605,
       "completedCount": 1223,
       "tags": [
