@@ -224,7 +224,7 @@ impl Default for InProcessLsp {
 /// import reflects the change automatically, turning any stale assertion into
 /// a compile error or immediate test failure.
 ///
-/// All nine deserializing arms of `handle_request` thread their error prefix
+/// All eight deserializing arms of `handle_request` thread their error prefix
 /// through a constant defined here. There are no remaining hardcoded strings
 /// in the implementation.
 pub mod error_prefix {

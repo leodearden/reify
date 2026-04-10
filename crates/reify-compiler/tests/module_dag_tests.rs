@@ -447,3 +447,76 @@ fn compiled_import_preserves_kind_and_is_pub() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ── step-2 (task-1074): cross-module unit collision names the source module ───
+
+/// When a module redeclares a unit exported by an imported user module,
+/// the diagnostic should:
+/// (a) mention the source module name ('dep'), NOT 'stdlib',
+/// (b) contain 'duplicate' and the unit name 'myunit',
+/// (c) have no label with SourceSpan::empty(0).
+#[test]
+fn compile_project_detects_cross_module_unit_collision() {
+    let dir = test_dir("cross_module_unit_collision");
+
+    // dep.ri: exports pub unit 'myunit'
+    fs::write(dir.join("dep.ri"), "pub unit myunit : Length = 0.001").unwrap();
+
+    // main.ri: imports dep and redeclares 'myunit'
+    fs::write(
+        dir.join("main.ri"),
+        "import dep\nunit myunit : Length = 0.002",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result =
+        reify_compiler::module_dag::compile_project(&dir.join("main.ri"), &resolver);
+
+    // compile_project returns Ok even when entry module has diagnostics
+    let modules = result.expect("compile_project should not return Err for duplicate unit");
+    let entry_module = modules.last().expect("no modules returned");
+
+    let errors: Vec<_> = entry_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+
+    // There should be a duplicate-unit error
+    let dup_diag = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate") && d.message.contains("myunit"));
+    assert!(
+        dup_diag.is_some(),
+        "expected a 'duplicate myunit' error, got: {:?}",
+        errors
+    );
+    let dup_diag = dup_diag.unwrap();
+
+    // (a) should mention 'dep' module name
+    assert!(
+        dup_diag.message.contains("dep"),
+        "expected 'dep' in diagnostic message, got: {:?}",
+        dup_diag.message
+    );
+
+    // (b) should NOT contain 'stdlib'
+    assert!(
+        !dup_diag.message.contains("stdlib"),
+        "diagnostic should NOT mention 'stdlib' for user module collision, got: {:?}",
+        dup_diag.message
+    );
+
+    // (c) no label should have SourceSpan::empty(0)
+    let empty_span = reify_types::SourceSpan::empty(0);
+    for label in &dup_diag.labels {
+        assert_ne!(
+            label.span, empty_span,
+            "diagnostic label '{}' has SourceSpan::empty(0) — misleading offset",
+            label.message
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}

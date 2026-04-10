@@ -90,6 +90,25 @@ fn dimensionless_fallback(ty: &Type) -> Type {
     }
 }
 
+/// Wrap a raw `f64` result as the appropriate `Value` variant for a scalar-valued operator.
+///
+/// - `Type::Scalar { dimension }` → `Value::Scalar { si_value: value, dimension }`
+/// - Any other type (typically `Type::Real`) → `Value::Real(value)`
+///
+/// The helper wraps blindly — callers are responsible for pre-normalising dimensionless
+/// Scalar codomains to `Type::Real` if they want `Value::Real` output in the dimensionless
+/// case.  Divergence and laplacian codomains are stamped by `compute_divergence` /
+/// `compute_laplacian` and are already normalised.
+fn wrap_scalar_result(value: f64, codomain_type: &Type) -> Value {
+    match codomain_type {
+        Type::Scalar { dimension } => Value::Scalar {
+            si_value: value,
+            dimension: *dimension,
+        },
+        _ => Value::Real(value),
+    }
+}
+
 /// Validate that a value is a differentiable field and extract its types.
 ///
 /// Performs the 3-part validation shared by all type-level differential operators:
@@ -129,11 +148,18 @@ fn validate_differentiable_field<'a>(
         source,
         FieldSourceKind::Analytical | FieldSourceKind::Composed
     ) {
+        #[cfg(debug_assertions)]
+        eprintln!("[reify-expr] {op}: unsupported source kind {:?}", source);
         return None;
     }
 
     // Lambda slot must be callable.
     if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[reify-expr] {op}: lambda slot is not callable: {:?}",
+            lambda
+        );
         return None;
     }
 
@@ -691,7 +717,6 @@ pub(crate) fn compute_numerical_gradient_at_point(
     // every axis iteration: at the bottom of the loop, work_coords[i] is restored
     // via direct assignment (`work_coords[i] = coord_i`), which is an exact
     // bit-identical restore of the value captured at the top of the iteration.
-    // Take ownership of coords — no clone needed.
     // Invariant: work_point[j] == make_arg(work_coords[j]) at axis start.
     let mut work_coords = coords;
     let (mut work_args, mut work_point) =
@@ -852,8 +877,8 @@ pub(crate) fn compute_numerical_gradient_at_point(
 /// the lambda always receives a `Point` regardless of the caller's input variant.
 ///
 /// `codomain_type` is the divergence field's already-divided codomain (stamped by
-/// compute_divergence). Mirrors the gradient handler's trust-the-declaration pattern:
-/// no further division is performed here — `result_dim` is extracted directly from it.
+/// `compute_divergence`). Follows the trust-the-declaration pattern established in
+/// `compute_numerical_gradient_at_point`: no further division is performed here.
 ///
 /// Returns:
 /// - Scalar with the declared codomain dimension for dimensioned fields
@@ -866,6 +891,11 @@ pub(crate) fn compute_numerical_divergence_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
+    debug_assert!(
+        matches!(codomain_type, Type::Real | Type::Scalar { .. }),
+        "divergence/laplacian codomain must be scalar, got {:?}",
+        codomain_type
+    );
     // Accept both Point and Vector — they share structural representation.
     // eval_perturbed_point re-wraps as Value::Point, so the lambda always sees a Point.
     let Some(coords) = extract_point_coords(point) else {
@@ -875,14 +905,6 @@ pub(crate) fn compute_numerical_divergence_at_point(
     let n = coords.len();
 
     let domain_dim = extract_explicit_domain_dim(domain_type);
-
-    // Extract result dimension from the already-divided codomain_type (stamped by
-    // compute_divergence). Divergence always produces a scalar codomain, so only
-    // Type::Scalar needs the dimensioned arm — no Type::Vector arm is needed here.
-    let result_dim = match codomain_type {
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
-    };
 
     let single_point_param = detect_single_point_param(lambda, n);
 
@@ -967,14 +989,7 @@ pub(crate) fn compute_numerical_divergence_at_point(
     if !divergence.is_finite() {
         return Value::Undef;
     }
-    if result_dim != DimensionVector::DIMENSIONLESS {
-        Value::Scalar {
-            si_value: divergence,
-            dimension: result_dim,
-        }
-    } else {
-        Value::Real(divergence)
-    }
+    wrap_scalar_result(divergence, codomain_type)
 }
 
 /// Compute the numerical curl of a 3D vector field at a given point via central differences.
@@ -992,11 +1007,11 @@ pub(crate) fn compute_numerical_divergence_at_point(
 /// the lambda always receives a `Point` regardless of the caller's input variant.
 ///
 /// `codomain_type` is the curl field's already-divided codomain (stamped by
-/// compute_curl). Mirrors the divergence handler's trust-the-declaration pattern:
-/// no further division is performed here — `result_dim` is extracted directly from it.
+/// `compute_curl`). Follows the trust-the-declaration pattern established in
+/// `compute_numerical_gradient_at_point`: no further division is performed here.
 ///
 /// Returns:
-/// - Vector3 of Real or Scalar components (Scalar when result_dim is non-dimensionless)
+/// - Vector3 of Real or Scalar components (dimensioned when codomain has a dimension)
 /// - Undef if any evaluation fails
 pub(crate) fn compute_numerical_curl_at_point(
     lambda: &Value,
@@ -1016,15 +1031,12 @@ pub(crate) fn compute_numerical_curl_at_point(
     let n = 3;
     let domain_dim = extract_explicit_domain_dim(domain_type);
 
-    // Extract result dimension from the already-divided codomain_type (stamped by
-    // compute_curl). Curl produces Vector{3, component}, so unwrap the quantity.
-    let result_dim = match codomain_type {
-        Type::Vector { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => *dimension,
-            _ => DimensionVector::DIMENSIONLESS,
-        },
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
+    // Extract the per-component codomain type from the already-divided codomain_type
+    // (stamped by compute_curl). Curl produces Vector{3, component}, so unwrap the
+    // quantity; for any other type fall back to codomain_type itself.
+    let component_codomain: &Type = match codomain_type {
+        Type::Vector { quantity, .. } => quantity.as_ref(),
+        _ => codomain_type,
     };
 
     // n is constant 3 here, so the n > 1 branch in detect_single_point_param is always
@@ -1126,18 +1138,11 @@ pub(crate) fn compute_numerical_curl_at_point(
         return Value::Undef;
     }
 
-    let wrap = |v: f64| -> Value {
-        if result_dim != DimensionVector::DIMENSIONLESS {
-            Value::Scalar {
-                si_value: v,
-                dimension: result_dim,
-            }
-        } else {
-            Value::Real(v)
-        }
-    };
-
-    Value::Vector(vec![wrap(curl_x), wrap(curl_y), wrap(curl_z)])
+    Value::Vector(vec![
+        wrap_scalar_result(curl_x, component_codomain),
+        wrap_scalar_result(curl_y, component_codomain),
+        wrap_scalar_result(curl_z, component_codomain),
+    ])
 }
 
 /// Compute the numerical Laplacian of a scalar field at a given point via central differences.
@@ -1151,8 +1156,8 @@ pub(crate) fn compute_numerical_curl_at_point(
 /// the lambda always receives a `Point` regardless of the caller's input variant.
 ///
 /// `codomain_type` is the Laplacian field's already-divided codomain (stamped by
-/// compute_laplacian). Mirrors the gradient handler's trust-the-declaration pattern:
-/// no further division is performed here — `result_dim` is extracted directly from it.
+/// `compute_laplacian`). Follows the trust-the-declaration pattern established in
+/// `compute_numerical_gradient_at_point`: no further division is performed here.
 ///
 /// Returns:
 /// - Scalar with the declared codomain dimension for dimensioned fields
@@ -1165,6 +1170,11 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
+    debug_assert!(
+        matches!(codomain_type, Type::Real | Type::Scalar { .. }),
+        "divergence/laplacian codomain must be scalar, got {:?}",
+        codomain_type
+    );
     // Accept Point, Vector, Real, Int, and Scalar — the wide extract_coords variant.
     // eval_perturbed_point re-wraps as Value::Point, so the lambda always sees a Point.
     let Some(coords) = extract_coords(point) else {
@@ -1174,14 +1184,6 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     let n = coords.len();
 
     let domain_dim = extract_explicit_domain_dim(domain_type);
-
-    // Extract result dimension from the already-divided codomain_type (stamped by
-    // compute_laplacian). Laplacian always produces a scalar codomain, so only
-    // Type::Scalar needs the dimensioned arm.
-    let result_dim = match codomain_type {
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
-    };
 
     let single_point_param = detect_single_point_param(lambda, n);
 
@@ -1275,14 +1277,7 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     if !laplacian.is_finite() {
         return Value::Undef;
     }
-    if result_dim != DimensionVector::DIMENSIONLESS {
-        Value::Scalar {
-            si_value: laplacian,
-            dimension: result_dim,
-        }
-    } else {
-        Value::Real(laplacian)
-    }
+    wrap_scalar_result(laplacian, codomain_type)
 }
 
 #[cfg(test)]
@@ -1565,6 +1560,70 @@ mod tests {
         );
     }
 
+    // --- divergence/laplacian codomain guard tests ---
+
+    /// Verify that `compute_numerical_divergence_at_point` panics (in debug mode) when
+    /// `codomain_type` is not `Type::Real` or `Type::Scalar`.
+    ///
+    /// `Type::Bool` is not a valid divergence codomain. The debug_assert fires before any
+    /// coordinate extraction, so the lambda/point/domain_type need not be functionally correct.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "divergence/laplacian codomain must be scalar")]
+    fn divergence_unexpected_codomain_panics_in_debug() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        let x_id = ValueCellId::new("$lambda0.S", "x");
+        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("x".to_string(), x_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let _result = compute_numerical_divergence_at_point(
+            &lambda,
+            &Value::Real(1.0),
+            &Type::Real,
+            &Type::Bool,
+            &ctx,
+        );
+    }
+
+    /// Verify that `compute_numerical_laplacian_at_point` panics (in debug mode) when
+    /// `codomain_type` is not `Type::Real` or `Type::Scalar`.
+    ///
+    /// Same pattern as the divergence test above. The debug_assert fires before any
+    /// coordinate extraction, so the lambda/point/domain_type need not be functionally correct.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "divergence/laplacian codomain must be scalar")]
+    fn laplacian_unexpected_codomain_panics_in_debug() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        let x_id = ValueCellId::new("$lambda0.S", "x");
+        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("x".to_string(), x_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let _result = compute_numerical_laplacian_at_point(
+            &lambda,
+            &Value::Real(1.0),
+            &Type::Real,
+            &Type::Bool,
+            &ctx,
+        );
+    }
+
     // --- eval_perturbed_point unit tests ---
 
     /// Verify the happy path for `eval_perturbed_point` with `single_point_param=true`.
@@ -1785,6 +1844,19 @@ mod tests {
             codomain_type: Type::Real,
             source: FieldSourceKind::Gradient,
             lambda: Box::new(original_field),
+        };
+        let result = validate_differentiable_field(&field, "test");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn validate_differentiable_field_imported_source_returns_none() {
+        let lambda = make_test_lambda();
+        let field = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Imported,
+            lambda: Box::new(lambda),
         };
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_none());
@@ -2056,6 +2128,47 @@ mod tests {
         assert_eq!(
             work_point[1],
             Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH }
+        );
+    }
+
+    // --- wrap_scalar_result unit tests ---
+
+    /// Scalar codomain with LENGTH dimension wraps as Value::Scalar{si_value, LENGTH}.
+    #[test]
+    fn wrap_scalar_result_scalar_length_returns_scalar() {
+        let result = wrap_scalar_result(42.0, &Type::Scalar { dimension: DimensionVector::LENGTH });
+        assert_eq!(
+            result,
+            Value::Scalar {
+                si_value: 42.0,
+                dimension: DimensionVector::LENGTH,
+            }
+        );
+    }
+
+    /// Real codomain wraps as Value::Real.
+    #[test]
+    fn wrap_scalar_result_real_returns_real() {
+        let result = wrap_scalar_result(42.0, &Type::Real);
+        assert_eq!(result, Value::Real(42.0));
+    }
+
+    /// Dimensionless Scalar codomain wraps as Value::Scalar{DIMENSIONLESS}, NOT Value::Real.
+    /// The helper wraps blindly — callers pre-normalize if they want Real for dimensionless.
+    #[test]
+    fn wrap_scalar_result_dimensionless_scalar_returns_dimensionless_scalar() {
+        let result = wrap_scalar_result(
+            7.0,
+            &Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        );
+        assert_eq!(
+            result,
+            Value::Scalar {
+                si_value: 7.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }
         );
     }
 }

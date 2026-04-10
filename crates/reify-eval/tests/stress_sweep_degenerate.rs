@@ -59,7 +59,7 @@ fn zero_extrude_distance() {
     let ops_ref = kernel.operations_ref();
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let _result = engine.build(&module, ExportFormat::Step);
+    let result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
     // Zero-distance extrude should be skipped — kernel should receive no Extrude ops.
@@ -73,6 +73,18 @@ fn zero_extrude_distance() {
          but kernel received {} Extrude op(s): {:?}",
         extrude_ops.len(),
         extrude_ops.iter().map(|o| &o.op).collect::<Vec<_>>()
+    );
+
+    // The degenerate-extrude warning must propagate through Engine::build to
+    // BuildResult.diagnostics so model authors see a specific explanation
+    // (not only the generic "failed to compile geometry operation" error).
+    // A regression that drops the warning on its way out would not be caught
+    // by the kernel-ops check above.
+    assert!(
+        result.diagnostics.iter().any(|d| matches!(d.severity, Severity::Warning)
+            && d.message.contains("extrude dropped")),
+        "expected a Warning containing 'extrude dropped' in BuildResult.diagnostics, got: {:?}",
+        result.diagnostics.iter().map(|d| (d.severity, &d.message)).collect::<Vec<_>>()
     );
 }
 
@@ -127,7 +139,7 @@ fn revolve_zero_angle() {
     let ops_ref = kernel.operations_ref();
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let _result = engine.build(&module, ExportFormat::Step);
+    let result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
     // Zero-angle revolve should be skipped — kernel should receive no Revolve ops.
@@ -141,6 +153,18 @@ fn revolve_zero_angle() {
          but kernel received {} Revolve op(s): {:?}",
         revolve_ops.len(),
         revolve_ops.iter().map(|o| &o.op).collect::<Vec<_>>()
+    );
+
+    // The degenerate-revolve warning must propagate through Engine::build to
+    // BuildResult.diagnostics so model authors see a specific explanation
+    // (not only the generic "failed to compile geometry operation" error).
+    // A regression that drops the warning on its way out would not be caught
+    // by the kernel-ops check above.
+    assert!(
+        result.diagnostics.iter().any(|d| matches!(d.severity, Severity::Warning)
+            && d.message.contains("revolve dropped")),
+        "expected a Warning containing 'revolve dropped' in BuildResult.diagnostics, got: {:?}",
+        result.diagnostics.iter().map(|d| (d.severity, &d.message)).collect::<Vec<_>>()
     );
 }
 
