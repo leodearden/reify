@@ -24612,7 +24612,7 @@
         "description": "The content hash computation for CompiledModule (lib.rs:4530-4552) does not include module-level pragmas. If pragmas like `#precision(value=64)` are semantically meaningful for downstream compilation (solver config, numeric precision), a change to pragmas alone won't invalidate cached content hashes, risking stale results in incremental compilation.\n\nEither:\n- Hash the pragmas vector into `all_hashes` if they affect semantics, OR\n- Document that pragmas are intentionally excluded from the content hash if they are purely advisory/metadata.\n\nMemory hints: search for \"content hash\" and \"CompiledModule\" in reify-compiler. Check task 12 for content-hash caching context.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -24625,7 +24625,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-10T16:19:06.695Z"
+        "updatedAt": "2026-04-10T16:25:56.969Z"
       },
       {
         "id": "1165",
@@ -32673,7 +32673,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:25:16.348Z",
+      "lastModified": "2026-04-10T16:25:56.970Z",
       "taskCount": 1605,
       "completedCount": 1229,
       "tags": [
