@@ -1605,10 +1605,20 @@ use reify_test_support::warn_capturing_subscriber;
 /// least one event contains every `(key, value)` pair in `expected_fields`.
 /// Returns the value produced by `action` for downstream assertions.
 ///
+/// # Contract
+///
+/// In addition to the count and field-value checks, this helper enforces a
+/// **co-location invariant**: at least one warn event must carry BOTH the
+/// canonical message `poison_fields::MSG_LOCK_POISONED` AND the structured
+/// `error` field on the *same* event.  This prevents a future refactor from
+/// accidentally emitting the message on one event and the error field on a
+/// separate unrelated warn — a split that would silently pass count/field-value
+/// checks while breaking the structured-error contract.
+///
 /// # Panics
 ///
 /// Panics if `action` panics (i.e., `catch_unwind` returns `Err`), or if the
-/// WARN count or field checks fail.
+/// WARN count, field-value, or co-location checks fail.
 #[cfg(feature = "test-utils")]
 fn assert_poison_recovers<T: Send + 'static>(
     action: impl FnOnce() -> T + std::panic::UnwindSafe,
@@ -1625,7 +1635,33 @@ fn assert_poison_recovers<T: Send + 'static>(
         "action panicked when poison recovery was expected — catch_unwind returned Err"
     );
     capture.assert_count(expected_warns);
+    // Validates exact field VALUES (e.g. lock="values", access="read") for the
+    // structured-field schema contract.
     capture.assert_any_event_has_fields(expected_fields);
+
+    // Co-location invariant: MSG_LOCK_POISONED and the `error` field must
+    // appear on the same event.  The two parallel vecs are always equal-length
+    // (WarnCapturingSubscriber pushes to both in the same event() call); the
+    // length assertion is a safety-net for that internal invariant.
+    let msgs = capture.messages();
+    let fbe = capture.fields_by_event();
+    assert_eq!(
+        msgs.len(),
+        fbe.len(),
+        "messages and fields_by_event must have equal length (internal invariant of WarnCapture)"
+    );
+    let has_colocation = msgs.iter().zip(fbe.iter()).any(|(msg, fields)| {
+        msg == poison_fields::MSG_LOCK_POISONED && fields.contains_key("error")
+    });
+    assert!(
+        has_colocation,
+        "expected at least one warn event with BOTH message == {:?} AND field 'error'; \
+         messages: {:?}, fields: {:?}",
+        poison_fields::MSG_LOCK_POISONED,
+        msgs,
+        fbe,
+    );
+
     result.unwrap()
 }
 
