@@ -29,21 +29,15 @@ echo "=== test_helpers.sh unit tests ==="
 echo ""
 echo "--- Test a: test_helpers.sh exists ---"
 
-if [ -f "$HELPER_FILE" ]; then
-    check "test_helpers.sh file exists" "true"
-else
-    check "test_helpers.sh file exists" "false"
-fi
+if [ -f "$HELPER_FILE" ]; then ok=true; else ok=false; fi
+check "test_helpers.sh file exists" "$ok"
 
 # -- Test (b): test_helpers.sh is sourceable -----------------------------------
 echo ""
 echo "--- Test b: test_helpers.sh is sourceable ---"
 
-if bash -c "source '$HELPER_FILE'" >/dev/null 2>&1; then
-    check "test_helpers.sh can be sourced without error" "true"
-else
-    check "test_helpers.sh can be sourced without error" "false"
-fi
+if bash -c "source '$HELPER_FILE'" >/dev/null 2>&1; then ok=true; else ok=false; fi
+check "test_helpers.sh can be sourced without error" "$ok"
 
 # -- Test (c): PASS and FAIL initialized to 0 after sourcing ------------------
 echo ""
@@ -60,21 +54,15 @@ fi
 echo ""
 echo "--- Test d: assert function defined ---"
 
-if bash -c "source '$HELPER_FILE' && declare -f assert >/dev/null" 2>/dev/null; then
-    check "assert function is defined after sourcing" "true"
-else
-    check "assert function is defined after sourcing" "false"
-fi
+if bash -c "source '$HELPER_FILE' && declare -f assert >/dev/null" 2>/dev/null; then ok=true; else ok=false; fi
+check "assert function is defined after sourcing" "$ok"
 
 # -- Test (e): test_summary function is defined --------------------------------
 echo ""
 echo "--- Test e: test_summary function defined ---"
 
-if bash -c "source '$HELPER_FILE' && declare -f test_summary >/dev/null" 2>/dev/null; then
-    check "test_summary function is defined after sourcing" "true"
-else
-    check "test_summary function is defined after sourcing" "false"
-fi
+if bash -c "source '$HELPER_FILE' && declare -f test_summary >/dev/null" 2>/dev/null; then ok=true; else ok=false; fi
+check "test_summary function is defined after sourcing" "$ok"
 
 # -- Test (f): source guard prevents double-sourcing side effects --------------
 echo ""
@@ -201,53 +189,35 @@ for consumer in "${CONSUMERS[@]}"; do
     echo "--- Consumer: $cname ---"
 
     # (a) file contains 'source.*test_helpers.sh'
-    if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$cfile" 2>/dev/null; then
-        check "$cname sources test_helpers.sh" "true"
-    else
-        check "$cname sources test_helpers.sh" "false"
-    fi
+    if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$cfile" 2>/dev/null; then ok=true; else ok=false; fi
+    check "$cname sources test_helpers.sh" "$ok"
 
     # (b) file does NOT contain assert() function definition
-    if grep -q '^assert()' "$cfile" 2>/dev/null; then
-        check "$cname does NOT define assert() locally" "false"
-    else
-        check "$cname does NOT define assert() locally" "true"
-    fi
+    if ! grep -q '^assert()' "$cfile" 2>/dev/null; then ok=true; else ok=false; fi
+    check "$cname does NOT define assert() locally" "$ok"
 
     # (c) file does NOT contain PASS=0 or FAIL=0 initialization
-    if grep -qE '^PASS=0|^FAIL=0' "$cfile" 2>/dev/null; then
-        check "$cname does NOT init PASS/FAIL locally" "false"
-    else
-        check "$cname does NOT init PASS/FAIL locally" "true"
-    fi
+    if ! grep -qE '^PASS=0|^FAIL=0' "$cfile" 2>/dev/null; then ok=true; else ok=false; fi
+    check "$cname does NOT init PASS/FAIL locally" "$ok"
 
     # (d) file does NOT contain inline summary block
     # Look for the echo "Results:..." pattern outside a function definition
-    if grep -q 'echo "Results:.*passed.*failed"' "$cfile" 2>/dev/null; then
-        check "$cname does NOT have inline summary block" "false"
-    else
-        check "$cname does NOT have inline summary block" "true"
-    fi
+    if ! grep -q 'echo "Results:.*passed.*failed"' "$cfile" 2>/dev/null; then ok=true; else ok=false; fi
+    check "$cname does NOT have inline summary block" "$ok"
 
     # (e) scripts/ consumers must have a comment explaining cross-directory
     #     sourcing from tests/infra/ (gated to scripts/ consumers only)
     case "$consumer" in scripts/*)
         if grep -B3 -E '(source|\.)\s+.*test_helpers\.sh' "$cfile" 2>/dev/null \
-             | grep -qi 'test script.*not.*build'; then
-            check "$cname has cross-directory sourcing comment" "true"
-        else
-            check "$cname has cross-directory sourcing comment" "false"
-        fi
+             | grep -qi 'test script.*not.*build'; then ok=true; else ok=false; fi
+        check "$cname has cross-directory sourcing comment" "$ok"
         ;;
     esac
 
     # (f) all consumers must have a pre-source existence guard for test_helpers.sh
     #     matching pattern: [ -f ... ] || or test -f ... ||
-    if grep -E '\[ -f.*test_helpers\.sh.*\] \|\||test -f.*test_helpers\.sh.*\|\|' "$cfile" >/dev/null 2>&1; then
-        check "$cname has pre-source existence guard" "true"
-    else
-        check "$cname has pre-source existence guard" "false"
-    fi
+    if grep -E '\[ -f.*test_helpers\.sh.*\] \|\||test -f.*test_helpers\.sh.*\|\|' "$cfile" >/dev/null 2>&1; then ok=true; else ok=false; fi
+    check "$cname has pre-source existence guard" "$ok"
 done
 
 # ==============================================================================
@@ -260,54 +230,46 @@ SYNC_REF_HELPERS_FILE="$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
 
 # File-local helpers so the structural checks and robustness tests share the
 # same pattern source-of-truth and cannot drift independently.
-# _has_if_n_guard catches any 'if [ -n' conditional regardless of
-# the variable name — so $marker, $fn_name, $ref_fn, $_expr_ref_fn, etc. all
-# count as prohibited defensive guards.
+# _has_if_n_guard detects defensive non-empty guards in all supported forms:
+#   bracket variants:  [ -n ... ]  [[ -n ... ]]  test -n ...
+#   negated-zero form: [ ! -z ... ]  [[ ! -z ... ]]  test ! -z ...
+#   trigger keywords:  if / && / ||
+# Comment lines (leading #) are stripped before matching to avoid false
+# positives from explanatory comments. Split-line variants (newline between
+# `if` and `[`) are not handled (grep is line-oriented; see design decisions).
+# Variable names are not constrained — $marker, $fn_name, $ref_fn,
+# $_expr_ref_fn, etc. all count as prohibited defensive guards.
 # _has_expr_body_empty_guard_short_circuit checks that the empty-guard for
 # expr_body short-circuits via test_summary on the same line. NOTE: if the
 # guard is ever reformatted to span multiple lines, this per-line grep will
 # need to be replaced with an awk-based multiline matcher.
 _has_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
-_has_if_n_guard() { grep -qE 'if \[ -n' "$1" 2>/dev/null; }
+_has_if_n_guard() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -qE '(if|&&|\|\|)[[:space:]]*(\[\[?|test)[[:space:]]+(-n|![[:space:]]+-z)'; }
 _has_expr_body_empty_guard_short_circuit() { grep -qE '\[ -z "\$expr_body".*test_summary' "$1" 2>/dev/null; }
 
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
 
-# (a) file has NO defensive if [ -n ] guard (defensive guards removed)
-if ! _has_if_n_guard "$SYNC_FILE"; then
-    check "sync_comments_test.sh has no defensive if [ -n ] guard" "true"
-else
-    check "sync_comments_test.sh has no defensive if [ -n ] guard" "false"
-fi
+# (a) file has NO defensive non-empty guard (defensive guards removed)
+if ! _has_if_n_guard "$SYNC_FILE"; then ok=true; else ok=false; fi
+check "sync_comments_test.sh has no defensive non-empty guard" "$ok"
 
-# (b) extract_fn docstring uses 'naturally excluded' wording (not the misleading 'Excludes')
-if grep -q 'naturally excluded' "$SYNC_FILE" 2>/dev/null; then
-    check "extract_fn docstring uses 'naturally excluded' wording" "true"
-else
-    check "extract_fn docstring uses 'naturally excluded' wording" "false"
-fi
+# (b) extract_fn comment describes the actual broad awk pattern modifier prefixes
+#     (task-1309: broadened from /^[^/]*fn/ to mirror assert_sync_ref_exists regex)
+if grep '^#' "$SYNC_FILE" 2>/dev/null | grep -qF 'Allowed prefixes'; then ok=true; else ok=false; fi
+check "extract_fn comment describes allowed prefixes for broad awk pattern" "$ok"
 
-# (c) extract_fn awk pattern is anchored with [(<] after fn_name to prevent prefix collisions
-if grep -q 'fn_name.*\[(<\]' "$SYNC_FILE" 2>/dev/null; then
-    check "extract_fn awk pattern is anchored with [(<] after fn_name" "true"
-else
-    check "extract_fn awk pattern is anchored with [(<] after fn_name" "false"
-fi
+# (c) extract_fn awk pattern is anchored with [[:space:](<] after fn_name to prevent prefix collisions
+if grep -q 'fn_name.*\[\[:space:\](<\]' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "extract_fn awk pattern is anchored with [[:space:](<] after fn_name" "$ok"
 
 # (d) extract_fn output is captured to a named variable before diffing (non-empty guard)
-if grep -Fq 'expr_body' "$SYNC_FILE" 2>/dev/null; then
-    check "extract_fn output captured to expr_body variable" "true"
-else
-    check "extract_fn output captured to expr_body variable" "false"
-fi
+if grep -Fq 'expr_body' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "extract_fn output captured to expr_body variable" "$ok"
 
 # (e) sync_comments_test.sh has a non-empty guard for the captured expr_body variable
-if grep -Fq '[ -z "$expr_body"' "$SYNC_FILE" 2>/dev/null; then
-    check "extract_fn non-empty guard present for expr_body" "true"
-else
-    check "extract_fn non-empty guard present for expr_body" "false"
-fi
+if grep -Fq '[ -z "$expr_body"' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "extract_fn non-empty guard present for expr_body" "$ok"
 
 # (e2) sync_comments_test.sh empty-guard short-circuits via test_summary before diff
 # WHY: check (e) only confirms the guard exists; it does NOT confirm the guard
@@ -317,25 +279,16 @@ fi
 # regression with a spurious PASS.  This structural check is the fast pre-flight
 # counterpart to the expensive behavioral test at the
 # "extract_fn non-empty guard short-circuit behavioral test" section below.
-if _has_expr_body_empty_guard_short_circuit "$SYNC_FILE"; then
-    check "extract_fn empty-guard short-circuits via test_summary for expr_body" "true"
-else
-    check "extract_fn empty-guard short-circuits via test_summary for expr_body" "false"
-fi
+if _has_expr_body_empty_guard_short_circuit "$SYNC_FILE"; then ok=true; else ok=false; fi
+check "extract_fn empty-guard short-circuits via test_summary for expr_body" "$ok"
 
 # (f) sync_comments_test.sh sources sync_ref_helpers.sh (function moved out)
-if grep -qE '(source|\.)\s+.*sync_ref_helpers\.sh' "$SYNC_FILE" 2>/dev/null; then
-    check "sync_comments_test.sh sources sync_ref_helpers.sh" "true"
-else
-    check "sync_comments_test.sh sources sync_ref_helpers.sh" "false"
-fi
+if grep -qE '(source|\.)\s+.*sync_ref_helpers\.sh' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_comments_test.sh sources sync_ref_helpers.sh" "$ok"
 
 # (g) sync_comments_test.sh does NOT define assert_sync_ref_exists() locally
-if ! _has_assert_sync_ref_exists "$SYNC_FILE"; then
-    check "sync_comments_test.sh does NOT define assert_sync_ref_exists() locally" "true"
-else
-    check "sync_comments_test.sh does NOT define assert_sync_ref_exists() locally" "false"
-fi
+if ! _has_assert_sync_ref_exists "$SYNC_FILE"; then ok=true; else ok=false; fi
+check "sync_comments_test.sh does NOT define assert_sync_ref_exists() locally" "$ok"
 
 # behavioral: extract_fn returns empty output for a non-existent function name,
 # confirming the non-empty guard would fire when a fn is renamed or missing.
@@ -396,65 +349,45 @@ echo ""
 echo "--- sync_ref_helpers.sh structural checks ---"
 
 # (a) file exists
-if [ -f "$SYNC_REF_HELPERS_FILE" ]; then
-    check "sync_ref_helpers.sh file exists" "true"
-else
-    check "sync_ref_helpers.sh file exists" "false"
-fi
+if [ -f "$SYNC_REF_HELPERS_FILE" ]; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh file exists" "$ok"
 
 # (b) file defines assert_sync_ref_exists() helper function
-if _has_assert_sync_ref_exists "$SYNC_REF_HELPERS_FILE"; then
-    check "sync_ref_helpers.sh defines assert_sync_ref_exists()" "true"
-else
-    check "sync_ref_helpers.sh defines assert_sync_ref_exists()" "false"
-fi
+if _has_assert_sync_ref_exists "$SYNC_REF_HELPERS_FILE"; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh defines assert_sync_ref_exists()" "$ok"
 
 # (c) file sources test_helpers.sh
-if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
-    check "sync_ref_helpers.sh sources test_helpers.sh" "true"
-else
-    check "sync_ref_helpers.sh sources test_helpers.sh" "false"
-fi
+if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh sources test_helpers.sh" "$ok"
 
 # (d) file has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)
-if grep -q '_REIFY_SYNC_REF_HELPERS_SH_SOURCED' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
-    check "sync_ref_helpers.sh has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)" "true"
-else
-    check "sync_ref_helpers.sh has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)" "false"
-fi
+if grep -q '_REIFY_SYNC_REF_HELPERS_SH_SOURCED' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)" "$ok"
 
 # (e) head -1 pipeline has adjacent comment documenting single-reference limitation
-if grep -B3 'head -1' "$SYNC_REF_HELPERS_FILE" 2>/dev/null | grep -qiE 'first|single|multi.?reference'; then
-    check "sync_ref_helpers.sh head -1 pipeline has single-reference documentation comment" "true"
-else
-    check "sync_ref_helpers.sh head -1 pipeline has single-reference documentation comment" "false"
-fi
+if grep -B3 'head -1' "$SYNC_REF_HELPERS_FILE" 2>/dev/null | grep -qiE 'first|single|multi.?reference'; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh head -1 pipeline has single-reference documentation comment" "$ok"
 
 # (f) assert_sync_ref_exists has an early-fail guard when ref_fn is empty
-if grep -Fq '[ -z "$ref_fn" ]' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
-    check "sync_ref_helpers.sh has early-fail guard for empty ref_fn" "true"
-else
-    check "sync_ref_helpers.sh has early-fail guard for empty ref_fn" "false"
-fi
+if grep -Fq '[ -z "$ref_fn" ]' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh has early-fail guard for empty ref_fn" "$ok"
 
 # (g) assert_sync_ref_exists uses a display_fn fallback variable
-if grep -Fq 'display_fn' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
-    check "sync_ref_helpers.sh uses display_fn fallback variable" "true"
-else
-    check "sync_ref_helpers.sh uses display_fn fallback variable" "false"
-fi
+if grep -Fq 'display_fn' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_ref_helpers.sh uses display_fn fallback variable" "$ok"
 
 # ==============================================================================
 # assert_sync_ref_exists behavioral test (sourceable helper)
 # Sources sync_ref_helpers.sh directly — no sed text extraction.
-# S5 hardening applied from inception: rc -eq 0 AND anchored ^  FAIL: grep.
+# S3+S5 hardening: bash -eu catches unset-var/missing-cmd regressions via rc;
+# anchored PASS/FAIL greps verify assertion output.
 # ==============================================================================
 
 echo ""
 echo "--- assert_sync_ref_exists behavioral test (sourceable helper) ---"
 
 _src_beh_rc=0
-_src_beh_out=$(bash -c "
+_src_beh_out=$(bash -eu -c "
     tmp_src=\$(mktemp)
     tmp_tgt=\$(mktemp)
     trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
@@ -477,6 +410,62 @@ else
     check "guard fires: assert records anchored FAIL when ref_fn extraction yields nothing (got: $_src_beh_out)" "false"
 fi
 
+# happy-path: SYNC comment references a fn that exists in target file → PASS
+_src_beh_happy_rc=0
+_src_beh_happy_out=$(bash -eu -c "
+    tmp_src=\$(mktemp)
+    tmp_tgt=\$(mktemp)
+    trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
+    echo '// SYNC: mirror of reify-bogus::some_fn' > \"\$tmp_src\"
+    echo 'pub fn some_fn() {}' > \"\$tmp_tgt\"
+    source '${SYNC_REF_HELPERS_FILE}'
+    PASS=0; FAIL=0
+    assert_sync_ref_exists src-crate reify-bogus \"\$tmp_src\" \"\$tmp_tgt\"
+" 2>&1) || _src_beh_happy_rc=$?
+
+if [ "$_src_beh_happy_rc" -eq 0 ]; then
+    check "happy-path subshell exits cleanly (rc=0)" "true"
+else
+    check "happy-path subshell exits cleanly (rc=0, got rc=$_src_beh_happy_rc)" "false"
+fi
+
+if echo "$_src_beh_happy_out" | grep -q '^  PASS:'; then
+    check "happy-path: assert records anchored PASS when referenced fn exists in target" "true"
+else
+    check "happy-path: assert records anchored PASS when referenced fn exists in target (got: $_src_beh_happy_out)" "false"
+fi
+
+# mismatch-path: SYNC comment references a fn that does NOT exist in target → FAIL
+_src_beh_mismatch_rc=0
+_src_beh_mismatch_out=$(bash -eu -c "
+    tmp_src=\$(mktemp)
+    tmp_tgt=\$(mktemp)
+    trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
+    echo '// SYNC: mirror of reify-bogus::expected_fn' > \"\$tmp_src\"
+    echo 'pub fn different_fn() {}' > \"\$tmp_tgt\"
+    source '${SYNC_REF_HELPERS_FILE}'
+    PASS=0; FAIL=0
+    assert_sync_ref_exists src-crate reify-bogus \"\$tmp_src\" \"\$tmp_tgt\"
+" 2>&1) || _src_beh_mismatch_rc=$?
+
+if [ "$_src_beh_mismatch_rc" -eq 0 ]; then
+    check "mismatch-path subshell exits cleanly (rc=0)" "true"
+else
+    check "mismatch-path subshell exits cleanly (rc=0, got rc=$_src_beh_mismatch_rc)" "false"
+fi
+
+if echo "$_src_beh_mismatch_out" | grep -q '^  FAIL:'; then
+    check "mismatch-path: assert records anchored FAIL when referenced fn absent from target" "true"
+else
+    check "mismatch-path: assert records anchored FAIL when referenced fn absent from target (got: $_src_beh_mismatch_out)" "false"
+fi
+
+if echo "$_src_beh_mismatch_out" | grep '^  FAIL:' | grep -q 'expected_fn'; then
+    check "mismatch-path FAIL message names the missing fn (fn-existence path, not guard path)" "true"
+else
+    check "mismatch-path FAIL message names the missing fn (fn-existence path, not guard path) (got: $_src_beh_mismatch_out)" "false"
+fi
+
 
 # ==============================================================================
 # Robustness tests for sync_comments_test.sh structural checks
@@ -484,6 +473,9 @@ fi
 
 _robust_tmpdir=$(mktemp -d)
 cleanup_robust() { rm -rf "$_robust_tmpdir"; }
+# only main-shell EXIT trap in this file — earlier EXIT traps (lines ~363, ~419)
+# are inside `bash -c` subshells and do not affect this scope.  If you need a
+# second main-shell trap, use `trap -p EXIT` stacking instead of replacing this.
 trap cleanup_robust EXIT
 mk_fixture() { mktemp -p "$_robust_tmpdir"; }
 
@@ -493,8 +485,13 @@ echo "--- Robustness: assert_sync_ref_exists pattern tolerates whitespace ---"
 for ws in '' ' ' '  ' $'\t'; do
     fixture=$(mk_fixture)
     printf 'assert_sync_ref_exists%s() {\n  : trivial body\n}\n' "$ws" > "$fixture"
-    _ws_label="${ws:-(empty)}"
-    case "$ws" in $'\t') _ws_label='(tab)' ;; esac
+    case "$ws" in
+        '')     _ws_label='(empty)'   ;;
+        ' ')    _ws_label='(1 space)' ;;
+        '  ')   _ws_label='(2 spaces)' ;;
+        $'\t')  _ws_label='(tab)'    ;;
+        *)      _ws_label="(${#ws} chars)" ;;
+    esac
     if _has_assert_sync_ref_exists "$fixture" 2>/dev/null; then ok=true; else ok=false; fi
     check "_has_assert_sync_ref_exists accepts whitespace variant: ${_ws_label}" "$ok"
 done
@@ -513,11 +510,8 @@ check "_has_if_n_guard detects non-underscore ref variable" "$ok"
 # Clean fixture with no if-guard: helper should return 0 (no guard → true).
 fixture_clean=$(mk_fixture)
 printf '# no guards here\necho hello\n' > "$fixture_clean"
-if ! _has_if_n_guard "$fixture_clean" 2>/dev/null; then
-    check "if-guard pattern returns true for clean file (no guard)" "true"
-else
-    check "if-guard pattern returns true for clean file (no guard)" "false"
-fi
+if ! _has_if_n_guard "$fixture_clean" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard reports no-guard for clean file (no false positive)" "$ok"
 
 # Fixture with a non-ref-named guard variable ($marker): the broadened regex
 # 'if \[ -n' matches regardless of the variable name, so this guard is
@@ -548,22 +542,71 @@ echo "--- Robustness: empty-guard short-circuit pattern ---"
 fixture_no_summary=$(mk_fixture)
 printf '[ -z "$expr_body" ] && { assert "extract_fn sanitize_value found in reify-expr" false; }\n' \
     > "$fixture_no_summary"
-if ! _has_expr_body_empty_guard_short_circuit "$fixture_no_summary" 2>/dev/null; then
-    check "_has_expr_body_empty_guard_short_circuit rejects guard without test_summary" "true"
-else
-    check "_has_expr_body_empty_guard_short_circuit rejects guard without test_summary" "false"
-fi
+if ! _has_expr_body_empty_guard_short_circuit "$fixture_no_summary" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_expr_body_empty_guard_short_circuit rejects guard without test_summary" "$ok"
 
 # Positive fixture: guard WITH test_summary; — helper must return zero.
 # Confirms the helper does not false-positive on a correctly written guard.
 fixture_with_summary=$(mk_fixture)
 printf '[ -z "$expr_body" ] && { assert "extract_fn sanitize_value found in reify-expr" false; test_summary; }\n' \
     > "$fixture_with_summary"
-if _has_expr_body_empty_guard_short_circuit "$fixture_with_summary" 2>/dev/null; then
-    check "_has_expr_body_empty_guard_short_circuit accepts guard with test_summary" "true"
-else
-    check "_has_expr_body_empty_guard_short_circuit accepts guard with test_summary" "false"
-fi
+if _has_expr_body_empty_guard_short_circuit "$fixture_with_summary" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_expr_body_empty_guard_short_circuit accepts guard with test_summary" "$ok"
+
+# Positive-direction mirror of the historical pin above: a legitimate early-fail
+# guard using `-z` (not `-n`) must NOT be detected.  The regex uses alternation
+# `(-n|![[:space:]]+-z)` specifically to allow bare `-z` guards while banning
+# `-n` (and `! -z`) guards.  Without this pin a future change like `\[ -[nz]`
+# would ban legitimate production guards silently while the negative-pin tests
+# above all passed.
+# Protected production sites:
+#   - tests/infra/sync_ref_helpers.sh:31   `[ -z "$ref_fn" ]`
+#   - tests/sync_comments_test.sh:63-64    `[ -z "$expr_body" ]`
+fixture_z=$(mk_fixture)
+printf 'if [ -z "$ref_fn" ]; then echo fail; fi\n' > "$fixture_z"
+if ! _has_if_n_guard "$fixture_z" 2>/dev/null; then ok=true; else ok=false; fi
+check "if-guard pattern tolerates legitimate -z early-fail guard (\$ref_fn)" "$ok"
+
+# Double-bracket form: `if [[ -n "$var" ]]`
+# Requires regex to match `[[` as well as `[`.
+fixture_double_bracket=$(mk_fixture)
+printf 'if [[ -n "$var" ]]; then echo guard; fi\n' > "$fixture_double_bracket"
+if _has_if_n_guard "$fixture_double_bracket" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects double-bracket form: if [[ -n" "$ok"
+
+# `test` keyword form: `if test -n "$var"`
+fixture_test_keyword=$(mk_fixture)
+printf 'if test -n "$var"; then echo guard; fi\n' > "$fixture_test_keyword"
+if _has_if_n_guard "$fixture_test_keyword" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects test-keyword form: if test -n" "$ok"
+
+# Negated zero-length form: `if [ ! -z "$var" ]`
+# Requires regex to match `! -z` as an alternate to `-n`.
+fixture_not_z=$(mk_fixture)
+printf 'if [ ! -z "$var" ]; then echo guard; fi\n' > "$fixture_not_z"
+if _has_if_n_guard "$fixture_not_z" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects negated zero-length form: if [ ! -z" "$ok"
+
+# Double-bracket + negated zero-length: `if [[ ! -z "$var" ]]`
+# Verifies that `[[` and `! -z` work together (combination of steps 2+5).
+fixture_double_not_z=$(mk_fixture)
+printf 'if [[ ! -z "$var" ]]; then echo guard; fi\n' > "$fixture_double_not_z"
+if _has_if_n_guard "$fixture_double_not_z" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects double-bracket + ! -z: if [[ ! -z" "$ok"
+
+# Comment-only file: guard pattern appears ONLY inside a comment.
+# _has_if_n_guard must NOT fire on commented-out guards (false positive).
+fixture_comment=$(mk_fixture)
+printf '# if [ -n "$x" ]; then echo guard; fi\n' > "$fixture_comment"
+if ! _has_if_n_guard "$fixture_comment" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard ignores guard pattern inside comment line" "$ok"
+
+# Compound guard chained with &&: `something && [[ -n "$var" ]]`
+# The (if|&&|\|\|) alternation must cover non-`if` trigger forms.
+fixture_compound_and=$(mk_fixture)
+printf 'something && [[ -n "$var" ]] && do_work\n' > "$fixture_compound_and"
+if _has_if_n_guard "$fixture_compound_and" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects compound && guard: && [[ -n" "$ok"
 
 # Self-check: file-local helpers use symmetric positive _has_ naming.
 if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
@@ -582,6 +625,16 @@ else
     ok=false
 fi
 check "robustness check descriptions avoid ambiguous should-FAIL phrasing" "$ok"
+
+# Self-check: no check() call descriptions are duplicated across lines.
+# Duplicate descriptions (same string on the true and false branches of an
+# if/else) are ambiguous in CI output.  The unified ok=true/false form
+# (check "desc" "$ok") ensures each description appears exactly once.
+dup_count=$(grep -E '^[[:space:]]*check "' "${BASH_SOURCE[0]}" \
+    | grep -oE 'check "[^"]+"' \
+    | sort | uniq -d | wc -l)
+if [ "$dup_count" -eq 0 ]; then ok=true; else ok=false; fi
+check "no duplicate check descriptions in this file" "$ok"
 
 # Self-check: robustness section registers trap-based fixture cleanup.
 if grep -q 'trap cleanup_robust EXIT' "${BASH_SOURCE[0]}"; then
@@ -610,6 +663,36 @@ else
 fi
 check "mk_fixture is subshell-safe (no array append lost in command substitution)" "$ok"
 
+# Self-check: all behavioral assert_sync_ref_exists subshells use bash with -eu flag.
+# Count subshell-initiating lines (_src_beh_*_out assignments using bash with strict mode).
+# Must equal 3 (guard, happy-path, mismatch-path).
+_eu_flag="-eu"
+_beh_eu_count=$(grep -cE "_src_beh.*_out=\\\$\(bash ${_eu_flag} -c" "${BASH_SOURCE[0]}" || true)
+if [ "$_beh_eu_count" -eq 3 ]; then
+    ok=true
+else
+    ok=false
+fi
+check "all 3 behavioral subshells use bash -eu -c (S3 hardening, got $_beh_eu_count)" "$ok"
+
+# Self-check: _ws_label uses a comprehensive case statement with readable labels.
+# Grep for the literal case-arm assignment; this string is absent until step-2 adds it.
+if grep -q "_ws_label='(1 space)'" "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "_ws_label case statement maps single-space to readable label" "$ok"
+
+# Self-check: defensive trap comment warns about the single main-shell EXIT trap.
+# Grep for the comment marker; this string is absent until step-3 adds it.
+if grep -q '# only main-shell EXIT trap' "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "trap line has defensive comment about single main-shell EXIT trap invariant" "$ok"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
@@ -619,11 +702,8 @@ check "mk_fixture is subshell-safe (no array append lost in command substitution
 echo ""
 echo "--- Pipeline divergence documented in test_helpers.sh ---"
 
-if grep -q 'tests/infra/test_tree_sitter_pipeline.sh' "$HELPER_FILE" 2>/dev/null; then
-    check "test_helpers.sh documents pipeline divergence" "true"
-else
-    check "test_helpers.sh documents pipeline divergence" "false"
-fi
+if grep -q 'tests/infra/test_tree_sitter_pipeline.sh' "$HELPER_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "test_helpers.sh documents pipeline divergence" "$ok"
 
 # -- Summary -------------------------------------------------------------------
 echo ""
