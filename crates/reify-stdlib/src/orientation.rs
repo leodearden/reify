@@ -215,7 +215,7 @@ fn elementary_rotation_quat(axis: usize, angle: f64) -> (f64, f64, f64, f64) {
         0 => (c, s, 0.0, 0.0),
         1 => (c, 0.0, s, 0.0),
         2 => (c, 0.0, 0.0, s),
-        _ => (1.0, 0.0, 0.0, 0.0),
+        _ => unreachable!("elementary_rotation_quat called with axis > 2 — axes always come from orient_euler match"),
     }
 }
 
