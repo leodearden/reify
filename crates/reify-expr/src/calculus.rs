@@ -717,7 +717,6 @@ pub(crate) fn compute_numerical_gradient_at_point(
     // every axis iteration: at the bottom of the loop, work_coords[i] is restored
     // via direct assignment (`work_coords[i] = coord_i`), which is an exact
     // bit-identical restore of the value captured at the top of the iteration.
-    // Take ownership of coords — no clone needed.
     // Invariant: work_point[j] == make_arg(work_coords[j]) at axis start.
     let mut work_coords = coords;
     let (mut work_args, mut work_point) =
