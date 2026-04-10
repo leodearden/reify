@@ -249,13 +249,14 @@ echo "--- sync_comments_test.sh structural checks ---"
 if ! _has_if_n_guard "$SYNC_FILE"; then ok=true; else ok=false; fi
 check "sync_comments_test.sh has no defensive non-empty guard" "$ok"
 
-# (b) extract_fn comment references actual awk pattern /^[^/]*fn/ (task-1310: 'naturally excluded' replaced)
-if grep '^#' "$SYNC_FILE" 2>/dev/null | grep -qF '^[^/]*fn'; then ok=true; else ok=false; fi
-check "extract_fn comment references actual awk pattern /^[^/]*fn/" "$ok"
+# (b) extract_fn comment describes the actual broad awk pattern modifier prefixes
+#     (task-1309: broadened from /^[^/]*fn/ to mirror assert_sync_ref_exists regex)
+if grep '^#' "$SYNC_FILE" 2>/dev/null | grep -qF 'Allowed prefixes'; then ok=true; else ok=false; fi
+check "extract_fn comment describes allowed prefixes for broad awk pattern" "$ok"
 
-# (c) extract_fn awk pattern is anchored with [(<] after fn_name to prevent prefix collisions
-if grep -q 'fn_name.*\[(<\]' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
-check "extract_fn awk pattern is anchored with [(<] after fn_name" "$ok"
+# (c) extract_fn awk pattern is anchored with [[:space:](<] after fn_name to prevent prefix collisions
+if grep -q 'fn_name.*\[\[:space:\](<\]' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "extract_fn awk pattern is anchored with [[:space:](<] after fn_name" "$ok"
 
 # (d) extract_fn output is captured to a named variable before diffing (non-empty guard)
 if grep -Fq 'expr_body' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
