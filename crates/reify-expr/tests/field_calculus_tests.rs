@@ -528,6 +528,152 @@ fn run_dim_metadata_test(
     );
 }
 
+/// Build a sample point for the given domain type.
+///
+/// Returns `(Value, Type)` where the `Value` encodes coordinates (1.0, 2.0, 3.0)
+/// with component values matching the domain's quantity type:
+///  - `Point{n, Real}` or `Point{n, Int}` → components are `Value::Real`
+///  - `Point{n, Scalar{dim}}` → components are `Value::Scalar { si_value, dimension }`
+///  - bare `Type::Real` / `Type::Int` → `(Value::Real(1.0), Type::Real)`
+///  - bare `Type::Scalar{dim}` → `(Value::Scalar{1.0, dim}, domain.clone())`
+///
+/// Eliminates the `(Value, Type)` desynchronisation risk of constructing sample
+/// points manually.
+fn make_sample_point(domain: &Type) -> (Value, Type) {
+    match domain {
+        Type::Point { n, quantity } => {
+            let coords = [1.0f64, 2.0, 3.0];
+            let comps: Vec<Value> = coords[..*n]
+                .iter()
+                .map(|&v| match quantity.as_ref() {
+                    Type::Real | Type::Int => Value::Real(v),
+                    Type::Scalar { dimension } => Value::Scalar {
+                        si_value: v,
+                        dimension: *dimension,
+                    },
+                    _ => Value::Real(v),
+                })
+                .collect();
+            (Value::Point(comps), domain.clone())
+        }
+        Type::Real | Type::Int => (Value::Real(1.0), Type::Real),
+        Type::Scalar { dimension } => (
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: *dimension,
+            },
+            domain.clone(),
+        ),
+        _ => (Value::Real(1.0), Type::Real),
+    }
+}
+
+/// Evaluate a calculus operator on a standard analytical test field.
+///
+/// Builds a `Value::Field` with the given `domain` and `codomain` types, using a
+/// standard lambda body:
+///  - Vector codomain → identity `vec_n(x, y, z, ...)` (passes params straight through)
+///  - Scalar / Real / other codomain → linear sum `x + y + z + ...`
+///
+/// Value refs inside the body use `Type::Real` annotations (trust-the-declaration
+/// pattern, consistent with the rest of the test suite).
+///
+/// Supports `"gradient"`, `"divergence"`, `"curl"`, and `"laplacian"`.
+/// Returns the operator-result `Value` (a `Value::Field` for valid inputs).
+fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
+    let n: usize = match &domain {
+        Type::Point { n, .. } => *n,
+        _ => 1,
+    };
+
+    let names = ["x", "y", "z"];
+    let ids: Vec<ValueCellId> = names[..n]
+        .iter()
+        .map(|&name| ValueCellId::new("$lambda0.S", name))
+        .collect();
+
+    // Build lambda body.
+    let body = match &codomain {
+        Type::Vector { n: vec_n, .. } => {
+            // Identity: vec_n(x, y, z, ...)
+            let args: Vec<CompiledExpr> = ids
+                .iter()
+                .map(|id| CompiledExpr::value_ref(id.clone(), Type::Real))
+                .collect();
+            make_function_call(&format!("vec{vec_n}"), args, codomain.clone())
+        }
+        _ => {
+            // Linear sum: x + y + z + ...
+            let mut acc = CompiledExpr::value_ref(ids[0].clone(), Type::Real);
+            for id in &ids[1..] {
+                acc = CompiledExpr::binop(
+                    BinOp::Add,
+                    acc,
+                    CompiledExpr::value_ref(id.clone(), Type::Real),
+                    Type::Real,
+                );
+            }
+            acc
+        }
+    };
+
+    let params: Vec<(&str, ValueCellId)> = names[..n].iter().copied().zip(ids).collect();
+    let lambda = make_value_lambda(params, body, ValueMap::new());
+
+    let field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+
+    let op_expr = make_function_call(
+        op,
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real, // placeholder result_type; not used by the evaluator
+    );
+
+    let values = ValueMap::new();
+    eval_expr(&op_expr, &EvalContext::simple(&values))
+}
+
+/// Sample a field value at the standard test point for its domain type.
+///
+/// Extracts `codomain_type` from the `Value::Field`, calls `make_sample_point` to
+/// build a domain-compatible point, constructs a `sample(field, point)` call, and
+/// evaluates it.
+///
+/// Panics if `field` is not `Value::Field`.
+fn sample_field(field: Value, domain: Type) -> Value {
+    let codomain = match &field {
+        Value::Field { codomain_type, .. } => codomain_type.clone(),
+        other => panic!("sample_field: expected Value::Field, got {:?}", other),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain.clone()),
+        codomain: Box::new(codomain.clone()),
+    };
+
+    let (point_val, point_type) = make_sample_point(&domain);
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(point_val, point_type),
+        ],
+        codomain,
+    );
+
+    let values = ValueMap::new();
+    eval_expr(&sample_expr, &EvalContext::simple(&values))
+}
+
 // ── Step 1: Gradient accuracy tests ──────────────────────────────────────────
 
 /// Gradient of f(x) = x*x at x=3.0 should be ≈6.0.
