@@ -32708,15 +32708,16 @@
         "description": "Three follow-ups from reviewer_comprehensive on Task 1548's helper extraction in crates/reify-types/src/value.rs:\n\n1. Incomplete refactor: value_set_scalar_boundary_iteration_order (around lines 3271-3299) still uses the inlined BTreeSet + match-extract pattern that assert_boundary_set_iteration_order was designed to replace. Convert its body to call the helper with a Scalar build/extract pair (dimension=DimensionVector::LENGTH). This keeps the abstraction applied uniformly across all boundary-iteration tests (Scalar, Complex re/im, Orientation w/x/y/z).\n\n2. Style: `use std::collections::BTreeSet;` is scoped inside the assert_boundary_set_iteration_order fn body (around line 2754). Nearby tests (including value_set_scalar_boundary_iteration_order, Map tests) also use BTreeSet/BTreeMap locally. Hoist `use std::collections::{BTreeSet, BTreeMap};` to the top of `mod tests` and drop the local imports. Optional cleanup.\n\n3. Test quality: test_assert_boundary_set_iteration_order_using_real (around lines 2878-2889) only covers the happy path. Its sister helper assert_ieee754_total_order_real has symmetric #[should_panic] meta-tests (wrong order, wrong count). Add a #[should_panic(expected = \"unexpected value\")] meta-test for assert_boundary_set_iteration_order that passes a mismatched build/extract pair (e.g. build Value::Real but extract Complex) to prove the helper surfaces the variant mismatch, restoring parity.\n\nmemory_hints: search \"assert_boundary_set_iteration_order BOUNDARY_REALS helper\", get_entity \"Task 1548\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T16:35:58.341Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:35:56.963Z",
+      "lastModified": "2026-04-10T16:35:58.341Z",
       "taskCount": 1608,
       "completedCount": 1229,
       "tags": [
