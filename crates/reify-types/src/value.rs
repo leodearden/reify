@@ -3435,6 +3435,68 @@ mod tests {
         assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
     }
 
+    #[test]
+    fn value_set_complex_boundary_re_iteration_order() {
+        // Exercises the re-component fallthrough in the Complex arm of Value::Ord.
+        // The Ord impl chains dimension → re → im via total_cmp. With
+        // dimension=DIMENSIONLESS and im=0.0 for all entries, ordering falls
+        // through to re.total_cmp. Asserts the IEEE 754 totalOrder sequence from
+        // BTreeSet iteration over the re components.
+        // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
+        use std::collections::BTreeSet;
+        let mut inner = BTreeSet::new();
+        for &v in BOUNDARY_REALS {
+            inner.insert(Value::Complex {
+                re: v,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            });
+        }
+        let set_val = Value::Set(inner);
+
+        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
+            s.iter()
+                .map(|v| match v {
+                    Value::Complex { re, .. } => *re,
+                    _ => panic!("unexpected value"),
+                })
+                .collect()
+        } else {
+            panic!("expected Set");
+        };
+
+        assert_ieee754_total_order_real(&sorted);
+    }
+
+    #[test]
+    fn value_set_orientation_boundary_w_iteration_order() {
+        // Exercises the w-component (first) in the Orientation arm of Value::Ord.
+        // The Ord impl chains w → x → y → z via total_cmp. With x=0.0, y=0.0,
+        // z=0.0 for all entries, ordering is determined entirely by w.total_cmp.
+        // Asserts the IEEE 754 totalOrder sequence from BTreeSet iteration over
+        // the w components.
+        // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
+        use std::collections::BTreeSet;
+        let mut inner = BTreeSet::new();
+        for &v in BOUNDARY_REALS {
+            inner.insert(orient(v, 0.0, 0.0, 0.0));
+        }
+        let set_val = Value::Set(inner);
+
+        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
+            s.iter()
+                .map(|v| match v {
+                    Value::Orientation { w, .. } => *w,
+                    _ => panic!("unexpected value"),
+                })
+                .collect()
+        } else {
+            panic!("expected Set");
+        };
+
+        assert_ieee754_total_order_real(&sorted);
+    }
+
     // --- List tests (step-5) ---
 
     #[test]
