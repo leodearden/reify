@@ -17642,7 +17642,7 @@
         "description": "In reify-compiler/src/lib.rs:4542, `resolve_type_name(&type_expr.name).unwrap_or(Type::Real)` silently defaults unresolvable type names to Real without emitting a diagnostic. This is inconsistent with the equivalent code at lib.rs:6185 which properly emits `Diagnostic::error(\"unresolved type: ...\")` before defaulting to Real.\n\nThe fix should follow the pattern at line 6185: use `unwrap_or_else` to push a diagnostic error with the source span before falling back to Type::Real. The span is available from `type_expr.span`. This ensures users get an error when writing `param x: UnknownType` in port declarations.\n\nmemory_hints: search \"silent defaults pattern\", \"unwrap_or Type::Real compiler\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -17655,7 +17655,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-10T20:32:26.104Z"
       },
       {
         "id": "820",
@@ -32846,7 +32846,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T20:32:23.449Z",
+      "lastModified": "2026-04-10T20:32:26.104Z",
       "taskCount": 1614,
       "completedCount": 1248,
       "tags": [
