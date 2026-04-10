@@ -29761,11 +29761,11 @@
         "description": "Two related issues in build_logic_tests.rs from the task 1415 review:\n\n1. **Redundant meta-test (lines 1402-1417):** `test_self_path_constants_guard_is_not_vacuous` performs the exact same `source.matches(\"env!(\\\"CARGO_MANIFEST_DIR\\\")\").count() >= 2` assertion as `test_self_path_constants_use_manifest_dir` (lines 1394-1399). Both tests will always pass or fail together — the meta-test cannot catch any failure the main test wouldn't already catch.\n\n   **Fix:** Change the meta-test to assert `count == 2` (exact match) while the main test retains `>= 2` (lower bound). This makes them orthogonal: the main test guards against regression (count dropping below 2), while the meta-test guards against unexpected additions inflating the count and masking a regression.\n\n2. **Stale comment (line 1360):** The parenthetical \"(actual count is 6)\" is now inaccurate since the new tests (`test_self_path_constants_use_manifest_dir` and `test_self_path_constants_guard_is_not_vacuous`) both read THIS_FILE via `read_to_string(THIS_FILE)` and will be discovered by `find_self_reading_test_fns`. Update the parenthetical to reflect the actual count, or remove it since the comment already notes the threshold is a lower bound.\n\nmemory_hints:\n- search: \"test_self_path_constants vacuous guard meta-test\"\n- search: \"CARGO_MANIFEST_DIR test convention build_logic_tests\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T01:53:26.697Z",
+        "updatedAt": "2026-04-10T02:26:05.052Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/tests/build_logic_tests.rs"
@@ -30049,9 +30049,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:24:37.621Z",
+      "lastModified": "2026-04-10T02:26:05.055Z",
       "taskCount": 1455,
-      "completedCount": 1128,
+      "completedCount": 1129,
       "tags": [
         "master"
       ]
