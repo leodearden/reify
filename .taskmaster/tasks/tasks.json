@@ -32758,6 +32758,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1612,
+        "title": "Use make_analytical_field in run_dim_metadata_test and add source param",
+        "description": "In crates/reify-expr/tests/field_calculus_tests.rs, run_dim_metadata_test (~line 542) manually constructs Value::Field + Type::Field (~lines 574-586) instead of calling make_analytical_field. Add a source parameter to make_analytical_field (or create make_field_with_source variant) to support non-Analytical sources, then replace the inline construction in run_dim_metadata_test.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -32770,7 +32781,7 @@
       ],
       "created": "2026-04-10T16:44:40.070Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T16:44:43.483Z"
+      "updated": "2026-04-10T16:44:45.672Z"
     }
   }
 }
