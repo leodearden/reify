@@ -605,6 +605,16 @@ printf 'if test -z "$var"; then echo fail; fi\n' > "$fixture_z_test"
 if ! _has_if_n_guard "$fixture_z_test" 2>/dev/null; then ok=true; else ok=false; fi
 check "if-guard pattern tolerates -z in test-keyword form: if test -z" "$ok"
 
+# Positive-direction -z pin: compound && single-bracket form
+# `something && [ -z "$var" ] && do_work`.
+# The (if|&&|\|\|) trigger comes BEFORE the bracket here, but the -z
+# alternation still protects this guard.  Pin ensures compound-&& -z
+# stays tolerated.
+fixture_z_and=$(mk_fixture)
+printf 'something && [ -z "$var" ] && do_work\n' > "$fixture_z_and"
+if ! _has_if_n_guard "$fixture_z_and" 2>/dev/null; then ok=true; else ok=false; fi
+check "if-guard pattern tolerates compound && -z: && [ -z" "$ok"
+
 # Double-bracket form: `if [[ -n "$var" ]]`
 # Requires regex to match `[[` as well as `[`.
 fixture_double_bracket=$(mk_fixture)
