@@ -423,10 +423,11 @@ impl GeometryKernel for MockGeometryKernel {
 /// A mock geometry kernel whose `execute` always returns `Err`.
 ///
 /// Useful for testing how consumers handle geometry operation failures.
-/// All other methods return benign dummy values — `query` returns
-/// `Ok(Value::Real(0.0))`, `export` writes `b"BOGUS_EXPORT"`, and
-/// `tessellate` returns `Ok` with an empty mesh — so that tests can
-/// exercise error-path logic without needing to handle secondary failures.
+/// Because `execute` always fails, no valid `GeometryHandle` is ever
+/// produced. As a defensive fail-loud guard, `tessellate`, `export`,
+/// and `query` all return errors immediately — any call to them
+/// indicates a regression where the engine failed to short-circuit on
+/// the execute error.
 pub struct FailingMockGeometryKernel;
 
 impl GeometryKernel for FailingMockGeometryKernel {
@@ -437,26 +438,26 @@ impl GeometryKernel for FailingMockGeometryKernel {
     }
 
     fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Ok(Value::Real(0.0))
+        Err(QueryError::QueryFailed(
+            "should not reach: execute always fails".into(),
+        ))
     }
 
     fn export(
         &self,
         _handle: GeometryHandleId,
         _format: ExportFormat,
-        writer: &mut dyn std::io::Write,
+        _writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        writer
-            .write_all(b"BOGUS_EXPORT")
-            .map_err(|e| ExportError::IoError(e.to_string()))
+        Err(ExportError::FormatError(
+            "should not reach: execute always fails".into(),
+        ))
     }
 
     fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-        Ok(Mesh {
-            vertices: vec![],
-            indices: vec![],
-            normals: None,
-        })
+        Err(TessError::TessellationFailed(
+            "should not reach: execute always fails".into(),
+        ))
     }
 }
 
@@ -2158,33 +2159,46 @@ mod tests {
     }
 
     #[test]
-    fn failing_kernel_query_returns_ok_real_zero() {
+    fn failing_kernel_query_returns_err_defensively() {
         let kernel = FailingMockGeometryKernel;
         let id = GeometryHandleId(1);
         let result = kernel.query(&GeometryQuery::Volume(id));
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Value::Real(0.0));
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, QueryError::QueryFailed(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
     }
 
     #[test]
-    fn failing_kernel_export_writes_bogus_export() {
+    fn failing_kernel_export_returns_err_defensively() {
         let kernel = FailingMockGeometryKernel;
         let id = GeometryHandleId(1);
         let mut buf: Vec<u8> = Vec::new();
         let result = kernel.export(id, ExportFormat::Step, &mut buf);
-        assert!(result.is_ok());
-        assert_eq!(&buf, b"BOGUS_EXPORT");
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ExportError::FormatError(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
+        assert!(buf.is_empty(), "buffer should not have been written to");
     }
 
     #[test]
-    fn failing_kernel_tessellate_returns_ok_empty_mesh() {
+    fn failing_kernel_tessellate_returns_err_defensively() {
         let kernel = FailingMockGeometryKernel;
         let id = GeometryHandleId(1);
         let result = kernel.tessellate(id, 0.01);
-        assert!(result.is_ok());
-        let mesh = result.unwrap();
-        assert!(mesh.vertices.is_empty());
-        assert!(mesh.indices.is_empty());
-        assert!(mesh.normals.is_none());
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, TessError::TessellationFailed(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
     }
 }

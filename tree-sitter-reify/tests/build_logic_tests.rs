@@ -1401,7 +1401,7 @@ fn test_self_read_paths_use_manifest_dir() {
 #[test]
 fn test_self_path_constants_use_manifest_dir() {
     // Regression guard: the `THIS_FILE` and `BUILD_RS` constants must be defined using
-    // `env!("CARGO_MANIFEST_DIR")` for portable compile-time path resolution.
+    // the `env!` macro on `CARGO_MANIFEST_DIR` for portable compile-time path resolution.
     //
     // Single responsibility: asserts only that the constant *definitions* use the portable
     // env! macro form — orthogonal to `test_self_read_paths_use_manifest_dir`, which asserts
@@ -1409,15 +1409,31 @@ fn test_self_path_constants_use_manifest_dir() {
     // Splitting these checks yields unambiguous failure messages: a broken constant definition
     // fails only here; a test that bypasses THIS_FILE fails only in the other test.
     //
-    // The contains-check matches the exact macro invocation string to avoid false-positives
-    // from comments or doc-strings that merely mention the env var name without using it.
+    // The count-based check (>= 2) requires the exact macro invocation to appear at least twice,
+    // once for each constant, so neither definition can silently regress to a hardcoded path.
     let source = read_self_source();
 
     assert!(
-        source.contains("env!(\"CARGO_MANIFEST_DIR\")"),
+        source.matches("env!(\"CARGO_MANIFEST_DIR\")").count() >= 2,
         "THIS_FILE and BUILD_RS constants must be defined using env!(\"CARGO_MANIFEST_DIR\") \
-         for portable compile-time path resolution; checking for the exact macro invocation \
-         prevents false-positives from comments that merely mention the env var name"
+         for portable compile-time path resolution; at least two occurrences required \
+         (one per constant)"
+    );
+}
+
+#[test]
+fn test_self_path_constants_guard_is_not_vacuous() {
+    // Meta-test: verifies that the count-based assertion in
+    // `test_self_path_constants_use_manifest_dir` is non-vacuous.  The number of
+    // uses of the env! macro on CARGO_MANIFEST_DIR in this file must be >= 2
+    // (one per constant definition), confirming the >= 2 threshold is meaningful.
+    let source = read_self_source();
+    let count = source.matches("env!(\"CARGO_MANIFEST_DIR\")").count();
+    assert!(
+        count >= 2,
+        "expected at least 2 occurrences of env!(\"CARGO_MANIFEST_DIR\") in this file \
+         (one for THIS_FILE const, one for BUILD_RS const), but found {}",
+        count
     );
 }
 
