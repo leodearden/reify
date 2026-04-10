@@ -28449,11 +28449,11 @@
         "description": "In scripts/check-pm-standardization.sh line 52, the Check 2 assertion hardcodes `[ \"$total\" = '3' ]` where '3' must match the number of entries in PKG_FILES. If a fourth package.json is added to PKG_FILES, this magic number must be updated separately — a maintenance trap. Replace the hardcoded '3' with a dynamic count derived from PKG_FILES (e.g. convert PKG_FILES to an array and use `${#files[@]}`, or count words with `set -- $PKG_FILES; echo $#`). The test in test_npm_ci_hardening.sh Test 19 line 212 also asserts `total.* = '3'` and will need updating to match whatever approach is chosen.\n\nMemory hints: search \"check-pm-standardization PKG_FILES Check 2 task 1326\" for context on the original hardening that introduced this pattern.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:09:35.460Z",
+        "updatedAt": "2026-04-10T01:23:48.479Z",
         "metadata": {
           "modules": [
             "scripts/check-pm-standardization.sh",
@@ -29762,7 +29762,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:23:32.241Z",
+      "lastModified": "2026-04-10T01:23:48.479Z",
       "taskCount": 1440,
       "completedCount": 1104,
       "tags": [
