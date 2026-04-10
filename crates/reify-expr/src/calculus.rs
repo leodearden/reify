@@ -846,6 +846,11 @@ pub(crate) fn compute_numerical_gradient_at_point(
 /// For an n-dimensional vector field F: R^n → R^n, the divergence is:
 ///   div F(p) = Σ_i ∂Fi/∂xi ≈ Σ_i (F(p+h*ei)[i] - F(p-h*ei)[i]) / (2h)
 ///
+/// `point` may be either `Value::Point` or `Value::Vector` — both share the same
+/// structural representation and are extracted identically by `extract_point_coords`.
+/// `eval_perturbed_point` always re-wraps perturbed coordinates as `Value::Point`, so
+/// the lambda always receives a `Point` regardless of the caller's input variant.
+///
 /// `codomain_type` is the divergence field's already-divided codomain (stamped by
 /// compute_divergence). Mirrors the gradient handler's trust-the-declaration pattern:
 /// no further division is performed here — `result_dim` is extracted directly from it.
@@ -861,6 +866,8 @@ pub(crate) fn compute_numerical_divergence_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
+    // Accept both Point and Vector — they share structural representation.
+    // eval_perturbed_point re-wraps as Value::Point, so the lambda always sees a Point.
     let Some(coords) = extract_point_coords(point) else {
         return Value::Undef;
     };
@@ -979,6 +986,11 @@ pub(crate) fn compute_numerical_divergence_at_point(
 /// For each axis j, perturb to get F(p±h*ej), then for each component i compute:
 ///   J[i][j] = (F(p+h*ej)[i] − F(p−h*ej)[i]) / (2h)
 ///
+/// `point` may be either `Value::Point` or `Value::Vector` — both share the same
+/// structural representation and are extracted identically by `extract_point_coords`.
+/// `eval_perturbed_point` always re-wraps perturbed coordinates as `Value::Point`, so
+/// the lambda always receives a `Point` regardless of the caller's input variant.
+///
 /// `codomain_type` is the curl field's already-divided codomain (stamped by
 /// compute_curl). Mirrors the divergence handler's trust-the-declaration pattern:
 /// no further division is performed here — `result_dim` is extracted directly from it.
@@ -993,7 +1005,9 @@ pub(crate) fn compute_numerical_curl_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
-    // Only defined for 3D Point domains
+    // Accept both Point and Vector — they share structural representation.
+    // Only defined for 3D domains, so enforce len == 3 after extraction.
+    // eval_perturbed_point re-wraps as Value::Point, so the lambda always sees a Point.
     let coords = match extract_point_coords(point) {
         Some(c) if c.len() == 3 => c,
         _ => return Value::Undef,
@@ -1013,6 +1027,8 @@ pub(crate) fn compute_numerical_curl_at_point(
         _ => DimensionVector::DIMENSIONLESS,
     };
 
+    // n is constant 3 here, so the n > 1 branch in detect_single_point_param is always
+    // true; kept for consistency with divergence/laplacian, which derive n from coords.len().
     let single_point_param = detect_single_point_param(lambda, n);
 
     let make_arg = |val: f64| make_domain_arg(val, domain_dim);
@@ -1129,6 +1145,11 @@ pub(crate) fn compute_numerical_curl_at_point(
 /// For a scalar field f: R^n → R, the Laplacian is:
 ///   Δf(p) = Σ_i ∂²f/∂xi² ≈ Σ_i (f(p+h*ei) − 2*f(p) + f(p−h*ei)) / h²
 ///
+/// `point` may be `Value::Point`, `Value::Vector`, `Value::Real`, `Value::Int`, or
+/// `Value::Scalar` — the wide `extract_coords` helper accepts all of these.
+/// `eval_perturbed_point` always re-wraps perturbed coordinates as `Value::Point`, so
+/// the lambda always receives a `Point` regardless of the caller's input variant.
+///
 /// `codomain_type` is the Laplacian field's already-divided codomain (stamped by
 /// compute_laplacian). Mirrors the gradient handler's trust-the-declaration pattern:
 /// no further division is performed here — `result_dim` is extracted directly from it.
@@ -1144,6 +1165,8 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
+    // Accept Point, Vector, Real, Int, and Scalar — the wide extract_coords variant.
+    // eval_perturbed_point re-wraps as Value::Point, so the lambda always sees a Point.
     let Some(coords) = extract_coords(point) else {
         return Value::Undef;
     };
