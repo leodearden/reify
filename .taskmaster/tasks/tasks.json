@@ -18064,11 +18064,11 @@
         "description": "Move the byte_offset_to_line_col function (currently at gui/src-tauri/src/engine.rs:682-697 and crates/reify-cli/src/mcp_context.rs:105-121) into a shared utility crate (e.g. reify-types or a new reify-source-util). Agree on a single signature (usize→usize or u32→u32). Update both call sites to import from the shared crate.\n\nmemory_hints: search(\"byte_offset_to_line_col duplicate cross-crate\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T20:22:39.179Z",
+        "updatedAt": "2026-04-10T20:57:28.813Z",
         "metadata": {
           "modules": [
             "gui/src-tauri",
@@ -32863,9 +32863,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T20:54:22.006Z",
+      "lastModified": "2026-04-10T20:57:28.814Z",
       "taskCount": 1615,
-      "completedCount": 1256,
+      "completedCount": 1257,
       "tags": [
         "master"
       ]
