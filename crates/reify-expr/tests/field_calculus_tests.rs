@@ -3767,92 +3767,23 @@ fn divergence_dimensional_correctness_result_dimensionless_returns_real() {
     );
 }
 
-/// Divergence of a Composed Point{3,Length} → Vector{3,Velocity} field has codomain
-/// dimension Velocity/Length = 1/Time.
-///
-/// Exercises the `FieldSourceKind::Composed` whitelist in compute_divergence
-/// (calculus.rs:183). No existing divergence test uses a Composed source.
-/// Mirrors gradient_tests.rs:2580 `gradient_composed_field_returns_field`.
-/// Expected to pass immediately (coverage expansion).
+/// Exercises the `FieldSourceKind::Analytical | FieldSourceKind::Composed` source
+/// whitelist in `compute_divergence`. No other divergence test uses a `Composed` source.
+/// Mirrors `gradient_composed_field_returns_field` in `gradient_tests.rs`.
 #[test]
 fn divergence_dimensional_correctness_composed_source() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
-
-    let domain_type = Type::point3(Type::Scalar {
-        dimension: DimensionVector::LENGTH,
-    });
-    let codomain_type = Type::vec3(Type::Scalar {
-        dimension: velocity_dim,
-    });
-
-    // Lambda: |x, y, z| vec3(x, y, z) — metadata-only, not sampled.
-    let body = make_function_call(
-        "vec3",
-        vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        ],
-        codomain_type.clone(),
-    );
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
-    // source=Composed — exercises the Analytical|Composed whitelist in compute_divergence.
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Composed,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
-    let div_expr = make_function_call(
+    run_dim_metadata_test(
         "divergence",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME),
+        }),
+        FieldSourceKind::Composed,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME).div(&DimensionVector::LENGTH),
+        },
+        "divergence_dimensional_correctness_composed_source",
     );
-
-    let values = ValueMap::new();
-    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(
-            &div_result,
-            Value::Field {
-                source: FieldSourceKind::Divergence,
-                ..
-            }
-        ),
-        "divergence of Composed field must return a Divergence Field, got {:?}",
-        div_result
-    );
-
-    if let Value::Field { codomain_type, .. } = &div_result {
-        let expected_dim = velocity_dim.div(&DimensionVector::LENGTH);
-        match codomain_type {
-            Type::Scalar { dimension } => {
-                assert_eq!(
-                    *dimension, expected_dim,
-                    "divergence of Composed field: codomain should be Velocity/Length=1/Time ({:?}), got {:?}",
-                    expected_dim, dimension
-                );
-            }
-            other => panic!(
-                "divergence_dimensional_correctness_composed_source: expected Scalar codomain, got {:?}",
-                other
-            ),
-        }
-    }
 }
