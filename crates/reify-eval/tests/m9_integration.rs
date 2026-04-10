@@ -97,3 +97,45 @@ fn ri_file_parses_and_compiles() {
         "expected at least one template in m9_integration.ri, got none"
     );
 }
+
+// ── Step 3: constraint def with determinacy — satisfied case ─────────────────
+
+/// Cross-feature: a constraint def whose sole predicate is a determinacy predicate.
+/// When the invoked param has a concrete default (size=10mm), determined(v) is true,
+/// so RequireDetermined[0] should be Satisfied.
+#[test]
+fn constraint_def_with_determinacy_satisfied() {
+    let source = r#"
+constraint def RequireDetermined {
+    param v : Length
+    determined(v)
+}
+structure S {
+    param size : Length = 10mm
+    constraint RequireDetermined(v: size)
+}
+"#;
+    let result = check_source(source);
+
+    // Exactly one constraint result (one invocation, one predicate)
+    assert_eq!(
+        result.constraint_results.len(),
+        1,
+        "expected 1 constraint result, got: {:?}",
+        result.constraint_results
+    );
+
+    let entry = &result.constraint_results[0];
+    assert_eq!(
+        entry.label,
+        Some("RequireDetermined[0]".to_string()),
+        "expected label Some(\"RequireDetermined[0]\"), got: {:?}",
+        entry.label
+    );
+    assert_eq!(
+        entry.satisfaction,
+        Satisfaction::Satisfied,
+        "RequireDetermined[0] should be Satisfied when param has default, got: {:?}",
+        entry.satisfaction
+    );
+}
