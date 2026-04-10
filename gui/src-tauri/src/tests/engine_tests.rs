@@ -2229,6 +2229,8 @@ fn get_source_location_file_key_updates_after_update_source() {
         "after update_source: file_path should be 'updated.ri', not 'initial.ri'"
     );
 
+    assert!(loc_before.line > 0, "sanity: line should be positive for a real span");
+
     // Line/column positions must be unchanged when update_source uses identical source text.
     assert_eq!(
         loc_after.line, loc_before.line,
