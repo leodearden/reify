@@ -68,3 +68,36 @@ fn m9_combined_compiles_no_errors() {
         "expected at least one template in the compiled module"
     );
 }
+
+// ── Test 3: all constraints satisfied ────────────────────────────────────────
+
+/// Compile, eval with SimpleConstraintChecker, check() — all constraint results
+/// must be Satisfied and the results list must be non-empty.
+#[test]
+fn all_constraints_satisfied() {
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_combined.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let check_result = engine.check(&compiled);
+
+    // Must have at least some constraint results (file has active constraints)
+    assert!(
+        !check_result.constraint_results.is_empty(),
+        "expected at least one constraint result"
+    );
+
+    // All must be Satisfied — no violations
+    for entry in &check_result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
+}
