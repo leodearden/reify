@@ -10,6 +10,44 @@ use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_types::*;
 
+/// Build the canonical Bolt + Parent (collection sub) fixture used by most
+/// tests in this file and return a ready-to-eval `(CompiledModule, Engine)`.
+///
+/// - Bolt has a single `diameter: Scalar = 10mm` param.
+/// - Parent has `param n : Int` (default controlled by `n_default`), a
+///   `__count_bolts = n` let-binding marked as the structure-controlling
+///   cell, and a collection sub-component `bolts : List<Bolt>` whose count
+///   tracks `__count_bolts`.
+/// - `n_default = Some(n)` gives `n` an Int default; `None` leaves it Undef.
+fn make_bolt_parent_engine(n_default: Option<i64>) -> (reify_compiler::CompiledModule, Engine) {
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    let n_default_expr = n_default.map(|n| CompiledExpr::literal(Value::Int(n), Type::Int));
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param("Parent", "n", Type::Int, n_default_expr)
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let engine = Engine::new(Box::new(checker), None);
+    (module, engine)
+}
+
 // ─── step-7: collection sub elaboration in from_templates ───
 
 #[test]
@@ -63,37 +101,7 @@ fn from_templates_creates_collection_instances() {
 
 #[test]
 fn eval_collection_sub_produces_instances() {
-    // Bolt template: param diameter : Scalar = 10mm
-    let bolt = TopologyTemplateBuilder::new("Bolt")
-        .param(
-            "Bolt",
-            "diameter",
-            Type::length(),
-            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
-        )
-        .build();
-
-    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
-    let count_expr = value_ref_typed("Parent", "n", Type::Int);
-    let parent = TopologyTemplateBuilder::new("Parent")
-        .param(
-            "Parent",
-            "n",
-            Type::Int,
-            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
-        )
-        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
-        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
-        .build();
-
-    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-        .template(parent)
-        .template(bolt)
-        .build();
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
     let result = engine.eval(&module);
 
     // Verify count cell evaluated to Int(4)
@@ -129,33 +137,8 @@ fn eval_collection_sub_produces_instances() {
 
 #[test]
 fn eval_collection_sub_undef_count_no_instances() {
-    // Bolt template: param diameter : Scalar = 10mm
-    let bolt = TopologyTemplateBuilder::new("Bolt")
-        .param(
-            "Bolt",
-            "diameter",
-            Type::length(),
-            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
-        )
-        .build();
-
-    // Parent template: count cell depends on an Undef param (no default)
-    // __count_bolts = ValueRef(Parent.n), but n has no default -> Undef
-    let count_expr = value_ref_typed("Parent", "n", Type::Int);
-    let parent = TopologyTemplateBuilder::new("Parent")
-        .param("Parent", "n", Type::Int, None) // no default -> Undef
-        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
-        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
-        .build();
-
-    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-        .template(parent)
-        .template(bolt)
-        .build();
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    // n_default=None leaves n without a default, so count evaluates to Undef
+    let (module, mut engine) = make_bolt_parent_engine(None);
     let result = engine.eval(&module);
 
     // Count cell should be Undef
@@ -182,38 +165,8 @@ fn eval_collection_sub_undef_count_no_instances() {
 
 #[test]
 fn edit_param_count_change_re_elaborates_collection() {
-    // Bolt template: param diameter : Scalar = 10mm
-    let bolt = TopologyTemplateBuilder::new("Bolt")
-        .param(
-            "Bolt",
-            "diameter",
-            Type::length(),
-            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
-        )
-        .build();
-
-    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
-    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
     let n_id = ValueCellId::new("Parent", "n");
-    let parent = TopologyTemplateBuilder::new("Parent")
-        .param(
-            "Parent",
-            "n",
-            Type::Int,
-            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
-        )
-        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
-        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
-        .build();
-
-    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-        .template(parent)
-        .template(bolt)
-        .build();
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
 
     // Initial eval with n=4
     let initial_result = engine.eval(&module);
@@ -265,38 +218,8 @@ fn edit_param_count_change_re_elaborates_collection() {
 
 #[test]
 fn edit_param_count_decrease_removes_stale_instances() {
-    // Bolt template: param diameter : Scalar = 10mm
-    let bolt = TopologyTemplateBuilder::new("Bolt")
-        .param(
-            "Bolt",
-            "diameter",
-            Type::length(),
-            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
-        )
-        .build();
-
-    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
-    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
     let n_id = ValueCellId::new("Parent", "n");
-    let parent = TopologyTemplateBuilder::new("Parent")
-        .param(
-            "Parent",
-            "n",
-            Type::Int,
-            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
-        )
-        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
-        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
-        .build();
-
-    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-        .template(parent)
-        .template(bolt)
-        .build();
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
 
     // Initial eval with n=4
     let _initial = engine.eval(&module);
@@ -515,38 +438,8 @@ fn eval_collection_aggregate_from_source() {
 
 #[test]
 fn edit_param_count_int_undef_undef_int_transition() {
-    // Bolt template: param diameter : Scalar = 10mm
-    let bolt = TopologyTemplateBuilder::new("Bolt")
-        .param(
-            "Bolt",
-            "diameter",
-            Type::length(),
-            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
-        )
-        .build();
-
-    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
-    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
     let n_id = ValueCellId::new("Parent", "n");
-    let parent = TopologyTemplateBuilder::new("Parent")
-        .param(
-            "Parent",
-            "n",
-            Type::Int,
-            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
-        )
-        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
-        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
-        .build();
-
-    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-        .template(parent)
-        .template(bolt)
-        .build();
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
 
     // Initial eval with n=4, creating 4 bolt instances
     let _initial = engine.eval(&module);
@@ -593,38 +486,8 @@ fn edit_param_count_int_undef_undef_int_transition() {
 
 #[test]
 fn edit_param_count_to_undef_removes_all_instances() {
-    // Bolt template: param diameter : Scalar = 10mm
-    let bolt = TopologyTemplateBuilder::new("Bolt")
-        .param(
-            "Bolt",
-            "diameter",
-            Type::length(),
-            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
-        )
-        .build();
-
-    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
-    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
     let n_id = ValueCellId::new("Parent", "n");
-    let parent = TopologyTemplateBuilder::new("Parent")
-        .param(
-            "Parent",
-            "n",
-            Type::Int,
-            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
-        )
-        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
-        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
-        .build();
-
-    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-        .template(parent)
-        .template(bolt)
-        .build();
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
 
     // Initial eval with n=4, creating 4 bolt instances
     let _initial = engine.eval(&module);
