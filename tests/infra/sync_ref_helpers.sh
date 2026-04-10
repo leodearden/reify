@@ -17,7 +17,7 @@ fi
 _REIFY_SYNC_REF_HELPERS_SH_SOURCED=1
 
 _SYNC_REF_HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-[ -f "$_SYNC_REF_HELPERS_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $_SYNC_REF_HELPERS_DIR/test_helpers.sh"; exit 1; }
+[ -f "$_SYNC_REF_HELPERS_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $_SYNC_REF_HELPERS_DIR/test_helpers.sh"; return 1 2>/dev/null || exit 1; }
 source "$_SYNC_REF_HELPERS_DIR/test_helpers.sh"
 
 # Helper: verify that source_file's SYNC comment references a function that
