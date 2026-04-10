@@ -18,12 +18,10 @@ use crate::server::{NoOpSink, NotificationSink, ReifyLanguageServer};
 /// [`InProcessLsp::handle_request`] to keep the per-arm code one line.
 ///
 /// On failure, returns `Err(format!("{label}: {e}"))`, where `label` is used
-/// **verbatim** as the error prefix. Callers pass the full prefix string
-/// directly — typically an [`error_prefix`] constant for arms covered by
-/// integration tests — so the constant is the literal source of truth for the
-/// runtime error message. Editing a constant is the only change needed to
-/// rotate its prefix; there is no parallel string in the implementation that
-/// could drift.
+/// **verbatim** as the error prefix. Callers pass an [`error_prefix`] constant
+/// directly, making that constant the literal source of truth for the runtime
+/// error message. Editing a constant is the only change needed to rotate its
+/// prefix; there is no parallel string in the implementation that could drift.
 fn parse_params<T: serde::de::DeserializeOwned>(
     params: serde_json::Value,
     label: &str,
@@ -215,8 +213,9 @@ impl Default for InProcessLsp {
 /// import reflects the change automatically, turning any stale assertion into
 /// a compile error or immediate test failure.
 ///
-/// Only the six prefixes asserted by existing tests are exported.  Additional
-/// constants can be added here when new tests need them.
+/// All nine deserializing arms of `handle_request` thread their error prefix
+/// through a constant defined here. There are no remaining hardcoded strings
+/// in the implementation.
 pub mod error_prefix {
     /// Prefix for deserialization failures on `initialize` params.
     pub const INITIALIZE_PARAMS: &str = "initialize params error";
