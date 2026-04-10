@@ -29902,15 +29902,16 @@
         "description": "Two fixes in crates/reify-types/src/value.rs: (1) Lines 2700-2740: in assert_ieee754_total_order_real, derive expected count from BOUNDARY_REALS.len() instead of hardcoding 7 — prevents confusing panics if BOUNDARY_REALS is extended. (2) Lines 2816-2831: change bare #[should_panic] on test_assert_ieee754_total_order_real_wrong_order to #[should_panic(expected = \"-0.0 must come before +0.0\")] or similar to ensure it panics for the right reason.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T02:06:13.702Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:06:13.249Z",
+      "lastModified": "2026-04-10T02:06:13.702Z",
       "taskCount": 1447,
       "completedCount": 1118,
       "tags": [
