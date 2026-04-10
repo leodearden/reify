@@ -32747,7 +32747,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:53:35.217Z"
+        "updatedAt": "2026-04-10T16:53:35.217Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/tests"
+          ]
+        }
       },
       {
         "id": 1611,
