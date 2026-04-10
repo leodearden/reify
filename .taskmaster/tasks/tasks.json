@@ -17964,11 +17964,11 @@
         "description": "SolveResult::NoProgress is documented as 'solver made no progress (e.g., iteration limit reached)' but is also returned for hard precondition failures (missing eval values). Consider adding SolveResult::PreconditionFailed { reason } or at minimum update the doc comment on NoProgress to state that precondition violations also use this variant so callers don't treat it as always-retryable.\n\nNOTE: Task 772 previously completed \"Add structured NoProgressKind enum to SolveResult::NoProgress\" — check if that already covers this concern before implementing. If NoProgressKind already has a variant for precondition failures, this task may be a no-op (just verify docs are clear).\n\nmemory_hints: search(\"SolveResult NoProgressKind enum precondition\", project_id=\"reify\"); get_entity(\"NoProgressKind\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:25:58.222Z",
+        "updatedAt": "2026-04-10T20:13:54.788Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints/src",
@@ -32828,7 +32828,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T20:13:53.158Z",
+      "lastModified": "2026-04-10T20:13:54.788Z",
       "taskCount": 1613,
       "completedCount": 1245,
       "tags": [
