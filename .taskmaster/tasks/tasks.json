@@ -31904,11 +31904,11 @@
         "description": "Three fixes: (1) bridge.rs:227-229: \"All nine deserializing arms\" → \"All eight deserializing arms\". (2) in_process_bridge.rs:13: update stale \"All five malformed-params tests\" count. (3) in_process_bridge.rs:954-995: wrap 3 new standalone tests in with_hang_guard. Also restore 3 missing sweep assertions (completion/hover/definition) dropped by merge conflict ecb267280.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:05:06.340Z",
+        "updatedAt": "2026-04-10T07:07:49.717Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -32218,9 +32218,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:07:38.404Z",
+      "lastModified": "2026-04-10T07:07:49.717Z",
       "taskCount": 1584,
-      "completedCount": 1184,
+      "completedCount": 1185,
       "tags": [
         "master"
       ]
