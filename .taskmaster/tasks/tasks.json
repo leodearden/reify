@@ -32508,11 +32508,11 @@
         "description": "Revert the pub(crate) change to error_prefix::INITIALIZE_PARAMS in crates/reify-lsp/src/bridge.rs:233 back to pub. This change broke the single-source-of-truth design: (1) Module docstring now falsely claims \"no parallel string\" and \"compile-error on rename\". (2) Only INITIALIZE_PARAMS restricted while 8 siblings remain pub — arbitrary inconsistency. (3) Reintroduced duplicate INITIALIZE_PARAMS_ERR_PREFIX in tests/in_process_bridge.rs:18. (4) Mixed import patterns in error_prefix_constants_match_actual_errors test. (5) Semver concern doesn't apply — reify-lsp is an internal crate. Revert to pub, delete the file-local mirror, restore the import in the integration test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T11:08:28.319Z",
+        "updatedAt": "2026-04-10T16:05:29.092Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/src",
@@ -32526,11 +32526,11 @@
         "description": "reify-eval was added as a non-optional dependency of reify-test-support to support the `make_engine()` helper. This pulls reify-eval into the test build graph of every crate that dev-depends on reify-test-support (reify-syntax, reify-compiler, reify-expr, reify-constraints, etc.), even though only reify-eval tests actually call `make_engine()`.\\n\\n**Fix:** Make `reify-eval` an optional dependency gated by an `eval-helpers` feature. Move `make_engine()` behind `#[cfg(feature = \\\"eval-helpers\\\")]`. Activate the feature in reify-eval's dev-deps: `reify-test-support = { workspace = true, features = [\\\"eval-helpers\\\"] }`.\\n\\nSource: reviewer suggestion S1 from task 1332 unblock (comprehensive reviewer, architecture_and_design).\\nFiles: crates/reify-test-support/Cargo.toml, crates/reify-test-support/src/helpers.rs, crates/reify-eval/Cargo.toml",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T10:17:26.432Z",
+        "updatedAt": "2026-04-10T16:05:29.169Z",
         "metadata": {
           "files": [
             "crates/reify-test-support/Cargo.toml",
@@ -32660,7 +32660,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:05:28.994Z",
+      "lastModified": "2026-04-10T16:05:29.169Z",
       "taskCount": 1605,
       "completedCount": 1223,
       "tags": [
