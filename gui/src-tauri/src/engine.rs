@@ -538,10 +538,17 @@ impl EngineSession {
     /// Deliberately break the compiled/module_name/source_map invariant by
     /// clearing `module_name` while leaving `compiled` intact.
     ///
-    /// **Only for testing the panic guard in `resolve_source`.** After this
-    /// call the session is in an inconsistent state; any `get_*` call will
-    /// panic. Do not use this helper for any purpose other than verifying the
-    /// expect() on module_name fires correctly.
+    /// After this call, `resolve_source` returns `None` (via the `?` on
+    /// `module_name.as_deref()`).  Callers that rely on `resolve_source` —
+    /// `get_source_location` and `get_diagnostics` — degrade gracefully rather
+    /// than panicking (matching the struct-level invariant doc).  In debug
+    /// builds, `get_diagnostics` additionally trips a `debug_assert!` when the
+    /// diagnostics vec is non-empty.
+    ///
+    /// Tests exercising these paths:
+    /// - `resolve_source_returns_none_when_module_name_broken` (graceful `None`)
+    /// - `get_source_location_returns_none_when_module_name_broken` (graceful `None`)
+    /// - `get_diagnostics_debug_asserts_when_module_name_broken` (debug-build loud path)
     pub(crate) fn break_module_name_for_test(&mut self) {
         self.module_name.take();
     }
@@ -549,10 +556,17 @@ impl EngineSession {
     /// Deliberately break the compiled/module_name/source_map invariant by
     /// clearing `source_map` while leaving `compiled` and `module_name` intact.
     ///
-    /// **Only for testing the panic guard in `resolve_source`.** After this
-    /// call the session is in an inconsistent state; any `get_*` call will
-    /// panic. Do not use this helper for any purpose other than verifying the
-    /// expect() on source_map.get_key_value() fires correctly.
+    /// After this call, `resolve_source` returns `None` (via the `?` on
+    /// `source_map.get_key_value(&key)`).  Callers that rely on `resolve_source`
+    /// — `get_source_location` and `get_diagnostics` — degrade gracefully rather
+    /// than panicking (matching the struct-level invariant doc).  In debug
+    /// builds, `get_diagnostics` additionally trips a `debug_assert!` when the
+    /// diagnostics vec is non-empty.
+    ///
+    /// Tests exercising these paths:
+    /// - `resolve_source_returns_none_when_source_map_broken` (graceful `None`)
+    /// - `resolve_source_fallback_when_source_map_missing` (graceful `None`)
+    /// - `get_diagnostics_debug_asserts_when_source_map_broken` (debug-build loud path)
     pub(crate) fn break_source_map_for_test(&mut self) {
         self.source_map.clear();
     }

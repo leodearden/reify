@@ -3,70 +3,21 @@
 //! Exercises the full parse→compile→eval pipeline for `meta.key` expressions,
 //! ensuring integration across the parser, compiler, and evaluator boundaries.
 
-use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
+use reify_test_support::{make_engine, parse_and_compile, parse_compile_expect_err};
+use reify_types::{Satisfaction, Severity, Value, ValueCellId};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Parse `source`, assert no parse errors, compile, assert no compile errors.
-/// Returns the compiled module ready for eval.
-fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-    assert!(
-        !compiled.diagnostics.iter().any(|d| d.severity == Severity::Error),
-        "compile errors: {:?}",
-        compiled
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect::<Vec<_>>()
-    );
-
-    compiled
-}
-
-/// Create a new Engine backed by a fresh MockConstraintChecker.
-fn make_engine() -> reify_eval::Engine {
-    let checker = MockConstraintChecker::new();
-    reify_eval::Engine::new(Box::new(checker), None)
-}
-
-/// Parse `source`, compile, assert ≥1 Error-severity diagnostic is produced.
-/// If `needle` is non-empty, also assert at least one error message contains it.
-/// Returns the CompiledModule for optional further assertions.
-fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
+/// Assert that `diagnostics` contains no Error-severity entries.
+/// `phase` is a short label used in the failure message (e.g. `"eval"`, `"check"`, `"compile"`).
+fn assert_no_error_diagnostics(diagnostics: &[reify_types::Diagnostic], phase: &str) {
+    let errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected at least one compile error");
-    if !needle.is_empty() {
-        assert!(
-            errors.iter().any(|d| d.message.contains(needle)),
-            "expected error containing {:?}, got: {:?}",
-            needle,
-            errors
-        );
-    }
-    compiled
+    assert!(errors.is_empty(), "{} errors: {:?}", phase, errors);
 }
 
 // ---------------------------------------------------------------------------
@@ -105,12 +56,7 @@ fn e2e_meta_access_let_binding() {
     let result = engine.eval(&compiled);
 
     // Guard: no eval errors
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+    assert_no_error_diagnostics(&result.diagnostics, "eval");
 
     // Assert
     let desc_id = ValueCellId::new("Widget", "desc");
@@ -147,12 +93,7 @@ fn e2e_meta_access_multiple_keys() {
     let result = engine.eval(&compiled);
 
     // Guard: no eval errors
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+    assert_no_error_diagnostics(&result.diagnostics, "eval");
 
     // Assert both keys
     let n_id = ValueCellId::new("Gear", "n");
@@ -444,6 +385,7 @@ fn e2e_meta_access_in_constraint() {
             meta {
                 tag = "valid"
             }
+            let tag_value : String = meta.tag
             constraint meta.tag == "valid"
         }
     "#;
@@ -456,25 +398,14 @@ fn e2e_meta_access_in_constraint() {
     let result = engine.check(&compiled);
 
     // Guard: no check-phase errors
-    let check_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(check_errors.is_empty(), "check errors: {:?}", check_errors);
+    assert_no_error_diagnostics(&result.diagnostics, "check");
 
-    // Assert constraint_results is non-empty so the loop below is not vacuous.
-    // If the engine silently drops the constraint expression, this will fail.
-    assert!(
-        !result.constraint_results.is_empty(),
-        "expected at least one constraint result, got zero \
-         (engine may have dropped the MetaAccess constraint expression)"
-    );
     assert_eq!(
         result.constraint_results.len(),
         1,
         "expected exactly one constraint result for the single \
-         `constraint meta.tag == \"valid\"` declaration"
+         `constraint meta.tag == \"valid\"` declaration; \
+         engine may have dropped or duplicated the MetaAccess constraint expression"
     );
 
     // Assert no constraint violations
@@ -487,50 +418,16 @@ fn e2e_meta_access_in_constraint() {
             entry.satisfaction
         );
     }
-}
 
-// ---------------------------------------------------------------------------
-// --- meta.key value resolves to the expected string (companion to constraint test) ---
-// ---------------------------------------------------------------------------
-
-/// Companion to e2e_meta_access_in_constraint: verifies that `meta.tag` resolves
-/// to the expected `Value::String("valid")` at the eval boundary.
-///
-/// Uses a plain `let` binding (no constraint) so the resolved value is directly
-/// observable via `result.values`.  This proves the value handed to the constraint
-/// checker is the expected string rather than a coerced or default value.
-#[test]
-fn e2e_meta_access_in_constraint_value_resolves() {
-    let source = r#"
-        structure def S {
-            meta {
-                tag = "valid"
-            }
-            let tag_value : String = meta.tag
-        }
-    "#;
-
-    let compiled = parse_and_compile(source);
-
-    // Eval
-    let mut engine = make_engine();
-    let result = engine.eval(&compiled);
-
-    // Guard: no eval errors
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
-
-    // Assert meta.tag resolves to the expected string — proves the value
-    // handed to the constraint checker is Value::String("valid"), not a
-    // coerced or default value.
+    // Assert the value handed to the constraint checker is Value::String("valid"),
+    // not a coerced or default value — observing the resolved value on the SAME
+    // compiled module that runs the constraint expression.
     let tag_value_id = ValueCellId::new("S", "tag_value");
     assert_eq!(
         result.values.get(&tag_value_id),
         Some(&Value::String("valid".to_string())),
-        "S.tag_value should resolve to 'valid' via meta.tag"
+        "S.tag_value should resolve to 'valid' via meta.tag — proves the value \
+         handed to the constraint checker is Value::String(\"valid\"), not a \
+         coerced or default value"
     );
 }

@@ -161,7 +161,12 @@ mod tests {
 
     use super::*;
 
-    fn assert_extraction(input: &Value, expected_vals: &[f64], expected_dim: DimensionVector, label: &str) {
+    fn assert_extraction(
+        input: &Value,
+        expected_vals: &[f64],
+        expected_dim: DimensionVector,
+        label: &str,
+    ) {
         let (vals, dim) = tensor_components_f64(input)
             .unwrap_or_else(|| panic!("{}: expected Some but got None", label));
         assert_eq!(
@@ -334,8 +339,9 @@ mod tests {
 
     #[test]
     fn tensor_components_f64_vector_of_reals_returns_values_and_dimensionless() {
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
         assert_extraction(
-            &Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
+            &v,
             &[1.0, 2.0, 3.0],
             DimensionVector::DIMENSIONLESS,
             "Vector of Reals",
@@ -344,11 +350,18 @@ mod tests {
 
     #[test]
     fn tensor_components_f64_point_of_length_scalars_returns_values_and_length() {
+        let v = Value::Point(vec![
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
         assert_extraction(
-            &Value::Point(vec![
-                Value::Scalar { si_value: 0.5, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 1.5, dimension: DimensionVector::LENGTH },
-            ]),
+            &v,
             &[0.5, 1.5],
             DimensionVector::LENGTH,
             "Point of LENGTH Scalars",
@@ -357,8 +370,9 @@ mod tests {
 
     #[test]
     fn tensor_components_f64_single_element_tensor_of_int_returns_value_and_dimensionless() {
+        let v = Value::Tensor(vec![Value::Int(7)]);
         assert_extraction(
-            &Value::Tensor(vec![Value::Int(7)]),
+            &v,
             &[7.0],
             DimensionVector::DIMENSIONLESS,
             "single-element Tensor of Int",
@@ -367,11 +381,18 @@ mod tests {
 
     #[test]
     fn tensor_components_f64_vector_of_mass_scalars_returns_values_and_mass() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 2.5,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
         assert_extraction(
-            &Value::Vector(vec![
-                Value::Scalar { si_value: 1.5, dimension: DimensionVector::MASS },
-                Value::Scalar { si_value: 2.5, dimension: DimensionVector::MASS },
-            ]),
+            &v,
             &[1.5, 2.5],
             DimensionVector::MASS,
             "Vector of MASS Scalars",
@@ -380,8 +401,9 @@ mod tests {
 
     #[test]
     fn tensor_components_f64_tensor_of_reals_returns_values_and_dimensionless() {
+        let v = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
         assert_extraction(
-            &Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
+            &v,
             &[1.0, 2.0, 3.0],
             DimensionVector::DIMENSIONLESS,
             "Tensor of Reals",
@@ -390,16 +412,49 @@ mod tests {
 
     #[test]
     fn tensor_components_f64_vector_of_length_scalars_returns_values_and_length() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 0.1,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.2,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.3,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
         assert_extraction(
-            &Value::Vector(vec![
-                Value::Scalar { si_value: 0.1, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.2, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.3, dimension: DimensionVector::LENGTH },
-            ]),
+            &v,
             &[0.1, 0.2, 0.3],
             DimensionVector::LENGTH,
             "Vector of LENGTH Scalars",
         );
+    }
+
+    #[test]
+    fn assert_extraction_borrows_input_allowing_reuse() {
+        // Passing &v must compile; after the call v must still be accessible.
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert_extraction(
+            &v,
+            &[1.0, 2.0],
+            DimensionVector::DIMENSIONLESS,
+            "reuse test",
+        );
+        // v is still owned — reuse it here to prove it was not moved.
+        assert!(format!("{:?}", v).contains("Real"));
+    }
+
+    #[test]
+    fn assert_extraction_borrow_allows_reuse() {
+        // Construct v as an owned binding so we can pass &v and still use v afterward.
+        let v = Value::Vector(vec![Value::Real(1.0)]);
+        assert_extraction(&v, &[1.0], DimensionVector::DIMENSIONLESS, "borrow-reuse");
+        // Reusing v after the call is the whole point of the &Value signature.
+        assert!(matches!(v, Value::Vector(_)));
     }
 
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync

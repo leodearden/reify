@@ -224,12 +224,13 @@ impl Default for InProcessLsp {
 /// import reflects the change automatically, turning any stale assertion into
 /// a compile error or immediate test failure.
 ///
-/// All nine deserializing arms of `handle_request` thread their error prefix
+/// All eight deserializing arms of `handle_request` thread their error prefix
 /// through a constant defined here. There are no remaining hardcoded strings
 /// in the implementation.
 pub mod error_prefix {
     /// Prefix for deserialization failures on `initialize` params.
-    pub const INITIALIZE_PARAMS: &str = "initialize params error";
+    /// `pub(crate)` to avoid semver commitment on the error string — not part of the public API.
+    pub(crate) const INITIALIZE_PARAMS: &str = "initialize params error";
 
     /// Prefix for deserialization failures on `initialized` params.
     pub const INITIALIZED_PARAMS: &str = "initialized params error";
