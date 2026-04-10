@@ -428,7 +428,7 @@ printf 'gui/package-lock.json\n' > "$FIXTURE24/.gitignore"
 
 # The || true makes the capture tolerant of the script's non-zero exit: Check 3's
 # assert fails when a lockfile is gitignored, and because check-pm-standardization.sh
-# has set -e, it short-circuits before test_summary. The explicit echo | grep avoids
+# has set -e, it short-circuits before test_summary. The explicit printf | grep avoids
 # depending on the outer bash -c to not enable pipefail, or on assert()'s internal
 # >/dev/null 2>&1 redirection swallowing the output before grep can see it.
 out24=$(bash "$FIXTURE24/scripts/check-pm-standardization.sh" 2>&1 || true)
