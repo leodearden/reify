@@ -20607,11 +20607,11 @@
         "description": "In crates/reify-lsp/src/bridge.rs: (1) Change INIT_PARAMS_ERR_PREFIX from pub to pub(crate) since it's only used by tests — avoids semver commitment on error string. (2) In crates/reify-lsp/tests/in_process_bridge.rs line ~277, fix comment from Option<u32> to Option<i32> for processId.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T14:09:35.985Z",
+        "updatedAt": "2026-04-10T07:07:38.404Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -32165,7 +32165,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:07:31.829Z"
+        "updatedAt": "2026-04-10T07:07:31.829Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: DRY up sync_comments test boilerplate and add multi-modifier extract_fn tests"
+            ]
+          }
+        }
       },
       {
         "id": "1583",
@@ -32210,7 +32218,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:07:35.859Z",
+      "lastModified": "2026-04-10T07:07:38.404Z",
       "taskCount": 1584,
       "completedCount": 1184,
       "tags": [
