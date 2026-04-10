@@ -249,6 +249,42 @@ mod tests {
         );
     }
 
+    // ── tensor_components_f64 rejection: mixed dimensions ────────────────────
+
+    #[test]
+    fn tensor_components_f64_vector_mixed_dimensionless_and_length_returns_none() {
+        // First element is dimensionless (Real), second is LENGTH (Scalar).
+        let v = Value::Vector(vec![
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector mixing DIMENSIONLESS and LENGTH should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_tensor_mixed_length_and_mass_returns_none() {
+        let v = Value::Tensor(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Tensor mixing LENGTH and MASS should return None"
+        );
+    }
+
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
 
     // ── sanitize_value Real arm characterization tests ───────────────────────
