@@ -477,4 +477,24 @@ echo "--- Test 26: setup_fixture_dir helper function ---"
 
 assert "setup_fixture_dir function is defined" declare -f setup_fixture_dir
 
+tmpdirs_before=${#_TMPDIRS[@]}
+setup_fixture_dir FIXTURE_T26
+
+assert "setup_fixture_dir: scripts/ subdir exists" \
+    test -d "$FIXTURE_T26/scripts"
+assert "setup_fixture_dir: tests/infra/ subdir exists" \
+    test -d "$FIXTURE_T26/tests/infra"
+assert "setup_fixture_dir: gui/sidecar/ subdir exists" \
+    test -d "$FIXTURE_T26/gui/sidecar"
+assert "setup_fixture_dir: tree-sitter-reify/ subdir exists" \
+    test -d "$FIXTURE_T26/tree-sitter-reify"
+assert "setup_fixture_dir: check-pm-standardization.sh copied" \
+    test -f "$FIXTURE_T26/scripts/check-pm-standardization.sh"
+assert "setup_fixture_dir: test_helpers.sh copied" \
+    test -f "$FIXTURE_T26/tests/infra/test_helpers.sh"
+assert "setup_fixture_dir: fixture is a git work tree" \
+    bash -c "cd '$FIXTURE_T26' && git rev-parse --is-inside-work-tree"
+assert "setup_fixture_dir: appended to _TMPDIRS cleanup array" \
+    bash -c "[ '${#_TMPDIRS[@]}' -gt '$tmpdirs_before' ]"
+
 test_summary
