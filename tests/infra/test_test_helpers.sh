@@ -618,6 +618,7 @@ check "_has_if_n_guard detects compound || guard: || [ -n" "$ok"
 # Self-check: file-local helpers use symmetric positive _has_ naming.
 if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
     && grep -qE '^_has_if_n_guard\(\)' "${BASH_SOURCE[0]}" \
+    && grep -qE '^_has_expr_body_empty_guard_short_circuit\(\)' "${BASH_SOURCE[0]}" \
     && ! grep -qE '^_check_(defines|has)' "${BASH_SOURCE[0]}"; then
     ok=true
 else
