@@ -31814,7 +31814,13 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "1562",
@@ -31999,10 +32005,11 @@
         "description": "register() return type was changed from UnitEntry to Box&lt;UnitEntry&gt;, which is technically semver-breaking. Audit all call sites to confirm no downstream breakage and document the change, or revert if unintentional. Source: review of task 1074 (S6).",
         "details": "Files: crates/reify-eval/src/units.rs (register method).\\n\\nmemory_hints:\\n- search: \"register UnitEntry Box\"\\n- search: \"unit registry register return type\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T07:04:17.583Z"
       },
       {
         "id": "1578",
@@ -32084,7 +32091,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:04:16.982Z",
+      "lastModified": "2026-04-10T07:04:17.584Z",
       "taskCount": 1584,
       "completedCount": 1182,
       "tags": [
