@@ -247,3 +247,26 @@ pub mod error_prefix {
     /// The full error message is `"{UNSUPPORTED_METHOD} {method_name}"`.
     pub const UNSUPPORTED_METHOD: &str = "unsupported LSP method:";
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// `parse_params` must include the caller-supplied label as a prefix in its
+    /// error message so that callers can identify which arm failed.
+    ///
+    /// Uses `error_prefix::INITIALIZE_PARAMS` (not a literal) to validate the
+    /// constant-based pattern: the constant is the source of truth, not a copy.
+    #[test]
+    fn parse_params_includes_label_in_error() {
+        let result = parse_params::<InitializeParams>(json!(42), error_prefix::INITIALIZE_PARAMS);
+        assert!(result.is_err(), "expected Err for malformed params, got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains(error_prefix::INITIALIZE_PARAMS),
+            "error should contain '{}', got: {err}",
+            error_prefix::INITIALIZE_PARAMS
+        );
+    }
+}
