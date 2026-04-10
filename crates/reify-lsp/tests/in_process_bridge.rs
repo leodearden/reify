@@ -999,6 +999,24 @@ async fn error_prefix_constants_match_actual_errors() {
             error_prefix::DID_CLOSE_PARAMS,
         )
         .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/completion",
+            error_prefix::COMPLETION_PARAMS,
+        )
+        .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/hover",
+            error_prefix::HOVER_PARAMS,
+        )
+        .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/definition",
+            error_prefix::DEFINITION_PARAMS,
+        )
+        .await;
 
         // The unsupported-method constant covers the prefix portion of the error.
         let result = lsp.handle_request("textDocument/foobar", json!({})).await;
