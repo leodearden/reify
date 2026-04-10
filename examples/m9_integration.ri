@@ -94,26 +94,33 @@ structure def Bracket : Bounded + Measurable {
 }
 
 // ── Feature G: structure RecursiveChain ──────────────────────────────────────
-// Cross-feature: recursive sub guard uses a determinacy predicate (determined(span)).
-// Sub 'child' is created only when BOTH determined(span) is true AND depth > 0.
-// Since span always has a concrete value (either the default or a passed arg),
-// determined(span) is always true in this design, so recursion terminates on depth=0.
+// Cross-feature: recursive structure with depth-gated unfolding and per-level
+// determinacy constraints. Uses 'depth > 0' as the sub guard (value-based recursion
+// control) and 'constraint determined(span)' at each level to verify that span is
+// always concrete — exercising the cross-feature of recursive unfold + determinacy
+// predicates in the constraint layer.
+//
+// Note: 'determined()' in guard position (e.g., `where determined(span) && depth > 0`)
+// is NOT currently supported — the recursive guard evaluator does not have access to
+// the determinacy snapshot, so 'determined()' returns Undef there, causing the guard
+// to be treated as Undef and halting recursion immediately.
 //
 // With default depth=2 and span=100mm:
-//   root:       depth=2, span=100mm  (0.1  SI)  → child created (determined(span)=true, depth=2>0)
-//   child:      depth=1, span=50mm   (0.05 SI)  → grandchild created (determined(span)=true, depth=1>0)
-//   grandchild: depth=0, span=25mm   (0.025 SI) → great-grandchild NOT created (depth=0, guard false)
+//   root:       depth=2, span=100mm  (0.1  SI)  → child created (depth=2>0)
+//   child:      depth=1, span=50mm   (0.05 SI)  → grandchild created (depth=1>0)
+//   grandchild: depth=0, span=25mm   (0.025 SI) → great-grandchild NOT created (depth=0)
+//
+// Arg is inlined as 'span / 2' (not via a 'let' cell) because let cells are not
+// evaluated during Phase 1 (param-only elaboration) of the recursive unfold.
 
 structure def RecursiveChain {
     param depth : Int    = 2
     param span  : Length = 100mm
 
-    let next_span = span / 2
+    // Sub uses inline span/2 arg (not a let cell) so Phase 1 elaboration can compute it.
+    sub child = RecursiveChain(depth: depth - 1, span: span / 2) where depth > 0
 
-    // Guard uses determinacy predicate: only unfold when span is determined AND depth > 0
-    sub child = RecursiveChain(depth: depth - 1, span: next_span) where determined(span) && depth > 0
-
-    // Constraints on each instance
+    // Cross-feature: determinacy constraint evaluated at each recursion level.
     constraint determined(span)
     constraint span > 0mm
 }
