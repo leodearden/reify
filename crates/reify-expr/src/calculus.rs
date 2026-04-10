@@ -384,6 +384,30 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
     }
 }
 
+/// Extract the explicit SI dimension from a domain type, if present.
+///
+/// Returns `Some(dimension)` only when the domain type is:
+/// - `Type::Scalar { dimension }` — a dimensioned scalar
+/// - `Type::Point { quantity: Type::Scalar { dimension }, .. }` — a multi-dimensional
+///   domain with a dimensioned scalar quantity
+///
+/// Returns `None` for `Type::Real`, `Type::Int`, `Type::Point { quantity: Type::Real/Int }`,
+/// and all other types.
+///
+/// This differs from [`domain_dimension`] which returns `Some(DIMENSIONLESS)` for `Real`/`Int`.
+/// Here, `None` means "construct perturbed args as `Value::Real`, not `Value::Scalar`", which
+/// is the calling convention used by all 4 numerical differential operator functions.
+fn extract_explicit_domain_dim(domain_type: &Type) -> Option<DimensionVector> {
+    match domain_type {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Point { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Evaluate the lambda at a single perturbed point and recover `work_point`.
 ///
 /// This helper encapsulates the duplicated eval-and-recover sequence for the
@@ -503,14 +527,7 @@ pub(crate) fn compute_numerical_gradient_at_point(
     }
 
     // Determine if domain is dimensioned (for constructing perturbed args)
-    let domain_dim = match domain_type {
-        Type::Scalar { dimension } => Some(*dimension),
-        Type::Point { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => Some(*dimension),
-            _ => None,
-        },
-        _ => None,
-    };
+    let domain_dim = extract_explicit_domain_dim(domain_type);
 
     // Detect calling convention: single-Point param vs decomposed params.
     // If lambda has 1 param and n > 1, wrap perturbed coords in a Value::Point.
@@ -795,14 +812,7 @@ pub(crate) fn compute_numerical_divergence_at_point(
         return Value::Undef;
     }
 
-    let domain_dim = match domain_type {
-        Type::Scalar { dimension } => Some(*dimension),
-        Type::Point { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => Some(*dimension),
-            _ => None,
-        },
-        _ => None,
-    };
+    let domain_dim = extract_explicit_domain_dim(domain_type);
 
     // Extract result dimension from the already-divided codomain_type (stamped by
     // compute_divergence). Divergence always produces a scalar codomain, so only
@@ -960,14 +970,7 @@ pub(crate) fn compute_numerical_curl_at_point(
     };
 
     let n = 3;
-    let domain_dim = match domain_type {
-        Type::Scalar { dimension } => Some(*dimension),
-        Type::Point { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => Some(*dimension),
-            _ => None,
-        },
-        _ => None,
-    };
+    let domain_dim = extract_explicit_domain_dim(domain_type);
 
     // Extract result dimension from the already-divided codomain_type (stamped by
     // compute_curl). Curl produces Vector{3, component}, so unwrap the quantity.
@@ -1151,14 +1154,7 @@ pub(crate) fn compute_numerical_laplacian_at_point(
         return Value::Undef;
     }
 
-    let domain_dim = match domain_type {
-        Type::Scalar { dimension } => Some(*dimension),
-        Type::Point { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => Some(*dimension),
-            _ => None,
-        },
-        _ => None,
-    };
+    let domain_dim = extract_explicit_domain_dim(domain_type);
 
     // Extract result dimension from the already-divided codomain_type (stamped by
     // compute_laplacian). Laplacian always produces a scalar codomain, so only
