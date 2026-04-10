@@ -32359,11 +32359,11 @@
         "description": "Three improvements: (1) test_tree_sitter_pipeline.sh: extract require_tree_sitter_cli_or_skip helper and apply to test_auto_generation_rebuilds_parser (line 145) for consistency with test_generate_script_succeeds_normally. (2) test_generate_script_fails_without_grammar: assert on error message (\"grammar.js not found\") to prevent false pass when CLI is missing. (3) Add SKIP_COUNT to run_tests() with visible summary (\"N passed, N skipped, N failed\") so CI output shows when coverage is missing.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:13:59.429Z"
+        "updatedAt": "2026-04-10T10:32:15.315Z"
       },
       {
         "id": "1592",
@@ -32506,9 +32506,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T10:31:34.167Z",
+      "lastModified": "2026-04-10T10:32:15.318Z",
       "taskCount": 1600,
-      "completedCount": 1211,
+      "completedCount": 1212,
       "tags": [
         "master"
       ]
