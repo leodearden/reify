@@ -29941,15 +29941,16 @@
         "description": "Two minor code quality fixes in crates/reify-expr/src/calculus.rs from task 1223 review:\n\n1. **Duplicate comment (lines 689-694):** The sentence \"Take ownership of coords — no clone needed.\" appears twice in consecutive comment blocks — lines 689 and 694. Remove the duplicate on line 694 so the block reads cleanly into the invariant comment.\n\n2. **Debug observability in validate_differentiable_field (lines 128-138):** The source-kind rejection (line 132) and lambda-slot rejection (line 138) both silently return None. Add `#[cfg(debug_assertions)] eprintln!(...)` messages matching the existing pattern for the not-a-Field case (lines 115-118), so all three rejection reasons are observable in debug builds.\n\nmemory_hints: search \"validate_differentiable_field debug eprintln\" for the existing debug pattern",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T02:16:26.183Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:16:25.770Z",
+      "lastModified": "2026-04-10T02:16:26.183Z",
       "taskCount": 1449,
       "completedCount": 1122,
       "tags": [
