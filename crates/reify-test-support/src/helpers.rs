@@ -1,11 +1,14 @@
 //! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
 
-use crate::mocks::MockConstraintChecker;
 use reify_types::{ModulePath, Severity};
+
+#[cfg(feature = "eval-helpers")]
+use crate::mocks::MockConstraintChecker;
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
 /// geometry kernel. Suitable for tests that only need to evaluate logic
 /// expressions and constraints without real geometry.
+#[cfg(feature = "eval-helpers")]
 pub fn make_engine() -> reify_eval::Engine {
     let checker = MockConstraintChecker::new();
     reify_eval::Engine::new(Box::new(checker), None)
