@@ -1,5 +1,21 @@
-//! Utilities for mapping byte offsets in source text to human-readable
-//! `(line, column)` positions.
+//! Source location types and utilities for mapping byte offsets in source text
+//! to human-readable `(line, column)` positions.
+
+/// A source location reference with human-readable line/column positions.
+///
+/// This is a presentation type — it holds 1-based `line`/`column` positions
+/// derived from `SourceSpan` byte-offsets via `byte_offset_to_line_col`.
+/// It lives in reify-types so that the engine layer can produce it without
+/// importing from the MCP adapter layer.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SourceLocationInfo {
+    pub file_path: String,
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
 
 /// Convert a byte offset in `source` to a 1-based `(line, column)` pair.
 ///

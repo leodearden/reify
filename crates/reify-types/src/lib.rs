@@ -19,7 +19,7 @@ pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
     ConstraintResult, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult,
 };
-pub use diagnostics::{Diagnostic, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan};
+pub use diagnostics::{Diagnostic, DiagnosticInfo, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan};
 pub use dimension::{DimensionVector, Rational};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
@@ -38,5 +38,5 @@ pub use ty::Type;
 pub use value::{
     DeterminacyState, EvalError, FieldSourceKind, Freshness, Satisfaction, Value, ValueMap,
 };
-pub use source_location::byte_offset_to_line_col;
+pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
 pub use warm::{OpaqueState, WarmStartable};
