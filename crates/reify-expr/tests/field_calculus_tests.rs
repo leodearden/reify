@@ -2056,7 +2056,7 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
     let lap_expr = make_function_call(
         "laplacian",
         vec![CompiledExpr::literal(field, field_type)],
-        codomain, // placeholder result_type; not used by the evaluator
+        Type::Real, // placeholder result_type; not used by the evaluator (matches eval_field_op)
     );
 
     let values = ValueMap::new();
@@ -2078,6 +2078,9 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
                 temp_per_len_sq, dimension,
             );
             assert!(
+                // Looser tolerance than divergence (1e-4): Laplacian uses second-order
+                // numerical differentiation (finite differences applied twice),
+                // which accumulates more discretization error.
                 (si_value - 6.0).abs() < 1e-2,
                 "laplacian quadratic sample si_value should be ≈6.0 \
                  (∇²(x²+y²+z²) = 6), got {}",
