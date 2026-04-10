@@ -31422,7 +31422,15 @@
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:16:25.752Z"
+        "updatedAt": "2026-04-10T08:16:25.752Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add _has_expr_body_empty_guard_short_circuit to self-check in test_test_helpers.sh"
+            ]
+          }
+        }
       },
       {
         "id": "1537",
@@ -31430,13 +31438,13 @@
         "description": "Include the _has_expr_body_empty_guard_short_circuit helper in the self-check validation at lines 611-619 of tests/infra/test_test_helpers.sh.",
         "details": "The self-check in tests/infra/test_test_helpers.sh ensures all file-local helpers use symmetric positive `_has_` naming. Currently, it only checks for `_has_assert_sync_ref_exists` and `_has_if_n_guard`. To include the newly added `_has_expr_body_empty_guard_short_circuit` helper, modify the condition at line 613 by adding `&& grep -qE '^_has_expr_body_empty_guard_short_circuit\\(\\)' \"${BASH_SOURCE[0]}\"`. This ensures that if the helper is renamed or removed, the self-check will catch the inconsistency.",
         "testStrategy": "1. Open tests/infra/test_test_helpers.sh and navigate to lines 611-619.\n2. Add the grep condition for `_has_expr_body_empty_guard_short_circuit` at line 613.\n3. Run the script to ensure no errors occur and the self-check passes.\n4. Temporarily rename `_has_expr_body_empty_guard_short_circuit` and rerun the script to verify that the self-check fails as expected.",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [
           "1535"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:15:56.764Z",
+        "updatedAt": "2026-04-10T08:16:33.627Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -32398,9 +32406,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T08:16:25.753Z",
+      "lastModified": "2026-04-10T08:16:33.627Z",
       "taskCount": 1596,
-      "completedCount": 1206,
+      "completedCount": 1207,
       "tags": [
         "master"
       ]
