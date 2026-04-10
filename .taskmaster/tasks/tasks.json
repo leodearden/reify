@@ -30028,11 +30028,17 @@
         "description": "Two related issues around sub_member_types semantics:\n\n1. **Unreachable `or_else` fallback (expr.rs:1512-1517):** The `.or_else(|| scope.collection_sub_member_types.get(...))` fallback is unreachable because `sub_member_types` is populated for ALL subs (entity.rs:417-429), making it a strict superset of `collection_sub_member_types`. Either remove the fallback entirely or add an explicit comment marking it as a defensive guard.\n\n2. **Misleading docstring (scope.rs:36):** The docstring says \"Member types for non-collection sub-components\" but `sub_member_types` is populated for ALL subs unconditionally. Update to: `/// Member types for all sub-components: sub_name → { member_name → Type }. /// Populated for both collection and non-collection subs to resolve self.sub.member chains and instance qualified access.`\n\nMemory hints: search \"sub_member_types collection_sub_member_types superset defensive\" for prior analysis confirming the or_else is unreachable.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T02:24:37.621Z"
+        "updatedAt": "2026-04-10T02:27:56.512Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "1455",
@@ -30054,7 +30060,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:27:50.401Z",
+      "lastModified": "2026-04-10T02:27:56.512Z",
       "taskCount": 1455,
       "completedCount": 1130,
       "tags": [
