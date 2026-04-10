@@ -28,6 +28,15 @@ fn error_diagnostics(module: &reify_compiler::CompiledModule) -> Vec<&reify_type
         .collect()
 }
 
+/// Helper: return only warning-severity diagnostics.
+fn warning_diagnostics(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect()
+}
+
 // ── H2: collection member typo should produce a diagnostic ──────────────
 
 #[test]
@@ -208,5 +217,398 @@ fn box_wrong_arg_count_produces_preexisting_diagnostic() {
         has_arg_count_error,
         "expected diagnostic about argument count, got: {:?}",
         errors
+    );
+}
+
+// ── task-823 step-5: conformance.rs no-type-annotation diagnostics ──────────
+
+#[test]
+fn trait_member_no_type_annotation_emits_diagnostic() {
+    // A structure implementing a trait where one of the structure's params
+    // has no type annotation should produce a diagnostic (conformance.rs:46
+    // outer unwrap_or). Currently defaults silently to Type::Real.
+    let source = r#"
+        trait T {
+            param x : Real
+        }
+        structure S : T {
+            param x = 5.0
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_type_annotation_error = errors.iter().any(|d| {
+        d.message.contains("no type annotation")
+            || d.message.contains("missing type annotation")
+            || d.message.contains("cannot infer type")
+    });
+    assert!(
+        has_type_annotation_error,
+        "expected diagnostic about missing type annotation for conformance, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn trait_let_no_type_annotation_compiles_clean() {
+    // A structure implementing a trait may have let bindings without explicit
+    // type annotations — the type is inferred from the expression. This must
+    // NOT produce an error (conformance.rs:73 path). Previously this silently
+    // defaulted to Type::Real; the correct behavior is to simply omit the
+    // member from the structure_members map (its type is expression-inferred).
+    let source = r#"
+        trait T {
+            param x : Real
+        }
+        structure S : T {
+            param x : Real = 5.0
+            let y = x * 2.0
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    assert!(
+        errors.is_empty(),
+        "let binding without type annotation is valid code and must not produce errors, got: {:?}",
+        errors
+    );
+}
+
+// ── task-823 step-3: entity.rs ICE paths — green path (no ICE on valid code) ──
+
+#[test]
+fn structure_param_resolves_without_ice() {
+    // Verifies that entity.rs:525 (scope.resolve in pass 2 for structure param)
+    // does NOT emit an ICE diagnostic for valid code. The two-pass compilation
+    // registers all names in pass 1, so pass-2 resolve should always succeed
+    // for well-formed structures.
+    let source = r#"
+        structure S {
+            param x : Real = 1.0
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on valid structure param, got: {:?}",
+        errors
+    );
+    assert!(errors.is_empty(), "expected no errors at all, got: {:?}", errors);
+}
+
+#[test]
+fn port_member_resolves_without_ice() {
+    // Verifies that entity.rs:856 (scope.resolve in pass 2 for port member param)
+    // does NOT emit an ICE diagnostic for valid code.
+    let source = r#"
+        trait MechPort {
+            param diameter : Length
+        }
+        structure S {
+            port mount : MechPort {
+                param diameter : Length = 5mm
+            }
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on valid port member, got: {:?}",
+        errors
+    );
+    assert!(errors.is_empty(), "expected no errors at all, got: {:?}", errors);
+}
+
+// ── task-823 step-7: guards.rs ICE path — green path (no ICE on valid code) ──
+
+#[test]
+fn guarded_param_resolves_without_ice() {
+    // Verifies that guards.rs:272 (scope.resolve in compile_guarded_members for
+    // guarded structure param) does NOT emit an ICE diagnostic for valid code.
+    // Pass 1 registers all guarded member names via register_guarded_names, so
+    // pass 2 resolve should always succeed for well-formed guarded structures.
+    let source = r#"
+        structure S {
+            param mode : Bool = true
+            where mode {
+                param x : Real = 1.0
+            }
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on valid guarded param, got: {:?}",
+        errors
+    );
+    assert!(errors.is_empty(), "expected no errors at all, got: {:?}", errors);
+}
+
+// ── task-823 step-1: port param unknown type name emits diagnostic ──────
+
+#[test]
+fn port_param_unknown_type_name_emits_error() {
+    // A port param whose type name doesn't exist (Nonexistent) should produce
+    // an error diagnostic. Previously, entity.rs:366 silently defaulted to
+    // Type::Real via unwrap_or without any diagnostic.
+    let source = r#"
+        trait MechPort {
+            param diameter : Length
+        }
+        structure S {
+            port mount : MechPort {
+                param diameter : Nonexistent
+            }
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_type_error = errors.iter().any(|d| {
+        d.message.contains("Nonexistent") || d.message.contains("unresolved type name")
+    });
+    assert!(
+        has_type_error,
+        "expected diagnostic about unknown type 'Nonexistent' in port param, got: {:?}",
+        errors
+    );
+}
+
+// ── task-823 step-9: empty collection literal type inference warnings ────
+
+#[test]
+fn empty_list_literal_emits_type_inference_warning() {
+    // An empty list literal `[]` has no elements to infer the element type from.
+    // expr.rs:895 silently defaulted to Type::Real. It should now emit a warning
+    // diagnostic informing the user that element type is defaulting to Real.
+    let source = r#"
+        structure S {
+            let x = []
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(
+        errors.is_empty(),
+        "empty list should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warning_diagnostics(&module);
+    let has_type_warning = warnings
+        .iter()
+        .any(|d| d.message.contains("empty list") || d.message.contains("cannot infer"));
+    assert!(
+        has_type_warning,
+        "expected warning about empty list type inference, got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn empty_set_literal_emits_type_inference_warning() {
+    // An empty set literal `set{}` has no elements to infer from.
+    // expr.rs:917 silently defaulted to Type::Real. It should now emit a warning.
+    let source = r#"
+        structure S {
+            let x = set{}
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(
+        errors.is_empty(),
+        "empty set should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warning_diagnostics(&module);
+    let has_type_warning = warnings
+        .iter()
+        .any(|d| d.message.contains("empty set") || d.message.contains("cannot infer"));
+    assert!(
+        has_type_warning,
+        "expected warning about empty set type inference, got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn empty_map_literal_emits_type_inference_warning() {
+    // An empty map literal `map{}` has no entries to infer key/value types from.
+    // expr.rs:949 and 953 silently defaulted to Type::String/Type::Real. Should warn.
+    let source = r#"
+        structure S {
+            let x = map{}
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(
+        errors.is_empty(),
+        "empty map should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warning_diagnostics(&module);
+    let has_type_warning = warnings
+        .iter()
+        .any(|d| d.message.contains("empty map") || d.message.contains("cannot infer"));
+    assert!(
+        has_type_warning,
+        "expected warning about empty map type inference, got: {:?}",
+        warnings
+    );
+}
+
+// ── task-823 step-11: range/stdlib-fn-zero-arg/match-no-arms diagnostics ───
+
+/// Range with valid bounds (green-path ICE documentation).
+///
+/// expr.rs:369 has `.unwrap_or(Type::Real)` for the case where both
+/// `compiled_lower` and `compiled_upper` are `None`.  The parser
+/// (`lower_range_expr`) requires **both** lower and upper nodes via `?`, so
+/// `ExprKind::Range { lower: None, upper: None, .. }` is unreachable from user
+/// code — it is a pure ICE path.  This test confirms a valid range compiles
+/// without triggering the fallback or emitting any ICE diagnostic.
+#[test]
+fn range_valid_compiles_without_ice() {
+    let source = r#"
+        structure S {
+            let x = 1.0..10.0
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on valid range, got: {:?}",
+        errors
+    );
+    assert!(errors.is_empty(), "expected no errors on valid range, got: {:?}", errors);
+}
+
+/// Zero-arg stdlib function call should emit a type-inference warning.
+///
+/// expr.rs:575 falls through to `compiled_args.first().map(...).unwrap_or(Type::Real)`
+/// for non-geometry stdlib functions.  When `args` is empty the `first()` is
+/// `None`, so the result type silently defaults to `Type::Real`.  After
+/// step-12 this site will emit a warning.  This test is currently FAILING
+/// because no warning is emitted.
+#[test]
+fn stdlib_fn_no_args_emits_type_inference_warning() {
+    let source = r#"
+        structure S {
+            let x = pi()
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(
+        errors.is_empty(),
+        "zero-arg stdlib call should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warning_diagnostics(&module);
+    let has_type_warning = warnings.iter().any(|d| {
+        d.message.contains("zero-arg")
+            || d.message.contains("cannot infer")
+            || d.message.contains("return type")
+    });
+    assert!(
+        has_type_warning,
+        "expected warning about type inference for zero-arg stdlib call, got: {:?}",
+        warnings
+    );
+}
+
+// ── task-823 step-13: expr.rs:1511 sub-member type ICE — green path ─────────
+
+/// Sub-component qualified member access compiles without ICE.
+///
+/// expr.rs:1511 has `.unwrap_or(Type::Real)` when looking up the type of a
+/// sub-component's member via `scope.collection_sub_member_types`.  In valid
+/// code the scope is populated by entity.rs pass 1 so the lookup succeeds and
+/// the fallback is never reached.
+///
+/// The syntax `parts.(MechTrait::diameter)` is `InstanceQualifiedAccess` —
+/// accessing collection sub-component `parts` (type `List<Inner>`) `diameter`
+/// member through trait `MechTrait`.  Using the collection form
+/// `sub parts : List<Inner>` ensures `collection_sub_member_types` is populated.
+#[test]
+fn sub_member_type_resolves_without_ice() {
+    let source = r#"
+        trait MechTrait {
+            param diameter : Length
+        }
+        structure Inner : MechTrait {
+            param diameter : Length = 5mm
+        }
+        structure Outer {
+            sub parts : List<Inner>
+            let d = parts.(MechTrait::diameter)
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on valid sub-member access, got: {:?}",
+        errors
+    );
+    assert!(
+        errors.is_empty(),
+        "expected no errors on valid sub-member access, got: {:?}",
+        errors
+    );
+}
+
+/// Match with no arms (ICE-path documentation / parse-guard).
+///
+/// expr.rs:1046 has `.unwrap_or(Type::Real)` on `compiled_arms.first()`.
+/// If the grammar allows `match x {}` (no arms), that path is reachable and
+/// should emit an ICE diagnostic.  If the grammar rejects it (parse error),
+/// the code at expr.rs:1046 is an unreachable ICE path.
+///
+/// This test first checks parsability.  If the source parses without errors,
+/// it asserts that some diagnostic is emitted so the user is informed.  If
+/// the source produces parse errors, the ICE path is documented as unreachable.
+#[test]
+fn match_no_arms_emits_diagnostic() {
+    let source = r#"
+        structure S {
+            let disc = 1
+            let x = match disc { }
+        }
+    "#;
+    let parsed = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("silent_defaults_test"),
+    );
+    if !parsed.errors.is_empty() {
+        // Grammar does not allow empty match — expr.rs:1046 is an ICE path
+        // that is unreachable from user code.  Document and pass.
+        return;
+    }
+    // Grammar allows empty match: verify the compiler emits some diagnostic.
+    let module = reify_compiler::compile(&parsed);
+    assert!(
+        !module.diagnostics.is_empty(),
+        "expected a diagnostic for match with no arms, got none"
     );
 }

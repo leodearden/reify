@@ -113,8 +113,8 @@ export async function focusEntity(entityPath: string): Promise<void> {
 }
 
 /** Send an LSP request to the backend. */
-export async function lspRequest(method: string, params: unknown): Promise<unknown> {
-  return invoke('lsp_request', { method, params });
+export async function lspRequest(method: string, params: unknown): Promise<string> {
+  return invoke<string>('lsp_request', { method, params: JSON.stringify(params) });
 }
 
 // ── Claude commands ─────────────────────────────────────────────────

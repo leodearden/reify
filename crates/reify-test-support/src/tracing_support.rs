@@ -338,11 +338,12 @@ impl tracing::Subscriber for WarnCountingSubscriber {
 
 // ── WarnCapture (public) ──────────────────────────────────────────────────────
 
-/// Captured output from [`warn_capturing_subscriber`]: event count and message
-/// text for all WARN events.
+/// Captured output from [`warn_capturing_subscriber`]: event count, message
+/// text, and structured fields for all WARN events.
 pub struct WarnCapture {
     count: Arc<AtomicUsize>,
     messages: Arc<std::sync::Mutex<Vec<String>>>,
+    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
 }
 
 impl WarnCapture {
@@ -385,6 +386,138 @@ impl WarnCapture {
             "no WARN message contained {substring:?}; captured messages: {msgs:?}"
         );
     }
+
+    /// Return a snapshot of all captured WARN event field maps, one per event.
+    ///
+    /// Each element is a [`HashMap`] of field name → field value (as a string)
+    /// for the corresponding event.  The `message` field is **not** included in
+    /// these maps — use [`messages()`](Self::messages) for the message text.
+    ///
+    /// # How field values are stored
+    ///
+    /// The storage format depends on the tracing field type:
+    ///
+    /// * **`&str`-typed fields** (e.g. `lock = "values"`) are captured verbatim
+    ///   via `record_str` — no extra quotes or decoration.
+    /// * **`%Display` fields** (e.g. `error = %e`) are routed through
+    ///   `record_debug`.  Because tracing wraps Display values in a newtype whose
+    ///   `Debug` delegates to `Display`, the stored string equals `format!("{e}")`
+    ///   — no extra decoration.
+    /// * **`?Debug` fields** (e.g. `info = ?v`) are also routed through
+    ///   `record_debug` and stored as `format!("{v:?}")`.  For a `Vec<i32>` this
+    ///   produces `"[1, 2, 3]"` — the brackets are part of the stored value.
+    ///
+    /// Use [`assert_any_event_has_fields`] for exact matches (safe for `&str`
+    /// and `%Display` fields).  Use [`assert_any_event_field_contains`] for
+    /// substring matches when the field may include Debug decoration.
+    ///
+    /// [`assert_any_event_has_fields`]: Self::assert_any_event_has_fields
+    /// [`assert_any_event_field_contains`]: Self::assert_any_event_field_contains
+    pub fn fields_by_event(&self) -> Vec<HashMap<String, String>> {
+        self.fields.lock().unwrap().clone()
+    }
+
+    /// Assert that at least one captured WARN message equals `expected` exactly.
+    ///
+    /// This is strict equality — not substring containment.  Use this to verify a
+    /// fixed canonical message string (e.g. `"lock poisoned, recovering"`) when
+    /// tests migrate from 1-per-site coverage to 1-per-helper coverage: collapsing
+    /// many repeated string literals into one authoritative location while still
+    /// guarding against message-text regressions.
+    ///
+    /// See [`assert_count_and_any_message_contains`](Self::assert_count_and_any_message_contains)
+    /// for substring-based matching.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no captured message equals `expected` exactly.  The panic
+    /// message includes `expected` and the full list of captured messages for
+    /// diagnostics.
+    pub fn assert_any_message_equals(&self, expected: &str) {
+        let messages = self.messages.lock().unwrap();
+        assert!(
+            messages.iter().any(|m| m == expected),
+            "no WARN message equaled {expected:?}; captured messages: {messages:?}"
+        );
+    }
+
+    /// Assert that at least one captured WARN event contains **all** of the
+    /// key=value pairs in `pairs`.
+    ///
+    /// Useful for verifying that a structured `tracing::warn!(key = "value", …)`
+    /// emitted the expected field schema.
+    ///
+    /// # Value matching contract
+    ///
+    /// Exact matching is reliable for:
+    /// * **`&str`-typed fields** — stored verbatim (no decoration).
+    /// * **`%Display` fields** — tracing wraps Display in a newtype whose
+    ///   `Debug` delegates to `Display`, so the stored string equals the
+    ///   Display output.
+    ///
+    /// For **`?Debug` fields** the stored value includes the full Debug
+    /// representation (e.g. `"[1, 2, 3]"` for a `Vec`).  Asserting the exact
+    /// Debug string couples the test to `Debug` format stability.  Prefer
+    /// [`assert_any_event_field_contains`] for those fields.
+    ///
+    /// [`assert_any_event_field_contains`]: Self::assert_any_event_field_contains
+    ///
+    /// # Panics
+    ///
+    /// Panics if no single event's field map satisfies every pair.  The panic
+    /// message dumps both `fields_by_event()` and `messages()` for diagnostics.
+    pub fn assert_any_event_has_fields(&self, pairs: &[(&str, &str)]) {
+        let all_fields = self.fields_by_event();
+        let found = all_fields.iter().any(|event_fields| {
+            pairs
+                .iter()
+                .all(|(k, v)| event_fields.get(*k).map(|s| s.as_str()) == Some(*v))
+        });
+        if !found {
+            let msgs = self.messages();
+            panic!(
+                "no WARN event had all expected fields {pairs:?};\n  \
+                 fields_by_event: {all_fields:?}\n  \
+                 messages: {msgs:?}"
+            );
+        }
+    }
+
+    /// Assert that at least one captured WARN event has a field named `key`
+    /// whose value **contains** `substring`.
+    ///
+    /// This is a safer alternative to [`assert_any_event_has_fields`] when the
+    /// field value may include Debug decoration.  For example, a field emitted
+    /// with `?e` (Debug) is stored as `format!("{:?}", e)`, which may include
+    /// type wrappers or quotes; substring matching avoids coupling the assertion
+    /// to the exact Debug representation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no captured event has a field named `key` whose value contains
+    /// `substring`.  The panic message includes `fields_by_event()` and
+    /// `messages()` for diagnostics.
+    ///
+    /// [`assert_any_event_has_fields`]: Self::assert_any_event_has_fields
+    pub fn assert_any_event_field_contains(&self, key: &str, substring: &str) {
+        let all_fields = self.fields_by_event();
+        let found = all_fields
+            .iter()
+            .any(|event_fields| {
+                event_fields
+                    .get(key)
+                    .map(|v| v.contains(substring))
+                    .unwrap_or(false)
+            });
+        if !found {
+            let msgs = self.messages();
+            panic!(
+                "no WARN event had a field {key:?} containing {substring:?};\n  \
+                 fields_by_event: {all_fields:?}\n  \
+                 messages: {msgs:?}"
+            );
+        }
+    }
 }
 
 /// Build a minimal [`tracing::Subscriber`] that captures WARN-level events:
@@ -396,13 +529,16 @@ impl WarnCapture {
 pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, WarnCapture) {
     let count = Arc::new(AtomicUsize::new(0));
     let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let fields = Arc::new(std::sync::Mutex::new(Vec::<HashMap<String, String>>::new()));
     let capture = WarnCapture {
         count: Arc::clone(&count),
         messages: Arc::clone(&messages),
+        fields: Arc::clone(&fields),
     };
     let subscriber = WarnCapturingSubscriber {
         count,
         messages,
+        fields,
         span_counter: AtomicU64::new(1),
     };
     (subscriber, capture)
@@ -413,26 +549,43 @@ pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, W
 struct WarnCapturingSubscriber {
     count: Arc<AtomicUsize>,
     messages: Arc<std::sync::Mutex<Vec<String>>>,
+    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
     span_counter: AtomicU64,
 }
 
 /// A [`tracing::field::Visit`] implementation that extracts the formatted
-/// `message` field from a tracing event.
-struct MessageVisitor(String);
+/// `message` field from a tracing event, and collects all other structured
+/// field name/value pairs into a [`HashMap`].
+struct MessageVisitor {
+    message: String,
+    fields: HashMap<String, String>,
+}
 
 impl tracing::field::Visit for MessageVisitor {
-    /// Intercept `&str` message values and store them directly, bypassing
-    /// `record_debug`'s `{value:?}` formatting which would add surrounding
-    /// double-quotes around string literals.
+    /// Intercept `&str` field values.  For the `message` field, store directly
+    /// (bypassing `record_debug`'s `{value:?}` formatting which adds quotes).
+    /// For all other fields, store the raw string value in the fields map.
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() == "message" {
-            self.0 = value.to_owned();
+            self.message = value.to_owned();
+        } else {
+            self.fields.insert(field.name().to_owned(), value.to_owned());
         }
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
-            self.0 = format!("{value:?}");
+            self.message = format!("{value:?}");
+        } else {
+            // Non-message fields are stored as `format!("{value:?}")`.
+            // For `%Display` fields, tracing's newtype wrapper makes `Debug`
+            // delegate to `Display`, so the result equals the Display output.
+            // For `?Debug` fields, the result includes the full Debug repr
+            // (e.g. `"[1, 2, 3]"` for a Vec).  See the public API docs on
+            // `WarnCapture::fields_by_event` and `assert_any_event_has_fields`
+            // for the complete value-matching contract.
+            self.fields
+                .insert(field.name().to_owned(), format!("{value:?}"));
         }
     }
 }
@@ -464,9 +617,13 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
         // Release ordering pairs with Acquire loads in assertion helpers and
         // WarnCapture::count(), ensuring all prior memory writes are visible.
         self.count.fetch_add(1, Ordering::Release);
-        let mut visitor = MessageVisitor(String::new());
+        let mut visitor = MessageVisitor {
+            message: String::new(),
+            fields: HashMap::new(),
+        };
         event.record(&mut visitor);
-        self.messages.lock().unwrap().push(visitor.0);
+        self.messages.lock().unwrap().push(visitor.message);
+        self.fields.lock().unwrap().push(visitor.fields);
     }
 
     fn enter(&self, _span: &tracing::span::Id) {}
@@ -1326,5 +1483,206 @@ mod tests {
             1,
             "post-drop warn must not be counted (subscriber should be detached)",
         );
+    }
+
+    // ── warn_capturing_subscriber field-capture tests ─────────────────────────
+
+    /// `WarnCapture::fields_by_event()` and `assert_any_event_has_fields()` work
+    /// correctly on a structured WARN event.
+    ///
+    /// Verifies four properties:
+    /// (i)   count == 1 — exactly one event was emitted.
+    /// (ii)  messages() contains "lock poisoned, recovering" — backward-compat
+    ///       with existing callers that assert on message text.
+    /// (iii) `assert_any_event_has_fields(&[("lock","values"),("access","read")])`
+    ///       succeeds — the structured fields were captured.
+    /// (iv)  `assert_any_event_has_fields(&[("lock","snapshot_values")])` panics —
+    ///       a field value that was NOT emitted must not match.
+    #[test]
+    fn warn_capturing_structured_fields_are_captured() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(
+                lock = "values",
+                access = "read",
+                error = %"boom",
+                "lock poisoned, recovering"
+            );
+        });
+
+        // (i) Exactly one event was captured.
+        capture.assert_count(1);
+
+        // (ii) Backward-compat: messages() still returns the message text.
+        let msgs = capture.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("lock poisoned, recovering")),
+            "messages() must contain 'lock poisoned, recovering'; got: {msgs:?}"
+        );
+
+        // (iii) Structured fields lock=values and access=read are present.
+        capture.assert_any_event_has_fields(&[("lock", "values"), ("access", "read")]);
+
+        // (iv) A field value that was NOT emitted must cause a panic.
+        let result = std::panic::catch_unwind(|| {
+            capture.assert_any_event_has_fields(&[("lock", "snapshot_values")])
+        });
+        assert!(
+            result.is_err(),
+            "assert_any_event_has_fields must panic when no event has lock=snapshot_values"
+        );
+    }
+
+    // ── WarnCapture::assert_any_message_equals tests ──────────────────────────
+
+    /// `WarnCapture::assert_any_message_equals` passes when at least one captured
+    /// message equals the expected string exactly.
+    #[test]
+    fn warn_capture_assert_any_message_equals_passes_on_exact_match() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("lock poisoned, recovering");
+        });
+
+        // Should not panic — message matches exactly.
+        capture.assert_any_message_equals("lock poisoned, recovering");
+    }
+
+    /// `WarnCapture::assert_any_message_equals` panics with the canonical
+    /// "no WARN message equaled" prefix when no captured message matches.
+    #[test]
+    #[should_panic(expected = "no WARN message equaled")]
+    fn warn_capture_assert_any_message_equals_panics_on_missing() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("some other warning");
+        });
+
+        capture.assert_any_message_equals("lock poisoned, recovering");
+    }
+
+    /// `WarnCapture::assert_any_message_equals` uses strict equality, not
+    /// substring containment: a superstring does NOT satisfy the assertion.
+    ///
+    /// Emits `"lock poisoned, recovering: err"` and asserts against the shorter
+    /// string `"lock poisoned, recovering"` — this must panic because the emitted
+    /// message is a strict superset of the expected string.
+    #[test]
+    #[should_panic]
+    fn warn_capture_assert_any_message_equals_panics_on_partial_substring() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("lock poisoned, recovering: err");
+        });
+
+        // The emitted message contains the expected string but is not equal to
+        // it; assert_any_message_equals must reject it.
+        capture.assert_any_message_equals("lock poisoned, recovering");
+    }
+
+    // ── WarnCapture::assert_any_event_field_contains tests ────────────────────
+
+    /// `assert_any_event_field_contains` succeeds when a captured field value
+    /// contains the given substring.
+    ///
+    /// Emits a WARN with `error = %"some display error"` and verifies that
+    /// `assert_any_event_field_contains("error", "display")` passes.
+    #[test]
+    fn assert_any_event_field_contains_matches_substring() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(
+                error = %"some display error",
+                "test event"
+            );
+        });
+
+        capture.assert_any_event_field_contains("error", "display");
+    }
+
+    /// `assert_any_event_field_contains` panics when the given key does not
+    /// exist in any captured event.
+    #[test]
+    fn assert_any_event_field_contains_panics_on_missing_key() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(lock = "values", "test event");
+        });
+
+        let result = std::panic::catch_unwind(|| {
+            capture.assert_any_event_field_contains("nonexistent", "values")
+        });
+        assert!(
+            result.is_err(),
+            "assert_any_event_field_contains must panic when key is absent"
+        );
+    }
+
+    /// `assert_any_event_field_contains` panics when the key exists but the
+    /// value does not contain the substring.
+    #[test]
+    fn assert_any_event_field_contains_panics_on_missing_substring() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(lock = "values", "test event");
+        });
+
+        let result = std::panic::catch_unwind(|| {
+            capture.assert_any_event_field_contains("lock", "nonexistent_substring")
+        });
+        assert!(
+            result.is_err(),
+            "assert_any_event_field_contains must panic when substring is absent"
+        );
+    }
+
+    /// Documents the Debug-decoration invariant for fields captured via
+    /// `record_debug`.
+    ///
+    /// A `?Debug` field is stored as `format!("{:?}", value)`.  For a
+    /// `Vec<i32>`, that is `"[1, 2, 3]"` — the brackets are part of the stored
+    /// value.  This test verifies:
+    ///
+    /// (a) `assert_any_event_has_fields` exact match against `"[1, 2, 3]"` succeeds,
+    ///     demonstrating that the Debug representation is stored verbatim.
+    /// (b) `assert_any_event_field_contains` substring match against `"1, 2, 3"`
+    ///     also succeeds, showing the safer alternative.
+    #[test]
+    fn debug_field_captured_with_debug_decoration() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let v = vec![1i32, 2, 3];
+            tracing::warn!(info = ?v, "debug field event");
+        });
+
+        // (a) Exact match requires the full Debug representation.
+        capture.assert_any_event_has_fields(&[("info", "[1, 2, 3]")]);
+
+        // (b) Substring match works for the inner content without brackets.
+        capture.assert_any_event_field_contains("info", "1, 2, 3");
     }
 }

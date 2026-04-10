@@ -393,10 +393,14 @@ fn compile_auto_param() {
     let template = &compiled.templates[0];
     assert_eq!(template.value_cells.len(), 2);
 
-    // x should be Auto with no default_expr
+    // x should be Auto { free: false } with no default_expr
     let x = &template.value_cells[0];
     assert_eq!(x.id, reify_types::ValueCellId::new("S", "x"));
-    assert!(x.kind.is_auto());
+    assert_eq!(
+        x.kind,
+        ValueCellKind::Auto { free: false },
+        "bare auto should compile to Auto {{ free: false }}"
+    );
     assert!(
         x.default_expr.is_none(),
         "auto param should have no default_expr"
@@ -409,6 +413,203 @@ fn compile_auto_param() {
     assert!(
         y.default_expr.is_some(),
         "normal param should have default_expr"
+    );
+}
+
+/// Compile `auto(free)` param → ValueCellKind::Auto { free: true }, default_expr: None.
+#[test]
+fn compile_auto_free_param() {
+    let source = r#"structure S {
+    param x: Scalar = auto(free)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.value_cells.len(), 1);
+
+    let x = &template.value_cells[0];
+    assert_eq!(x.id, reify_types::ValueCellId::new("S", "x"));
+    assert_eq!(
+        x.kind,
+        ValueCellKind::Auto { free: true },
+        "auto(free) should compile to Auto {{ free: true }}"
+    );
+    assert!(
+        x.default_expr.is_none(),
+        "auto(free) param should have no default_expr"
+    );
+}
+
+/// Compile structure with both bare `auto` and `auto(free)` params.
+#[test]
+fn compile_mixed_auto_and_auto_free() {
+    let source = r#"structure S {
+    param a: Scalar = auto
+    param b: Scalar = auto(free)
+    param c: Scalar = 3mm
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.value_cells.len(), 3);
+
+    let a = &template.value_cells[0];
+    assert_eq!(a.id, reify_types::ValueCellId::new("S", "a"));
+    assert_eq!(
+        a.kind,
+        ValueCellKind::Auto { free: false },
+        "bare auto should compile to Auto {{ free: false }}"
+    );
+
+    let b = &template.value_cells[1];
+    assert_eq!(b.id, reify_types::ValueCellId::new("S", "b"));
+    assert_eq!(
+        b.kind,
+        ValueCellKind::Auto { free: true },
+        "auto(free) should compile to Auto {{ free: true }}"
+    );
+
+    let c = &template.value_cells[2];
+    assert_eq!(c.id, reify_types::ValueCellId::new("S", "c"));
+    assert_eq!(c.kind, ValueCellKind::Param);
+}
+
+/// Port param with `auto(free)` default → port member ValueCellDecl has kind Auto { free: true }.
+#[test]
+fn compile_auto_free_in_port_param() {
+    let source = r#"
+trait MyPort {
+    param foo : Scalar
+}
+
+structure def S {
+    port mount : MyPort {
+        param foo : Scalar = auto(free)
+    }
+}
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    // Filter to non-error diagnostics only (unknown port type warnings are ok)
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name.as_str().contains('S'))
+        .expect("expected template S");
+
+    // Port 'mount' should have exactly 1 member
+    assert_eq!(template.ports.len(), 1, "expected 1 port");
+    let port = &template.ports[0];
+    assert_eq!(port.name, "mount");
+    assert_eq!(port.members.len(), 1, "expected 1 port member");
+
+    let foo = &port.members[0];
+    assert!(
+        foo.id.member.contains("mount.foo"),
+        "expected id containing 'mount.foo', got '{}'",
+        foo.id.member
+    );
+    assert_eq!(
+        foo.kind,
+        ValueCellKind::Auto { free: true },
+        "port auto(free) param should compile to Auto {{ free: true }}"
+    );
+    assert!(foo.default_expr.is_none(), "auto(free) port param should have no default_expr");
+}
+
+/// Guarded param with `auto(free)` default → guarded member ValueCellDecl has kind Auto { free: true }.
+///
+/// Exercises the guards.rs compile_guarded_members path.
+#[test]
+fn compile_auto_free_in_guarded_param() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    where active {
+        param x : Scalar = auto(free)
+    }
+}
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let template = &compiled.templates[0];
+
+    // x is guarded — should NOT appear in top-level value_cells
+    assert!(
+        !template.value_cells.iter().any(|vc| vc.id.member == "x"),
+        "guarded param x should not be in top-level value_cells"
+    );
+
+    // Should have exactly 1 guarded group
+    assert_eq!(template.guarded_groups.len(), 1, "expected 1 guarded group");
+    let group = &template.guarded_groups[0];
+
+    // Group should have x as its sole member
+    assert_eq!(group.members.len(), 1, "expected 1 member in guarded group");
+    let x = &group.members[0];
+    assert!(
+        x.id.member.contains("x"),
+        "expected member 'x', got '{}'",
+        x.id.member
+    );
+    assert_eq!(
+        x.kind,
+        ValueCellKind::Auto { free: true },
+        "auto(free) guarded param should compile to Auto {{ free: true }}"
+    );
+    assert!(
+        x.default_expr.is_none(),
+        "auto(free) guarded param should have no default_expr"
     );
 }
 

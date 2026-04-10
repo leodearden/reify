@@ -13,6 +13,24 @@ use tower_lsp::{LanguageServer, LspService};
 
 use crate::server::{NoOpSink, NotificationSink, ReifyLanguageServer};
 
+/// Deserialize an LSP params payload into `T`, attaching `label` to any
+/// resulting error. Used by every deserializing arm of
+/// [`InProcessLsp::handle_request`] to keep the per-arm code one line.
+///
+/// On failure, returns `Err(format!("{label}: {e}"))`, where `label` is used
+/// **verbatim** as the error prefix. Callers pass the full prefix string
+/// directly — typically an [`error_prefix`] constant for arms covered by
+/// integration tests — so the constant is the literal source of truth for the
+/// runtime error message. Editing a constant is the only change needed to
+/// rotate its prefix; there is no parallel string in the implementation that
+/// could drift.
+fn parse_params<T: serde::de::DeserializeOwned>(
+    params: serde_json::Value,
+    label: &str,
+) -> Result<T, String> {
+    serde_json::from_value(params).map_err(|e| format!("{label}: {e}"))
+}
+
 /// An in-process LSP server that can be called directly without I/O streams.
 ///
 /// The `server` field holds a cloned `ReifyLanguageServer` (all `Arc`-wrapped
@@ -106,8 +124,7 @@ impl InProcessLsp {
 
         match method {
             "initialize" => {
-                let p: InitializeParams = serde_json::from_value(params)
-                    .map_err(|e| format!("{}: {e}", error_prefix::INITIALIZE_PARAMS))?;
+                let p = parse_params::<InitializeParams>(params, error_prefix::INITIALIZE_PARAMS)?;
                 let result = server
                     .initialize(p)
                     .await
@@ -124,32 +141,27 @@ impl InProcessLsp {
                 } else {
                     params
                 };
-                let p: InitializedParams = serde_json::from_value(params)
-                    .map_err(|e| format!("{}: {e}", error_prefix::INITIALIZED_PARAMS))?;
+                let p = parse_params::<InitializedParams>(params, error_prefix::INITIALIZED_PARAMS)?;
                 server.initialized(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didOpen" => {
-                let p: DidOpenTextDocumentParams = serde_json::from_value(params)
-                    .map_err(|e| format!("{}: {e}", error_prefix::DID_OPEN_PARAMS))?;
+                let p = parse_params::<DidOpenTextDocumentParams>(params, error_prefix::DID_OPEN_PARAMS)?;
                 server.did_open(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didChange" => {
-                let p: DidChangeTextDocumentParams = serde_json::from_value(params)
-                    .map_err(|e| format!("{}: {e}", error_prefix::DID_CHANGE_PARAMS))?;
+                let p = parse_params::<DidChangeTextDocumentParams>(params, error_prefix::DID_CHANGE_PARAMS)?;
                 server.did_change(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didClose" => {
-                let p: DidCloseTextDocumentParams = serde_json::from_value(params)
-                    .map_err(|e| format!("{}: {e}", error_prefix::DID_CLOSE_PARAMS))?;
+                let p = parse_params::<DidCloseTextDocumentParams>(params, error_prefix::DID_CLOSE_PARAMS)?;
                 server.did_close(p).await;
                 Ok(Value::Null)
             }
             "textDocument/completion" => {
-                let p: CompletionParams = serde_json::from_value(params)
-                    .map_err(|e| format!("completion params error: {e}"))?;
+                let p = parse_params::<CompletionParams>(params, "completion params error")?;
                 let result = server
                     .completion(p)
                     .await
@@ -157,8 +169,7 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/hover" => {
-                let p: HoverParams = serde_json::from_value(params)
-                    .map_err(|e| format!("hover params error: {e}"))?;
+                let p = parse_params::<HoverParams>(params, "hover params error")?;
                 let result = server
                     .hover(p)
                     .await
@@ -166,8 +177,7 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/definition" => {
-                let p: GotoDefinitionParams = serde_json::from_value(params)
-                    .map_err(|e| format!("definition params error: {e}"))?;
+                let p = parse_params::<GotoDefinitionParams>(params, "definition params error")?;
                 let result = server
                     .goto_definition(p)
                     .await
@@ -194,15 +204,16 @@ impl Default for InProcessLsp {
 
 /// Error-message prefix constants for [`InProcessLsp::handle_request`].
 ///
-/// These constants are the leading substrings that appear in `Err(String)`
-/// values returned by `handle_request` when a method receives malformed
-/// params.  Exposing them as named constants lets tests import and assert
-/// against the real values rather than duplicating hardcoded string literals.
+/// These constants are threaded directly into `parse_params` as the
+/// verbatim `label` argument, making each constant the **literal source of
+/// truth** for the runtime error prefix. There is no parallel string in the
+/// implementation — mismatches between the constant and the runtime error
+/// cannot exist because the constant *is* the runtime error prefix.
 ///
-/// If a prefix changes in the implementation, updating the constant here
-/// causes the test file's `use … error_prefix::*` import to reflect the
-/// change automatically — mismatches become compile errors or immediate
-/// test failures rather than silent runtime drift.
+/// Updating a constant here is the only change needed to rotate the
+/// corresponding runtime error string; the test file's `use … error_prefix::*`
+/// import reflects the change automatically, turning any stale assertion into
+/// a compile error or immediate test failure.
 ///
 /// Only the six prefixes asserted by existing tests are exported.  Additional
 /// constants can be added here when new tests need them.

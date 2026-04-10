@@ -416,7 +416,10 @@ impl ParamMapping {
 ///
 /// Carries the `cell_id` as a structured field so it can be logged
 /// separately by the `solve()` call site, and a human-readable `message`.
-#[derive(Debug, Clone)]
+/// Implements `std::error::Error` so it can be propagated with `?` or
+/// wrapped by any conforming error-aggregation library.
+// DO NOT derive Clone — ValueCellId holds two String fields and nothing clones BuilderError.
+#[derive(Debug)]
 struct BuilderError {
     cell_id: ValueCellId,
     message: String,
@@ -1106,7 +1109,7 @@ fn dimension_of(ty: &Type) -> DimensionVector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_test_support::vcid;
+    use reify_test_support::{single_auto_param, vcid};
 
     // ── Shared test helpers ────────────────────────────────────────────────
 
@@ -1140,7 +1143,10 @@ mod tests {
         context: &str,
     ) {
         match result {
-            Err(BuilderError { cell_id: id, message }) => {
+            Err(BuilderError {
+                cell_id: id,
+                message,
+            }) => {
                 assert_eq!(
                     id, *cell_id,
                     "{context}: BuilderError cell_id should match the expected ValueCellId"
@@ -1151,9 +1157,7 @@ mod tests {
                     message
                 );
             }
-            Ok(v) => panic!(
-                "{context}: expected Err for missing non-auto coord, got Ok({v:?})"
-            ),
+            Ok(v) => panic!("{context}: expected Err for missing non-auto coord, got Ok({v:?})"),
         }
     }
 
@@ -1196,17 +1200,6 @@ mod tests {
         line(fixed_point(x0, y0, z0), fixed_point(x1, y1, z1))
     }
 
-    /// Build a one-element auto_params vec for the given cell_id with Type::length() and no bounds.
-    /// Shared by the three add_auto_coord tests that need a standard single-param setup.
-    fn auto_params_for(cell_id: &ValueCellId) -> Vec<AutoParam> {
-        vec![AutoParam {
-            id: cell_id.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        }]
-    }
-
     /// Non-auto param with a value present in current_values should succeed
     /// and use the provided value. Regression guard for the non-auto happy path.
     #[test]
@@ -1247,7 +1240,7 @@ mod tests {
         let mut builder = SystemBuilder::new();
         let cell_id = vcid("Test", "x");
         // cell_id IS in auto_params
-        let auto_params = auto_params_for(&cell_id);
+        let auto_params = vec![single_auto_param(cell_id.clone())];
         // But NOT in current_values — should use 0.01 default
         let current_values = ValueMap::new();
 
@@ -1315,8 +1308,8 @@ mod tests {
 
     /// BuilderError Display must embed the cell_id and the word "missing" so
     /// log messages and SolveResult::NoProgress reasons are human-readable.
-    /// Also verifies the type satisfies std::error::Error so it can be used
-    /// in ? chains with anyhow / thiserror in the future.
+    /// Also verifies the type implements `std::error::Error` so it can be
+    /// propagated with `?` or wrapped by any conforming error-aggregation library.
     #[test]
     fn builder_error_display_contains_cell_id() {
         let cell_id = vcid("Test", "x");
@@ -1430,7 +1423,11 @@ mod tests {
 
         let result = add_pattern_to_builder(&mut builder, &pattern, &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id, "add_pattern_to_builder (parallel line_b.start path)");
+        assert_missing_err(
+            result,
+            &cell_id,
+            "add_pattern_to_builder (parallel line_b.start path)",
+        );
     }
 
     /// Calling add_auto_coord twice with the same auto-param cell_id must
@@ -1439,7 +1436,7 @@ mod tests {
     fn add_auto_coord_cache_hit_idempotency() {
         let mut builder = SystemBuilder::new();
         let cell_id = vcid("Test", "x");
-        let auto_params = auto_params_for(&cell_id);
+        let auto_params = vec![single_auto_param(cell_id.clone())];
         let current_values = ValueMap::new();
         let initial_len = builder.params.len();
 
@@ -1473,7 +1470,7 @@ mod tests {
     fn add_auto_coord_auto_param_warm_start() {
         let mut builder = SystemBuilder::new();
         let cell_id = vcid("Test", "x");
-        let auto_params = auto_params_for(&cell_id);
+        let auto_params = vec![single_auto_param(cell_id.clone())];
         let mut current_values = ValueMap::new();
         current_values.insert(
             cell_id.clone(),
@@ -1534,7 +1531,10 @@ mod tests {
         let expected_id = vcid("B", "y");
         let result: Result<(), BuilderError> = Err(BuilderError {
             cell_id: actual_id.clone(),
-            message: format!("non-auto parameter {} missing from current_values", actual_id),
+            message: format!(
+                "non-auto parameter {} missing from current_values",
+                actual_id
+            ),
         });
         // Passes `expected_id` ("B","y") but the error carries `actual_id` ("A","x") — must panic.
         assert_missing_err(result, &expected_id, "panics_on_wrong_cell_id");
@@ -1705,8 +1705,7 @@ mod tests {
             .find(|e| e.h == entities.line_b)
             .expect("line_b entity must be present in builder.entities");
         assert_eq!(
-            segment_a.point[1],
-            segment_b.point[0],
+            segment_a.point[1], segment_b.point[0],
             "shared endpoint handle must be identical in both segment Slvs_Entity.point arrays: \
              segment_a.point[1] (la_end) should equal segment_b.point[0] (lb_start)"
         );
@@ -1770,8 +1769,7 @@ mod tests {
 
         for (position_name, line_a, line_b) in positions {
             let mut builder = SystemBuilder::new();
-            let result =
-                builder.add_line_pair(line_a, line_b, &auto_params, &current_values);
+            let result = builder.add_line_pair(line_a, line_b, &auto_params, &current_values);
             assert_missing_err(result, &cell_id, position_name);
         }
     }
@@ -1814,5 +1812,4 @@ mod tests {
             "at most 1 entry in point_entities cache should remain after the Err"
         );
     }
-
 }
