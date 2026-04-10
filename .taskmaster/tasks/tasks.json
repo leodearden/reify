@@ -29660,15 +29660,16 @@
         "description": "In `tests/infra/test_release_mode_in_test_command.sh`, Test 6 hardcodes the path `gui/src-tauri/src/tests/engine_tests.rs` to verify that at least one `#[cfg(not(debug_assertions))]` test exists. If that file is moved or renamed, this infra test breaks even though the orchestrator.yaml change remains correct.\n\nReplace the hardcoded path check with a broader workspace search:\n```bash\ngrep -rq '#\\[cfg(not(debug_assertions))\\]' \"$REPO_ROOT\" --include='*.rs'\n```\n\nThis asserts that at least one such test exists anywhere in the workspace, decoupling the infra test from specific file paths.\n\nSource: review suggestion on task 1410.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:11:26.770Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:11:26.076Z",
+      "lastModified": "2026-04-10T01:11:26.770Z",
       "taskCount": 1435,
       "completedCount": 1097,
       "tags": [
