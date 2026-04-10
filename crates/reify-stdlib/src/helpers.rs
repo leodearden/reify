@@ -339,22 +339,7 @@ mod tests {
 
     #[test]
     fn tensor_components_f64_point_of_length_scalars_returns_values_and_length() {
-        let v = Value::Point(vec![
-            Value::Scalar {
-                si_value: 0.5,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 1.5,
-                dimension: DimensionVector::LENGTH,
-            },
-        ]);
-        let (vals, dim) =
-            tensor_components_f64(&v).expect("expected Some for Point of LENGTH Scalars");
-        assert_eq!(vals.len(), 2, "should extract 2 components");
-        assert!((vals[0] - 0.5).abs() < f64::EPSILON);
-        assert!((vals[1] - 1.5).abs() < f64::EPSILON);
-        assert_eq!(dim, DimensionVector::LENGTH, "Scalar{{LENGTH}} elements have LENGTH dimension");
+        assert_extraction(Value::Point(vec![Value::Scalar { si_value: 0.5, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 1.5, dimension: DimensionVector::LENGTH }]), &[0.5, 1.5], DimensionVector::LENGTH, "Point of LENGTH Scalars");
     }
 
     #[test]
