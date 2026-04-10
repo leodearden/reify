@@ -70,8 +70,88 @@ pub enum Value {
     /// Ordered list of values.
     List(Vec<Value>),
     /// Ordered set of unique values.
+    ///
+    /// Iteration order is governed by `impl Ord for Value`. Float-bearing variants
+    /// (`Value::Real`, `Value::Scalar`, `Value::Complex`, `Value::Orientation`)
+    /// use [`f64::total_cmp`], which places NaN strictly after `+∞`, `-0.0` before
+    /// `+0.0`, and negatives mathematically below positives — the full IEEE 754
+    /// totalOrder. See the *Float ordering strategy* comment block at the top of
+    /// this module for the rationale (total_cmp vs. to_bits) and migration guidance.
+    ///
+    /// **Breaking-change warning:** any modification to `impl Ord for Value`
+    /// invalidates the iteration order of every persisted or cached
+    /// `BTreeSet<Value>` containing float-bearing elements. Consult the *Float
+    /// ordering strategy* migration note before changing `Ord`.
+    ///
+    /// Because `content_hash()` folds over the `BTreeSet` iteration order,
+    /// iteration-order stability is also a content-addressing invariant: any `Ord`
+    /// change silently shifts `content_hash` for sets containing floats.
+    ///
+    /// # Example: round-trip preserves iteration order and content hash
+    ///
+    /// ```rust
+    /// use std::collections::BTreeSet;
+    /// use reify_types::Value;
+    ///
+    /// // Construct a Value::Set containing all float boundary values.
+    /// let boundary = [f64::NEG_INFINITY, -1.0_f64, -0.0_f64, 0.0_f64, 1.0_f64, f64::INFINITY, f64::NAN];
+    /// let inner: BTreeSet<Value> = boundary.iter().map(|&v| Value::Real(v)).collect();
+    /// let original = Value::Set(inner);
+    /// let original_hash = original.content_hash();
+    ///
+    /// // Collect the iteration sequence, rebuild from it — order and hash must be stable.
+    /// let seq: Vec<Value> = if let Value::Set(ref s) = original {
+    ///     s.iter().cloned().collect()
+    /// } else { unreachable!() };
+    /// let rebuilt = Value::Set(seq.into_iter().collect());
+    ///
+    /// assert_eq!(rebuilt, original);
+    /// assert_eq!(rebuilt.content_hash(), original_hash);
+    /// ```
     Set(BTreeSet<Value>),
     /// Ordered map from values to values.
+    ///
+    /// Key iteration order follows `impl Ord for Value`. Float-bearing key variants
+    /// (`Value::Real`, `Value::Scalar`, `Value::Complex`, `Value::Orientation`)
+    /// use [`f64::total_cmp`], so NaN sorts strictly after `+∞`, `-0.0` before
+    /// `+0.0`, and negatives mathematically below positives — IEEE 754 totalOrder.
+    /// See the *Float ordering strategy* comment block at the top of this module
+    /// for the rationale and migration guidance.
+    ///
+    /// **Breaking-change warning:** any modification to `impl Ord for Value`
+    /// invalidates the key iteration order of every persisted or cached
+    /// `BTreeMap<Value, _>` containing float-bearing keys. Consult the *Float
+    /// ordering strategy* migration note before changing `Ord`.
+    ///
+    /// Because `content_hash()` folds over the `BTreeMap` key iteration order,
+    /// key-ordering stability is also a content-addressing invariant: any `Ord`
+    /// change silently shifts `content_hash` for maps with float-bearing keys.
+    ///
+    /// # Example: round-trip preserves key iteration order and content hash
+    ///
+    /// ```rust
+    /// use std::collections::BTreeMap;
+    /// use reify_types::Value;
+    ///
+    /// // Construct a Value::Map keyed by all float boundary values.
+    /// let boundary = [f64::NEG_INFINITY, -1.0_f64, -0.0_f64, 0.0_f64, 1.0_f64, f64::INFINITY, f64::NAN];
+    /// let inner: BTreeMap<Value, Value> = boundary
+    ///     .iter()
+    ///     .enumerate()
+    ///     .map(|(i, &v)| (Value::Real(v), Value::Int(i as i64)))
+    ///     .collect();
+    /// let original = Value::Map(inner);
+    /// let original_hash = original.content_hash();
+    ///
+    /// // Collect (key, value) pairs, rebuild from them — key order and hash must be stable.
+    /// let pairs: Vec<(Value, Value)> = if let Value::Map(ref m) = original {
+    ///     m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    /// } else { unreachable!() };
+    /// let rebuilt = Value::Map(pairs.into_iter().collect());
+    ///
+    /// assert_eq!(rebuilt, original);
+    /// assert_eq!(rebuilt.content_hash(), original_hash);
+    /// ```
     Map(BTreeMap<Value, Value>),
     /// Optional value: Some(value) or None.
     Option(Option<Box<Value>>),
