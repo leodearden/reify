@@ -1613,17 +1613,8 @@ fn divergence_dimensional_correctness() {
         ValueMap::new(),
     );
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), codomain_type.clone(), lambda);
 
     // divergence(field) → scalar field with codomain = Velocity/Length = 1/Time
     let div_expr = make_function_call(
@@ -1700,17 +1691,8 @@ fn laplacian_dimensional_correctness() {
         ValueMap::new(),
     );
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), codomain_type.clone(), lambda);
 
     // laplacian(field) → scalar field with codomain = Temperature / Length²
     let lap_expr = make_function_call(
