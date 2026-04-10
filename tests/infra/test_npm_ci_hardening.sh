@@ -15,6 +15,25 @@ _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
 
+# setup_fixture_dir VARNAME
+# Creates a temp dir with the standard fixture layout used by Tests 23a/23c/23d:
+#   scripts/, tests/infra/, gui/sidecar/, tree-sitter-reify/
+# Copies check-pm-standardization.sh and test_helpers.sh into the fixture.
+# Initialises a git repo so 'git check-ignore' works inside Check 3.
+# Appends the dir to _TMPDIRS so cleanup() removes it at script exit.
+# Writes the path back to the caller via printf -v (bash 3.1+; no subshell).
+setup_fixture_dir() {
+    local _varname="$1"
+    local dir
+    dir="$(mktemp -d)"
+    _TMPDIRS+=("$dir")
+    mkdir -p "$dir/scripts" "$dir/tests/infra" "$dir/gui/sidecar" "$dir/tree-sitter-reify"
+    cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$dir/scripts/"
+    cp "$SCRIPT_DIR/test_helpers.sh" "$dir/tests/infra/"
+    git -C "$dir" init -q
+    printf -v "$_varname" '%s' "$dir"
+}
+
 echo "=== npm ci hardening tests ==="
 
 # -- Test 1: check-pm-standardization.sh location ----------------------------
