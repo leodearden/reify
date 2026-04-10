@@ -344,12 +344,7 @@ mod tests {
 
     #[test]
     fn tensor_components_f64_single_element_tensor_of_int_returns_value_and_dimensionless() {
-        let v = Value::Tensor(vec![Value::Int(7)]);
-        let (vals, dim) =
-            tensor_components_f64(&v).expect("expected Some for single-element Tensor of Int");
-        assert_eq!(vals.len(), 1, "should extract 1 component");
-        assert!((vals[0] - 7.0).abs() < f64::EPSILON, "Int(7) should become 7.0_f64");
-        assert_eq!(dim, DimensionVector::DIMENSIONLESS, "Int elements are dimensionless");
+        assert_extraction(Value::Tensor(vec![Value::Int(7)]), &[7.0], DimensionVector::DIMENSIONLESS, "single-element Tensor of Int");
     }
 
     #[test]
