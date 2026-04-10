@@ -32058,6 +32058,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1584,
+        "title": "Add violated-case integration test using .ri file in m9_integration",
+        "description": "There is no integration test that loads a .ri file and verifies the constraint-violated path. Add a test that loads a .ri file with intentionally violated constraints and asserts SolveResult::Violated. Source: review of task 220 (S7).",
+        "details": "Files: tests/m9_integration.rs, test fixtures.\\n\\nmemory_hints:\\n- search: \"m9_integration .ri file test\"\\n- search: \"SolveResult Violated ri file\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -32070,7 +32081,7 @@
       ],
       "created": "2026-04-10T06:51:02.836Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T07:02:55.245Z"
+      "updated": "2026-04-10T07:03:00.434Z"
     }
   }
 }
