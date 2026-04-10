@@ -608,6 +608,13 @@ printf 'something && [[ -n "$var" ]] && do_work\n' > "$fixture_compound_and"
 if _has_if_n_guard "$fixture_compound_and" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects compound && guard: && [[ -n" "$ok"
 
+# Compound guard chained with ||: `something || [ -n "$var" ] && do_work`
+# The (if|&&|\|\|) alternation must also cover the || trigger form.
+fixture_compound_or=$(mk_fixture)
+printf 'something || [ -n "$var" ] && do_work\n' > "$fixture_compound_or"
+if _has_if_n_guard "$fixture_compound_or" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects compound || guard: || [ -n" "$ok"
+
 # Self-check: file-local helpers use symmetric positive _has_ naming.
 if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
     && grep -qE '^_has_if_n_guard\(\)' "${BASH_SOURCE[0]}" \
