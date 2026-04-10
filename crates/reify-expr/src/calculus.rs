@@ -74,6 +74,22 @@ fn dim_quotient_type(
     }
 }
 
+/// Compute the "dimensionless fallback" type for a differential operator result.
+///
+/// Returns `Type::Real` if `ty` is `Scalar { dimension: DIMENSIONLESS }`,
+/// otherwise clones and returns `ty` unchanged.
+///
+/// This is the shared pattern used by all 4 type-level differential operators
+/// (gradient, divergence, curl, laplacian) when computing the fallback type
+/// passed to `dim_quotient_type`. A dimensionless `Scalar` is normalised to
+/// `Real` so the operator result has no spurious dimensionless-scalar wrapping.
+fn dimensionless_fallback(ty: &Type) -> Type {
+    match ty {
+        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
+        _ => ty.clone(),
+    }
+}
+
 /// Validate that a value is a differentiable field and extract its types.
 ///
 /// Performs the 3-part validation shared by all type-level differential operators:
@@ -139,16 +155,12 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
     };
 
     // Compute gradient quantity type: codomain_dim / domain_dim.
-    // Gradient-specific fallback: DIMENSIONLESS Scalar normalizes to Real, else clone codomain.
-    let gradient_fallback = match codomain_type {
-        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
-        _ => codomain_type.clone(),
-    };
+    // Fallback: DIMENSIONLESS Scalar normalizes to Real, else clone codomain.
     let gradient_quantity = dim_quotient_type(
         scalar_dimension(codomain_type),
         domain_dimension(domain_type),
         1,
-        gradient_fallback,
+        dimensionless_fallback(codomain_type),
     );
 
     // Construct result codomain type:
@@ -227,15 +239,11 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
     // Compute result codomain type: codomain_component_dim / domain_dim.
     // Preserve-codomain fallback: downgrade dimensionless Scalar to Real, else keep component type.
     // codomain_quantity is the unwrapped Vector quantity — no outer Vector match needed.
-    let divergence_fallback = match codomain_quantity {
-        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
-        _ => codomain_quantity.clone(),
-    };
     let result_codomain = dim_quotient_type(
         scalar_dimension(codomain_quantity),
         domain_dimension(domain_type),
         1,
-        divergence_fallback,
+        dimensionless_fallback(codomain_quantity),
     );
 
     // Result: scalar field with dimensionally-correct codomain
@@ -302,15 +310,11 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
 
     // Compute result component type: codomain_component_dim / domain_dim.
     // Same pattern as compute_divergence, but wrapped back in Vector{3, ...}.
-    let curl_fallback = match codomain_quantity {
-        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
-        _ => codomain_quantity.clone(),
-    };
     let result_component = dim_quotient_type(
         scalar_dimension(codomain_quantity),
         domain_dimension(domain_type),
         1,
-        curl_fallback,
+        dimensionless_fallback(codomain_quantity),
     );
 
     // Result: vector field with dimensionally-correct codomain
@@ -364,15 +368,11 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
 
     // Compute result codomain type: codomain_dim / domain_dim².
     // Preserve-codomain fallback: downgrade dimensionless Scalar to Real, else keep codomain.
-    let laplacian_fallback = match codomain_type {
-        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
-        _ => codomain_type.clone(),
-    };
     let result_codomain = dim_quotient_type(
         scalar_dimension(codomain_type),
         domain_dimension(domain_type),
         2,
-        laplacian_fallback,
+        dimensionless_fallback(codomain_type),
     );
 
     // Result: scalar field with dimensionally-correct codomain
