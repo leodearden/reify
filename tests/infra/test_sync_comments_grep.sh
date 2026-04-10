@@ -68,9 +68,20 @@ _no_unhardened_pattern_interp() {
     printf 'UNHARDENED PATTERN INTERPOLATION FOUND:\n%s\n' "$m" >&3
     return 1
 }
+_no_double_quoted_bash_c() {
+    local m
+    m=$(grep -nE '^[[:space:]]*bash -c "' "$THIS_SCRIPT" 2>/dev/null) || true
+    if [ -z "$m" ]; then
+        return 0
+    fi
+    printf 'DOUBLE-QUOTED bash -c FOUND (use single-outer quotes + exported vars):\n%s\n' "$m" >&3
+    return 1
+}
 
 assert 'no Section 1 bash -c $PATTERN interpolation in this script' \
     _no_unhardened_pattern_interp
+assert 'no double-quoted bash -c in this script (all bash -c must be single-outer-quoted)' \
+    _no_double_quoted_bash_c
 
 # -- S3: behavioral assertion that PATTERN is actually exported at runtime -----
 assert 'PATTERN is actually exported (behavioral)' \
