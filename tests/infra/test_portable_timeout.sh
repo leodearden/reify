@@ -761,11 +761,13 @@ echo "--- Test 24d (structural): count-grep uses include -cF flag ---"
 # can be an accidental self-match.  The guard rejects any line where the
 # count flag is not immediately followed by F for fixed-string safety.
 #
-# NOTE: assertion polarity is temporarily INVERTED (no '!') to demonstrate
-# that the guard CAN fire.  Step-2 will flip it to '! grep -nE'.
+# The regex is split across three printf arguments so no two adjacent args
+# produce the flagless count-grep pattern contiguously in source; the self-
+# referential scan cannot false-positive on this block.  Invocations with
+# -cE (extended-regex) are also caught — this file has none intentionally.
 printf -v _24d_regex '%s' 'grep' ' -c' '([^F]|$)'
 assert "count-grep uses include -cF flag (no bare count-grep)" \
-    bash -c 'grep -nE "$2" "$1"' _ "${BASH_SOURCE[0]}" "$_24d_regex"
+    bash -c '! grep -nE "$2" "$1"' _ "${BASH_SOURCE[0]}" "$_24d_regex"
 
 # -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
 echo ""
