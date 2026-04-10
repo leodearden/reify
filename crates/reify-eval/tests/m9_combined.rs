@@ -50,3 +50,21 @@ fn m9_combined_ri_parses() {
         parsed.errors
     );
 }
+
+// ── Test 2: file compiles without error diagnostics ─────────────────────────
+
+/// Compile m9_combined.ri and verify no error-severity diagnostics.
+/// Also confirms at least one template exists (structures are present).
+#[test]
+fn m9_combined_compiles_no_errors() {
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_combined.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+
+    // Must have at least one template (structure)
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected at least one template in the compiled module"
+    );
+}
