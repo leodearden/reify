@@ -704,6 +704,8 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
             *"local _pt_kill_grace=2"*) ;;
             *) echo "SANITY FAIL: local _pt_kill_grace=2 not found in portable_timeout" >&2; exit 1 ;;
         esac
+        _pt_grace_count=$(grep -cF "local _pt_kill_grace=2" <<< "$func_text")
+        [ "$_pt_grace_count" -eq 1 ] || { echo "SANITY FAIL: expected exactly 1 occurrence of local _pt_kill_grace=2, found $_pt_grace_count" >&2; exit 1; }
         eval "${func_text/local _pt_kill_grace=2/local _pt_kill_grace=5}"
 
         t_start=$("$_abs_date" +%s)
