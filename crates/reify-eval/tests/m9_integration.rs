@@ -181,3 +181,73 @@ structure S {
         entry.satisfaction
     );
 }
+
+// ── Step 7: multi-predicate constraint def with determinacy + value range ─────
+
+/// Cross-feature: DeterminedInRange has 3 predicates — determined(v), v >= lo, v <= hi.
+/// With v=50mm, lo=10mm, hi=100mm, all three predicates are satisfied.
+/// Verifies DeterminedInRange[0], [1], [2] all Satisfied.
+#[test]
+fn constraint_def_multi_predicate_determinacy_plus_value() {
+    let source = r#"
+constraint def DeterminedInRange {
+    param v  : Length
+    param lo : Length
+    param hi : Length
+    determined(v)
+    v >= lo
+    v <= hi
+}
+structure S {
+    param v  : Length = 50mm
+    param lo : Length = 10mm
+    param hi : Length = 100mm
+    constraint DeterminedInRange(v: v, lo: lo, hi: hi)
+}
+"#;
+    let result = check_source(source);
+
+    // Exactly 3 constraint results (one per predicate in the def)
+    assert_eq!(
+        result.constraint_results.len(),
+        3,
+        "expected 3 constraint results (one per predicate), got: {:?}",
+        result.constraint_results
+    );
+
+    // DeterminedInRange[0] = determined(v): v=50mm has default → Satisfied
+    let entry0 = result
+        .constraint_results
+        .iter()
+        .find(|e| e.label == Some("DeterminedInRange[0]".to_string()))
+        .expect("expected DeterminedInRange[0]");
+    assert_eq!(
+        entry0.satisfaction,
+        Satisfaction::Satisfied,
+        "DeterminedInRange[0] (determined(v)) should be Satisfied"
+    );
+
+    // DeterminedInRange[1] = v >= lo: 50mm >= 10mm → Satisfied
+    let entry1 = result
+        .constraint_results
+        .iter()
+        .find(|e| e.label == Some("DeterminedInRange[1]".to_string()))
+        .expect("expected DeterminedInRange[1]");
+    assert_eq!(
+        entry1.satisfaction,
+        Satisfaction::Satisfied,
+        "DeterminedInRange[1] (v >= lo) should be Satisfied (50mm >= 10mm)"
+    );
+
+    // DeterminedInRange[2] = v <= hi: 50mm <= 100mm → Satisfied
+    let entry2 = result
+        .constraint_results
+        .iter()
+        .find(|e| e.label == Some("DeterminedInRange[2]".to_string()))
+        .expect("expected DeterminedInRange[2]");
+    assert_eq!(
+        entry2.satisfaction,
+        Satisfaction::Satisfied,
+        "DeterminedInRange[2] (v <= hi) should be Satisfied (50mm <= 100mm)"
+    );
+}
