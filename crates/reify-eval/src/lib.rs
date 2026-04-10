@@ -3330,9 +3330,8 @@ impl Engine {
 
 /// Look up a named argument in `args`, evaluate it, and return the resulting
 /// `Value`.  If the argument is absent, push a `Warning` diagnostic and return
-/// `None`.  Non-finite numeric values do **not** trigger a diagnostic here;
-/// callers that need the `f64` representation should use [`eval_named_arg_f64`]
-/// which silently returns `None` for non-finite values.
+/// `None`.  Callers that need a finite `f64` should use [`eval_named_arg_f64`],
+/// which also emits a `Warning` when the value is non-numeric or non-finite.
 fn eval_named_arg(
     name: &str,
     kind_label: impl std::fmt::Debug,
@@ -3358,20 +3357,32 @@ fn eval_named_arg(
 }
 
 /// Look up a named argument, evaluate it, and convert to a finite `f64`.
-/// Returns `None` (without a diagnostic) when the argument is present but
-/// non-finite; returns `None` with a diagnostic when the argument is absent.
+/// Returns `None` with a diagnostic when the argument is absent (delegated
+/// to [`eval_named_arg`]) or when the argument is present but evaluates to a
+/// non-numeric or non-finite value (NaN, ±Infinity, or a non-`f64` type such
+/// as `String` or `Bool`).  In the latter case a `Warning` diagnostic is
+/// pushed with the message `"argument '{name}' for {kind:?} evaluated to
+/// non-numeric/non-finite value"`.
 fn eval_named_arg_f64(
     name: &str,
-    kind_label: impl std::fmt::Debug,
+    kind_label: impl std::fmt::Debug + Copy,
     args: &[(String, reify_types::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    eval_named_arg(name, kind_label, args, values, functions, meta_map, diagnostics)?
-        .as_f64()
-        .filter(|v| v.is_finite())
+    let value = eval_named_arg(name, kind_label, args, values, functions, meta_map, diagnostics)?;
+    match value.as_f64() {
+        Some(v) if v.is_finite() => Some(v),
+        _ => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "argument '{}' for {:?} evaluated to non-numeric/non-finite value",
+                name, kind_label
+            )));
+            None
+        }
+    }
 }
 
 /// Compile a CompiledGeometryOp into a GeometryOp by evaluating expressions.
@@ -4594,13 +4605,19 @@ mod tests {
             ],
         };
 
-        // NaN axis components are silently filtered upstream by
-        // eval_named_arg_f64 before reaching the degenerate-magnitude guard
-        // in compile_geometry_op. This test documents that behavior. The
-        // degenerate-magnitude warning path is out of scope here and is
-        // covered by compile_geometry_op_revolve_zero_axis_returns_none.
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(result.is_none(), "NaN rotation axis should return None");
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("ax")
+                    && d.message.contains("Revolve")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'ax', and 'Revolve', got: {:?}",
+            diagnostics
+        );
     }
 
     #[test]
@@ -4764,8 +4781,19 @@ mod tests {
             args: vec![("factor".into(), literal_f64(f64::NAN))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(result.is_none(), "NaN scale factor should return None");
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("factor")
+                    && d.message.contains("Scale")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'factor', and 'Scale', got: {:?}",
+            diagnostics
+        );
     }
 
     #[test]
@@ -5462,6 +5490,181 @@ mod tests {
             diagnostics[0].message.contains("Translate"),
             "diagnostic message should mention 'Translate', got: {}",
             diagnostics[0].message
+        );
+    }
+
+    // ── non-numeric/non-finite diagnostic tests ──────────────────────────────
+
+    #[test]
+    fn compile_geometry_op_translate_wrong_type_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // dx is a String value, not a numeric f64 — should trigger a non-numeric diagnostic
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                (
+                    "dx".into(),
+                    reify_types::CompiledExpr::literal(
+                        reify_types::Value::String("oops".into()),
+                        reify_types::Type::String,
+                    ),
+                ),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "wrong-type dx should return None, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("dx")
+                    && d.message.contains("Translate")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_translate_nan_dx_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // dx is NaN — non-finite, should trigger a diagnostic
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(f64::NAN)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "NaN dx should return None, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("dx")
+                    && d.message.contains("Translate")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_translate_infinity_dx_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // dx is +Infinity — non-finite, should trigger a diagnostic
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(f64::INFINITY)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "Infinity dx should return None, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("dx")
+                    && d.message.contains("Translate")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_translate_finite_args_no_false_positive_warning() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // All finite args — should succeed with no non-numeric/non-finite warning
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(1.0)),
+                ("dy".into(), literal_f64(2.0)),
+                ("dz".into(), literal_f64(3.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_some(),
+            "finite Translate args should return Some, got None; diagnostics: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("non-numeric/non-finite")),
+            "no 'non-numeric/non-finite' warning expected for finite args, got: {:?}",
+            diagnostics
         );
     }
 

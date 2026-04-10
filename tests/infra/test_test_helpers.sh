@@ -260,20 +260,26 @@ SYNC_REF_HELPERS_FILE="$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
 
 # File-local helpers so the structural checks and robustness tests share the
 # same pattern source-of-truth and cannot drift independently.
-# _has_if_n_guard catches any 'if [ -n' conditional regardless of
-# the variable name — so $marker, $fn_name, $ref_fn, $_expr_ref_fn, etc. all
-# count as prohibited defensive guards.
+# _has_if_n_guard detects defensive non-empty guards in all supported forms:
+#   bracket variants:  [ -n ... ]  [[ -n ... ]]  test -n ...
+#   negated-zero form: [ ! -z ... ]  [[ ! -z ... ]]  test ! -z ...
+#   trigger keywords:  if / && / ||
+# Comment lines (leading #) are stripped before matching to avoid false
+# positives from explanatory comments. Split-line variants (newline between
+# `if` and `[`) are not handled (grep is line-oriented; see design decisions).
+# Variable names are not constrained — $marker, $fn_name, $ref_fn,
+# $_expr_ref_fn, etc. all count as prohibited defensive guards.
 _has_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
-_has_if_n_guard() { grep -qE 'if \[ -n' "$1" 2>/dev/null; }
+_has_if_n_guard() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -qE '(if|&&|\|\|)[[:space:]]*(\[\[?|test)[[:space:]]+(-n|![[:space:]]+-z)'; }
 
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
 
-# (a) file has NO defensive if [ -n ] guard (defensive guards removed)
+# (a) file has NO defensive non-empty guard (defensive guards removed)
 if ! _has_if_n_guard "$SYNC_FILE"; then
-    check "sync_comments_test.sh has no defensive if [ -n ] guard" "true"
+    check "sync_comments_test.sh has no defensive non-empty guard" "true"
 else
-    check "sync_comments_test.sh has no defensive if [ -n ] guard" "false"
+    check "sync_comments_test.sh has no defensive non-empty guard" "false"
 fi
 
 # (b) extract_fn docstring uses 'naturally excluded' wording (not the misleading 'Excludes')
@@ -518,6 +524,61 @@ fixture_historical=$(mk_fixture)
 printf 'if [ -n "$_expr_ref_fn" ]; then echo skip; fi\n' > "$fixture_historical"
 if _has_if_n_guard "$fixture_historical" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects historical \$_expr_ref_fn (ff0880bfe regression pin)" "$ok"
+
+# Positive-direction mirror of the historical pin above: a legitimate early-fail
+# guard using `-z` (not `-n`) must NOT be detected.  The regex uses alternation
+# `(-n|![[:space:]]+-z)` specifically to allow bare `-z` guards while banning
+# `-n` (and `! -z`) guards.  Without this pin a future change like `\[ -[nz]`
+# would ban legitimate production guards silently while the negative-pin tests
+# above all passed.
+# Protected production sites:
+#   - tests/infra/sync_ref_helpers.sh:31   `[ -z "$ref_fn" ]`
+#   - tests/sync_comments_test.sh:63-64    `[ -z "$expr_body" ]`
+fixture_z=$(mk_fixture)
+printf 'if [ -z "$ref_fn" ]; then echo fail; fi\n' > "$fixture_z"
+if ! _has_if_n_guard "$fixture_z" 2>/dev/null; then ok=true; else ok=false; fi
+check "if-guard pattern tolerates legitimate -z early-fail guard (\$ref_fn)" "$ok"
+
+# Double-bracket form: `if [[ -n "$var" ]]`
+# Requires regex to match `[[` as well as `[`.
+fixture_double_bracket=$(mk_fixture)
+printf 'if [[ -n "$var" ]]; then echo guard; fi\n' > "$fixture_double_bracket"
+if _has_if_n_guard "$fixture_double_bracket" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects double-bracket form: if [[ -n" "$ok"
+
+# `test` keyword form: `if test -n "$var"`
+fixture_test_keyword=$(mk_fixture)
+printf 'if test -n "$var"; then echo guard; fi\n' > "$fixture_test_keyword"
+if _has_if_n_guard "$fixture_test_keyword" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects test-keyword form: if test -n" "$ok"
+
+# Negated zero-length form: `if [ ! -z "$var" ]`
+# Requires regex to match `! -z` as an alternate to `-n`.
+fixture_not_z=$(mk_fixture)
+printf 'if [ ! -z "$var" ]; then echo guard; fi\n' > "$fixture_not_z"
+if _has_if_n_guard "$fixture_not_z" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects negated zero-length form: if [ ! -z" "$ok"
+
+# Double-bracket + negated zero-length: `if [[ ! -z "$var" ]]`
+# Verifies that `[[` and `! -z` work together (combination of steps 2+5).
+fixture_double_not_z=$(mk_fixture)
+printf 'if [[ ! -z "$var" ]]; then echo guard; fi\n' > "$fixture_double_not_z"
+if _has_if_n_guard "$fixture_double_not_z" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects double-bracket + ! -z: if [[ ! -z" "$ok"
+
+# Comment-only file: guard pattern appears ONLY inside a comment.
+# _has_if_n_guard must NOT fire on commented-out guards (false positive).
+fixture_comment=$(mk_fixture)
+printf '# if [ -n "$x" ]; then echo guard; fi\n' > "$fixture_comment"
+if ! _has_if_n_guard "$fixture_comment" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard ignores guard pattern inside comment line" "$ok"
+
+# Compound guard chained with &&: `something && [[ -n "$var" ]]`
+# The (if|&&|\|\|) alternation must cover non-`if` trigger forms.
+fixture_compound_and=$(mk_fixture)
+printf 'something && [[ -n "$var" ]] && do_work\n' > "$fixture_compound_and"
+if _has_if_n_guard "$fixture_compound_and" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects compound && guard: && [[ -n" "$ok"
 
 # Self-check: file-local helpers use symmetric positive _has_ naming.
 if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \

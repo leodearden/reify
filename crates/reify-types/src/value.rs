@@ -2429,14 +2429,14 @@ mod tests {
     }
 
     #[test]
-    fn value_ord_within_int() {
+    fn value_ord_int_ordering() {
         assert!(Value::Int(1) < Value::Int(2));
         assert!(Value::Int(-10) < Value::Int(0));
         assert_eq!(Value::Int(5).cmp(&Value::Int(5)), std::cmp::Ordering::Equal);
     }
 
     #[test]
-    fn value_ord_within_string() {
+    fn value_ord_string_ordering() {
         assert!(Value::String("a".into()) < Value::String("b".into()));
         assert!(Value::String("abc".into()) < Value::String("abd".into()));
     }
@@ -2466,17 +2466,8 @@ mod tests {
         // PartialEq still distinguishes them (different bit patterns — content hash invariant).
         let pos = Value::Real(0.0);
         let neg = Value::Real(-0.0);
-        // PartialEq uses `a.to_bits() == b.to_bits()` (see `impl PartialEq for Value`,
-        // line 968), so -0.0 and +0.0 are treated as distinct values.
-        assert_ne!(pos, neg);
-        // Ord must be deterministic and antisymmetric.
-        let pos_cmp_neg = pos.cmp(&neg);
-        let neg_cmp_pos = neg.cmp(&pos);
-        assert_eq!(pos_cmp_neg, neg_cmp_pos.reverse());
-        // Ord+PartialEq consistency: since pos != neg, their ordering must not be Equal.
-        assert_ne!(pos_cmp_neg, std::cmp::Ordering::Equal);
-        // Assert the actual direction: IEEE 754 totalOrder puts -0.0 before +0.0.
-        assert!(neg < pos, "-0.0 must be Less than +0.0 under total_cmp()");
+        // neg passes first: under IEEE 754 totalOrder, -0.0 < +0.0.
+        assert_ord_consistent(&neg, &pos, false);
     }
 
     #[test]
@@ -2715,6 +2706,79 @@ mod tests {
         let canonical_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
         let payload_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0001));
         assert_ord_consistent(&canonical_nan, &payload_nan, false);
+    }
+
+    #[test]
+    fn value_ord_real_negative_nan() {
+        // Under f64::total_cmp() (IEEE 754 totalOrder), negative NaN bit patterns
+        // sort before -Infinity: neg_qNaN < neg_sNaN < -Inf < ... < +Inf < pos_sNaN < pos_qNaN.
+        //
+        // Negative quiet NaN: sign bit set, exponent all-1s, quiet bit set (0xfff8_0000_0000_0000).
+        let neg_qnan = Value::Real(f64::from_bits(0xfff8_0000_0000_0000));
+        let neg_inf = Value::Real(f64::NEG_INFINITY);
+        let pos_qnan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
+
+        // (a) Negative quiet NaN sorts strictly Less than -Infinity.
+        assert_eq!(neg_qnan.cmp(&neg_inf), std::cmp::Ordering::Less);
+
+        // (b) Negative quiet NaN sorts strictly Less than positive quiet NaN.
+        assert_eq!(neg_qnan.cmp(&pos_qnan), std::cmp::Ordering::Less);
+
+        // (c) PartialEq distinguishes negative NaN from positive NaN (different bit patterns).
+        assert_ne!(neg_qnan, pos_qnan);
+
+        // (d) Antisymmetry holds for neg_qnan vs pos_qnan.
+        assert_eq!(neg_qnan.cmp(&pos_qnan), pos_qnan.cmp(&neg_qnan).reverse());
+
+        // (e) Full assert_ord_consistent check for neg_qnan vs neg_inf pair (neg_qnan < neg_inf).
+        assert_ord_consistent(&neg_qnan, &neg_inf, false);
+        // (f) Full assert_ord_consistent check for the cross-sign NaN pair (neg_qnan < pos_qnan).
+        assert_ord_consistent(&neg_qnan, &pos_qnan, false);
+    }
+
+    #[test]
+    fn value_ord_real_signaling_nan() {
+        // Under f64::total_cmp() (IEEE 754 totalOrder), signaling NaN (quiet bit CLEAR)
+        // sits between infinity and quiet NaN on each side:
+        //   neg_qnan < neg_snan < -Inf < ... < +Inf < pos_snan < pos_qnan
+        //
+        // Positive sNaN: sign=0, exp=all-1s, quiet=0, non-zero mantissa.
+        // Negative sNaN: sign=1, exp=all-1s, quiet=0, non-zero mantissa.
+        let pos_snan = Value::Real(f64::from_bits(0x7ff0_0000_0000_0001));
+        let neg_snan = Value::Real(f64::from_bits(0xfff0_0000_0000_0001));
+        let pos_inf = Value::Real(f64::INFINITY);
+        let neg_inf = Value::Real(f64::NEG_INFINITY);
+        let pos_qnan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
+        let neg_qnan = Value::Real(f64::from_bits(0xfff8_0000_0000_0000));
+
+        // (a) Positive sNaN sorts Greater than +Infinity.
+        assert_eq!(pos_snan.cmp(&pos_inf), std::cmp::Ordering::Greater);
+
+        // (b) Positive sNaN sorts Less than positive quiet NaN (canonical).
+        assert_eq!(pos_snan.cmp(&pos_qnan), std::cmp::Ordering::Less);
+
+        // (c) Negative sNaN sorts Less than -Infinity but Greater than negative quiet NaN.
+        assert_eq!(neg_snan.cmp(&neg_inf), std::cmp::Ordering::Less);
+        assert_eq!(neg_snan.cmp(&neg_qnan), std::cmp::Ordering::Greater);
+
+        // (d) PartialEq distinguishes sNaN from qNaN (different bit patterns).
+        assert_ne!(pos_snan, pos_qnan);
+        assert_ne!(neg_snan, neg_qnan);
+
+        // (e) Antisymmetry holds for each pair.
+        assert_eq!(pos_snan.cmp(&pos_inf), pos_inf.cmp(&pos_snan).reverse());
+        assert_eq!(pos_snan.cmp(&pos_qnan), pos_qnan.cmp(&pos_snan).reverse());
+        assert_eq!(neg_snan.cmp(&neg_inf), neg_inf.cmp(&neg_snan).reverse());
+        assert_eq!(neg_snan.cmp(&neg_qnan), neg_qnan.cmp(&neg_snan).reverse());
+
+        // assert_ord_consistent for the pos_inf < pos_snan pair.
+        assert_ord_consistent(&pos_inf, &pos_snan, false);
+        // assert_ord_consistent for the neg_qnan < neg_snan pair.
+        assert_ord_consistent(&neg_qnan, &neg_snan, false);
+        // assert_ord_consistent for the neg_snan < neg_inf boundary (neg_snan is smaller).
+        assert_ord_consistent(&neg_snan, &neg_inf, false);
+        // assert_ord_consistent for the pos_snan < pos_qnan boundary (pos_snan is smaller).
+        assert_ord_consistent(&pos_snan, &pos_qnan, false);
     }
 
     #[test]

@@ -2652,6 +2652,63 @@ fn gradient_composed_field_returns_field() {
 
 // ── Steps 3-5: 1-param lambda helper and non-trivial gradient tests ───
 
+/// Shared scaffolding for building a 3D gradient field.
+///
+/// Accepts a `body_builder` closure that receives the lambda parameter's `ValueCellId`
+/// and returns the body `CompiledExpr`. Constructs the full `Value::Field`, wraps it in a
+/// gradient expression, evaluates it, asserts the result is a `Value::Field`, and returns
+/// `(grad_result, domain_type, Type::vec3(Type::Real))`.
+///
+/// # Parameters
+/// - `body_builder`: closure `FnOnce(ValueCellId) -> CompiledExpr` — builds the lambda body
+///   from the parameter id. The closure receives a *clone* of `p_id`; the original is retained
+///   for `make_value_lambda`.
+/// - `label`: included in the assertion message for diagnostic specificity.
+fn make_gradient_field(
+    body_builder: impl FnOnce(ValueCellId) -> CompiledExpr,
+    label: &str,
+) -> (Value, Type, Type) {
+    let p_id = ValueCellId::new("$lambda0.S", "p");
+
+    let body = body_builder(p_id.clone());
+    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "{label}: gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    (grad_result, domain_type, Type::vec3(Type::Real))
+}
+
 /// Build a gradient field for `|p: Point3<Real>| dot(p, [1,2,3])`.
 ///
 /// Returns `(grad_field, domain_type, grad_codomain_type)` where:
@@ -2665,54 +2722,21 @@ fn gradient_composed_field_returns_field() {
 /// `gradient_sample_with_inf_point_returns_undef`,
 /// `gradient_tensor_single_point_param_returns_undef`.
 fn make_3d_dot_product_gradient_field() -> (Value, Type, Type) {
-    let p_id = ValueCellId::new("$lambda0.S", "p");
-
-    // Lambda: |p| dot(p, Point3(1.0, 2.0, 3.0))
+    // Delegates shared scaffolding to make_gradient_field; only the body differs.
     let weight_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
-    let body = make_function_call(
-        "dot",
-        vec![
-            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
-            CompiledExpr::literal(weight_point, Type::point3(Type::Real)),
-        ],
-        Type::Real,
-    );
-    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
-
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
-    };
-
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
+    make_gradient_field(
+        |p_id| {
+            make_function_call(
+                "dot",
+                vec![
+                    CompiledExpr::value_ref(p_id, Type::point3(Type::Real)),
+                    CompiledExpr::literal(weight_point, Type::point3(Type::Real)),
+                ],
+                Type::Real,
+            )
         },
-    );
-
-    let values = ValueMap::new();
-    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(&grad_result, Value::Field { .. }),
-        "make_3d_dot_product_gradient_field: gradient should return a Field, got {:?}",
-        grad_result
-    );
-
-    (grad_result, domain_type, Type::vec3(Type::Real))
+        "make_3d_dot_product_gradient_field",
+    )
 }
 
 /// Build a gradient field for `|p: Point3<Real>| dot(p, p)` = x²+y²+z².
@@ -2726,53 +2750,113 @@ fn make_3d_dot_product_gradient_field() -> (Value, Type, Type) {
 /// coordinates. Used by `gradient_single_point_param_quadratic` and
 /// `gradient_single_point_param_irrational_coords`.
 fn make_3d_quadratic_gradient_field() -> (Value, Type, Type) {
-    let p_id = ValueCellId::new("$lambda0.S", "p");
-
-    // Lambda: |p| dot(p, p)
-    let body = make_function_call(
-        "dot",
-        vec![
-            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
-            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
-        ],
-        Type::Real,
-    );
-    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
-
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
-    };
-
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
+    // Delegates shared scaffolding to make_gradient_field; only the body differs.
+    make_gradient_field(
+        |p_id| {
+            make_function_call(
+                "dot",
+                vec![
+                    CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
+                    CompiledExpr::value_ref(p_id, Type::point3(Type::Real)),
+                ],
+                Type::Real,
+            )
         },
-    );
+        "make_3d_quadratic_gradient_field",
+    )
+}
 
-    let values = ValueMap::new();
-    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+/// Characterization test: `make_gradient_field` returns a triple matching `make_3d_dot_product_gradient_field`.
+///
+/// Verifies that the shared helper produces a `Value::Field` as the first element,
+/// `Type::point3(Type::Real)` as the domain type, and `Type::vec3(Type::Real)` as
+/// the gradient codomain type — identical to what the existing dot-product factory returns.
+#[test]
+fn test_make_gradient_field_produces_field() {
+    let (grad_result, domain_type, grad_codomain_type) = make_gradient_field(
+        |p_id| {
+            make_function_call(
+                "dot",
+                vec![
+                    CompiledExpr::value_ref(p_id, Type::point3(Type::Real)),
+                    CompiledExpr::literal(
+                        Value::Point(vec![
+                            Value::Real(1.0),
+                            Value::Real(2.0),
+                            Value::Real(3.0),
+                        ]),
+                        Type::point3(Type::Real),
+                    ),
+                ],
+                Type::Real,
+            )
+        },
+        "test_make_gradient_field_produces_field",
+    );
 
     assert!(
         matches!(&grad_result, Value::Field { .. }),
-        "make_3d_quadratic_gradient_field: gradient should return a Field, got {:?}",
+        "make_gradient_field: expected Value::Field, got {:?}",
         grad_result
     );
+    assert_eq!(
+        domain_type,
+        Type::point3(Type::Real),
+        "make_gradient_field: domain type should be Point3<Real>"
+    );
+    assert_eq!(
+        grad_codomain_type,
+        Type::vec3(Type::Real),
+        "make_gradient_field: gradient codomain should be Vec3<Real>"
+    );
+}
 
-    (grad_result, domain_type, Type::vec3(Type::Real))
+/// Characterization test: `make_gradient_field` with the quadratic body closure
+/// produces a gradient at (2,3,5) matching (4,6,10).
+///
+/// dot(p, p) = x² + y² + z², gradient = 2p = (2x, 2y, 2z). At (2,3,5) this is (4,6,10).
+/// Central difference on a quadratic is mathematically exact to FP roundoff; tolerance 1e-9.
+#[test]
+fn test_make_gradient_field_quadratic_body() {
+    let (grad_result, domain_type, grad_codomain_type) = make_gradient_field(
+        |p_id| {
+            make_function_call(
+                "dot",
+                vec![
+                    CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
+                    CompiledExpr::value_ref(p_id, Type::point3(Type::Real)),
+                ],
+                Type::Real,
+            )
+        },
+        "test_make_gradient_field_quadratic_body",
+    );
+
+    let values = ValueMap::new();
+    let point = Value::Point(vec![Value::Real(2.0), Value::Real(3.0), Value::Real(5.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_gradient_vector(
+        &sample_result,
+        &[4.0, 6.0, 10.0],
+        1e-9,
+        "make_gradient_field quadratic body: gradient at (2,3,5)",
+    );
 }
 
 /// Gradient of a 3D field with a 1-param lambda: |p| dot(p, [1,2,3]).
@@ -2853,6 +2937,47 @@ fn gradient_single_point_param_quadratic() {
         &[4.0, 6.0, 10.0],
         1e-9,
         "gradient of dot(p,p) at (2,3,5)",
+    );
+}
+
+/// Gradient of a 3D quadratic field `|p| dot(p,p)` sampled at the origin.
+///
+/// grad(x²+y²+z²) = (2x, 2y, 2z); at (0,0,0) this is the zero vector (0,0,0).
+/// Exercises the zero-vector edge case: the central-difference perturbation must
+/// not divide by zero or produce NaN when all coordinates are zero.
+///
+/// Central difference on a quadratic is mathematically exact (O(h²) truncation
+/// vanishes), leaving only FP roundoff. At the origin, f(h) − f(−h) = h²− h² = 0
+/// exactly in IEEE 754, so the result is exact zero. Tolerance 1e-9 is conservative.
+#[test]
+fn gradient_quadratic_at_origin() {
+    let (grad_result, domain_type, grad_codomain_type) = make_3d_quadratic_gradient_field();
+    let values = ValueMap::new();
+
+    // Sample at the origin (0, 0, 0); expected gradient = (0.0, 0.0, 0.0)
+    let point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_gradient_vector(
+        &sample_result,
+        &[0.0, 0.0, 0.0],
+        1e-9,
+        "gradient of dot(p,p) at origin (0,0,0)",
     );
 }
 

@@ -1503,19 +1503,19 @@ pub(crate) fn compile_expr_guarded(
             let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
             let id = ValueCellId::new(&scoped_entity, &member);
             // Infer member type from the sub's structure member types if available.
-            // Check both singular sub_member_types and collection_sub_member_types.
+            // sub_member_types covers ALL subs (collection and non-collection);
+            // collection_sub_member_types covers only collection subs.
             let ty = scope
                 .sub_member_types
                 .get(&sub_name)
                 .and_then(|m| m.get(&member))
-                .cloned()
                 .or_else(|| {
                     scope
                         .collection_sub_member_types
                         .get(&sub_name)
                         .and_then(|m| m.get(&member))
-                        .cloned()
                 })
+                .cloned()
                 .unwrap_or_else(|| {
                     diagnostics.push(
                         Diagnostic::error(format!(

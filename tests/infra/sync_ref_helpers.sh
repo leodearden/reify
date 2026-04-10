@@ -32,5 +32,5 @@ assert_sync_ref_exists() {
     local display_fn="${ref_fn:-<none>}"
     assert \
         "fn ${display_fn} exists in ${tgt_crate} (as referenced by SYNC in ${src_crate})" \
-        grep -qE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+'"${ref_fn}"'[[:space:](<]' "$tgt_file"
+        grep -qE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?fn[[:space:]]+'"${ref_fn}"'[[:space:](<]' "$tgt_file"
 }

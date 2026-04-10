@@ -420,6 +420,46 @@ impl GeometryKernel for MockGeometryKernel {
     }
 }
 
+/// A mock geometry kernel whose `execute` always returns `Err`.
+///
+/// Useful for testing how consumers handle geometry operation failures.
+/// All other methods return benign dummy values — `query` returns
+/// `Ok(Value::Real(0.0))`, `export` writes `b"BOGUS_EXPORT"`, and
+/// `tessellate` returns `Ok` with an empty mesh — so that tests can
+/// exercise error-path logic without needing to handle secondary failures.
+pub struct FailingMockGeometryKernel;
+
+impl GeometryKernel for FailingMockGeometryKernel {
+    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(
+            "simulated kernel failure".into(),
+        ))
+    }
+
+    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        Ok(Value::Real(0.0))
+    }
+
+    fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        writer
+            .write_all(b"BOGUS_EXPORT")
+            .map_err(|e| ExportError::IoError(e.to_string()))
+    }
+
+    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+        Ok(Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        })
+    }
+}
+
 /// Spy constraint solver that captures the last `ResolutionProblem` passed to it.
 ///
 /// Use this in tests where you need to assert what the engine sent to the solver,
@@ -2096,5 +2136,55 @@ mod tests {
             collected.into_inner().unwrap_or_else(|e| e.into_inner())
         });
         assert_eq!(result.len(), 4, "all 4 scoped threads should complete");
+    }
+
+    // step-1: failing tests for FailingMockGeometryKernel (struct not yet defined)
+    #[test]
+    fn failing_kernel_execute_returns_err() {
+        let mut kernel = FailingMockGeometryKernel;
+        let op = GeometryOp::Box {
+            width: Value::length(0.08),
+            height: Value::length(0.1),
+            depth: Value::length(0.005),
+        };
+        let result = kernel.execute(&op);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, GeometryError::OperationFailed(ref msg) if msg.contains("simulated kernel failure")),
+            "unexpected error: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn failing_kernel_query_returns_ok_real_zero() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let result = kernel.query(&GeometryQuery::Volume(id));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Value::Real(0.0));
+    }
+
+    #[test]
+    fn failing_kernel_export_writes_bogus_export() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let mut buf: Vec<u8> = Vec::new();
+        let result = kernel.export(id, ExportFormat::Step, &mut buf);
+        assert!(result.is_ok());
+        assert_eq!(&buf, b"BOGUS_EXPORT");
+    }
+
+    #[test]
+    fn failing_kernel_tessellate_returns_ok_empty_mesh() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let result = kernel.tessellate(id, 0.01);
+        assert!(result.is_ok());
+        let mesh = result.unwrap();
+        assert!(mesh.vertices.is_empty());
+        assert!(mesh.indices.is_empty());
+        assert!(mesh.normals.is_none());
     }
 }

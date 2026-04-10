@@ -1943,6 +1943,10 @@ fn resolve_source_returns_key_and_source_after_load() {
 ///
 /// NOTE: get_diagnostics early-exits when diagnostics is empty, so we inject a
 /// synthetic diagnostic to ensure resolve_source is actually reached.
+///
+/// Only runs in release builds — in debug builds the new debug_assert fires and
+/// the corresponding `_debug` variant (below) verifies the panic instead.
+#[cfg(not(debug_assertions))]
 #[test]
 fn get_diagnostics_returns_empty_when_module_name_broken() {
     use reify_types::Diagnostic;
@@ -1973,6 +1977,10 @@ fn get_diagnostics_returns_empty_when_module_name_broken() {
 ///
 /// NOTE: get_diagnostics early-exits when diagnostics is empty, so we inject a
 /// synthetic diagnostic to ensure resolve_source is actually reached.
+///
+/// Only runs in release builds — in debug builds the new debug_assert fires and
+/// the corresponding `_debug` variant (below) verifies the panic instead.
+#[cfg(not(debug_assertions))]
 #[test]
 fn get_diagnostics_returns_empty_when_source_map_broken() {
     use reify_types::Diagnostic;
@@ -2004,6 +2012,9 @@ fn get_diagnostics_returns_empty_when_source_map_broken() {
 /// uses a real compiler-produced warning rather than inject_diagnostic_for_test.
 /// This pins the graceful-return behavior on the user-visible failure mode: real
 /// source that the compiler emits warnings for, with a deliberately broken invariant.
+///
+/// Only runs in release builds — in debug builds the debug_assert fires instead.
+#[cfg(not(debug_assertions))]
 #[test]
 fn get_diagnostics_returns_empty_when_module_name_broken_with_real_warning() {
     let checker = SimpleConstraintChecker;
@@ -2037,6 +2048,9 @@ fn get_diagnostics_returns_empty_when_module_name_broken_with_real_warning() {
 /// uses a real compiler-produced warning rather than inject_diagnostic_for_test.
 /// This pins the graceful-return behavior on the user-visible failure mode and
 /// removes coupling to the test injection helper — complementary, not duplicative.
+///
+/// Only runs in release builds — in debug builds the debug_assert fires instead.
+#[cfg(not(debug_assertions))]
 #[test]
 fn get_diagnostics_returns_empty_when_source_map_broken_with_real_warning() {
     let checker = SimpleConstraintChecker;
@@ -2060,6 +2074,59 @@ fn get_diagnostics_returns_empty_when_source_map_broken_with_real_warning() {
         "expected empty diagnostics when source_map is broken, got: {:?}",
         diags
     );
+}
+
+// --- Broken-invariant debug_assert (debug builds only) ---
+
+/// In debug builds, get_diagnostics must panic (via debug_assert) when
+/// module_name has been cleared while compiled.diagnostics is non-empty.
+///
+/// The broken invariant is caught loudly in development so stale-state bugs
+/// surface immediately. Release builds retain the graceful empty-vec fallback
+/// (tested by get_diagnostics_returns_empty_when_module_name_broken).
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "invariant broken")]
+fn get_diagnostics_debug_asserts_when_module_name_broken() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    // Break invariant: compiled is Some, module_name is None.
+    session.break_module_name_for_test();
+    // Inject a diagnostic so the empty-diagnostics early-exit is skipped and
+    // resolve_source is reached — which returns None, triggering the debug_assert.
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-none"));
+    // Must panic with "invariant broken" in debug builds.
+    let _ = session.get_diagnostics();
+}
+
+/// In debug builds, get_diagnostics must panic (via debug_assert) when
+/// source_map has been cleared while compiled.diagnostics is non-empty.
+///
+/// Mirrors get_diagnostics_debug_asserts_when_module_name_broken but exercises
+/// the break_source_map_for_test path.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "invariant broken")]
+fn get_diagnostics_debug_asserts_when_source_map_broken() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    // Break invariant: compiled and module_name are Some, source_map is empty.
+    session.break_source_map_for_test();
+    // Inject a diagnostic so the empty-diagnostics early-exit is skipped and
+    // resolve_source is reached — which returns None, triggering the debug_assert.
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-none"));
+    // Must panic with "invariant broken" in debug builds.
+    let _ = session.get_diagnostics();
 }
 
 // --- resolve_source after update_source ---
