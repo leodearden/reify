@@ -29598,7 +29598,7 @@
         "description": "In `crates/reify-test-support/src/mocks.rs:440-441`, `FailingMockGeometryKernel::query` returns `Ok(Value::Real(0.0))` as a \"benign dummy\". Commits b33adafaf and 8c431804d just made `export` and `tessellate` fail-loud on the rationale that any call indicates a regression. The same logic applies to `query` — if execute always fails, no valid handle exists, so query should also return Err.\n\nFix: Change query to `Err(QueryError::QueryFailed(\"should not reach: execute always fails\".into()))` matching the tessellate/export pattern. Update tests if any rely on the Ok return.\n\nmemory_hints: search \"FailingMockGeometryKernel\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -29609,7 +29609,8 @@
           "modules": [
             "crates/reify-test-support/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-10T01:07:25.906Z"
       },
       {
         "id": "1432",
@@ -29625,7 +29626,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:07:25.397Z",
+      "lastModified": "2026-04-10T01:07:25.906Z",
       "taskCount": 1432,
       "completedCount": 1097,
       "tags": [
