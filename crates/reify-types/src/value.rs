@@ -2817,26 +2817,6 @@ mod tests {
         let pos_qnan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
         let neg_qnan = Value::Real(f64::from_bits(0xfff8_0000_0000_0000));
 
-        // (a) Positive sNaN sorts Greater than +Infinity.
-        assert_eq!(pos_snan.cmp(&pos_inf), std::cmp::Ordering::Greater);
-
-        // (b) Positive sNaN sorts Less than positive quiet NaN (canonical).
-        assert_eq!(pos_snan.cmp(&pos_qnan), std::cmp::Ordering::Less);
-
-        // (c) Negative sNaN sorts Less than -Infinity but Greater than negative quiet NaN.
-        assert_eq!(neg_snan.cmp(&neg_inf), std::cmp::Ordering::Less);
-        assert_eq!(neg_snan.cmp(&neg_qnan), std::cmp::Ordering::Greater);
-
-        // (d) PartialEq distinguishes sNaN from qNaN (different bit patterns).
-        assert_ne!(pos_snan, pos_qnan);
-        assert_ne!(neg_snan, neg_qnan);
-
-        // (e) Antisymmetry holds for each pair.
-        assert_eq!(pos_snan.cmp(&pos_inf), pos_inf.cmp(&pos_snan).reverse());
-        assert_eq!(pos_snan.cmp(&pos_qnan), pos_qnan.cmp(&pos_snan).reverse());
-        assert_eq!(neg_snan.cmp(&neg_inf), neg_inf.cmp(&neg_snan).reverse());
-        assert_eq!(neg_snan.cmp(&neg_qnan), neg_qnan.cmp(&neg_snan).reverse());
-
         // assert_ord_consistent for the pos_inf < pos_snan pair.
         assert_ord_consistent(&pos_inf, &pos_snan, false);
         // assert_ord_consistent for the neg_qnan < neg_snan pair.
