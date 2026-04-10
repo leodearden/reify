@@ -32172,11 +32172,11 @@
         "description": "Two related issues: (1) 6+ test blocks in sync_comments tests repeat ~10 lines of boilerplate each -- extract a shared helper. (2) No multi-modifier extract_fn tests exist (only grep tests), leaving a coverage gap. Source: review of task 1309 (S4, S5).",
         "details": "Files: test_sync_comments_grep.sh, sync_comments_test.sh\\n\\nmemory_hints:\\n- search: \"sync_comments test boilerplate\"\\n- search: \"extract_fn multi-modifier\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:07:31.829Z",
+        "updatedAt": "2026-04-10T07:08:32.520Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -32229,9 +32229,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:08:30.597Z",
+      "lastModified": "2026-04-10T07:08:32.520Z",
       "taskCount": 1584,
-      "completedCount": 1189,
+      "completedCount": 1190,
       "tags": [
         "master"
       ]
