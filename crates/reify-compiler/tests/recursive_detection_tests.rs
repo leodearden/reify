@@ -697,3 +697,50 @@ structure C {
          it appears in a module that also contains a recursive cycle"
     );
 }
+
+/// The module-level content_hash must differ between two modules that have
+/// different recursion topology. Since template hashes feed into the module hash,
+/// the remix of is_recursive at the template level propagates through to the
+/// module level — ensuring incremental compilation correctly invalidates at
+/// the module granularity too.
+#[test]
+fn module_hash_changes_when_recursion_topology_changes() {
+    // Module 1: A<->B mutual cycle (A.is_recursive = true, B.is_recursive = true)
+    let cyclic_source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub a = A(n: n - 1) where n > 0
+}
+"#;
+
+    // Module 2: A->B->C linear acyclic (nothing is recursive)
+    let acyclic_source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub c = C(n: n - 1) where n > 0
+}
+structure C {
+    param n : Int = 5
+}
+"#;
+
+    let cyclic_module = compile_module(cyclic_source);
+    let acyclic_module = compile_module(acyclic_source);
+
+    // The module hashes must differ: the cyclic module has recursive templates
+    // whose hashes were remixed, so the aggregated module hash differs.
+    assert_ne!(
+        cyclic_module.content_hash,
+        acyclic_module.content_hash,
+        "module content_hash must differ between cyclic and acyclic topology \
+         (is_recursive remix propagates to module level)"
+    );
+}
