@@ -21,15 +21,7 @@ fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
     );
 
     let compiled = reify_compiler::compile(&parsed);
-    assert!(
-        !compiled.diagnostics.iter().any(|d| d.severity == Severity::Error),
-        "compile errors: {:?}",
-        compiled
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect::<Vec<_>>()
-    );
+    assert_no_error_diagnostics(&compiled.diagnostics, "compile");
 
     compiled
 }
