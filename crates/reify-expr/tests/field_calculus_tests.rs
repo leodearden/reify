@@ -364,7 +364,6 @@ fn run_laplacian_quadratic_test(point: Value, point_literal_type: Type, label: &
 /// `op` must be `"laplacian"` or `"divergence"`; other values cause a panic with `label`.
 /// `domain_type` must have arity 1–3; `Type::Point { n, .. }` yields `n` params,
 /// all other types yield 1 param (named `"x"`).
-#[allow(dead_code)]
 fn run_dim_metadata_test(
     op: &str,
     domain_type: Type,
@@ -3577,70 +3576,28 @@ fn curl_sample_dimensionless_returns_real() {
 
 // ── Step 12: Expanded dimensional-correctness coverage (Task 1238) ────────────
 
-/// Laplacian of a bare-scalar (1D) domain: Type::Scalar{LENGTH} → Scalar<Temperature>
-/// has codomain dimension Temperature / Length².
+/// Laplacian of a bare-scalar (1D) domain: `Type::Scalar{LENGTH}` → `Scalar<Temperature>`
+/// has codomain dimension `Temperature / Length²`.
 ///
-/// Exercises the `_ if scalar_dimension(domain_type).is_some()` arm of
-/// compute_laplacian (calculus.rs:386) — the path where domain is a bare scalar
-/// rather than a Point{n}. Expected to pass immediately (coverage expansion).
+/// Exercises the `_ if scalar_dimension(domain_type).is_some()` first arm of
+/// `compute_laplacian`'s domain match — the path where domain is a bare scalar
+/// rather than a `Point{n}`.
 #[test]
 fn laplacian_dimensional_correctness_1d_scalar_domain() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-
-    let domain_type = Type::Scalar {
-        dimension: DimensionVector::LENGTH,
-    };
-    let codomain_type = Type::Scalar {
-        dimension: DimensionVector::TEMPERATURE,
-    };
-
-    // Lambda: |x| x — metadata-only, not sampled.
-    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
-    let lap_expr = make_function_call(
+    run_dim_metadata_test(
         "laplacian",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE,
+        },
+        FieldSourceKind::Analytical,
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2)),
+        },
+        "laplacian_dimensional_correctness_1d_scalar_domain",
     );
-
-    let values = ValueMap::new();
-    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(&lap_result, Value::Field { .. }),
-        "laplacian of Scalar{{LENGTH}}→Scalar<Temperature> should return a Field, got {:?}",
-        lap_result
-    );
-
-    if let Value::Field { codomain_type, .. } = &lap_result {
-        let expected_dim = DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2));
-        match codomain_type {
-            Type::Scalar { dimension } => {
-                assert_eq!(
-                    *dimension, expected_dim,
-                    "laplacian codomain should be Temperature/Length² ({:?}), got {:?}",
-                    expected_dim, dimension
-                );
-            }
-            other => panic!(
-                "laplacian_dimensional_correctness_1d_scalar_domain: expected Scalar codomain, got {:?}",
-                other
-            ),
-        }
-    }
 }
 
 /// Laplacian of a 2D domain: Point{2,Length} → Scalar<Temperature>
