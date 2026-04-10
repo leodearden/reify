@@ -82,15 +82,19 @@ echo ""
 echo "--- Test 6: script has cross-file packageManager consistency check ---"
 
 assert "Check 2 block uses 'sort -u' for cross-file consistency comparison" \
-    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'sort -u'"
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'sort -u'"
 
 assert "Check 2 block references 'packageManager' in consistency logic" \
-    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'packageManager'"
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'packageManager'"
 
 # -- Test 7: git check-ignore is NOT called inside a for loop ----------------
 echo ""
 echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
 
+# NOTE: the awk range below only matches the one-line `for ...; do` form;
+# a multi-line `for ...\ndo` spelling would slip past this check. If a
+# future refactor splits the header across lines, broaden the start
+# pattern (e.g. `/^for /` + a separate `/^do/` anchor) to keep coverage.
 assert "bare git check-ignore (without -v) is not inside for/done loops" \
     bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for [^;]*; *do/,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
 
