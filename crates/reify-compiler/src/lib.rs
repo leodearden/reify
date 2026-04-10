@@ -235,6 +235,7 @@ pub fn compile_with_prelude(
     // Seed prelude units into the registry so module-local code can reference them.
     // Only pub units are seeded (private units are module-internal).
     for prelude_module in prelude {
+        let module_display = prelude_module.path.to_string();
         for cu in &prelude_module.units {
             if cu.is_pub {
                 unit_registry.seed_prelude_unit(UnitEntry {
@@ -245,7 +246,7 @@ pub fn compile_with_prelude(
                     is_pub: cu.is_pub,
                     span: SourceSpan::empty(0),
                     content_hash: cu.content_hash,
-                    source_module: None,
+                    source_module: Some(module_display.clone()),
                 });
             }
         }
