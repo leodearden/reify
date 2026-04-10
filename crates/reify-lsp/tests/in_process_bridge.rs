@@ -10,7 +10,7 @@ use std::time::Duration;
 /// Assert that calling `handle_request` with `method` and `json!(42)` (a canonical
 /// malformed payload) returns an `Err` whose message contains `fragment`.
 ///
-/// All five "malformed params" tests share this identical assertion triple.
+/// All malformed-params tests share this identical assertion triple.
 /// The caller is responsible for constructing `lsp` (uninitialized via
 /// `InProcessLsp::new()` or fully handshook via `init_lsp()` / `initialized_lsp()`).
 async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str, fragment: &str) {
