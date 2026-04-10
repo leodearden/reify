@@ -1504,7 +1504,7 @@ pub(crate) fn compile_expr_guarded(
             let id = ValueCellId::new(&scoped_entity, &member);
             // Infer member type from the sub's structure member types if available.
             let ty = scope
-                .collection_sub_member_types
+                .sub_member_types
                 .get(&sub_name)
                 .and_then(|m| m.get(&member))
                 .cloned()
