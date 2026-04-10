@@ -28771,11 +28771,11 @@
         "description": "Follow-up from task 985 review. Three near-identical compile-time trait-bound assertion helpers now live in the gui/src-tauri tests:\n\n- `assert_clone_debug<T: Clone + Debug>()` at gui/src-tauri/src/tests/mod.rs:20\n- `assert_clone_debug<T: Clone + Debug>()` at gui/src-tauri/src/tests/commands_tests.rs:204\n- `assert_ipc_contract<T: Serialize + for<'de> Deserialize<'de> + Clone + Debug + PartialEq>()` at gui/src-tauri/src/tests/types_tests.rs:518\n\nScope:\n1. Replace `for<'de> Deserialize<'de>` with `serde::de::DeserializeOwned` — that alias is exactly this HRTB and is already the idiomatic form used in crates/reify-lsp/src/bridge.rs:23.\n2. Consolidate the helpers into a single test-only helper under a shared test module (tests/mod.rs is the natural home). Drop the duplicate in commands_tests.rs and update call sites. Keep the stricter `assert_ipc_contract` bound set as the canonical helper since it subsumes the weaker `assert_clone_debug`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:21:24.842Z",
+        "updatedAt": "2026-04-10T01:07:24.386Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src"
@@ -29624,7 +29624,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:07:23.979Z",
+      "lastModified": "2026-04-10T01:07:24.387Z",
       "taskCount": 1432,
       "completedCount": 1097,
       "tags": [
