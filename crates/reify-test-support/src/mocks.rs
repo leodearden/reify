@@ -2177,14 +2177,16 @@ mod tests {
     }
 
     #[test]
-    fn failing_kernel_tessellate_returns_ok_empty_mesh() {
+    fn failing_kernel_tessellate_returns_err_defensively() {
         let kernel = FailingMockGeometryKernel;
         let id = GeometryHandleId(1);
         let result = kernel.tessellate(id, 0.01);
-        assert!(result.is_ok());
-        let mesh = result.unwrap();
-        assert!(mesh.vertices.is_empty());
-        assert!(mesh.indices.is_empty());
-        assert!(mesh.normals.is_none());
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, TessError::TessellationFailed(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
     }
 }
