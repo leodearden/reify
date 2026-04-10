@@ -88,6 +88,13 @@ fn make_value_lambda(
 /// - the vector length differs from `expected.len()`
 /// - any component is non-numeric
 /// - any component differs from the expected value by more than `tol`
+///
+/// Note: components are compared via `Value::as_f64()`, which accepts
+/// `Value::Real`, `Value::Int`, and `Value::Scalar` (ignoring dimension).
+/// A `Scalar[kg/m]` component is treated identically to a dimensionless
+/// `Real`. For dimensioned assertions (e.g. verifying a specific
+/// `DimensionVector`), use an inline `match Value::Vector(components)`
+/// pattern instead.
 fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &str) {
     match result {
         Value::Vector(components) => {
