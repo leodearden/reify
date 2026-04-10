@@ -31892,11 +31892,11 @@
         "description": "Extract a setup_fixture_dir helper in tests/infra/test_npm_ci_hardening.sh to deduplicate the test 23 boilerplate for creating fixture directories with package.json files.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:08:30.597Z",
+        "updatedAt": "2026-04-10T07:12:00.868Z",
         "metadata": {
           "modules": [
             "tests/infra/test_npm_ci_hardening.sh"
@@ -32244,7 +32244,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:11:59.395Z",
+      "lastModified": "2026-04-10T07:12:00.870Z",
       "taskCount": 1584,
       "completedCount": 1198,
       "tags": [
