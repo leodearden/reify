@@ -452,4 +452,10 @@ out24=$(bash "$FIXTURE24/scripts/check-pm-standardization.sh" 2>&1 || true)
 assert "Check 3 emits DIAGNOSTIC: when gui/package-lock.json is gitignored" \
     bash -c 'printf "%s\n" "$1" | grep -q DIAGNOSTIC:' _ "$out24"
 
+# -- Test 26: setup_fixture_dir helper function --------------------------------
+echo ""
+echo "--- Test 26: setup_fixture_dir helper function ---"
+
+assert "setup_fixture_dir function is defined" declare -f setup_fixture_dir
+
 test_summary
