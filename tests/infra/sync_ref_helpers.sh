@@ -29,8 +29,7 @@ assert_sync_ref_exists() {
     local ref_fn
     ref_fn=$(grep 'SYNC:' "$src_file" | grep -oE "${tgt_crate}::[a-z_]+" | head -1 | sed 's/.*:://' || true)
     if [ -z "$ref_fn" ]; then assert "SYNC in ${src_crate} references a ${tgt_crate} function" false; return; fi
-    local display_fn="${ref_fn:-<none>}"
     assert \
-        "fn ${display_fn} exists in ${tgt_crate} (as referenced by SYNC in ${src_crate})" \
+        "fn ${ref_fn} exists in ${tgt_crate} (as referenced by SYNC in ${src_crate})" \
         grep -qE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?fn[[:space:]]+'"${ref_fn}"'[[:space:](<]' "$tgt_file"
 }
