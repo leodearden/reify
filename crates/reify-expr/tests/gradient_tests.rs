@@ -187,6 +187,19 @@ fn test_assert_gradient_vector_panics_on_non_numeric_component() {
     assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "non-numeric component");
 }
 
+/// Characterization test: `assert_gradient_vector` panics on `Value::Undef` with a
+/// distinctive, Undef-specific message.
+///
+/// Once the helper has a dedicated `Value::Undef` arm, callers that receive Undef
+/// will see `"gradient returned Undef, expected Vector"` rather than the generic
+/// `"expected Value::Vector, got Undef"`.  This test confirms that distinctive
+/// message so grepping for "Undef" in failing-test output is diagnostic.
+#[test]
+#[should_panic(expected = "gradient returned Undef, expected Vector")]
+fn test_assert_gradient_vector_panics_on_undef_with_distinctive_message() {
+    assert_gradient_vector(&Value::Undef, &[1.0, 2.0, 3.0], 1e-4, "undef input");
+}
+
 /// Sampling a field with a wrong-size Tensor point returns Undef.
 ///
 /// Build a 3D analytical field whose lambda expects 3 decomposed coordinate
