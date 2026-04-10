@@ -1984,16 +1984,7 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
         dimension: DimensionVector::TEMPERATURE,
     };
 
-    let field = Value::Field {
-        domain_type: domain.clone(),
-        codomain_type: codomain.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-    let field_type = Type::Field {
-        domain: Box::new(domain.clone()),
-        codomain: Box::new(codomain.clone()),
-    };
+    let (field, field_type) = make_analytical_field(domain.clone(), codomain, lambda);
 
     let lap_expr = make_function_call(
         "laplacian",
@@ -2082,20 +2073,8 @@ fn curl_2d_vector_field_returns_undef() {
     );
     let lambda = make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new());
 
-    let domain_type = Type::point2(Type::Real);
-    let codomain_type = Type::vec2(Type::Real);
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type),
-        codomain: Box::new(codomain_type),
-    };
+    let (field, field_type) =
+        make_analytical_field(Type::point2(Type::Real), Type::vec2(Type::Real), lambda);
 
     let curl_expr = make_function_call(
         "curl",
@@ -2166,29 +2145,16 @@ fn divergence_gradient_field_returns_undef() {
     );
 
     let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), Type::Real, lambda);
 
     // gradient(field) — should succeed and produce a Gradient-sourced field
     // with domain=Point3 and codomain=Vec3(Real).
     let grad_expr = make_function_call(
         "gradient",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
-        },
+        gradient_result_type(domain_type.clone(), 3),
     );
 
     let values = ValueMap::new();
@@ -2204,14 +2170,13 @@ fn divergence_gradient_field_returns_undef() {
     // so compute_divergence returns Undef (calculus.rs:151–156).
     // The domain (Point{3}), codomain (Vector{3}), and dim-match (3==3) guards
     // all pass; only the source-kind whitelist triggers Undef here.
-    let grad_field_type = Type::Field {
-        domain: Box::new(domain_type),
-        codomain: Box::new(Type::vec3(Type::Real)),
-    };
 
     let div_expr = make_function_call(
         "divergence",
-        vec![CompiledExpr::literal(grad_result, grad_field_type)],
+        vec![CompiledExpr::literal(
+            grad_result,
+            gradient_result_type(domain_type, 3),
+        )],
         Type::Real, // result type doesn't matter — we expect Undef
     );
 
@@ -2250,20 +2215,12 @@ fn divergence_field_with_mismatched_dims_returns_undef() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real); // n=3
-    let codomain_type = Type::vec2(Type::Real); // n=2 — mismatch!
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type),
-        codomain: Box::new(codomain_type),
-    };
+    // n=3 domain, n=2 codomain — mismatch!
+    let (field, field_type) = make_analytical_field(
+        Type::point3(Type::Real),
+        Type::vec2(Type::Real),
+        lambda,
+    );
 
     let div_expr = make_function_call(
         "divergence",
