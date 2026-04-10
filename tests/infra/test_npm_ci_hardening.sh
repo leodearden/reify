@@ -320,4 +320,31 @@ printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/pack
 assert "22b: mismatched packageManager versions -> exit non-zero" \
     bash -c "! (cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh)"
 
+# Test 22c: all files use the SAME non-npm@ packageManager (yarn@1.22.0)
+# Check 1 fails (no npm@ prefix); Check 2 still passes (total=3, unique=1 — same value everywhere)
+# Checks 3 and 4 pass because lockfile/.gitignore state is correct
+FIXTURE_22C="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR" "$FIXTURE_22C" "${FIX_DIR:?}"' EXIT
+
+mkdir -p "$FIXTURE_22C/scripts"
+mkdir -p "$FIXTURE_22C/tests/infra"
+mkdir -p "$FIXTURE_22C/gui/sidecar"
+mkdir -p "$FIXTURE_22C/tree-sitter-reify"
+
+cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_22C/scripts/"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_22C/tests/infra/"
+
+# .gitignore: pnpm-lock.yaml gitignored (Check 4 pass); npm lockfiles NOT listed (Check 3 pass)
+echo "gui/pnpm-lock.yaml" > "$FIXTURE_22C/.gitignore"
+
+git -C "$FIXTURE_22C" init -q
+
+# All three files use the SAME non-npm@ value — Check 2 still passes (total=3, unique=1)
+for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+    printf '{"packageManager":"yarn@1.22.0"}\n' > "$FIXTURE_22C/$pkg"
+done
+
+assert "22c: non-npm@ packageManager (yarn@1.22.0 in all files) -> exit non-zero (Check 1 fails)" \
+    bash -c "! (cd '$FIXTURE_22C' && bash scripts/check-pm-standardization.sh)"
+
 test_summary
