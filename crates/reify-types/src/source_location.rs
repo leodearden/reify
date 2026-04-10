@@ -1,5 +1,5 @@
-/// Utilities for mapping byte offsets in source text to human-readable
-/// `(line, column)` positions.
+//! Utilities for mapping byte offsets in source text to human-readable
+//! `(line, column)` positions.
 
 /// Convert a byte offset in `source` to a 1-based `(line, column)` pair.
 ///
