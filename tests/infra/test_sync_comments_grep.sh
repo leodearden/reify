@@ -178,6 +178,12 @@ assert "no \\b in grep invocations in sync_ref_helpers.sh (non-comment lines, sc
 assert "no grep -P in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
     bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_REF_HELPERS'"
 
+assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC marker'" \
+    grep -q '"reify-stdlib has SYNC marker referencing reify-expr::sanitize_value"' "$SYNC_TEST"
+
+assert "extract_fn comment references actual awk pattern /^[^/]*fn/" \
+    bash -c "grep '^#' '$SYNC_TEST' | grep -qF '^[^/]*fn'"
+
 echo ""
 echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
 

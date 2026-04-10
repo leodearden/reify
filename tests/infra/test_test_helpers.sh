@@ -249,9 +249,9 @@ echo "--- sync_comments_test.sh structural checks ---"
 if ! _has_if_n_guard "$SYNC_FILE"; then ok=true; else ok=false; fi
 check "sync_comments_test.sh has no defensive non-empty guard" "$ok"
 
-# (b) extract_fn docstring uses 'naturally excluded' wording (not the misleading 'Excludes')
-if grep -q 'naturally excluded' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
-check "extract_fn docstring uses 'naturally excluded' wording" "$ok"
+# (b) extract_fn comment references actual awk pattern /^[^/]*fn/ (task-1310: 'naturally excluded' replaced)
+if grep '^#' "$SYNC_FILE" 2>/dev/null | grep -qF '^[^/]*fn'; then ok=true; else ok=false; fi
+check "extract_fn comment references actual awk pattern /^[^/]*fn/" "$ok"
 
 # (c) extract_fn awk pattern is anchored with [(<] after fn_name to prevent prefix collisions
 if grep -q 'fn_name.*\[(<\]' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
