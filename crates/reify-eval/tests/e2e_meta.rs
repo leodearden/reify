@@ -450,18 +450,12 @@ fn e2e_meta_access_in_constraint() {
     // Guard: no check-phase errors
     assert_no_error_diagnostics(&result.diagnostics, "check");
 
-    // Assert constraint_results is non-empty so the loop below is not vacuous.
-    // If the engine silently drops the constraint expression, this will fail.
-    assert!(
-        !result.constraint_results.is_empty(),
-        "expected at least one constraint result, got zero \
-         (engine may have dropped the MetaAccess constraint expression)"
-    );
     assert_eq!(
         result.constraint_results.len(),
         1,
         "expected exactly one constraint result for the single \
-         `constraint meta.tag == \"valid\"` declaration"
+         `constraint meta.tag == \"valid\"` declaration; \
+         engine may have dropped or duplicated the MetaAccess constraint expression"
     );
 
     // Assert no constraint violations
