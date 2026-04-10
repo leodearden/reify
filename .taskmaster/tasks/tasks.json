@@ -30594,11 +30594,11 @@
         "description": "Tests 23a, 23c, and 23d in test_npm_ci_hardening.sh repeat ~15 lines of identical fixture setup boilerplate (mktemp, mkdir -p for 4 subdirs, cp script + helpers, write .gitignore, git init, write package.json files). Extract a `setup_fixture_dir()` helper function that:\n\n1. Creates a temp dir and appends it to `_TMPDIRS`\n2. Creates the standard directory layout (scripts, tests/infra, gui/sidecar, tree-sitter-reify)\n3. Copies check-pm-standardization.sh and test_helpers.sh\n4. Initializes a git repo\n\nEach test case would then only specify per-test differences (.gitignore content, packageManager values).\n\nSource: review suggestion on task 1383 (reviewer_comprehensive, code_duplication).\n\nmemory_hints:\n- search: \"test fixture helper deduplication bash test_npm_ci_hardening\"\n- search: \"_TMPDIRS cleanup pattern test infrastructure\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:13:50.342Z",
+        "updatedAt": "2026-04-10T11:57:03.484Z",
         "metadata": {
           "modules": [
             "tests/infra/test_npm_ci_hardening.sh"
@@ -32597,9 +32597,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T11:55:53.022Z",
+      "lastModified": "2026-04-10T11:57:03.486Z",
       "taskCount": 1605,
-      "completedCount": 1222,
+      "completedCount": 1223,
       "tags": [
         "master"
       ]
