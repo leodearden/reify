@@ -1942,6 +1942,19 @@ impl ValueMap {
 mod tests {
     use super::*;
 
+    // Boundary float values used by IEEE 754 totalOrder ordering tests.
+    // All 7 values are bit-distinct; insertion order is intentionally scrambled
+    // so that tests exercise the sort rather than relying on insertion sequence.
+    const BOUNDARY_REALS: &[f64] = &[
+        0.0,             // +0.0
+        -0.0,            // -0.0 (different bit pattern from +0.0)
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+        -1.0,
+        1.0,
+    ];
+
     // ── normalize_range_flags unit tests ─────────────────────────────────────
 
     #[test]
@@ -2729,6 +2742,45 @@ mod tests {
         }
     }
 
+    /// Asserts that `floats` contains exactly 7 bit-distinct f64 values in the
+    /// IEEE 754 totalOrder sequence:
+    ///   NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
+    ///
+    /// Positions are identified by property (sign, magnitude, is_nan, is_infinite)
+    /// rather than by index so the helper is robust to future reorderings of the
+    /// input array.
+    fn assert_ieee754_total_order_real(floats: &[f64]) {
+        assert_eq!(floats.len(), 7, "expected exactly 7 bit-distinct boundary values");
+
+        let neg_inf_idx = floats
+            .iter()
+            .position(|f| f.is_infinite() && f.is_sign_negative())
+            .expect("NEG_INFINITY must be present");
+        let neg_one_idx = floats.iter().position(|&f| f == -1.0_f64).expect("-1.0 must be present");
+        let neg_zero_idx = floats
+            .iter()
+            .position(|f| *f == 0.0 && f.is_sign_negative())
+            .expect("-0.0 must be present");
+        let pos_zero_idx = floats
+            .iter()
+            .position(|f| *f == 0.0 && f.is_sign_positive())
+            .expect("+0.0 must be present");
+        let pos_one_idx = floats.iter().position(|&f| f == 1.0_f64).expect("1.0 must be present");
+        let pos_inf_idx = floats
+            .iter()
+            .position(|f| f.is_infinite() && f.is_sign_positive())
+            .expect("INFINITY must be present");
+        let nan_idx = floats.iter().position(|f| f.is_nan()).expect("NaN must be present");
+
+        // Full ordering: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
+        assert!(neg_inf_idx < neg_one_idx, "NEG_INFINITY must come before -1.0");
+        assert!(neg_one_idx < neg_zero_idx, "-1.0 must come before -0.0");
+        assert!(neg_zero_idx < pos_zero_idx, "-0.0 must come before +0.0");
+        assert!(pos_zero_idx < pos_one_idx, "+0.0 must come before 1.0");
+        assert!(pos_one_idx < pos_inf_idx, "1.0 must come before INFINITY");
+        assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
+    }
+
     #[test]
     fn test_assert_ord_consistent_equal() {
         // Meta-test: verify assert_ord_consistent works for an equal pair.
@@ -2786,6 +2838,38 @@ mod tests {
         let canonical_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
         let payload_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0001));
         assert_ord_consistent(&canonical_nan, &payload_nan, false);
+    }
+
+    #[test]
+    fn test_assert_ieee754_total_order_real_correct_order() {
+        // Meta-test: assert_ieee754_total_order_real must not panic when given the
+        // correct IEEE 754 totalOrder sequence.
+        assert_ieee754_total_order_real(&[
+            f64::NEG_INFINITY,
+            -1.0_f64,
+            -0.0_f64,
+            0.0_f64,
+            1.0_f64,
+            f64::INFINITY,
+            f64::NAN,
+        ]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_assert_ieee754_total_order_real_wrong_order() {
+        // Meta-test: assert_ieee754_total_order_real must panic when -0.0 and +0.0
+        // are swapped (violating the IEEE 754 totalOrder requirement that -0.0
+        // precedes +0.0).
+        assert_ieee754_total_order_real(&[
+            f64::NEG_INFINITY,
+            -1.0_f64,
+            0.0_f64,   // +0.0 in the -0.0 position → wrong order
+            -0.0_f64,  // -0.0 in the +0.0 position → wrong order
+            1.0_f64,
+            f64::INFINITY,
+            f64::NAN,
+        ]);
     }
 
     #[test]
