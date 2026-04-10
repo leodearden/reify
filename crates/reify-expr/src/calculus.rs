@@ -1989,4 +1989,48 @@ mod tests {
     fn extract_point_coords_empty_point_returns_none() {
         assert_eq!(extract_point_coords(&Value::Point(vec![])), None);
     }
+
+    // --- init_work_buffers unit tests ---
+
+    /// single_point_param=false: work_args pre-allocated for n=3, work_point is empty.
+    #[test]
+    fn init_work_buffers_decomposed_allocates_n_capacity() {
+        let coords = vec![1.0_f64, 2.0, 3.0];
+        let (work_args, work_point) = init_work_buffers(&coords, false, None);
+        assert_eq!(work_args.capacity(), 3);
+        assert!(work_args.is_empty());
+        assert!(work_point.is_empty());
+    }
+
+    /// single_point_param=true, domain_dim=None: work_args capacity=1,
+    /// work_point has 3 Value::Real elements.
+    #[test]
+    fn init_work_buffers_single_point_dimensionless_populates_work_point() {
+        let coords = vec![1.0_f64, 2.0, 3.0];
+        let (work_args, work_point) = init_work_buffers(&coords, true, None);
+        assert_eq!(work_args.capacity(), 1);
+        assert!(work_args.is_empty());
+        assert_eq!(work_point.len(), 3);
+        assert_eq!(work_point[0], Value::Real(1.0));
+        assert_eq!(work_point[1], Value::Real(2.0));
+        assert_eq!(work_point[2], Value::Real(3.0));
+    }
+
+    /// single_point_param=true, domain_dim=Some(LENGTH): work_point elements are Scalar.
+    #[test]
+    fn init_work_buffers_single_point_dimensioned_populates_scalar_work_point() {
+        let coords = vec![4.0_f64, 5.0];
+        let (work_args, work_point) = init_work_buffers(&coords, true, Some(DimensionVector::LENGTH));
+        assert_eq!(work_args.capacity(), 1);
+        assert!(work_args.is_empty());
+        assert_eq!(work_point.len(), 2);
+        assert_eq!(
+            work_point[0],
+            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH }
+        );
+        assert_eq!(
+            work_point[1],
+            Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH }
+        );
+    }
 }
