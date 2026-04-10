@@ -748,6 +748,15 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
         [ "$gap" -ge 5 ]
     '
 
+# -- Meta: Test 24c block is gone and Test 24b's stale cross-reference removed -
+# Test 24c validated a well-known grep/bash behaviour with no project-code
+# dependency; its removal is guarded by two structural checks:
+# (a) no comment line starting with '# -- Test 24c' in this file
+# (b) no occurrence of the phrase 'validated by Test 24c' (stale cross-ref)
+assert "Test 24c block absent and stale cross-reference removed from Test 24b" \
+    bash -c '! grep -qE '"'"'^# -- Test 24c'"'"' "$1" && ! grep -qF '"'"'validated by Test 24c'"'"' "$1"' \
+    _ "${BASH_SOURCE[0]}"
+
 # -- Test 24c (meta): grep -cF count distinguishes 1- vs 2-occurrence inputs --
 echo ""
 echo "--- Test 24c (meta): grep -cF count correctly distinguishes 1 vs 2 occurrences ---"
