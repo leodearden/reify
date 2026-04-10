@@ -646,7 +646,7 @@ assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)
 # 'kill -TERM', or '--signal=TERM' variants — those are not used in the file.
 # Comment lines are excluded first to avoid false matches on inline documentation.
 assert "no line uses the canonical kill -- -\$cmd_pid form (quoted or unquoted)" \
-    bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "(^|[^-9])kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
+    bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
 
 # -- Test 23: structural: both timer subshells quote the PGID argument (S1) ---
 echo ""
@@ -704,6 +704,16 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
             *"local _pt_kill_grace=2"*) ;;
             *) echo "SANITY FAIL: local _pt_kill_grace=2 not found in portable_timeout" >&2; exit 1 ;;
         esac
+        # Count-exactly-1 check: bash ${var/pat/repl} replaces only the first
+        # occurrence, so a second local _pt_kill_grace=2 in portable_timeout
+        # would silently leave the default in place at runtime (the later
+        # local declaration overrides the first).  Fail loudly here with a
+        # clear count instead of a mysterious timing failure below.
+        _grace_count=$(printf "%s\n" "$func_text" | grep -cF "local _pt_kill_grace=2")
+        if [ "$_grace_count" -ne 1 ]; then
+            echo "SANITY FAIL: expected exactly 1 '"'"'local _pt_kill_grace=2'"'"' in portable_timeout, found $_grace_count" >&2
+            exit 1
+        fi
         eval "${func_text/local _pt_kill_grace=2/local _pt_kill_grace=5}"
 
         t_start=$("$_abs_date" +%s)
