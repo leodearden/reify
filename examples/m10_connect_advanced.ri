@@ -1,0 +1,81 @@
+// m10_connect_advanced.ri
+// Demonstrates port-mapping features: auto-match, explicit mapping, and mixed body.
+//
+// Structures covered:
+//   1. FluidPort trait — two params (diameter, flow_rate) for auto-matching
+//   2. BoltSet connector structure with a grade param
+//   3. AutoMatchDemo — auto-match connects ports of same trait by identical member names
+//   4. ExplicitMappingDemo — explicit { diameter -> diameter, flow_rate -> flow_rate } mapping
+//   5. MixedBodyDemo — BoltSet connector body with a param + explicit mappings
+//
+// All active constraints are designed to be Satisfied under SimpleConstraintChecker.
+// Task 252 will extend this file with ad-hoc selectors and connector constraints.
+
+// ── FluidPort trait: two params for auto-matching ────────────────────────────
+
+trait FluidPort {
+    param diameter : Length
+    param flow_rate : Real
+}
+
+// ── BoltSet connector structure ──────────────────────────────────────────────
+
+structure def BoltSet {
+    param grade : Real = 8.8
+}
+
+// ── AutoMatchDemo: same-trait ports, auto-match by identical member names ────
+
+structure def AutoMatchDemo {
+    port supply : out FluidPort {
+        param diameter : Length = 25mm
+        param flow_rate : Real = 2.0
+    }
+    port demand : in FluidPort {
+        param diameter : Length = 25mm
+        param flow_rate : Real = 2.0
+    }
+    param nominal : Length = 25mm
+    connect supply -> demand
+    constraint nominal > 0mm
+    constraint nominal < 200mm
+    constraint nominal > 10mm
+}
+
+// ── ExplicitMappingDemo: explicit { diameter -> diameter, flow_rate -> flow_rate } ─
+
+structure def ExplicitMappingDemo {
+    port outlet : out FluidPort {
+        param diameter : Length = 32mm
+        param flow_rate : Real = 3.5
+    }
+    port inlet : in FluidPort {
+        param diameter : Length = 32mm
+        param flow_rate : Real = 3.5
+    }
+    param design_diameter : Length = 32mm
+    connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate }
+    constraint design_diameter > 0mm
+    constraint design_diameter < 500mm
+    constraint design_diameter > 10mm
+    constraint design_diameter < 100mm
+}
+
+// ── MixedBodyDemo: BoltSet connector with grade param + explicit mappings ────
+
+structure def MixedBodyDemo {
+    port source : out FluidPort {
+        param diameter : Length = 50mm
+        param flow_rate : Real = 5.0
+    }
+    port sink : in FluidPort {
+        param diameter : Length = 50mm
+        param flow_rate : Real = 5.0
+    }
+    param pipe_length : Length = 200mm
+    connect source -> sink : BoltSet { grade = 10.9, diameter -> diameter, flow_rate -> flow_rate }
+    constraint pipe_length > 0mm
+    constraint pipe_length > 100mm
+    constraint pipe_length < 1000mm
+    constraint pipe_length < 500mm
+}
