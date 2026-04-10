@@ -20826,11 +20826,11 @@
         "description": "In crates/reify-constraints/src/solvespace.rs inline unit tests: (1) Replace 11 ValueCellId::new() call sites with vcid() from reify-test-support for consistency with integration tests. (2) In add_point_propagates_error_for_unresolved_x_coord, change ValueCellId::new(\"Fixed\", \"y\") to \"x\" since the cell is used as the x-coordinate in PointRef::Auto.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T02:03:19.252Z",
+        "updatedAt": "2026-04-10T02:03:47.579Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints",
@@ -20839,7 +20839,13 @@
           "files": [
             "crates/reify-constraints/src/solvespace.rs",
             "crates/reify-test-support/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Solvespace test cleanup: use vcid() helper and fix misleading field name"
+            ]
+          }
         }
       },
       {
@@ -29898,9 +29904,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:03:19.252Z",
+      "lastModified": "2026-04-10T02:03:47.582Z",
       "taskCount": 1447,
-      "completedCount": 1114,
+      "completedCount": 1115,
       "tags": [
         "master"
       ]
