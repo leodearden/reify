@@ -2166,13 +2166,19 @@ mod tests {
     }
 
     #[test]
-    fn failing_kernel_export_writes_bogus_export() {
+    fn failing_kernel_export_returns_err_defensively() {
         let kernel = FailingMockGeometryKernel;
         let id = GeometryHandleId(1);
         let mut buf: Vec<u8> = Vec::new();
         let result = kernel.export(id, ExportFormat::Step, &mut buf);
-        assert!(result.is_ok());
-        assert_eq!(&buf, b"BOGUS_EXPORT");
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ExportError::FormatError(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
+        assert!(buf.is_empty(), "buffer should not have been written to");
     }
 
     #[test]
