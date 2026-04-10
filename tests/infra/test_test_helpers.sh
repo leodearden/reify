@@ -309,11 +309,11 @@ else
     check "extract_fn docstring uses 'naturally excluded' wording" "false"
 fi
 
-# (g) extract_fn awk pattern is anchored with [(<] after fn_name to prevent prefix collisions
-if grep -q 'fn_name.*\[(<\]' "$SYNC_FILE" 2>/dev/null; then
-    check "extract_fn awk pattern is anchored with [(<] after fn_name" "true"
+# (g) extract_fn awk pattern is anchored with [[:space:](<] after fn_name to prevent prefix collisions
+if grep -q 'fn_name.*\[\[:space:\](<\]' "$SYNC_FILE" 2>/dev/null; then
+    check "extract_fn awk pattern is anchored with [[:space:](<] after fn_name" "true"
 else
-    check "extract_fn awk pattern is anchored with [(<] after fn_name" "false"
+    check "extract_fn awk pattern is anchored with [[:space:](<] after fn_name" "false"
 fi
 
 # (h) extract_fn output is captured to a named variable before diffing (non-empty guard)
