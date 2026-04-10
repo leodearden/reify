@@ -32293,11 +32293,11 @@
         "description": "The existing value_set_orientation_boundary_{w,x,y,z}_iteration_order tests in crates/reify-types/src/value.rs verify that each component can drive ordering when higher-priority components compare Equal, but do NOT verify the chain-precedence itself. For example, the current suite would still pass under a bogus Ord impl like `x.total_cmp().then(w).then(y).then(z)`.\n\nAdd precedence tests to pin each chain link:\n- w dominates x/y/z: e.g. `assert!(orient(1.0, NAN, NAN, NAN) < orient(2.0, NEG_INFINITY, NEG_INFINITY, NEG_INFINITY))`\n- x dominates y/z: similar pattern holding w equal, varying x vs. later components\n- y dominates z: holding w and x equal, varying y vs. z\n\nUse IEEE 754 totalOrder semantics (total_cmp), and prefer contrasting \"large\" NaN/INFINITY values in the lower-priority positions to demonstrate that the higher-priority field alone determines order.\n\nRelated: see value_set_orientation_boundary_{w,x,y,z}_iteration_order in crates/reify-types/src/value.rs (~lines 3360–3445). The Ord impl being tested chains w → x → y → z via total_cmp.\n\nSource: review triage of task 1487 (suggestion S2 from reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:13:54.649Z",
+        "updatedAt": "2026-04-10T16:05:28.821Z",
         "metadata": {
           "files": [
             "crates/reify-types/src/value.rs"
@@ -32313,11 +32313,11 @@
         "description": "Two improvements in tests/infra/test_sync_comments_grep.sh: (1) Lines 60-66: add a second self-check assertion that greps for double-quoted bash -c lines containing $SYNC_TEST, $SYNC_REF_HELPERS, or $_SECT3_HELPER — enforces the single-quoted hardening convention for Sections 2/3 (currently only Section 1 is guarded). (2) Lines 189-195: extend comment to note that sourcing SYNC_TEST executes its top-level assertions as a side effect, and they must be non-fatal for the meta-tests to work. Consider follow-up to wrap sync_comments_test.sh assertions in a main() function.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:13:56.477Z",
+        "updatedAt": "2026-04-10T16:05:28.921Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh"
@@ -32660,7 +32660,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:05:28.740Z",
+      "lastModified": "2026-04-10T16:05:28.921Z",
       "taskCount": 1605,
       "completedCount": 1223,
       "tags": [
