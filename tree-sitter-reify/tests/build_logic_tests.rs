@@ -1372,15 +1372,14 @@ fn test_self_read_paths_use_manifest_dir() {
         .filter(|sig| !sig.contains("test_self_read_paths_use_manifest_dir"))
         .collect();
 
-    // Sanity-check: the scanner must find at least 6 self-reading tests (the
-    // deterministic count after self-filter on this codebase is 6). This catches a
+    // Sanity-check: the scanner must find at least 6 self-reading tests. This catches a
     // broken scanner that silently returns empty or near-empty. The threshold is a
     // lower bound rather than an exact count because the real file may gain more
     // self-reading tests over time.
     assert!(
         self_reading_fns.len() >= 6,
         "find_self_reading_test_fns should discover at least 6 self-reading test functions \
-         after excluding this meta-test (actual count is 6); but found {:?}",
+         after excluding this meta-test; but found {:?}",
         self_reading_fns
     );
 
@@ -1424,17 +1423,93 @@ fn test_self_path_constants_use_manifest_dir() {
 #[test]
 fn test_self_path_constants_guard_is_not_vacuous() {
     // Meta-test: verifies that the count-based assertion in
-    // `test_self_path_constants_use_manifest_dir` is non-vacuous.  The number of
-    // uses of the env! macro on CARGO_MANIFEST_DIR in this file must be >= 2
-    // (one per constant definition), confirming the >= 2 threshold is meaningful.
+    // `test_self_path_constants_use_manifest_dir` is non-vacuous AND orthogonal.
+    // Design: the main test uses a lower-bound check (guards against regression);
+    // this meta-test uses an exact-count check `count == 2` (guards against inflation).
+    // Together they are orthogonal: a drop below 2 fails only the main test; an unexpected
+    // addition above 2 fails only this meta-test, so any single failure has a unique cause.
     let source = read_self_source();
     let count = source.matches("env!(\"CARGO_MANIFEST_DIR\")").count();
     assert!(
-        count >= 2,
-        "expected at least 2 occurrences of env!(\"CARGO_MANIFEST_DIR\") in this file \
+        count == 2,
+        "expected exactly 2 occurrences of env!(\"CARGO_MANIFEST_DIR\") in this file \
          (one for THIS_FILE const, one for BUILD_RS const), but found {}",
         count
     );
+}
+
+#[test]
+fn test_path_constants_guard_uses_exact_count() {
+    // Meta-meta-test: `test_self_path_constants_guard_is_not_vacuous` must use
+    // `count == 2` (exact match) rather than `count >= 2` (lower bound).
+    // Using an exact count makes the meta-test orthogonal to the main test:
+    // the main test (`test_self_path_constants_use_manifest_dir`) guards against
+    // regression (count dropping below 2); the meta-test guards against inflation
+    // (unexpected additions that could raise the count and mask a regression).
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+
+    let body =
+        extract_test_fn_body(&source, "fn test_self_path_constants_guard_is_not_vacuous()")
+            .expect("source should contain test_self_path_constants_guard_is_not_vacuous");
+
+    assert!(
+        body.contains("count == 2"),
+        "test_self_path_constants_guard_is_not_vacuous must assert `count == 2` \
+         (exact match) so that the meta-test is orthogonal to the main test's `>= 2` \
+         lower-bound check. Function body:\n{}",
+        body
+    );
+
+    assert!(
+        !body.contains("count >= 2"),
+        "test_self_path_constants_guard_is_not_vacuous must NOT use `count >= 2` \
+         (lower bound), as that would be redundant with the main test's assertion. \
+         Use `count == 2` instead. Function body:\n{}",
+        body
+    );
+}
+
+#[test]
+fn test_self_reading_count_comment_accuracy() {
+    // Meta-test: if `test_self_read_paths_use_manifest_dir` contains a parenthetical
+    // of the form `(actual count is N)`, the claimed N must match the real count
+    // returned by `find_self_reading_test_fns` (with the same self-exclusion filter).
+    // If no such parenthetical is present, this test passes vacuously — removing the
+    // parenthetical is the preferred fix for a stale claim.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+
+    let body =
+        extract_test_fn_body(&source, "fn test_self_read_paths_use_manifest_dir()")
+            .expect("source should contain test_self_read_paths_use_manifest_dir");
+
+    // Compute the real count with the same self-exclusion filter used in the test.
+    let real_count = find_self_reading_test_fns(&source)
+        .into_iter()
+        .filter(|sig| !sig.contains("test_self_read_paths_use_manifest_dir"))
+        .count();
+
+    // If the body contains a `(actual count is N)` parenthetical, it must be accurate.
+    let prefix = "(actual count is ";
+    if let Some(start) = body.find(prefix) {
+        let after = &body[start + prefix.len()..];
+        let end = after.find(')').expect("parenthetical must be closed with ')'");
+        let claimed: usize = after[..end]
+            .trim()
+            .parse()
+            .expect("value after '(actual count is ' must be a number");
+        assert_eq!(
+            claimed,
+            real_count,
+            "test_self_read_paths_use_manifest_dir claims '(actual count is {})' but \
+             find_self_reading_test_fns (after self-exclusion) returns {}. \
+             Either update the claim or remove the parenthetical entirely.",
+            claimed,
+            real_count
+        );
+    }
+    // No parenthetical present — passes vacuously.
 }
 
 #[test]
