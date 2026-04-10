@@ -32530,7 +32530,18 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T10:17:26.432Z"
+        "updatedAt": "2026-04-10T10:17:26.432Z",
+        "metadata": {
+          "files": [
+            "crates/reify-test-support/Cargo.toml",
+            "crates/reify-test-support/src/helpers.rs",
+            "crates/reify-eval/Cargo.toml"
+          ],
+          "modules": [
+            "crates/reify-test-support",
+            "crates/reify-eval"
+          ]
+        }
       },
       {
         "id": 1600,
@@ -32576,7 +32587,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "tests/infra/test_npm_ci_hardening.sh"
+          ],
+          "modules": [
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": 1603,
@@ -32587,7 +32606,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/collection_sub_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
       },
       {
         "id": 1604,
