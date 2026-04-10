@@ -1451,6 +1451,48 @@ fn test_path_constants_guard_uses_exact_count() {
 }
 
 #[test]
+fn test_self_reading_count_comment_accuracy() {
+    // Meta-test: if `test_self_read_paths_use_manifest_dir` contains a parenthetical
+    // of the form `(actual count is N)`, the claimed N must match the real count
+    // returned by `find_self_reading_test_fns` (with the same self-exclusion filter).
+    // If no such parenthetical is present, this test passes vacuously — removing the
+    // parenthetical is the preferred fix for a stale claim.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+
+    let body =
+        extract_test_fn_body(&source, "fn test_self_read_paths_use_manifest_dir()")
+            .expect("source should contain test_self_read_paths_use_manifest_dir");
+
+    // Compute the real count with the same self-exclusion filter used in the test.
+    let real_count = find_self_reading_test_fns(&source)
+        .into_iter()
+        .filter(|sig| !sig.contains("test_self_read_paths_use_manifest_dir"))
+        .count();
+
+    // If the body contains a `(actual count is N)` parenthetical, it must be accurate.
+    let prefix = "(actual count is ";
+    if let Some(start) = body.find(prefix) {
+        let after = &body[start + prefix.len()..];
+        let end = after.find(')').expect("parenthetical must be closed with ')'");
+        let claimed: usize = after[..end]
+            .trim()
+            .parse()
+            .expect("value after '(actual count is ' must be a number");
+        assert_eq!(
+            claimed,
+            real_count,
+            "test_self_read_paths_use_manifest_dir claims '(actual count is {})' but \
+             find_self_reading_test_fns (after self-exclusion) returns {}. \
+             Either update the claim or remove the parenthetical entirely.",
+            claimed,
+            real_count
+        );
+    }
+    // No parenthetical present — passes vacuously.
+}
+
+#[test]
 fn test_drop_logs_error_check_is_form_agnostic() {
     // Meta-test / regression guard: `test_readonly_guard_drop_logs_error` must enforce
     // *semantic* invariants only (no silent discard + must log), not *syntactic* ones.
