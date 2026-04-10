@@ -461,6 +461,33 @@ else
     check "mismatch-path FAIL message names the missing fn (fn-existence path, not guard path) (got: $_src_beh_mismatch_out)" "false"
 fi
 
+# ==============================================================================
+# sync_ref_helpers.sh sourceable-failure test (S5)
+# Verify: sourcing the helper when test_helpers.sh is absent does NOT kill the
+# caller's shell (i.e., uses return 1 rather than exit 1 on failure).
+# ==============================================================================
+
+echo ""
+echo "--- sync_ref_helpers.sh sourceable-failure test (S5) ---"
+
+_s5_tmp_dir=$(mktemp -d)
+cp "$SYNC_REF_HELPERS_FILE" "$_s5_tmp_dir/sync_ref_helpers.sh"
+# Deliberately do NOT copy test_helpers.sh — we want the helper to hit the
+# "ERROR: test_helpers.sh not found" branch.
+_s5_out=$(bash -c "source '$_s5_tmp_dir/sync_ref_helpers.sh' 2>&1; echo CALLER_SURVIVED" 2>&1) || true
+rm -rf "$_s5_tmp_dir"
+
+if echo "$_s5_out" | grep -q 'CALLER_SURVIVED'; then
+    check "S5: caller shell survives source-time failure (return 1 not exit 1)" "true"
+else
+    check "S5: caller shell survives source-time failure (return 1 not exit 1) (got: $_s5_out)" "false"
+fi
+
+if echo "$_s5_out" | grep -q 'ERROR: test_helpers.sh not found'; then
+    check "S5: error diagnostic still emitted when test_helpers.sh is absent" "true"
+else
+    check "S5: error diagnostic still emitted when test_helpers.sh is absent (got: $_s5_out)" "false"
+fi
 
 # ==============================================================================
 # Robustness tests for sync_comments_test.sh structural checks
