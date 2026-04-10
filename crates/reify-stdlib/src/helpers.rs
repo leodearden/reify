@@ -161,8 +161,13 @@ mod tests {
 
     use super::*;
 
-    fn assert_extraction(input: Value, expected_vals: &[f64], expected_dim: DimensionVector, label: &str) {
-        let (vals, dim) = tensor_components_f64(&input)
+    fn assert_extraction(
+        input: &Value,
+        expected_vals: &[f64],
+        expected_dim: DimensionVector,
+        label: &str,
+    ) {
+        let (vals, dim) = tensor_components_f64(input)
             .unwrap_or_else(|| panic!("{}: expected Some but got None", label));
         assert_eq!(
             vals.len(),
@@ -334,32 +339,99 @@ mod tests {
 
     #[test]
     fn tensor_components_f64_vector_of_reals_returns_values_and_dimensionless() {
-        assert_extraction(Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]), &[1.0, 2.0, 3.0], DimensionVector::DIMENSIONLESS, "Vector of Reals");
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        assert_extraction(
+            &v,
+            &[1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
+            "Vector of Reals",
+        );
     }
 
     #[test]
     fn tensor_components_f64_point_of_length_scalars_returns_values_and_length() {
-        assert_extraction(Value::Point(vec![Value::Scalar { si_value: 0.5, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 1.5, dimension: DimensionVector::LENGTH }]), &[0.5, 1.5], DimensionVector::LENGTH, "Point of LENGTH Scalars");
+        let v = Value::Point(vec![
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert_extraction(
+            &v,
+            &[0.5, 1.5],
+            DimensionVector::LENGTH,
+            "Point of LENGTH Scalars",
+        );
     }
 
     #[test]
     fn tensor_components_f64_single_element_tensor_of_int_returns_value_and_dimensionless() {
-        assert_extraction(Value::Tensor(vec![Value::Int(7)]), &[7.0], DimensionVector::DIMENSIONLESS, "single-element Tensor of Int");
+        let v = Value::Tensor(vec![Value::Int(7)]);
+        assert_extraction(
+            &v,
+            &[7.0],
+            DimensionVector::DIMENSIONLESS,
+            "single-element Tensor of Int",
+        );
     }
 
     #[test]
     fn tensor_components_f64_vector_of_mass_scalars_returns_values_and_mass() {
-        assert_extraction(Value::Vector(vec![Value::Scalar { si_value: 1.5, dimension: DimensionVector::MASS }, Value::Scalar { si_value: 2.5, dimension: DimensionVector::MASS }]), &[1.5, 2.5], DimensionVector::MASS, "Vector of MASS Scalars");
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 2.5,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
+        assert_extraction(
+            &v,
+            &[1.5, 2.5],
+            DimensionVector::MASS,
+            "Vector of MASS Scalars",
+        );
     }
 
     #[test]
     fn tensor_components_f64_tensor_of_reals_returns_values_and_dimensionless() {
-        assert_extraction(Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]), &[1.0, 2.0, 3.0], DimensionVector::DIMENSIONLESS, "Tensor of Reals");
+        let v = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        assert_extraction(
+            &v,
+            &[1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
+            "Tensor of Reals",
+        );
     }
 
     #[test]
     fn tensor_components_f64_vector_of_length_scalars_returns_values_and_length() {
-        assert_extraction(Value::Vector(vec![Value::Scalar { si_value: 0.1, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 0.2, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 0.3, dimension: DimensionVector::LENGTH }]), &[0.1, 0.2, 0.3], DimensionVector::LENGTH, "Vector of LENGTH Scalars");
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 0.1,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.2,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.3,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert_extraction(
+            &v,
+            &[0.1, 0.2, 0.3],
+            DimensionVector::LENGTH,
+            "Vector of LENGTH Scalars",
+        );
     }
 
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
