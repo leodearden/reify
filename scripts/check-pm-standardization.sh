@@ -14,6 +14,12 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/../tests/infra/test_helpers.sh"
 
 PKG_FILES='gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json'
+# Derive the file count from PKG_FILES so Check 2's total assertion tracks
+# the list automatically (task 1366). Intentional word-splitting on $PKG_FILES
+# is consistent with how the rest of this script uses the variable.
+# shellcheck disable=SC2086
+set -- $PKG_FILES
+PKG_COUNT=$#
 
 echo "=== check-pm-standardization ==="
 
