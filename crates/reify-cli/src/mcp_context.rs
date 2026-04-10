@@ -101,25 +101,6 @@ impl CliToolContext {
     }
 }
 
-/// Convert a byte offset to (line, column), both 1-based.
-fn byte_offset_to_line_col(source: &str, offset: u32) -> (u32, u32) {
-    let offset = offset as usize;
-    let mut line = 1u32;
-    let mut col = 1u32;
-    for (i, ch) in source.char_indices() {
-        if i >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
-}
-
 /// Format a dimension as a human-readable unit string.
 fn dimension_unit(ty: &reify_types::ty::Type) -> String {
     match ty {
@@ -176,9 +157,9 @@ impl ReifyToolContext for CliToolContext {
                 // Use the first label's span if available, otherwise default to (1,1)
                 let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
                 {
-                    let (l, c) = byte_offset_to_line_col(source, label.span.start);
-                    let (el, ec) = byte_offset_to_line_col(source, label.span.end);
-                    (l, c, el, ec)
+                    let (l, c) = reify_types::byte_offset_to_line_col(source, label.span.start as usize);
+                    let (el, ec) = reify_types::byte_offset_to_line_col(source, label.span.end as usize);
+                    (l as u32, c as u32, el as u32, ec as u32)
                 } else {
                     (1, 1, 1, 1)
                 };
@@ -316,14 +297,14 @@ impl ReifyToolContext for CliToolContext {
             if template.name == entity_path {
                 // Return the span of the first value cell as a proxy for the entity
                 if let Some(cell) = template.value_cells.first() {
-                    let (line, column) = byte_offset_to_line_col(source, cell.span.start);
-                    let (end_line, end_column) = byte_offset_to_line_col(source, cell.span.end);
+                    let (line, column) = reify_types::byte_offset_to_line_col(source, cell.span.start as usize);
+                    let (end_line, end_column) = reify_types::byte_offset_to_line_col(source, cell.span.end as usize);
                     return Ok(SourceLocationInfo {
                         file_path,
-                        line,
-                        column,
-                        end_line,
-                        end_column,
+                        line: line as u32,
+                        column: column as u32,
+                        end_line: end_line as u32,
+                        end_column: end_column as u32,
                     });
                 }
             }
@@ -332,14 +313,14 @@ impl ReifyToolContext for CliToolContext {
             for cell in &template.value_cells {
                 let cell_id_str = format!("{}", cell.id);
                 if cell_id_str == entity_path || cell.id.member == entity_path {
-                    let (line, column) = byte_offset_to_line_col(source, cell.span.start);
-                    let (end_line, end_column) = byte_offset_to_line_col(source, cell.span.end);
+                    let (line, column) = reify_types::byte_offset_to_line_col(source, cell.span.start as usize);
+                    let (end_line, end_column) = reify_types::byte_offset_to_line_col(source, cell.span.end as usize);
                     return Ok(SourceLocationInfo {
                         file_path,
-                        line,
-                        column,
-                        end_line,
-                        end_column,
+                        line: line as u32,
+                        column: column as u32,
+                        end_line: end_line as u32,
+                        end_column: end_column as u32,
                     });
                 }
             }
