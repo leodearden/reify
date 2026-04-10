@@ -28130,13 +28130,13 @@
         "description": "Three small documentation/clarity improvements on the `assert_gradient_vector` helper introduced in task 1016 (crates/reify-expr/tests/gradient_tests.rs).\n\n1. Preserve the historical \"not Undef\" debugging signal lost in the refactor. In `assert_gradient_vector` at lines 91-118, add a specific branch that detects `Value::Undef` and panics with a distinct message like `{label}: gradient returned Undef, expected Vector` — or update callers of the two sites that previously carried `\"gradient sample should return a Vector, not Undef\"` (gradient_1param_constant_field and gradient_1param_magnitude_field) to pass a richer label.\n\n2. Document that `assert_gradient_vector` is dimension-agnostic. Add a doc-comment line such as: `/// Note: components are compared via Value::as_f64(), which accepts Value::Real, Value::Int, and Value::Scalar (ignoring dimension). For dimensioned assertions, use the inline match pattern.`\n\n3. Add brief comments at the two inline-match sites (~lines 955 and 1229) noting that these sites intentionally retain the inline `match Value::Vector(components) => ...` pattern because they assert dimensioned `Value::Scalar` components that `assert_gradient_vector` does not check. Optionally introduce a sibling helper `assert_gradient_vector_with_dimension(result, expected, expected_dim, tol, label)` in a follow-up to consolidate the remaining two sites.\n\nSource: task 1016 review suggestions (3 × reviewer_comprehensive). All three are on a single file and can be landed as one small polish commit.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1016"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T17:12:10.651Z",
+        "updatedAt": "2026-04-10T17:35:46.105Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -32821,9 +32821,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T17:35:45.549Z",
+      "lastModified": "2026-04-10T17:35:46.105Z",
       "taskCount": 1613,
-      "completedCount": 1243,
+      "completedCount": 1244,
       "tags": [
         "master"
       ]
