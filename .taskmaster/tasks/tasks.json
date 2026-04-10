@@ -3797,7 +3797,7 @@
         "dependencies": [
           "209"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -3809,7 +3809,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:21:26.400Z"
+        "updatedAt": "2026-04-10T00:03:23.030Z"
       },
       {
         "id": "211",
@@ -28913,7 +28913,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:03:06.354Z"
+        "updatedAt": "2026-04-10T00:03:06.354Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Pin expected-panic prefix on warn_capture_assert_any_message_equals partial-substring test"
+            ]
+          }
+        }
       },
       {
         "id": "1401",
@@ -28990,9 +28998,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:03:06.355Z",
+      "lastModified": "2026-04-10T00:03:23.030Z",
       "taskCount": 1406,
-      "completedCount": 1081,
+      "completedCount": 1082,
       "tags": [
         "master"
       ]
