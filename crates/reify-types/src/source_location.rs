@@ -19,8 +19,22 @@
 /// - **Empty spans** (`start == end`): calling this function twice with the
 ///   same offset produces identical `(line, col)` coordinates, as expected for
 ///   zero-length diagnostic spans.
-pub fn byte_offset_to_line_col(_source: &str, _offset: usize) -> (usize, usize) {
-    todo!("byte_offset_to_line_col not yet implemented")
+pub fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    debug_assert!(offset <= source.len());
+    let mut line = 1;
+    let mut col = 1;
+    for (i, ch) in source.char_indices() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
 }
 
 #[cfg(test)]
