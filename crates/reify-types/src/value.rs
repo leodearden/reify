@@ -2466,18 +2466,8 @@ mod tests {
         // PartialEq still distinguishes them (different bit patterns — content hash invariant).
         let pos = Value::Real(0.0);
         let neg = Value::Real(-0.0);
-        // PartialEq uses `a.to_bits() == b.to_bits()` (see `impl PartialEq for Value`),
-        // so -0.0 and +0.0 are treated as distinct values.
-        assert_ne!(pos, neg);
-        // Ord must be deterministic and antisymmetric.
-        let pos_cmp_neg = pos.cmp(&neg);
-        let neg_cmp_pos = neg.cmp(&pos);
-        assert_eq!(pos_cmp_neg, neg_cmp_pos.reverse());
-        // Ord+PartialEq consistency: since pos != neg, their ordering must not be Equal.
-        assert_ne!(pos_cmp_neg, std::cmp::Ordering::Equal);
-        // Assert the actual direction: IEEE 754 totalOrder puts -0.0 before +0.0.
-        assert!(neg < pos, "-0.0 must be Less than +0.0 under total_cmp()");
-        assert_eq!(pos.cmp(&neg), std::cmp::Ordering::Greater);
+        // neg passes first: under IEEE 754 totalOrder, -0.0 < +0.0.
+        assert_ord_consistent(&neg, &pos, false);
     }
 
     #[test]
