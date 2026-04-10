@@ -943,8 +943,7 @@ fn test_unix_permission_tests_have_root_guard() {
     // The set of unix test functions is discovered dynamically by
     // find_cfg_unix_test_fns so that newly added #[cfg(unix)] tests are
     // automatically checked without updating a hardcoded list.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file");
+    let source = read_self_source();
 
     let unix_test_fns = find_cfg_unix_test_fns(&source);
 
@@ -984,8 +983,7 @@ fn test_readonly_guard_drop_logs_error() {
     // `match { Err(e) => eprintln!(...), ... }`, `.map_err(|e| eprintln!(...))`, etc.
     // Do NOT add assertions that enforce a specific syntactic form; see
     // `test_drop_logs_error_check_is_form_agnostic` for the enforcement of this rule.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file");
+    let source = read_self_source();
 
     // Extract the Drop impl for ReadonlyGuard
     let drop_start = source
@@ -1052,8 +1050,7 @@ fn test_is_root_uses_libc_not_raw_ffi() {
     // a raw `unsafe extern "C" { fn getuid() -> u32; }` declaration.
     // Raw FFI declarations are fragile (no type-checked header), whereas libc provides
     // a well-audited, platform-tested binding.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     let fn_start = source
         .find("fn is_root()")
@@ -1365,8 +1362,7 @@ fn test_self_read_paths_use_manifest_dir() {
     // while the loop asserts only the THIS_FILE criterion. A test discovered via the
     // bare-path criterion would pass the scanner but fail this assertion, catching
     // the exact regression the guard is designed to prevent.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     let self_reading_fns = find_self_reading_test_fns(&source);
 
@@ -1415,8 +1411,7 @@ fn test_self_path_constants_use_manifest_dir() {
     //
     // The contains-check matches the exact macro invocation string to avoid false-positives
     // from comments or doc-strings that merely mention the env var name without using it.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     assert!(
         source.contains("env!(\"CARGO_MANIFEST_DIR\")"),
@@ -1433,8 +1428,7 @@ fn test_drop_logs_error_check_is_form_agnostic() {
     // A future contributor must not add assertions like `contains("if let Err"` or
     // `contains("match "` that enforce a specific error-handling form — any equivalent
     // form that logs the error is acceptable.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     let drop_logs_body =
         extract_test_fn_body(&source, "fn test_readonly_guard_drop_logs_error()")
@@ -1695,8 +1689,7 @@ fn test_no_bare_relative_path_reads() {
     // Note: path-pattern strings in this file use escaped quotes in Rust string
     // literals, so the raw source text contains \" rather than an unescaped ",
     // and the helpers find no self-match.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     // Each entry: (violation scanner, path description, constant to use instead).
     let guards: &[(fn(&str) -> Vec<(usize, &str)>, &str, &str)] = &[
@@ -1747,8 +1740,7 @@ fn test_no_bare_relative_self_path_reads() {
     // Note: pattern strings in this file use escaped quotes in Rust string
     // literals, so the raw source text contains \" rather than an unescaped ",
     // and the helper finds no self-match.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     let violations = find_bare_self_path_violations(&source);
 
