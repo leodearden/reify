@@ -32884,15 +32884,16 @@
         "description": "Two test-quality fixes for task 251's TDD specs: (1) In crates/reify-eval/tests/connect_eval.rs, eval_ad_hoc_port_in_forall_quantifier_evaluates_each_element (~line 870) iterates over an empty collection making the test vacuously pass — populate the fixture with concrete sub-component instances and add assert!(!result.constraint_results.is_empty()) before the loop. (2) In crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs, several error-path tests use overly broad substring matches (e.g., msg.contains(\"face\"), msg.contains(\"type\")) that could match unrelated diagnostics — tighten to more discriminating tokens that pin the diagnostic category. Note: boilerplate extraction across 17 tests deferred until task 249/250 lands.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T22:06:40.456Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T22:06:33.180Z",
+      "lastModified": "2026-04-10T22:06:40.457Z",
       "taskCount": 1616,
       "completedCount": 1260,
       "tags": [
