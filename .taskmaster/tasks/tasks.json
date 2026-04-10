@@ -32485,10 +32485,11 @@
         "description": "reify-eval was added as a non-optional dependency of reify-test-support to support the `make_engine()` helper. This pulls reify-eval into the test build graph of every crate that dev-depends on reify-test-support (reify-syntax, reify-compiler, reify-expr, reify-constraints, etc.), even though only reify-eval tests actually call `make_engine()`.\\n\\n**Fix:** Make `reify-eval` an optional dependency gated by an `eval-helpers` feature. Move `make_engine()` behind `#[cfg(feature = \\\"eval-helpers\\\")]`. Activate the feature in reify-eval's dev-deps: `reify-test-support = { workspace = true, features = [\\\"eval-helpers\\\"] }`.\\n\\nSource: reviewer suggestion S1 from task 1332 unblock (comprehensive reviewer, architecture_and_design).\\nFiles: crates/reify-test-support/Cargo.toml, crates/reify-test-support/src/helpers.rs, crates/reify-eval/Cargo.toml",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T10:17:26.432Z"
       },
       {
         "id": "1600",
@@ -32504,7 +32505,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T10:17:25.770Z",
+      "lastModified": "2026-04-10T10:17:26.432Z",
       "taskCount": 1600,
       "completedCount": 1210,
       "tags": [
