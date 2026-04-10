@@ -32379,7 +32379,9 @@
         "details": "",
         "testStrategy": "",
         "status": "blocked",
-        "dependencies": [],
+        "dependencies": [
+          "1332"
+        ],
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-10T08:16:44.713Z",
