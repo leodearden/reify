@@ -29362,11 +29362,11 @@
         "description": "Five post-merge review polish suggestions targeting the behavioral Test 24 block added in Task 1343 (tests/infra/test_portable_timeout.sh:614-720). All five touch the same ~80-line region and should be applied as a single coherent polish pass.\n\n**1. Test naming/header clarity (line 614)**\nTwo distinct tests share the number \"Test 24\" — the structural one at line 600 and the new behavioral one at line 663 — with no suffix to disambiguate and no `echo \"--- Test 24 ...\"` header for the behavioral block (inconsistent with every other test in the file). Rename to `Test 24b` (matching the existing 18b/18c convention) or Test 25, and add a header line: `echo \"\"; echo \"--- Test 24b (behavioral): _pt_kill_grace override flows to timer ---\"`.\n\n**2. Doc overstatement on Test 22 regex (lines 578-582)**\nThe comment claims the regex covers SIGTERM \"in any syntactic form — quoted or unquoted, with or without '|| true', any redirection.\" That overstates: the regex `(^|[^-9])kill[[:space:]]+--[[:space:]]+\"?-\\$cmd_pid` requires the literal `kill ... --` token sequence and would NOT catch forms like `kill -s TERM -- \"-$cmd_pid\"`, `kill -TERM -- ...`, or `kill --signal=TERM -- ...`. Either tighten the regex to also match `kill[[:space:]]+(-s[[:space:]]+TERM|-TERM|--signal=TERM)[[:space:]]+--`, or trim the comment to say \"no line uses the canonical `kill -- -$cmd_pid` form (quoted or unquoted, with optional `|| true` or redirection)\". Trimming the comment is simpler since the codebase only uses the canonical form.\n\n**3. Behavioral Test 24 margin is too tight (lines 660-666)**\nThe behavioral test measures elapsed time with `date +%s` (1-second integer resolution) and asserts `gap >= 4`. Expected wall-clock is ~5s (1s timer + 4s grace); integer truncation and scheduler jitter can legitimately produce gap=4 with zero margin. The only safe regression bucket is gap==3; single-bucket margins are fragile under CI load. Fix: override `_pt_kill_grace=5` instead of 4 — expected ~6s, lower bound 5 still excludes the 2s regression. Minimal change, preserves POSIX portability.\n\n**4. Substitution anchor robustness (lines 651-657)**\n`${func_text/_pt_kill_grace=2/_pt_kill_grace=4}` replaces only the first occurrence. If a future change adds an unrelated `_pt_kill_grace=2` token earlier in the function body (comment, heredoc, string literal), the substitution silently rewrites the wrong site and the test passes vacuously. Fix: anchor on the `local` keyword: `${func_text/local _pt_kill_grace=2/local _pt_kill_grace=4}`. This matches the structural Test 24 invariant on line 608 (`local[[:space:]]+_pt_kill_grace=2`).\n\n**5. rescue_dir leak on sanity-fail path (lines 640-671)**\nThe new test cleans up `rescue_dir` with `rm -rf` on line 666, but ONLY on the success path. If the SANITY FAIL branch (line 654) fires after `eval \"$POSIX_FALLBACK_SETUP_NO_TRAP\"` succeeds, the test exits 1 and `rescue_dir` leaks under `$TMPDIR`. Fix: move cleanup to a `trap 'rm -rf \"$rescue_dir\"' EXIT` set immediately after the eval succeeds. This is safe inside the outer `bash -c` because the timer subshell has already terminated by the time the trap fires (the helper's \"no EXIT trap\" concern applies to portable_timeout's internal subshells, not to this outer shell).\n\n**Context:** All five suggestions come from reviewer_comprehensive's post-merge review of Task 1343 (esc-1343-138). Task 1343 itself fixed an unbound-variable bug in the behavioral Test 24 block (commit 5c5801029) — these are follow-up polish items, not the same class of bug.\n\n**Memory hints:** search \"test_portable_timeout behavioral Test 24\" for Task 1343 context; the structural Test 24 at line 600 is the existing reference for suffix naming conventions (18b/18c).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T01:03:46.765Z",
+        "updatedAt": "2026-04-10T01:27:16.437Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -29805,7 +29805,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:27:15.570Z",
+      "lastModified": "2026-04-10T01:27:16.437Z",
       "taskCount": 1442,
       "completedCount": 1105,
       "tags": [
