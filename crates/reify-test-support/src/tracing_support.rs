@@ -1502,14 +1502,33 @@ mod tests {
         // (iii) Structured fields lock=values and access=read are present.
         capture.assert_any_event_has_fields(&[("lock", "values"), ("access", "read")]);
 
-        // (iv) A field value that was NOT emitted must cause a panic.
-        let result = std::panic::catch_unwind(|| {
-            capture.assert_any_event_has_fields(&[("lock", "snapshot_values")])
+    }
+
+    /// `assert_any_event_has_fields` panics with "no WARN event had all expected
+    /// fields" when no captured event contains the requested field value.
+    ///
+    /// Emits a WARN with `lock=values`, `access=read`, `error=%"boom"`, then
+    /// asserts an event with `lock=snapshot_values` — which was NOT emitted.
+    /// Using `#[should_panic(expected = ...)]` verifies the panic message prefix,
+    /// preventing false greens from unrelated panics that the old
+    /// `catch_unwind`+`is_err()` approach would silently accept.
+    #[test]
+    #[should_panic(expected = "no WARN event had all expected fields")]
+    fn assert_any_event_has_fields_panics_on_non_matching_field() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(
+                lock = "values",
+                access = "read",
+                error = %"boom",
+                "lock poisoned, recovering"
+            );
         });
-        assert!(
-            result.is_err(),
-            "assert_any_event_has_fields must panic when no event has lock=snapshot_values"
-        );
+
+        capture.assert_any_event_has_fields(&[("lock", "snapshot_values")]);
     }
 
     /// `assert_any_event_field_contains` succeeds when a captured field value
