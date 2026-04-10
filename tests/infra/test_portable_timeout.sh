@@ -795,6 +795,13 @@ assert "Test 24d regex matches flagless count-grep invocation" \
 assert "Test 24d regex does not match count-grep -cF invocation" \
     bash -c '! printf "%s%s\n" "grep" " -cF pattern" | grep -qE "$1"' _ "$_24d_regex"
 
+# -- Meta: Test 24b sanity failures use a distinct exit code (not the default) -
+# Both sanity checks must be updated so a precondition failure is distinguishable
+# from a normal assertion failure at the bash-c level.
+# Count-based check: the grep command itself contributes one hit; after the
+# implementation step the two sanity-check lines add two more (total >= 2).
+assert "sanity failures use distinct exit code (exit two, not silenced exit one)" \
+    bash -c '[ "$(grep -c '"'"'exit 2'"'"' "$1")" -ge 2 ]' _ "${BASH_SOURCE[0]}"
 
 # -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
 echo ""
