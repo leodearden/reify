@@ -302,11 +302,11 @@ else
     check "assert_sync_ref_exists uses display_fn fallback variable" "false"
 fi
 
-# (f) extract_fn docstring uses 'naturally excluded' wording (not the misleading 'Excludes')
-if grep -q 'naturally excluded' "$SYNC_FILE" 2>/dev/null; then
-    check "extract_fn docstring uses 'naturally excluded' wording" "true"
+# (f) extract_fn comment references actual awk pattern /^[^/]*fn/ (task-1310: 'naturally excluded' replaced)
+if grep '^#' "$SYNC_FILE" 2>/dev/null | grep -qF '^[^/]*fn'; then
+    check "extract_fn comment references actual awk pattern /^[^/]*fn/" "true"
 else
-    check "extract_fn docstring uses 'naturally excluded' wording" "false"
+    check "extract_fn comment references actual awk pattern /^[^/]*fn/" "false"
 fi
 
 # (g) extract_fn awk pattern is anchored with [(<] after fn_name to prevent prefix collisions
