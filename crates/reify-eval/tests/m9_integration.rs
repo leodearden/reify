@@ -331,3 +331,63 @@ structure Widget : Sized {
         );
     }
 }
+
+// ── Step 11: trait conformance with determinacy constraint ────────────────────
+
+/// Cross-feature: a trait defines an inline determinacy constraint (determined(value)).
+/// When injected into Item : Verifiable { value = 25mm }, determined(value) is true
+/// → the injected constraint should be Satisfied.
+/// Also verifies Item.value evaluates to the correct SI value.
+#[test]
+fn trait_conformance_with_determinacy_constraint() {
+    let source = r#"
+trait Verifiable {
+    param value : Length
+    constraint determined(value)
+}
+structure Item : Verifiable {
+    param value : Length = 25mm
+}
+"#;
+    let check_result = check_source(source);
+    let eval_result = eval_source(source);
+
+    // Item should have the trait-injected determined(value) constraint = Satisfied
+    // (inline constraint from trait, no label)
+    let det_entry = check_result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Item")
+        .expect("expected at least one constraint result for Item");
+    assert_eq!(
+        det_entry.satisfaction,
+        Satisfaction::Satisfied,
+        "Item's trait-injected determined(value) constraint should be Satisfied (value=25mm)"
+    );
+
+    // All Item constraints should be Satisfied
+    for entry in check_result.constraint_results.iter().filter(|e| e.id.entity == "Item") {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "all Item constraints should be Satisfied, but {:?} is {:?}",
+            entry.label, entry.satisfaction
+        );
+    }
+
+    // Item.value = 25mm = 0.025 SI
+    let val_id = ValueCellId::new("Item", "value");
+    let val = eval_result
+        .values
+        .get(&val_id)
+        .expect("Item.value should exist in eval result");
+    match val {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.025).abs() < 1e-12,
+                "expected 0.025 SI for Item.value (25mm), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for Item.value, got {:?}", other),
+    }
+}
