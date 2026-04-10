@@ -27975,11 +27975,11 @@
         "description": "The updated `extract_fn` awk script at tests/sync_comments_test.sh:51-63 uses a range pattern `/^[^/]*fn NAME[(<]/,/^}/`. If either copy of sanitize_value is ever moved somewhere the start pattern doesn't match, awk silently outputs nothing and `diff` compares two empty outputs — passing vacuously.",
         "details": "Add a guard after extraction, e.g.:\n```bash\n[ -s \"$tmp_a\" ] || { echo \"FAIL: extract_fn produced empty output for $src_file\"; exit 1; }\n[ -s \"$tmp_b\" ] || { echo \"FAIL: extract_fn produced empty output for $tgt_file\"; exit 1; }\n```\nso the test fails loudly if the function body could not be extracted. Verify by temporarily breaking the extract_fn pattern and confirming the test fails rather than passing silently.\n\nSource: review triage of task 159 (auto(free) grammar + compiler threading).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:13:48.872Z",
+        "updatedAt": "2026-04-10T10:17:13.848Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh",
@@ -32300,11 +32300,11 @@
         "description": "In tests/infra/test_npm_ci_hardening.sh (lines 90-95), broaden the awk range to handle both single-line `for ...; do` and multi-line `for\\ndo` header forms. Current NOTE documents the limitation. Use e.g. `awk '/^for /{inloop=1} inloop{print} /^done/{inloop=0}'` after leading-whitespace strip, then remove the NOTE comment.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T10:17:13.852Z"
+        "updatedAt": "2026-04-10T08:13:57.000Z"
       },
       {
         "id": "1588",
@@ -32416,11 +32416,11 @@
         "description": "Two local copies of `fn parse_and_compile` remain after task 1332's consolidation:\n- crates/reify-compiler/tests/unit_registry_tests.rs:14 — uses `ModulePath::single(\"unit_test\")`\n- crates/reify-compiler/tests/type_alias_compile_tests.rs:12 — uses `ModulePath::single(\"alias_test\")`\n\nreify-compiler already has `reify-test-support` as a dev-dependency (Cargo.toml:13), so the migration is just a use-site swap.\n\n**Important behavior difference:** The shared `reify_test_support::parse_and_compile` asserts zero error-severity diagnostics, but the local copies in these two files return the raw `CompiledModule` without filtering. The existing callers use a separate `errors_only(module)` helper to inspect diagnostics, and some tests intentionally compile source that produces errors (e.g., cycle detection, unknown aliases). Those tests must NOT use the asserting shared helper.\n\nRecommended approach:\n1. Find all call sites in each file.\n2. For tests that expect success, migrate to `reify_test_support::parse_and_compile`.\n3. For tests that expect errors, use `reify_test_support::parse_compile_expect_err(source, needle)` or keep a local `parse_no_assert` helper that just calls `reify_syntax::parse` + `compile` without the assert.\n4. Remove the local `parse_and_compile` fn once all call sites are migrated.\n5. Verify no test depends on the `\"unit_test\"` or `\"alias_test\"` module-path strings (grep those literals).\n\n**Priority:** low. Code-reuse / drift-prevention.\n\n**Source:** review of task 1332 (esc-1332-348, reviewer_comprehensive suggestion 4, code_reuse).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T10:17:14.822Z",
+        "updatedAt": "2026-04-10T08:14:02.942Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -32497,7 +32497,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T10:17:14.822Z",
+      "lastModified": "2026-04-10T10:17:13.853Z",
       "taskCount": 1600,
       "completedCount": 1210,
       "tags": [
