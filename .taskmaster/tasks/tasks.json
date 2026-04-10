@@ -29407,7 +29407,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "tests/infra/test_test_helpers.sh"
+          ],
+          "modules": [
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": 1422,
@@ -29418,7 +29426,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/bridge.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": 1423,
