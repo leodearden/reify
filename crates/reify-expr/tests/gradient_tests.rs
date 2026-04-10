@@ -4155,7 +4155,6 @@ mod trust_the_declaration_tests {
     ///
     /// See module doc (trust-the-declaration). Samples at Scalar{1.0, LENGTH};
     /// result is Scalar{≈2.0, MASS/LENGTH}.
-    #[cfg(debug_assertions)]
     #[test]
     fn gradient_codomain_mismatch_dimensioned_domain_no_panic() {
         let (grad_result, domain_type, grad_codomain_type) =
