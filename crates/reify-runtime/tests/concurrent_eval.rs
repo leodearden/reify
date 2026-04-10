@@ -1621,7 +1621,7 @@ use reify_test_support::warn_capturing_subscriber;
 ///    `poison_evaluate::tracing_warn_emitted_on_poison_evaluate_snapshot_values`.
 /// 2. The triple-lock shared-fallback path in
 ///    `all_three_locks_poisoned_shared_fallback_recovers_with_three_warns`.
-/// 3. The per-site structured-field tests in the `structured_field_observation` module.
+/// 3. The per-site structured-field tests in the `structured_field_emission` module.
 #[cfg(feature = "test-utils")]
 fn assert_poison_recovers<T: Send + 'static>(
     action: impl FnOnce() -> T + std::panic::UnwindSafe,
