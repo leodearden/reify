@@ -746,7 +746,7 @@ fi
 check "all 3 behavioral subshells use bash -eu -c (S3 hardening, got $_beh_eu_count)" "$ok"
 
 # Self-check: _ws_label uses a comprehensive case statement with readable labels.
-# Grep for the literal case-arm assignment; this string is absent until step-2 adds it.
+# Grep for the literal case-arm assignment to verify the readable-label mapping exists.
 if grep -q "_ws_label='(1 space)'" "${BASH_SOURCE[0]}"; then
     ok=true
 else
@@ -755,7 +755,7 @@ fi
 check "_ws_label case statement maps single-space to readable label" "$ok"
 
 # Self-check: defensive trap comment warns about the single main-shell EXIT trap.
-# Grep for the comment marker; this string is absent until step-3 adds it.
+# Grep for the comment marker to verify the defensive trap comment exists.
 if grep -q '# only main-shell EXIT trap' "${BASH_SOURCE[0]}"; then
     ok=true
 else
