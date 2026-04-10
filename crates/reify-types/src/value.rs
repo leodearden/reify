@@ -2745,6 +2745,26 @@ mod tests {
         assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
     }
 
+    /// Parameterized sibling of [`assert_ieee754_total_order_real`] for boundary-Set
+    /// iteration-order checks.  Builds a `BTreeSet<Value>` by inserting `build(v)` for
+    /// each value in `BOUNDARY_REALS`, wraps it in `Value::Set`, iterates it, extracts
+    /// the discriminating `f64` field via `extract`, and delegates to
+    /// `assert_ieee754_total_order_real` to assert the IEEE 754 totalOrder sequence.
+    fn assert_boundary_set_iteration_order(build: fn(f64) -> Value, extract: fn(&Value) -> f64) {
+        use std::collections::BTreeSet;
+        let mut inner = BTreeSet::new();
+        for &v in BOUNDARY_REALS {
+            inner.insert(build(v));
+        }
+        let set_val = Value::Set(inner);
+        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
+            s.iter().map(|v| extract(v)).collect()
+        } else {
+            panic!("expected Set");
+        };
+        assert_ieee754_total_order_real(&sorted);
+    }
+
     #[test]
     fn test_assert_ord_consistent_equal() {
         // Meta-test: verify assert_ord_consistent works for an equal pair.
@@ -2852,6 +2872,20 @@ mod tests {
             f64::INFINITY,
             // NaN intentionally omitted → 6 elements instead of 7
         ]);
+    }
+
+    #[test]
+    fn test_assert_boundary_set_iteration_order_using_real() {
+        // Meta-test: assert_boundary_set_iteration_order must not panic when given
+        // Value::Real as the build function and the corresponding Real extractor.
+        // This documents the helper's contract using the simplest Value variant.
+        assert_boundary_set_iteration_order(
+            Value::Real,
+            |v| match v {
+                Value::Real(f) => *f,
+                _ => panic!("unexpected value"),
+            },
+        );
     }
 
     #[test]
