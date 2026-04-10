@@ -18705,7 +18705,13 @@
           "files": [
             "crates/reify-lsp/tests/in_process_bridge.rs",
             "gui/src-tauri/src/tests/lsp_bridge_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract shared minimal InitializeParams fixture into helper"
+            ]
+          }
         }
       },
       {
@@ -31887,11 +31893,11 @@
         "description": "Three fixes: (1) bridge.rs:227-229: \"All nine deserializing arms\" → \"All eight deserializing arms\". (2) in_process_bridge.rs:13: update stale \"All five malformed-params tests\" count. (3) in_process_bridge.rs:954-995: wrap 3 new standalone tests in with_hang_guard. Also restore 3 missing sweep assertions (completion/hover/definition) dropped by merge conflict ecb267280.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:49:57.406Z"
+        "updatedAt": "2026-04-10T07:05:06.340Z"
       },
       {
         "id": "1567",
@@ -32111,7 +32117,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:04:45.355Z",
+      "lastModified": "2026-04-10T07:05:06.340Z",
       "taskCount": 1584,
       "completedCount": 1182,
       "tags": [
