@@ -2062,6 +2062,16 @@ mod tests {
         assert_eq!(extract_coords(&Value::Bool(true)), None);
     }
 
+    /// Exercises the `as_f64() => None` path of `items_to_f64_vec` with a non-numeric
+    /// element inside a Point. This complements
+    /// `extract_coords_vector_with_nan_element_returns_none` (which covers the NaN branch
+    /// via `is_finite` false) by hitting the non-numeric `_ => None` branch.
+    #[test]
+    fn extract_coords_point_with_non_numeric_element_returns_none() {
+        let point = Value::Point(vec![Value::Real(1.0), Value::Bool(true)]);
+        assert_eq!(extract_coords(&point), None);
+    }
+
     // --- extract_point_coords unit tests (point/vector only) ---
 
     #[test]
@@ -2170,5 +2180,153 @@ mod tests {
                 dimension: DimensionVector::DIMENSIONLESS,
             }
         );
+    }
+
+    // --- Integration tests for refactored differential operators ---
+    //
+    // These exercise `compute_gradient`, `compute_divergence`, `compute_curl`, and
+    // `compute_laplacian` end-to-end on Analytical fields, asserting that the refactored
+    // validation + fallback logic produces a `Value::Field` with the expected
+    // `codomain_type` and `source`. They complement the fine-grained unit tests above
+    // (which cover individual helpers) by guarding against semantic drift in the
+    // composed behaviour of the public entry points.
+
+    /// Build a minimal valid Analytical Field with explicit domain/codomain types.
+    /// The lambda stored in the field is a trivial 1-param lambda — validation only
+    /// checks for `Value::Lambda { .. }`, not arity.
+    fn make_analytical_field_with_types(domain: Type, codomain: Type) -> Value {
+        Value::Field {
+            domain_type: domain,
+            codomain_type: codomain,
+            source: FieldSourceKind::Analytical,
+            lambda: Box::new(make_test_lambda()),
+        }
+    }
+
+    /// compute_gradient on a 1D Real→Real Analytical field produces a Gradient field.
+    /// In the 1D case, `result_codomain` is the scalar `gradient_quantity`, which for
+    /// dimensionless codomain/domain is `Real` (via the dimensionless fallback).
+    #[test]
+    fn compute_gradient_analytical_real_to_real_returns_gradient_field() {
+        let field = make_analytical_field_with_types(Type::Real, Type::Real);
+        let result = compute_gradient(&field);
+        match result {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                lambda: _,
+            } => {
+                assert_eq!(source, FieldSourceKind::Gradient);
+                assert_eq!(domain_type, Type::Real);
+                // 1D dimensionless domain + dimensionless codomain → Real.
+                assert_eq!(codomain_type, Type::Real);
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
+
+    /// compute_gradient on a 3D Point→Real Analytical field wraps the gradient quantity
+    /// in `Vector{3, ...}`, exercising the nD branch of the refactored logic.
+    #[test]
+    fn compute_gradient_analytical_point3_to_real_returns_vector3_gradient() {
+        let field = make_analytical_field_with_types(Type::point3(Type::Real), Type::Real);
+        let result = compute_gradient(&field);
+        match result {
+            Value::Field {
+                codomain_type,
+                source,
+                ..
+            } => {
+                assert_eq!(source, FieldSourceKind::Gradient);
+                assert_eq!(codomain_type, Type::vec3(Type::Real));
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
+
+    /// compute_divergence on a 3D vector field produces a scalar Divergence field.
+    #[test]
+    fn compute_divergence_analytical_point3_to_vec3_returns_scalar_divergence_field() {
+        let field =
+            make_analytical_field_with_types(Type::point3(Type::Real), Type::vec3(Type::Real));
+        let result = compute_divergence(&field);
+        match result {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                ..
+            } => {
+                assert_eq!(source, FieldSourceKind::Divergence);
+                assert_eq!(domain_type, Type::point3(Type::Real));
+                // Divergence of a dimensionless vector field collapses to scalar Real.
+                assert_eq!(codomain_type, Type::Real);
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
+
+    /// compute_curl on a 3D vector field produces a Vec3 Curl field.
+    #[test]
+    fn compute_curl_analytical_point3_to_vec3_returns_vec3_curl_field() {
+        let field =
+            make_analytical_field_with_types(Type::point3(Type::Real), Type::vec3(Type::Real));
+        let result = compute_curl(&field);
+        match result {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                ..
+            } => {
+                assert_eq!(source, FieldSourceKind::Curl);
+                assert_eq!(domain_type, Type::point3(Type::Real));
+                // Curl of a dimensionless Vec3 field is still a dimensionless Vec3.
+                assert_eq!(codomain_type, Type::vec3(Type::Real));
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
+
+    /// compute_laplacian on a 1D Real→Real Analytical field produces a scalar Laplacian
+    /// field. Exercises the scalar-domain branch and the `domain_exponent=2` quotient.
+    #[test]
+    fn compute_laplacian_analytical_real_to_real_returns_scalar_laplacian_field() {
+        let field = make_analytical_field_with_types(Type::Real, Type::Real);
+        let result = compute_laplacian(&field);
+        match result {
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                ..
+            } => {
+                assert_eq!(source, FieldSourceKind::Laplacian);
+                assert_eq!(domain_type, Type::Real);
+                // Dimensionless domain² / dimensionless codomain → Real.
+                assert_eq!(codomain_type, Type::Real);
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
+    }
+
+    /// compute_laplacian on a 3D Point→Real Analytical field exercises the Point-domain
+    /// branch.
+    #[test]
+    fn compute_laplacian_analytical_point3_to_real_returns_scalar_laplacian_field() {
+        let field = make_analytical_field_with_types(Type::point3(Type::Real), Type::Real);
+        let result = compute_laplacian(&field);
+        match result {
+            Value::Field {
+                codomain_type,
+                source,
+                ..
+            } => {
+                assert_eq!(source, FieldSourceKind::Laplacian);
+                assert_eq!(codomain_type, Type::Real);
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        }
     }
 }
