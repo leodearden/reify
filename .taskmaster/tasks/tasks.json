@@ -28630,11 +28630,11 @@
         "description": "Two test improvements in gui/src-tauri/src/tests/engine_tests.rs from task 962 review:\n\n1. **Symmetric get_source_location test for broken module_name (S3)**: The new resolve_source_returns_none_* tests verify the None return but there's no symmetric test for get_source_location with broken module_name. Add a test: load a module with a locatable entity, call break_module_name_for_test(), assert get_source_location returns None. This complements the existing broken-source-map test (resolve_source_fallback_when_source_map_missing).\n\n2. **Add line/col assertions to update_source test (S4)**: get_source_location_file_key_updates_after_update_source (around line 2102) only checks file_path after module name change. Add assertions on loc_after.line and loc_after.column matching loc_before values (they should be identical since source text is unchanged). This guards against regressions where update_source corrupts the source map content.\n\nmemory_hints:\n- search \"resolve_source broken invariant test engine_tests\" for test patterns\n- search \"break_module_name_for_test break_source_map_for_test\" for test helper usage",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:14:03.629Z",
+        "updatedAt": "2026-04-10T01:06:26.745Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src"
@@ -29336,7 +29336,15 @@
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T01:06:21.378Z"
+        "updatedAt": "2026-04-10T01:06:21.378Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract shared unit-test helpers to tests/common/mod.rs"
+            ]
+          }
+        }
       },
       {
         "id": "1420",
@@ -29492,9 +29500,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:06:21.378Z",
+      "lastModified": "2026-04-10T01:06:26.745Z",
       "taskCount": 1432,
-      "completedCount": 1096,
+      "completedCount": 1097,
       "tags": [
         "master"
       ]
