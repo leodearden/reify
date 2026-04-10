@@ -29468,7 +29468,7 @@
         "description": "Four fixes to complete the error_prefix refactor in crates/reify-lsp/src/bridge.rs: (1) Lines 164/172/180: add COMPLETION_PARAMS/HOVER_PARAMS/DEFINITION_PARAMS constants to error_prefix module and use them in the 3 arms still using hardcoded strings. (2) Lines 144/149/154/159: run cargo fmt — lines exceed 100 chars. (3) Lines 205-219: fix doc comment that claims \"no parallel string in the implementation\" — scope the guarantee to the arms that actually use constants. (4) Line 250: change parse_params unit test from literal \"initialize\" to error_prefix::INITIALIZE_PARAMS for consistency.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -29481,7 +29481,7 @@
             "crates/reify-lsp/tests"
           ]
         },
-        "updatedAt": "2026-04-10T01:11:26.076Z"
+        "updatedAt": "2026-04-10T02:30:09.995Z"
       },
       {
         "id": "1423",
@@ -30073,7 +30073,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:30:08.480Z",
+      "lastModified": "2026-04-10T02:30:09.995Z",
       "taskCount": 1456,
       "completedCount": 1131,
       "tags": [
