@@ -3305,29 +3305,13 @@ mod tests {
         // falls through to im.total_cmp. Asserts the IEEE 754 totalOrder sequence
         // from BTreeSet iteration over the im components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeSet;
-        let mut inner = BTreeSet::new();
-        for &v in BOUNDARY_REALS {
-            inner.insert(Value::Complex {
-                re: 0.0,
-                im: v,
-                dimension: DimensionVector::DIMENSIONLESS,
-            });
-        }
-        let set_val = Value::Set(inner);
-
-        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
-            s.iter()
-                .map(|v| match v {
-                    Value::Complex { im, .. } => *im,
-                    _ => panic!("unexpected value"),
-                })
-                .collect()
-        } else {
-            panic!("expected Set");
-        };
-
-        assert_ieee754_total_order_real(&sorted);
+        assert_boundary_set_iteration_order(
+            |v| Value::Complex { re: 0.0, im: v, dimension: DimensionVector::DIMENSIONLESS },
+            |v| match v {
+                Value::Complex { im, .. } => *im,
+                _ => panic!("unexpected value"),
+            },
+        );
     }
 
     #[test]
@@ -3354,29 +3338,13 @@ mod tests {
         // through to re.total_cmp. Asserts the IEEE 754 totalOrder sequence from
         // BTreeSet iteration over the re components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeSet;
-        let mut inner = BTreeSet::new();
-        for &v in BOUNDARY_REALS {
-            inner.insert(Value::Complex {
-                re: v,
-                im: 0.0,
-                dimension: DimensionVector::DIMENSIONLESS,
-            });
-        }
-        let set_val = Value::Set(inner);
-
-        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
-            s.iter()
-                .map(|v| match v {
-                    Value::Complex { re, .. } => *re,
-                    _ => panic!("unexpected value"),
-                })
-                .collect()
-        } else {
-            panic!("expected Set");
-        };
-
-        assert_ieee754_total_order_real(&sorted);
+        assert_boundary_set_iteration_order(
+            |v| Value::Complex { re: v, im: 0.0, dimension: DimensionVector::DIMENSIONLESS },
+            |v| match v {
+                Value::Complex { re, .. } => *re,
+                _ => panic!("unexpected value"),
+            },
+        );
     }
 
     #[test]
