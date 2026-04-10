@@ -110,6 +110,9 @@ assert "accepts: pub(super) unsafe fn sanitize_value( (pub(super)+unsafe combina
 assert "accepts: unsafe async fn sanitize_value( (unsafe+async combination)" \
     bash -c "printf '%s\n' 'unsafe async fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
 
+assert "accepts: const unsafe fn sanitize_value( (const+unsafe combination)" \
+    bash -c "printf '%s\n' 'const unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
 # -- Reject cases: pattern must NOT match these strings ------------------------
 
 assert "rejects: fn sanitize_value_raw( (suffix false-positive)" \
