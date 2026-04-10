@@ -566,3 +566,81 @@ structure S {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── Task 367: is_recursive mixed into content_hash ──────────────────────────
+
+/// Helper: parse source and compile, returning the full CompiledModule.
+fn compile_module(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    reify_compiler::compile(&parsed)
+}
+
+/// A recursive template's content_hash must differ from an identical template
+/// that is not recursive. This verifies that `is_recursive` is mixed into the hash,
+/// preventing incorrect incremental compilation cache hits.
+///
+/// Module 1 (cyclic): A references B, B references A  → A.is_recursive = true
+/// Module 2 (acyclic): A references B, B references C → A.is_recursive = false
+///
+/// Template A has identical raw content in both modules. Before the fix, both A
+/// templates have the same content_hash. After the fix they must differ.
+#[test]
+fn is_recursive_mixed_into_content_hash() {
+    // Module 1: A<->B mutual cycle — A.is_recursive = true
+    let cyclic_source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub a = A(n: n - 1) where n > 0
+}
+"#;
+
+    // Module 2: A->B->C acyclic — A.is_recursive = false
+    let acyclic_source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub c = C(n: n - 1) where n > 0
+}
+structure C {
+    param n : Int = 5
+}
+"#;
+
+    let (cyclic_templates, _) = compile_all(cyclic_source);
+    let (acyclic_templates, _) = compile_all(acyclic_source);
+
+    let a_cyclic = find_template(&cyclic_templates, "A");
+    let a_acyclic = find_template(&acyclic_templates, "A");
+
+    // Sanity checks: recursion flag is set correctly.
+    assert!(
+        a_cyclic.is_recursive,
+        "A in A<->B cycle should have is_recursive == true"
+    );
+    assert!(
+        !a_acyclic.is_recursive,
+        "A in acyclic A->B->C should have is_recursive == false"
+    );
+
+    // The content_hash MUST differ because is_recursive differs.
+    // Before the fix both hashes are equal (is_recursive not mixed in),
+    // so this assertion fails before the fix.
+    assert_ne!(
+        a_cyclic.content_hash,
+        a_acyclic.content_hash,
+        "template A with is_recursive=true must have a different content_hash \
+         than the same template with is_recursive=false (incremental correctness)"
+    );
+}
