@@ -20433,11 +20433,11 @@
         "description": "In crates/reify-eval/src/lib.rs, replace the Value::Undef => 0 safety fallback in new_count match (dead code due to guard above) with unreachable!(\"Undef new_count guarded above\") per silent-defaults convention.",
         "details": "",
         "testStrategy": "",
-        "status": "done",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:11:55.844Z",
+        "updatedAt": "2026-04-10T07:12:01.075Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -31993,11 +31993,11 @@
         "description": "Two fixes: (1) concurrent_eval.rs:1609-1616: split coverage scope doc into \"Covered (9 sites)\" and \"Not covered (2 sites)\". (2) concurrent_eval.rs:2833-2872: replace let _ = evaluate_with_recovery(...) with .expect() in both write-site tests.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:09:49.921Z",
+        "updatedAt": "2026-04-10T07:12:02.137Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests"
@@ -32244,9 +32244,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:12:00.870Z",
+      "lastModified": "2026-04-10T07:12:02.137Z",
       "taskCount": 1584,
-      "completedCount": 1198,
+      "completedCount": 1197,
       "tags": [
         "master"
       ]
