@@ -32835,15 +32835,16 @@
         "description": "Three improvements to crates/reify-eval/tests/collection_sub_eval.rs from task 957 review: (1) Add coverage for the new_count match arm (lib.rs:2165-2168) — after setting count to Undef, set it back to Int(2) and verify bolts are re-created. (2) Verify __list_bolts__diameter becomes Value::List(vec![]) when count becomes Undef (lib.rs:2209-2228 list maintenance path). (3) Assert initial eval creates the 4 bolt diameter cells before the edit, so post-edit is_none() checks aren't vacuously true.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T20:27:50.085Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T20:27:49.331Z",
+      "lastModified": "2026-04-10T20:27:50.085Z",
       "taskCount": 1614,
       "completedCount": 1248,
       "tags": [
