@@ -32273,10 +32273,11 @@
         "description": "In tests/infra/test_npm_ci_hardening.sh (lines 90-95), broaden the awk range to handle both single-line `for ...; do` and multi-line `for\\ndo` header forms. Current NOTE documents the limitation. Use e.g. `awk '/^for /{inloop=1} inloop{print} /^done/{inloop=0}'` after leading-whitespace strip, then remove the NOTE comment.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T08:13:57.000Z"
       },
       {
         "id": "1588",
@@ -32381,7 +32382,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T08:13:56.477Z",
+      "lastModified": "2026-04-10T08:13:57.000Z",
       "taskCount": 1596,
       "completedCount": 1206,
       "tags": [
