@@ -26624,13 +26624,13 @@
         "description": "Two related robustness improvements in `crates/reify-eval/src/tests_runner.rs` from Task 268 review:\n\nS1 (lines 48-68): `build_isolated_module` only strips `t.constraints`, `guarded_groups.{constraints,else_constraints}`, and `t.objective` from non-test templates. It does NOT strip `CompiledPort.constraints` or connection-attached constraints (`compatibility_constraint`, `frame_constraint`). This is currently safe only because `Engine::collect_active_constraints()` (crates/reify-eval/src/lib.rs ~line 2743) gathers exclusively from `template.constraints` + `template.guarded_groups`. The coupling is implicit and fragile — if the check pipeline ever extends to port/connection constraints, tests will silently pick up unrelated non-test failures.\n\nAction: (a) add a doc comment in both `build_isolated_module` and `collect_active_constraints` pointing at each other as the shared invariant; and/or (b) defensively clear `t.ports[*].constraints` and any connection-embedded constraint IDs in the strip step.\n\nS2 (lines 115-117): `TestResult.diagnostics` is populated from `check_result.diagnostics`, which includes `eval_result.diagnostics` computed over the entire isolated module. Any eval warning/error from an unrelated non-test template (e.g. a faulty default_expr) therefore leaks into a passing test's diagnostics. The docstring (\"Diagnostics emitted by constraint checking during the test run\") is misleading.\n\nAction: pick one — either filter diagnostics to those originating from the target test template (and its sub-component closure), or update the docstring to state that diagnostics may include eval diagnostics from the whole isolated module. Lock the chosen behavior in with a dedicated test (faulty default_expr in a non-test fixture, passing test, assert leak-or-no-leak).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "268"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T02:14:05.108Z",
+        "updatedAt": "2026-04-10T02:28:08.547Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -26639,7 +26639,8 @@
             ]
           },
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests"
           ],
           "files": [
             "crates/reify-eval/src/tests_runner.rs"
@@ -30060,7 +30061,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:27:56.512Z",
+      "lastModified": "2026-04-10T02:28:08.547Z",
       "taskCount": 1455,
       "completedCount": 1130,
       "tags": [
