@@ -282,4 +282,20 @@ printf '{\n  "packageManager": "npm@10.1.0"\n}\n' > "$FIX_DIR/case_d/p3.json"
 assert "Check 2 logic rejects differing packageManager versions" \
     bash -c "! '$CHECK2_HELPER' '$FIX_DIR/case_d/p1.json' '$FIX_DIR/case_d/p2.json' '$FIX_DIR/case_d/p3.json'"
 
+# -- Test 22: script derives PKG_COUNT dynamically from PKG_FILES (task 1366) -
+echo ""
+echo "--- Test 22: script derives PKG_COUNT dynamically from PKG_FILES ---"
+
+# The magic number '3' in Check 2's total assertion must be replaced by a
+# PKG_COUNT variable that is computed from PKG_FILES so that adding a new
+# package.json path to PKG_FILES automatically adjusts the assertion.
+assert "script uses 'set -- \$PKG_FILES' to load positional parameters" \
+    bash -c "grep -qE 'set -- \\\$PKG_FILES' '$SCRIPT'"
+
+assert "script derives PKG_COUNT from positional parameter count (PKG_COUNT=\$#)" \
+    bash -c "grep -qE 'PKG_COUNT=\\\$#' '$SCRIPT'"
+
+assert "Check 2 block references PKG_COUNT in the total assertion" \
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'PKG_COUNT'"
+
 test_summary
