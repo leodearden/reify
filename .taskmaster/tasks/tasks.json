@@ -29630,10 +29630,11 @@
         "description": "In `crates/reify-types/src/value.rs`, the IEEE 754 totalOrder golden-ordering assertion block (7 position lookups + 6 chain assertions on boundary floats) is copy-pasted across 5 tests (~150 lines total): `value_btreeset_boundary_real_iteration_order` (line 2595), `value_set_real_boundary_iteration_order_through_variant` (line 3082), `value_map_real_boundary_key_iteration_order_through_variant` (line 3144), `value_set_round_trip_preserves_iteration_order` (line 3209), and `value_map_round_trip_preserves_key_iteration_order` (line 3291). The boundary float array `[0.0, -0.0, INFINITY, NEG_INFINITY, NAN, -1.0, 1.0]` is also repeated.\n\n**What to do:**\n1. Extract a helper like `fn assert_ieee754_total_order_real(floats: &[f64])` that encapsulates the 7-position lookup and 6-assertion chain.\n2. Define a `const BOUNDARY_REALS: &[f64]` in the test module.\n3. While refactoring, simplify the round-trip tests (`value_set_round_trip_preserves_iteration_order` and `value_map_round_trip_preserves_key_iteration_order`): their structural-equality and content-hash assertions (parts a-c) are tautological given BTreeSet/BTreeMap stdlib guarantees (Ord alone determines order, not insertion order). Either add a comment noting the real value is the golden-ordering assertion (part d), or fold the hash check into the ordering tests as a one-liner and drop the standalone round-trip tests.\n\n**memory_hints:** search \"IEEE 754 totalOrder golden ordering assertion value.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:08:45.539Z"
       },
       {
         "id": "1434",
@@ -29649,7 +29650,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:08:45.142Z",
+      "lastModified": "2026-04-10T01:08:45.539Z",
       "taskCount": 1434,
       "completedCount": 1097,
       "tags": [
