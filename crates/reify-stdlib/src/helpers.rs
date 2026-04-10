@@ -203,6 +203,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tensor_components_f64_list_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::List(vec![Value::Real(1.0)])).is_none(),
+            "List value should return None"
+        );
+    }
+
     // ── tensor_components_f64 rejection: empty containers ────────────────────
 
     #[test]
