@@ -255,6 +255,9 @@ unset PATTERN
 echo ""
 echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
 
+assert 'PATTERN is unset at start of Section 2 (S4: scoping regression guard)' \
+    bash -c '[ -z "${PATTERN+x}" ]'
+
 assert "sync_comments_test.sh exists" \
     test -f "$SYNC_TEST"
 
