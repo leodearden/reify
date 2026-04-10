@@ -384,7 +384,7 @@ assert "extract_fn: 'let y = fn foo(x);' NOT extracted for fn_name=foo (embedded
         [ -z "$out" ]
     '
 
-# accept: const fn foo( — must be extracted when fn_name=foo
+# accept: const fn foo( — must be extracted when fn_name=foo; sed strips const prefix
 assert "extract_fn: const fn foo( extracted correctly for fn_name=foo" \
     bash -c '
         tmp=$(mktemp)
@@ -395,10 +395,10 @@ assert "extract_fn: const fn foo( extracted correctly for fn_name=foo" \
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
-        [ -n "$out" ] && echo "$out" | grep -q "const fn foo("
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
     '
 
-# accept: unsafe fn foo( — must be extracted when fn_name=foo
+# accept: unsafe fn foo( — must be extracted when fn_name=foo; sed strips unsafe prefix
 assert "extract_fn: unsafe fn foo( extracted correctly for fn_name=foo" \
     bash -c '
         tmp=$(mktemp)
@@ -409,10 +409,10 @@ assert "extract_fn: unsafe fn foo( extracted correctly for fn_name=foo" \
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
-        [ -n "$out" ] && echo "$out" | grep -q "unsafe fn foo("
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
     '
 
-# accept: async fn foo( — must be extracted when fn_name=foo
+# accept: async fn foo( — must be extracted when fn_name=foo; sed strips async prefix
 assert "extract_fn: async fn foo( extracted correctly for fn_name=foo" \
     bash -c '
         tmp=$(mktemp)
@@ -423,7 +423,7 @@ assert "extract_fn: async fn foo( extracted correctly for fn_name=foo" \
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
-        [ -n "$out" ] && echo "$out" | grep -q "async fn foo("
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
     '
 
 # accept: pub fn foo( — must be extracted when fn_name=foo; sed strips the pub prefix
@@ -440,7 +440,7 @@ assert "extract_fn: pub fn foo( extracted correctly for fn_name=foo" \
         [ -n "$out" ] && echo "$out" | grep -q "fn foo("
     '
 
-# accept: pub(crate) const fn foo( — must be extracted when fn_name=foo; sed strips pub(crate) prefix
+# accept: pub(crate) const fn foo( — must be extracted when fn_name=foo; sed strips pub(crate) and const
 assert "extract_fn: pub(crate) const fn foo( extracted correctly for fn_name=foo" \
     bash -c '
         tmp=$(mktemp)
@@ -451,10 +451,10 @@ assert "extract_fn: pub(crate) const fn foo( extracted correctly for fn_name=foo
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
-        [ -n "$out" ] && echo "$out" | grep -q "const fn foo("
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
     '
 
-# accept: async unsafe fn foo( — multi-modifier combination (Rust grammar order) must be extracted
+# accept: async unsafe fn foo( — multi-modifier combination (Rust grammar order) must be extracted; sed strips async+unsafe
 assert "extract_fn: async unsafe fn foo( extracted correctly for fn_name=foo" \
     bash -c '
         tmp=$(mktemp)
@@ -465,10 +465,10 @@ assert "extract_fn: async unsafe fn foo( extracted correctly for fn_name=foo" \
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
-        [ -n "$out" ] && echo "$out" | grep -q "async unsafe fn foo("
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
     '
 
-# accept: pub(crate) const unsafe fn foo( — full modifier chain must be extracted
+# accept: pub(crate) const unsafe fn foo( — full modifier chain must be extracted; sed strips all modifiers
 assert "extract_fn: pub(crate) const unsafe fn foo( extracted correctly for fn_name=foo" \
     bash -c '
         tmp=$(mktemp)
@@ -479,7 +479,21 @@ assert "extract_fn: pub(crate) const unsafe fn foo( extracted correctly for fn_n
         PASS=0; FAIL=0
         out=$(extract_fn foo "$tmp")
         rm -f "$tmp"
-        [ -n "$out" ] && echo "$out" | grep -q "const unsafe fn foo("
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
+    '
+
+# accept: const unsafe fn foo( — canonical-order const+unsafe combination; sed strips both modifiers
+assert "extract_fn: const unsafe fn foo( extracted correctly for fn_name=foo" \
+    bash -c '
+        tmp=$(mktemp)
+        printf "const unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
+        test_summary() { :; }
+        source "$SYNC_TEST"
+        PASS=0; FAIL=0
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
     '
 
 test_summary
