@@ -362,6 +362,15 @@ mod tests {
         assert_extraction(Value::Vector(vec![Value::Scalar { si_value: 0.1, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 0.2, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 0.3, dimension: DimensionVector::LENGTH }]), &[0.1, 0.2, 0.3], DimensionVector::LENGTH, "Vector of LENGTH Scalars");
     }
 
+    #[test]
+    fn assert_extraction_borrows_input_allowing_reuse() {
+        // Passing &v must compile; after the call v must still be accessible.
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert_extraction(&v, &[1.0, 2.0], DimensionVector::DIMENSIONLESS, "reuse test");
+        // v is still owned — reuse it here to prove it was not moved.
+        assert!(format!("{:?}", v).contains("Real"));
+    }
+
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
 
     // ── sanitize_value Real arm characterization tests ───────────────────────
