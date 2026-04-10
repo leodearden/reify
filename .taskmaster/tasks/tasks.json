@@ -29192,11 +29192,11 @@
         "description": "Several engine.rs invariant tests are gated behind `#[cfg(not(debug_assertions))]` and only run under `cargo test --release`. The current `orchestrator.yaml` test_command runs `cargo test --workspace -- --test-threads=1` (debug only), so the release-mode graceful-fallback path documented in the debug_assert comments is not exercised in the default verify pipeline.\n\nAffected tests in `gui/src-tauri/src/tests/engine_tests.rs`:\n- `get_diagnostics_returns_empty_when_module_name_broken`\n- `get_diagnostics_returns_empty_when_source_map_broken`\n- `get_diagnostics_returns_empty_when_module_name_broken_with_real_warning`\n- `get_diagnostics_returns_empty_when_source_map_broken_with_real_warning`\n- `get_source_location_returns_none_when_module_name_broken` (new in task 1377)\n- `get_source_location_returns_none_when_source_map_broken` (new in task 1377)\n\nOptions:\n1. Add a second `cargo test --release` pass to `orchestrator.yaml`'s test_command (cost: ~2x compile + test time).\n2. Add a release-only CI job that runs only the affected test names via filter.\n3. Drop the cfg gate and use runtime `if cfg!(debug_assertions)` branching inside the tests instead — single pass covers both modes.\n\nDecide which option fits the verify-pipeline budget and apply it.\n\nmemory_hints:\n- search \"orchestrator.yaml verify pipeline test_command\" for current CI structure\n- search \"task 1377 debug_assert get_source_location\" for context\n",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:13:34.874Z",
+        "updatedAt": "2026-04-10T01:11:30.718Z",
         "metadata": {
           "files": [
             "orchestrator.yaml",
@@ -29669,9 +29669,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:11:26.770Z",
+      "lastModified": "2026-04-10T01:11:30.718Z",
       "taskCount": 1435,
-      "completedCount": 1097,
+      "completedCount": 1098,
       "tags": [
         "master"
       ]
