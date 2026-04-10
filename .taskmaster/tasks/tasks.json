@@ -32420,7 +32420,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:14:02.942Z"
+        "updatedAt": "2026-04-10T08:14:02.942Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": 1596,
