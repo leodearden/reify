@@ -31861,6 +31861,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1567,
+        "title": "calculus.rs: wrap_scalar_result cross-ref, curl debug_assert, Vector panic test",
+        "description": "Three improvements in crates/reify-expr/src/calculus.rs: (1) Lines 93-105: add doc cross-ref to Value::from_component. (2) Lines 1025-1034: add debug_assert on codomain_type in curl for consistency with divergence/laplacian. (3) Add debug_assert panic test using Type::vec3(Type::Real) as invalid codomain.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -31873,7 +31884,7 @@
       ],
       "created": "2026-04-10T06:44:45.217Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T06:46:12.953Z"
+      "updated": "2026-04-10T06:46:17.134Z"
     }
   }
 }
