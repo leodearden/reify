@@ -519,6 +519,33 @@ printf 'if [ -n "$_expr_ref_fn" ]; then echo skip; fi\n' > "$fixture_historical"
 if _has_if_n_guard "$fixture_historical" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects historical \$_expr_ref_fn (ff0880bfe regression pin)" "$ok"
 
+echo ""
+echo "--- Robustness: empty-guard short-circuit pattern ---"
+
+# Negative fixture: guard WITHOUT test_summary; — helper must return non-zero.
+# This reproduces the exact regression the new check is designed to catch:
+# the guard is present but does not short-circuit, so execution falls through
+# to the diff assertion, producing a spurious PASS on empty expr_body.
+fixture_no_summary=$(mk_fixture)
+printf '[ -z "$expr_body" ] && { assert "extract_fn sanitize_value found in reify-expr" false; }\n' \
+    > "$fixture_no_summary"
+if ! _has_expr_body_empty_guard_short_circuit "$fixture_no_summary" 2>/dev/null; then
+    check "_has_expr_body_empty_guard_short_circuit rejects guard without test_summary" "true"
+else
+    check "_has_expr_body_empty_guard_short_circuit rejects guard without test_summary" "false"
+fi
+
+# Positive fixture: guard WITH test_summary; — helper must return zero.
+# Confirms the helper does not false-positive on a correctly written guard.
+fixture_with_summary=$(mk_fixture)
+printf '[ -z "$expr_body" ] && { assert "extract_fn sanitize_value found in reify-expr" false; test_summary; }\n' \
+    > "$fixture_with_summary"
+if _has_expr_body_empty_guard_short_circuit "$fixture_with_summary" 2>/dev/null; then
+    check "_has_expr_body_empty_guard_short_circuit accepts guard with test_summary" "true"
+else
+    check "_has_expr_body_empty_guard_short_circuit accepts guard with test_summary" "false"
+fi
+
 # Self-check: file-local helpers use symmetric positive _has_ naming.
 if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
     && grep -qE '^_has_if_n_guard\(\)' "${BASH_SOURCE[0]}" \
