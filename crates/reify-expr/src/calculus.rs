@@ -1844,6 +1844,19 @@ mod tests {
     }
 
     #[test]
+    fn validate_differentiable_field_imported_source_returns_none() {
+        let lambda = make_test_lambda();
+        let field = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Imported,
+            lambda: Box::new(lambda),
+        };
+        let result = validate_differentiable_field(&field, "test");
+        assert!(result.is_none());
+    }
+
+    #[test]
     fn validate_differentiable_field_non_lambda_slot_returns_none() {
         let field = Value::Field {
             domain_type: Type::Real,
