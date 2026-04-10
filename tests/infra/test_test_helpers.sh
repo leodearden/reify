@@ -589,6 +589,14 @@ printf 'if [ -z "$ref_fn" ]; then echo fail; fi\n' > "$fixture_z"
 if ! _has_if_n_guard "$fixture_z" 2>/dev/null; then ok=true; else ok=false; fi
 check "if-guard pattern tolerates legitimate -z early-fail guard (\$ref_fn)" "$ok"
 
+# Positive-direction -z pin: double-bracket form `if [[ -z "$var" ]]`.
+# If the regex were tightened to `\[\[?[[:space:]]+-[nz]`, it would ban this
+# legitimate guard too.  This pin ensures double-bracket -z stays tolerated.
+fixture_z_double=$(mk_fixture)
+printf 'if [[ -z "$var" ]]; then echo fail; fi\n' > "$fixture_z_double"
+if ! _has_if_n_guard "$fixture_z_double" 2>/dev/null; then ok=true; else ok=false; fi
+check "if-guard pattern tolerates -z in double-bracket form: if [[ -z" "$ok"
+
 # Double-bracket form: `if [[ -n "$var" ]]`
 # Requires regex to match `[[` as well as `[`.
 fixture_double_bracket=$(mk_fixture)
