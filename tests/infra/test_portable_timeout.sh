@@ -50,6 +50,13 @@ _build_posix_fallback_env() {
     printf '    source "$LIB_PORTABLE"\n'
 }
 
+# -- Shared regex: canonical 'kill -- -$cmd_pid' form -------------------------
+# Used by Test 22 (structural assertion: no non-comment line in LIB_PORTABLE uses
+# this form) and by Test 22b (meta-assertions validating match/reject semantics).
+# Single-quoted to preserve the backslash-dollar literal; grep -E sees \$ as a
+# literal dollar sign (matching the unquoted $cmd_pid in the shell text).
+KILL_CMD_PID_RE='kill[[:space:]]+--[[:space:]]+"?-\$cmd_pid'
+
 echo "=== portable_timeout unit tests ==="
 
 # -- Meta: KILL_CMD_PID_RE shared-setup constant is declared ------------------
@@ -653,7 +660,7 @@ assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)
 # cannot match the intervening '-9' — no prefix anchor is needed.
 # Comment lines are excluded first to avoid false matches on inline documentation.
 assert "no line uses the canonical kill -- -\$cmd_pid form (quoted or unquoted)" \
-    bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
+    env KILL_CMD_PID_RE="$KILL_CMD_PID_RE" bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "$KILL_CMD_PID_RE"' _ "$LIB_PORTABLE"
 
 # -- Test 22b (meta): simplified kill regex discrimination semantics -----------
 echo ""
@@ -663,10 +670,10 @@ echo "--- Test 22b (meta): simplified kill regex matches/rejects correctly ---"
 # matches 'kill -- -$cmd_pid' and correctly rejects 'kill -9 -- -$cmd_pid'.
 # Self-contained; does not depend on lib_portable.sh content.
 assert "simplified kill regex matches canonical kill -- -\$cmd_pid" \
-    bash -c 'printf "%s\n" "kill -- -\$cmd_pid" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"'
+    env KILL_CMD_PID_RE="$KILL_CMD_PID_RE" bash -c 'printf "%s\n" "kill -- -\$cmd_pid" | grep -qE "$KILL_CMD_PID_RE"'
 
 assert "simplified kill regex rejects kill -9 -- -\$cmd_pid" \
-    bash -c '! printf "%s\n" "kill -9 -- -\$cmd_pid" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"'
+    env KILL_CMD_PID_RE="$KILL_CMD_PID_RE" bash -c '! printf "%s\n" "kill -9 -- -\$cmd_pid" | grep -qE "$KILL_CMD_PID_RE"'
 
 # -- Test 23: structural: both timer subshells quote the PGID argument (S1) ---
 echo ""
