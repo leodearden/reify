@@ -2187,11 +2187,15 @@ fn resolve_source_returns_updated_content_after_update_source() {
     );
 }
 
-/// get_source_location returns the updated file_path after update_source changes the module name.
+/// get_source_location returns the updated file_path after update_source changes the module name,
+/// and line/column positions remain stable when the source text is identical.
 ///
 /// After load_from_source with 'initial' then update_source("updated.ri", ...),
 /// get_source_location must use the new module name key "updated.ri" for the file_path,
-/// not the stale "initial.ri". Fills test-analyst gap S11.
+/// not the stale "initial.ri". Fills test-analyst gap S11. Additionally, because both
+/// calls pass the same source text, the byte span for S.width is unchanged and
+/// byte_offset_to_line_col must produce identical line/column/end_line/end_column values —
+/// guarding against update_source corrupting source-map content.
 #[test]
 fn get_source_location_file_key_updates_after_update_source() {
     let checker = SimpleConstraintChecker;
@@ -2223,5 +2227,23 @@ fn get_source_location_file_key_updates_after_update_source() {
     assert_eq!(
         loc_after.file_path, "updated.ri",
         "after update_source: file_path should be 'updated.ri', not 'initial.ri'"
+    );
+
+    // Line/column positions must be unchanged when update_source uses identical source text.
+    assert_eq!(
+        loc_after.line, loc_before.line,
+        "line should be unchanged when update_source uses identical source text"
+    );
+    assert_eq!(
+        loc_after.column, loc_before.column,
+        "column should be unchanged when update_source uses identical source text"
+    );
+    assert_eq!(
+        loc_after.end_line, loc_before.end_line,
+        "end_line should be unchanged when update_source uses identical source text"
+    );
+    assert_eq!(
+        loc_after.end_column, loc_before.end_column,
+        "end_column should be unchanged when update_source uses identical source text"
     );
 }
