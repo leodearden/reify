@@ -29439,6 +29439,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1429,
+        "title": "Audit compile_geometry_op for silent return-None branches missing diagnostics",
+        "description": "The new warn-and-drop pattern added by Task 1199 applies only to Extrude distance, Revolve axis, and Revolve angle. Several sibling branches in `compile_geometry_op` (crates/reify-eval/src/lib.rs, lines ~3404-3605) still silently return `None` on degenerate/invalid input, leaving the user with only the caller's generic \"failed to compile geometry operation\" error:\n\n- `TransformKind::Scale` with `factor < 0.0` (line ~3549)\n- `PrimitiveKind::Cylinder` / `Sphere` with missing args\n- `ModifyKind::Draft` with no plane (line ~3508)\n- `ModifyKind::Shell` with empty/invalid faces\n- Mirror/Loft resolution failures\n\nFor UX consistency, apply the same warn-and-drop pattern at each of these points so model authors always get a specific explanation. This is a follow-up audit — coordinate with the diagnostic-noise fix (suppress redundant generic error task) if both are in-flight.\n\nmemory_hints: search \"compile_geometry_op return None silent\" entity \"compile_geometry_op\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -29451,7 +29462,7 @@
       ],
       "created": "2026-04-10T01:03:18.006Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T01:03:30.750Z"
+      "updated": "2026-04-10T01:03:38.431Z"
     }
   }
 }
