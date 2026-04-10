@@ -241,12 +241,13 @@ cat > "$CHECK2_HELPER" <<'CHECK2EOF'
 #!/usr/bin/env bash
 # Mirror of scripts/check-pm-standardization.sh Check 2 subshell body.
 set -euo pipefail
+expected=$#
 for f in "$@"; do
     [ -f "$f" ] || exit 1
 done
 total=$(grep -ohE '"packageManager"\s*:\s*"[^"]+"' "$@" | wc -l | tr -d ' ')
 unique=$(grep -ohE '"packageManager"\s*:\s*"[^"]+"' "$@" | sort -u | wc -l | tr -d ' ')
-[ "$total" = '3' ] && [ "$unique" = '1' ]
+[ "$total" = "$expected" ] && [ "$unique" = '1' ]
 CHECK2EOF
 chmod +x "$CHECK2_HELPER"
 
