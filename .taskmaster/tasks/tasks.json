@@ -6017,12 +6017,17 @@
         "testStrategy": "cargo test -p reify-kernel-occt -- cone && cargo test -p reify-eval -- cone",
         "priority": "high",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-M8.1",
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-compiler/src",
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests",
+            "crates/reify-kernel-occt/cpp",
+            "crates/reify-kernel-occt/src",
+            "crates/reify-kernel-occt/tests",
+            "crates/reify-types/src"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -6032,7 +6037,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-10T01:07:21.421Z"
+        "updatedAt": "2026-04-10T01:11:49.419Z"
       },
       {
         "id": "304",
@@ -29669,7 +29674,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:11:30.718Z",
+      "lastModified": "2026-04-10T01:11:49.419Z",
       "taskCount": 1435,
       "completedCount": 1098,
       "tags": [
