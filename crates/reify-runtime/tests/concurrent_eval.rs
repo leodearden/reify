@@ -1605,24 +1605,33 @@ use reify_test_support::warn_capturing_subscriber;
 /// least one event contains every `(key, value)` pair in `expected_fields`.
 /// Returns the value produced by `action` for downstream assertions.
 ///
-/// # Contract checks (applied to every callsite)
+/// # Contract
 ///
-/// In addition to the count and field checks, this helper enforces two
-/// invariants that must hold for every warn site across all 3 families
-/// (helper recovery, into_result inline, shared_fallback inline):
-///
-/// 1. **Canonical message** — at least one captured event has the exact message
-///    text `"lock poisoned, recovering"`.  Verified via
-///    `capture.assert_any_message_equals(...)`.
-///
-/// 2. **`error` field presence** — at least one captured event has an `error`
-///    field key, guarding against silent removal of the `error = %e` structured
-///    field from any warn site.
+/// In addition to the count and field-value checks, this helper enforces a
+/// **co-location invariant**: at least one warn event must carry BOTH the
+/// canonical message `poison_fields::MSG_LOCK_POISONED` AND the structured
+/// `error` field on the *same* event.  This prevents a future refactor from
+/// accidentally emitting the message on one event and the error field on a
+/// separate unrelated warn — a split that would silently pass count/field-value
+/// checks while breaking the structured-error contract.
 ///
 /// # Panics
 ///
 /// Panics if `action` panics (i.e., `catch_unwind` returns `Err`), or if the
-/// WARN count, field, message, or error-field checks fail.
+/// WARN count, field-value, or co-location checks fail.
+///
+/// # Coverage note
+///
+/// This helper's invariants (no-panic, exact warn count, structured-field match)
+/// apply only at callsites that route through it.  The following warn sites are
+/// tested outside this helper:
+///
+/// 1. `write_values` and `write_snapshot_values` via `evaluate()` in
+///    `poison_evaluate::tracing_warn_emitted_on_poison_evaluate` and
+///    `poison_evaluate::tracing_warn_emitted_on_poison_evaluate_snapshot_values`.
+/// 2. The triple-lock shared-fallback path in
+///    `all_three_locks_poisoned_shared_fallback_recovers_with_three_warns`.
+/// 3. The per-site structured-field tests in the `structured_field_emission` module.
 #[cfg(feature = "test-utils")]
 fn assert_poison_recovers<T: Send + 'static>(
     action: impl FnOnce() -> T + std::panic::UnwindSafe,
@@ -1639,21 +1648,33 @@ fn assert_poison_recovers<T: Send + 'static>(
         "action panicked when poison recovery was expected — catch_unwind returned Err"
     );
     capture.assert_count(expected_warns);
+    // Validates exact field VALUES (e.g. lock="values", access="read") for the
+    // structured-field schema contract.
     capture.assert_any_event_has_fields(expected_fields);
-    // Contract: canonical message text must be exactly "lock poisoned, recovering"
-    // on every poison-recovery warn site.  This collapses 11 per-site string
-    // literals into one authoritative check.
-    capture.assert_any_message_equals(poison_fields::MSG_LOCK_POISONED);
-    // Contract: the `error = %e` structured field must be present on at least
-    // one captured event.  Guards against silent removal of the field from any
-    // warn site.
+
+    // Co-location invariant: MSG_LOCK_POISONED and the `error` field must
+    // appear on the same event.  The two parallel vecs are always equal-length
+    // (WarnCapturingSubscriber pushes to both in the same event() call); the
+    // length assertion is a safety-net for that internal invariant.
+    let msgs = capture.messages();
     let fbe = capture.fields_by_event();
-    assert!(
-        fbe.iter().any(|m| m.contains_key("error")),
-        "no captured WARN event had an `error` field key; \
-         the `error = %e` structured field must be present on every \
-         poison-recovery warn site. fields_by_event: {fbe:?}"
+    assert_eq!(
+        msgs.len(),
+        fbe.len(),
+        "messages and fields_by_event must have equal length (internal invariant of WarnCapture)"
     );
+    let has_colocation = msgs.iter().zip(fbe.iter()).any(|(msg, fields)| {
+        msg == poison_fields::MSG_LOCK_POISONED && fields.contains_key("error")
+    });
+    assert!(
+        has_colocation,
+        "expected at least one warn event with BOTH message == {:?} AND field 'error'; \
+         messages: {:?}, fields: {:?}",
+        poison_fields::MSG_LOCK_POISONED,
+        msgs,
+        fbe,
+    );
+
     result.unwrap()
 }
 
@@ -1761,6 +1782,48 @@ mod poison_recovery {
             || adapter.build_result_shared(&eval_set, HashSet::new()),
             1,
             &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)],
+        );
+    }
+
+    /// Co-location contract: the canonical message `MSG_LOCK_POISONED` and the
+    /// structured `error` field must appear on the **same** warn event.
+    ///
+    /// This standalone test captures events directly (without going through
+    /// `assert_poison_recovers`) so the co-location invariant is explicit and not
+    /// hidden behind helper abstraction.  It uses `values()` after `poison_values()`
+    /// as the simplest single-warn exercise path.
+    #[test]
+    fn error_field_colocated_with_canonical_message() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        adapter.poison_values();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let _values = tracing::subscriber::with_default(subscriber, || adapter.values());
+
+        let msgs = capture.messages();
+        let fbe = capture.fields_by_event();
+
+        // Safety invariant: WarnCapturingSubscriber pushes to both vecs in the same
+        // event() call, so they are always equal-length.
+        assert_eq!(
+            msgs.len(),
+            fbe.len(),
+            "messages and fields_by_event must have equal length (internal invariant of WarnCapture)"
+        );
+
+        // At least one warn event must have BOTH the canonical message AND the
+        // structured error field — they must be co-located on the same event.
+        let has_colocation = msgs.iter().zip(fbe.iter()).any(|(msg, fields)| {
+            msg == poison_fields::MSG_LOCK_POISONED && fields.contains_key("error")
+        });
+        assert!(
+            has_colocation,
+            "expected at least one warn event with BOTH message == {:?} AND field 'error'; \
+             messages: {:?}, fields: {:?}",
+            poison_fields::MSG_LOCK_POISONED,
+            msgs,
+            fbe,
         );
     }
 }
@@ -2524,8 +2587,45 @@ mod poison_evaluate {
             count >= 2,
             "expected at least 2 WARN events (read_values + write_values recovery), got {count}"
         );
-        // Verify at least one event names the correct lock via structured fields
-        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES)]);
+        // Verify at least one event names the correct lock AND access=write via structured fields
+        capture.assert_any_event_has_fields(&[
+            ("lock", poison_fields::LOCK_VALUES),
+            ("access", poison_fields::ACCESS_WRITE),
+        ]);
+    }
+
+    /// Verify that tracing::warn! is emitted when evaluate() recovers from a poisoned
+    /// snapshot_values lock.  evaluate() calls write_snapshot_values after write_values,
+    /// so poisoning only snapshot_values isolates the write_snapshot_values warn site.
+    /// The values lock remains clean, so read_values and write_values succeed silently;
+    /// exactly the snapshot_values write path fires a WARN event.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tracing_warn_emitted_on_poison_evaluate_snapshot_values() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
+
+        // Poison only snapshot_values — values lock stays clean
+        adapter.poison_snapshot_values();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let outcome = tracing::subscriber::with_default(subscriber, || {
+            evaluate_with_recovery(&adapter, node)
+        });
+        let outcome = outcome
+            .expect("evaluate() should recover from poisoned snapshot_values lock, not panic");
+        assert_eq!(outcome, EvalOutcome::Changed);
+
+        let count = capture.count();
+        assert!(
+            count >= 1,
+            "expected at least 1 WARN event (write_snapshot_values recovery), got {count}"
+        );
+        // Verify at least one event names lock=snapshot_values AND access=write
+        capture.assert_any_event_has_fields(&[
+            ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+            ("access", poison_fields::ACCESS_WRITE),
+        ]);
     }
 }
 

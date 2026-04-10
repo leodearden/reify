@@ -124,11 +124,243 @@ pub(crate) fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value
     sanitize_value(Value::from_component(mag, dimension))
 }
 
+/// Extract numeric components and consistent dimension from a Tensor value.
+///
+/// Returns `Some((values, dimension))` if:
+/// - `v` is a `Value::Tensor`, `Value::Point`, or `Value::Vector` with at least one element.
+/// - All components support `as_f64()`.
+/// - All components share the same dimension (or all are dimensionless).
+///
+/// Returns `None` for non-Tensor/Point/Vector values, empty containers, non-numeric
+/// components, or containers with mixed dimensions.
+pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
+    let items = match v {
+        Value::Tensor(items) | Value::Point(items) | Value::Vector(items) if !items.is_empty() => {
+            items
+        }
+        _ => return None,
+    };
+    let first_dim = items[0].dimension();
+    let mut vals = Vec::with_capacity(items.len());
+    for item in items {
+        if item.dimension() != first_dim {
+            return None; // mixed dimensions
+        }
+        match item.as_f64() {
+            Some(x) => vals.push(x),
+            None => return None, // non-numeric component
+        }
+    }
+    Some((vals, first_dim))
+}
+
+// SYNC: mirror of reify-expr::sanitize.rs tests — keep in sync
 #[cfg(test)]
 mod tests {
     use reify_types::DimensionVector;
 
     use super::*;
+
+    fn assert_extraction(input: Value, expected_vals: &[f64], expected_dim: DimensionVector, label: &str) {
+        let (vals, dim) = tensor_components_f64(&input)
+            .unwrap_or_else(|| panic!("{}: expected Some but got None", label));
+        assert_eq!(
+            vals.len(),
+            expected_vals.len(),
+            "{}: expected {} components but got {}",
+            label,
+            expected_vals.len(),
+            vals.len()
+        );
+        for (i, (&actual, &expected)) in vals.iter().zip(expected_vals.iter()).enumerate() {
+            assert!(
+                (actual - expected).abs() < f64::EPSILON,
+                "{}: vals[{}] expected {} but got {}",
+                label,
+                i,
+                expected,
+                actual
+            );
+        }
+        assert_eq!(dim, expected_dim, "{}: dimension mismatch", label);
+    }
+
+    // ── tensor_components_f64 rejection: non-container types ─────────────────
+
+    #[test]
+    fn tensor_components_f64_real_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Real(1.0)).is_none(),
+            "Real value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_int_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Int(42)).is_none(),
+            "Int value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_undef_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Undef).is_none(),
+            "Undef value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_bool_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Bool(true)).is_none(),
+            "Bool value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_string_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::String("hello".to_string())).is_none(),
+            "String value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_list_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::List(vec![Value::Real(1.0)])).is_none(),
+            "List value should return None"
+        );
+    }
+
+    // ── tensor_components_f64 rejection: empty containers ────────────────────
+
+    #[test]
+    fn tensor_components_f64_empty_tensor_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Tensor(vec![])).is_none(),
+            "Empty Tensor should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_empty_point_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Point(vec![])).is_none(),
+            "Empty Point should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_empty_vector_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Vector(vec![])).is_none(),
+            "Empty Vector should return None"
+        );
+    }
+
+    // ── tensor_components_f64 rejection: non-numeric components ──────────────
+
+    #[test]
+    fn tensor_components_f64_vector_with_string_component_returns_none() {
+        let v = Value::Vector(vec![Value::String("x".to_string())]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector containing a String component should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_tensor_with_bool_component_returns_none() {
+        let v = Value::Tensor(vec![Value::Bool(true)]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Tensor containing a Bool component should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_vector_with_complex_component_returns_none() {
+        let v = Value::Vector(vec![Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector containing a Complex component should return None"
+        );
+    }
+
+    // ── tensor_components_f64 rejection: mixed dimensions ────────────────────
+
+    #[test]
+    fn tensor_components_f64_vector_mixed_dimensionless_and_length_returns_none() {
+        // First element is dimensionless (Real), second is LENGTH (Scalar).
+        let v = Value::Vector(vec![
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector mixing DIMENSIONLESS and LENGTH should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_tensor_mixed_length_and_mass_returns_none() {
+        let v = Value::Tensor(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Tensor mixing LENGTH and MASS should return None"
+        );
+    }
+
+    // ── tensor_components_f64 success: valid extraction paths ────────────────
+
+    #[test]
+    fn tensor_components_f64_vector_of_reals_returns_values_and_dimensionless() {
+        assert_extraction(Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]), &[1.0, 2.0, 3.0], DimensionVector::DIMENSIONLESS, "Vector of Reals");
+    }
+
+    #[test]
+    fn tensor_components_f64_point_of_length_scalars_returns_values_and_length() {
+        assert_extraction(Value::Point(vec![Value::Scalar { si_value: 0.5, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 1.5, dimension: DimensionVector::LENGTH }]), &[0.5, 1.5], DimensionVector::LENGTH, "Point of LENGTH Scalars");
+    }
+
+    #[test]
+    fn tensor_components_f64_single_element_tensor_of_int_returns_value_and_dimensionless() {
+        assert_extraction(Value::Tensor(vec![Value::Int(7)]), &[7.0], DimensionVector::DIMENSIONLESS, "single-element Tensor of Int");
+    }
+
+    #[test]
+    fn tensor_components_f64_vector_of_mass_scalars_returns_values_and_mass() {
+        assert_extraction(Value::Vector(vec![Value::Scalar { si_value: 1.5, dimension: DimensionVector::MASS }, Value::Scalar { si_value: 2.5, dimension: DimensionVector::MASS }]), &[1.5, 2.5], DimensionVector::MASS, "Vector of MASS Scalars");
+    }
+
+    #[test]
+    fn tensor_components_f64_tensor_of_reals_returns_values_and_dimensionless() {
+        assert_extraction(Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]), &[1.0, 2.0, 3.0], DimensionVector::DIMENSIONLESS, "Tensor of Reals");
+    }
+
+    #[test]
+    fn tensor_components_f64_vector_of_length_scalars_returns_values_and_length() {
+        assert_extraction(Value::Vector(vec![Value::Scalar { si_value: 0.1, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 0.2, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 0.3, dimension: DimensionVector::LENGTH }]), &[0.1, 0.2, 0.3], DimensionVector::LENGTH, "Vector of LENGTH Scalars");
+    }
 
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
 
@@ -222,34 +454,219 @@ mod tests {
             other => panic!("expected Scalar{{0.001, LENGTH}}, got {:?}", other),
         }
     }
-}
 
-/// Extract numeric components and consistent dimension from a Tensor value.
-///
-/// Returns `Some((values, dimension))` if:
-/// - `v` is a `Value::Tensor`, `Value::Point`, or `Value::Vector` with at least one element.
-/// - All components support `as_f64()`.
-/// - All components share the same dimension (or all are dimensionless).
-///
-/// Returns `None` for non-Tensor/Point/Vector values, empty containers, non-numeric
-/// components, or containers with mixed dimensions.
-pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
-    let items = match v {
-        Value::Tensor(items) | Value::Point(items) | Value::Vector(items) if !items.is_empty() => {
-            items
-        }
-        _ => return None,
-    };
-    let first_dim = items[0].dimension();
-    let mut vals = Vec::with_capacity(items.len());
-    for item in items {
-        if item.dimension() != first_dim {
-            return None; // mixed dimensions
-        }
-        match item.as_f64() {
-            Some(x) => vals.push(x),
-            None => return None, // non-numeric component
+    // ── sanitize_value Complex arm characterization tests ─────────────────────
+
+    #[test]
+    fn sanitize_complex_nan_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with NaN re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_nan_im_returns_undef() {
+        let v = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with NaN im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_inf_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::INFINITY,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with +Inf re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_neg_inf_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::NEG_INFINITY,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with -Inf re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_inf_im_returns_undef() {
+        let v = Value::Complex {
+            re: 0.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with +Inf im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_neg_inf_im_returns_undef() {
+        let v = Value::Complex {
+            re: 0.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with -Inf im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_finite_passthrough() {
+        let v = Value::Complex {
+            re: 3.0,
+            im: -4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        match sanitize_value(v) {
+            Value::Complex { re, im, .. } => {
+                assert!((re - 3.0).abs() < f64::EPSILON);
+                assert!((im - (-4.0)).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Complex{{re:3.0, im:-4.0}}, got {:?}", other),
         }
     }
-    Some((vals, first_dim))
+
+    // ── sanitize_value Orientation arm characterization tests ─────────────────
+
+    #[test]
+    fn sanitize_orientation_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN w should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::INFINITY,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with +Inf x should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_neg_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: f64::NEG_INFINITY,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with -Inf z should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_nan_y_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: f64::NAN,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN y should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_x_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::NAN,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN x should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_w_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::INFINITY,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with +Inf w should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_all_components_nonfinite_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NAN,
+            x: f64::INFINITY,
+            y: f64::NEG_INFINITY,
+            z: f64::NAN,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with all non-finite components should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_valid_passthrough() {
+        let v = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        match sanitize_value(v) {
+            Value::Orientation { w, x, y, z } => {
+                assert!((w - 1.0).abs() < f64::EPSILON);
+                assert!((x - 0.0).abs() < f64::EPSILON);
+                assert!((y - 0.0).abs() < f64::EPSILON);
+                assert!((z - 0.0).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Orientation{{1,0,0,0}}, got {:?}", other),
+        }
+    }
 }

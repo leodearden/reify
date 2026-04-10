@@ -140,6 +140,9 @@ assert "rejects: pub(crate) async fn sanitize_value_raw( (pub+async suffix false
 assert "rejects: pub(super) const fn sanitize_value_raw( (pub(super)+const suffix false-positive)" \
     bash -c '! printf "%s\n" "pub(super) const fn sanitize_value_raw(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
+assert "rejects: pub(in crate::foo) fn sanitize_value_raw( (pub(in path) suffix false-positive)" \
+    bash -c '! printf "%s\n" "pub(in crate::foo) fn sanitize_value_raw(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
 assert "rejects: // fn sanitize_value (comment line)" \
     bash -c '! printf "%s\n" "// fn sanitize_value(v: Value)" | grep -qE "$PATTERN"'
 
@@ -177,6 +180,12 @@ assert "no \\b in grep invocations in sync_ref_helpers.sh (non-comment lines, sc
 
 assert "no grep -P in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
     bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_REF_HELPERS'"
+
+assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC marker'" \
+    grep -q '"reify-stdlib has SYNC marker referencing reify-expr::sanitize_value"' "$SYNC_TEST"
+
+assert "extract_fn comment references actual awk pattern /^[^/]*fn/" \
+    bash -c "grep '^#' '$SYNC_TEST' | grep -qF '^[^/]*fn'"
 
 echo ""
 echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"

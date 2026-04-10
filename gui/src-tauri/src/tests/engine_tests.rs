@@ -2214,6 +2214,7 @@ fn get_source_location_file_key_updates_after_update_source() {
         loc_before.file_path, "initial.ri",
         "before update: file_path should be 'initial.ri'"
     );
+    assert!(loc_before.line > 0, "sanity: line should be positive for a real span");
 
     // Update with the same source but a different module name.
     session
