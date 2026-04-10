@@ -1417,6 +1417,38 @@ fn test_self_path_constants_guard_is_not_vacuous() {
 }
 
 #[test]
+fn test_path_constants_guard_uses_exact_count() {
+    // Meta-meta-test: `test_self_path_constants_guard_is_not_vacuous` must use
+    // `count == 2` (exact match) rather than `count >= 2` (lower bound).
+    // Using an exact count makes the meta-test orthogonal to the main test:
+    // the main test (`test_self_path_constants_use_manifest_dir`) guards against
+    // regression (count dropping below 2); the meta-test guards against inflation
+    // (unexpected additions that could raise the count and mask a regression).
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+
+    let body =
+        extract_test_fn_body(&source, "fn test_self_path_constants_guard_is_not_vacuous()")
+            .expect("source should contain test_self_path_constants_guard_is_not_vacuous");
+
+    assert!(
+        body.contains("count == 2"),
+        "test_self_path_constants_guard_is_not_vacuous must assert `count == 2` \
+         (exact match) so that the meta-test is orthogonal to the main test's `>= 2` \
+         lower-bound check. Function body:\n{}",
+        body
+    );
+
+    assert!(
+        !body.contains("count >= 2"),
+        "test_self_path_constants_guard_is_not_vacuous must NOT use `count >= 2` \
+         (lower bound), as that would be redundant with the main test's assertion. \
+         Use `count == 2` instead. Function body:\n{}",
+        body
+    );
+}
+
+#[test]
 fn test_drop_logs_error_check_is_form_agnostic() {
     // Meta-test / regression guard: `test_readonly_guard_drop_logs_error` must enforce
     // *semantic* invariants only (no silent discard + must log), not *syntactic* ones.
