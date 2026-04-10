@@ -711,3 +711,120 @@ fn full_pipeline_cross_feature_values() {
         other => panic!("expected Scalar for Plate.length, got {:?}", other),
     }
 }
+
+// ── Step 21/22: capstone inline — all 3 M9 features in one structure ──────────
+
+/// Final capstone: inline source that combines all three M9 features in a single
+/// structure. Tests that they compose correctly:
+///
+///   Feature 1 — Trait conformance + defaults:
+///     Trait 'Verifiable' with inline determinacy constraint (determined(value)) and
+///     trait 'Ranged' with inline value constraint (value > 0mm).
+///
+///   Feature 2 — Constraint def instantiation:
+///     Constraint def 'DeterminedPositive' with determined(v) + v > 0mm predicates,
+///     invoked on a structure-level param.
+///
+///   Feature 3 — Determinacy predicates:
+///     Both inline and constraint-def-based determinacy checks on the same param.
+///
+///   Structure 'Composite' implements both traits + invokes constraint def:
+///     - Trait-injected: determined(value) = Satisfied (value = 75mm)
+///     - Trait-injected: value > 0mm = Satisfied
+///     - Constraint def: DeterminedPositive[0] = determined(value) = Satisfied
+///     - Constraint def: DeterminedPositive[1] = value > 0mm = Satisfied
+///
+///   Assertions:
+///     1. Composite.value = 0.075 SI (75mm)
+///     2. DeterminedPositive[0] = Satisfied (determined(value))
+///     3. DeterminedPositive[1] = Satisfied (value > 0mm)
+///     4. All Composite constraints are Satisfied
+///     5. Total Composite constraint count >= 4 (2 trait-injected + 2 from constraint def)
+#[test]
+fn constraint_def_determinacy_in_multi_trait_structure() {
+    let source = r#"
+constraint def DeterminedPositive {
+    param v : Length
+    determined(v)
+    v > 0mm
+}
+trait Verifiable {
+    param value : Length
+    constraint determined(value)
+}
+trait Ranged {
+    param value : Length
+    constraint value > 0mm
+}
+structure Composite : Verifiable + Ranged {
+    param value : Length = 75mm
+    constraint DeterminedPositive(v: value)
+}
+"#;
+    let eval_result = eval_source(source);
+    let check_result = check_source(source);
+
+    // 1. Composite.value = 75mm = 0.075 SI
+    let value_id = ValueCellId::new("Composite", "value");
+    let value = eval_result
+        .values
+        .get(&value_id)
+        .expect("Composite.value should exist");
+    match value {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.075).abs() < 1e-12,
+                "expected ~0.075 SI for Composite.value (75mm), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for Composite.value, got {:?}", other),
+    }
+
+    // 2. DeterminedPositive[0] = determined(value) = Satisfied
+    let dp0 = check_result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Composite" && e.label == Some("DeterminedPositive[0]".to_string()))
+        .expect("expected DeterminedPositive[0] for Composite");
+    assert_eq!(
+        dp0.satisfaction,
+        Satisfaction::Satisfied,
+        "DeterminedPositive[0] (determined(value)) should be Satisfied for value=75mm"
+    );
+
+    // 3. DeterminedPositive[1] = value > 0mm = Satisfied
+    let dp1 = check_result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Composite" && e.label == Some("DeterminedPositive[1]".to_string()))
+        .expect("expected DeterminedPositive[1] for Composite");
+    assert_eq!(
+        dp1.satisfaction,
+        Satisfaction::Satisfied,
+        "DeterminedPositive[1] (value > 0mm) should be Satisfied for value=75mm"
+    );
+
+    // 4. All Composite constraints are Satisfied
+    let composite_constraints: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.id.entity == "Composite")
+        .collect();
+    for e in &composite_constraints {
+        assert_eq!(
+            e.satisfaction,
+            Satisfaction::Satisfied,
+            "all Composite constraints should be Satisfied, but {:?} is {:?}",
+            e.label,
+            e.satisfaction
+        );
+    }
+
+    // 5. At least 4 constraint results for Composite
+    // (2 trait-injected unlabeled + 2 from DeterminedPositive def)
+    assert!(
+        composite_constraints.len() >= 4,
+        "expected >= 4 constraint results for Composite, got {}",
+        composite_constraints.len()
+    );
+}
