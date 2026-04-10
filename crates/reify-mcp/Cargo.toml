@@ -10,6 +10,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
 thiserror = "2"
+reify-types = { workspace = true, features = ["serde"] }
 
 [features]
 test-support = []
