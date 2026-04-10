@@ -575,21 +575,23 @@ async fn initialized_returns_ok_null() {
 /// didOpen is sent after the initialize/initialized handshake.
 #[tokio::test]
 async fn did_open_returns_ok_null() {
-    let lsp = initialized_lsp().await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
 
-    let result = lsp
-        .handle_request(
-            "textDocument/didOpen",
-            did_open_params("file:///test.ri", reify_test_support::bracket_source()),
-        )
-        .await
-        .expect("didOpen should return Ok");
+        let result = lsp
+            .handle_request(
+                "textDocument/didOpen",
+                did_open_params("file:///test.ri", reify_test_support::bracket_source()),
+            )
+            .await
+            .expect("didOpen should return Ok");
 
-    assert_eq!(
-        result,
-        serde_json::Value::Null,
-        "didOpen should return exactly Ok(Value::Null)"
-    );
+        assert_eq!(
+            result,
+            serde_json::Value::Null,
+            "didOpen should return exactly Ok(Value::Null)"
+        );
+    });
 }
 
 /// Malformed (non-object) params for `initialized` should return an Err
@@ -615,20 +617,22 @@ async fn initialized_with_malformed_params_returns_error() {
 /// rather than a deserialization error.
 #[tokio::test]
 async fn initialized_with_null_params_returns_ok() {
-    let lsp = initialized_lsp().await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
 
-    // Value::Null simulates a JSON-RPC client that omits params or sends null
-    // for a notification with no meaningful payload.
-    let result = lsp
-        .handle_request("initialized", serde_json::Value::Null)
-        .await;
+        // Value::Null simulates a JSON-RPC client that omits params or sends null
+        // for a notification with no meaningful payload.
+        let result = lsp
+            .handle_request("initialized", serde_json::Value::Null)
+            .await;
 
-    let val = result.expect("initialized with null params should return Ok");
-    assert_eq!(
-        val,
-        serde_json::Value::Null,
-        "initialized with null params should return exactly Ok(Value::Null)"
-    );
+        let val = result.expect("initialized with null params should return Ok");
+        assert_eq!(
+            val,
+            serde_json::Value::Null,
+            "initialized with null params should return exactly Ok(Value::Null)"
+        );
+    });
 }
 
 /// Malformed params for `textDocument/didOpen` should return an Err
@@ -640,13 +644,15 @@ async fn initialized_with_null_params_returns_ok() {
 /// didOpen is sent after the initialize/initialized handshake.
 #[tokio::test]
 async fn did_open_with_malformed_params_returns_error() {
-    let lsp = initialized_lsp().await;
-    assert_malformed_params_returns_error(
-        &lsp,
-        "textDocument/didOpen",
-        error_prefix::DID_OPEN_PARAMS,
-    )
-    .await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/didOpen",
+            error_prefix::DID_OPEN_PARAMS,
+        )
+        .await;
+    });
 }
 
 /// Malformed params for `textDocument/didChange` should return an Err
@@ -656,13 +662,15 @@ async fn did_open_with_malformed_params_returns_error() {
 /// params are surfaced to the caller rather than silently ignored.
 #[tokio::test]
 async fn did_change_with_malformed_params_returns_error() {
-    let lsp = initialized_lsp().await;
-    assert_malformed_params_returns_error(
-        &lsp,
-        "textDocument/didChange",
-        error_prefix::DID_CHANGE_PARAMS,
-    )
-    .await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/didChange",
+            error_prefix::DID_CHANGE_PARAMS,
+        )
+        .await;
+    });
 }
 
 /// A valid `textDocument/didChange` notification should return exactly `Ok(Value::Null)`.
@@ -672,29 +680,31 @@ async fn did_change_with_malformed_params_returns_error() {
 /// realistic open → change lifecycle rather than coupling to lenient missing-URI behavior.
 #[tokio::test]
 async fn did_change_returns_ok_null() {
-    let lsp = initialized_lsp().await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
 
-    open_bracket_doc(&lsp).await;
+        open_bracket_doc(&lsp).await;
 
-    let result = lsp
-        .handle_request(
-            "textDocument/didChange",
-            json!({
-                "textDocument": {
-                    "uri": "file:///test.ri",
-                    "version": 2
-                },
-                "contentChanges": [{ "text": reify_test_support::bracket_source() }]
-            }),
-        )
-        .await
-        .expect("didChange should return Ok");
+        let result = lsp
+            .handle_request(
+                "textDocument/didChange",
+                json!({
+                    "textDocument": {
+                        "uri": "file:///test.ri",
+                        "version": 2
+                    },
+                    "contentChanges": [{ "text": reify_test_support::bracket_source() }]
+                }),
+            )
+            .await
+            .expect("didChange should return Ok");
 
-    assert_eq!(
-        result,
-        serde_json::Value::Null,
-        "didChange should return exactly Ok(Value::Null)"
-    );
+        assert_eq!(
+            result,
+            serde_json::Value::Null,
+            "didChange should return exactly Ok(Value::Null)"
+        );
+    });
 }
 
 /// Malformed params for `textDocument/didClose` should return an Err
@@ -704,13 +714,15 @@ async fn did_change_returns_ok_null() {
 /// params are surfaced to the caller rather than silently ignored.
 #[tokio::test]
 async fn did_close_with_malformed_params_returns_error() {
-    let lsp = initialized_lsp().await;
-    assert_malformed_params_returns_error(
-        &lsp,
-        "textDocument/didClose",
-        error_prefix::DID_CLOSE_PARAMS,
-    )
-    .await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/didClose",
+            error_prefix::DID_CLOSE_PARAMS,
+        )
+        .await;
+    });
 }
 
 /// A valid `textDocument/didClose` notification should return exactly `Ok(Value::Null)`.
@@ -750,8 +762,10 @@ async fn did_close_returns_ok_null() {
 /// was previously untested.
 #[tokio::test]
 async fn shutdown_returns_ok_null() {
-    let lsp = initialized_lsp().await;
-    assert_shutdown_returns_null(&lsp, &json!({})).await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
+        assert_shutdown_returns_null(&lsp, &json!({})).await;
+    });
 }
 
 /// The `shutdown` request with `null` params should return exactly `Ok(Value::Null)`.
@@ -766,8 +780,10 @@ async fn shutdown_returns_ok_null() {
 /// established for the analogous null-params case in the `initialized` arm.
 #[tokio::test]
 async fn shutdown_with_null_params_returns_ok_null() {
-    let lsp = initialized_lsp().await;
-    assert_shutdown_returns_null(&lsp, &json!(null)).await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
+        assert_shutdown_returns_null(&lsp, &json!(null)).await;
+    });
 }
 
 /// Calling `shutdown` on a bare [`InProcessLsp`] before the initialize/initialized
@@ -835,12 +851,14 @@ async fn shutdown_ignores_unexpected_params() {
 /// assertions are isolated from any state the prior shutdown call may have left.
 #[tokio::test]
 async fn shutdown_ignores_unexpected_params_after_initialize() {
-    // Object with unexpected extra fields — bridge must not reject this post-handshake.
-    let lsp = initialized_lsp().await;
-    assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
-    // Wrong JSON type entirely — bridge must not reject this post-handshake either.
-    let lsp = initialized_lsp().await;
-    assert_shutdown_returns_null(&lsp, &json!("oops")).await;
+    hang_guard!(async {
+        // Object with unexpected extra fields — bridge must not reject this post-handshake.
+        let lsp = initialized_lsp().await;
+        assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
+        // Wrong JSON type entirely — bridge must not reject this post-handshake either.
+        let lsp = initialized_lsp().await;
+        assert_shutdown_returns_null(&lsp, &json!("oops")).await;
+    });
 }
 
 /// Unit tests for the `completion_items` helper function.
