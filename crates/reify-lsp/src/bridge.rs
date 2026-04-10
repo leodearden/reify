@@ -18,12 +18,10 @@ use crate::server::{NoOpSink, NotificationSink, ReifyLanguageServer};
 /// [`InProcessLsp::handle_request`] to keep the per-arm code one line.
 ///
 /// On failure, returns `Err(format!("{label}: {e}"))`, where `label` is used
-/// **verbatim** as the error prefix. Callers pass the full prefix string
-/// directly — typically an [`error_prefix`] constant for arms covered by
-/// integration tests — so the constant is the literal source of truth for the
-/// runtime error message. Editing a constant is the only change needed to
-/// rotate its prefix; there is no parallel string in the implementation that
-/// could drift.
+/// **verbatim** as the error prefix. Callers pass an [`error_prefix`] constant
+/// directly, making that constant the literal source of truth for the runtime
+/// error message. Editing a constant is the only change needed to rotate its
+/// prefix; there is no parallel string in the implementation that could drift.
 fn parse_params<T: serde::de::DeserializeOwned>(
     params: serde_json::Value,
     label: &str,
@@ -141,27 +139,37 @@ impl InProcessLsp {
                 } else {
                     params
                 };
-                let p = parse_params::<InitializedParams>(params, error_prefix::INITIALIZED_PARAMS)?;
+                let p =
+                    parse_params::<InitializedParams>(params, error_prefix::INITIALIZED_PARAMS)?;
                 server.initialized(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didOpen" => {
-                let p = parse_params::<DidOpenTextDocumentParams>(params, error_prefix::DID_OPEN_PARAMS)?;
+                let p = parse_params::<DidOpenTextDocumentParams>(
+                    params,
+                    error_prefix::DID_OPEN_PARAMS,
+                )?;
                 server.did_open(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didChange" => {
-                let p = parse_params::<DidChangeTextDocumentParams>(params, error_prefix::DID_CHANGE_PARAMS)?;
+                let p = parse_params::<DidChangeTextDocumentParams>(
+                    params,
+                    error_prefix::DID_CHANGE_PARAMS,
+                )?;
                 server.did_change(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didClose" => {
-                let p = parse_params::<DidCloseTextDocumentParams>(params, error_prefix::DID_CLOSE_PARAMS)?;
+                let p = parse_params::<DidCloseTextDocumentParams>(
+                    params,
+                    error_prefix::DID_CLOSE_PARAMS,
+                )?;
                 server.did_close(p).await;
                 Ok(Value::Null)
             }
             "textDocument/completion" => {
-                let p = parse_params::<CompletionParams>(params, "completion params error")?;
+                let p = parse_params::<CompletionParams>(params, error_prefix::COMPLETION_PARAMS)?;
                 let result = server
                     .completion(p)
                     .await
@@ -169,7 +177,7 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/hover" => {
-                let p = parse_params::<HoverParams>(params, "hover params error")?;
+                let p = parse_params::<HoverParams>(params, error_prefix::HOVER_PARAMS)?;
                 let result = server
                     .hover(p)
                     .await
@@ -177,7 +185,8 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/definition" => {
-                let p = parse_params::<GotoDefinitionParams>(params, "definition params error")?;
+                let p =
+                    parse_params::<GotoDefinitionParams>(params, error_prefix::DEFINITION_PARAMS)?;
                 let result = server
                     .goto_definition(p)
                     .await
@@ -215,8 +224,9 @@ impl Default for InProcessLsp {
 /// import reflects the change automatically, turning any stale assertion into
 /// a compile error or immediate test failure.
 ///
-/// Only the six prefixes asserted by existing tests are exported.  Additional
-/// constants can be added here when new tests need them.
+/// All nine deserializing arms of `handle_request` thread their error prefix
+/// through a constant defined here. There are no remaining hardcoded strings
+/// in the implementation.
 pub mod error_prefix {
     /// Prefix for deserialization failures on `initialize` params.
     pub const INITIALIZE_PARAMS: &str = "initialize params error";
@@ -233,8 +243,40 @@ pub mod error_prefix {
     /// Prefix for deserialization failures on `textDocument/didClose` params.
     pub const DID_CLOSE_PARAMS: &str = "didClose params error";
 
+    /// Prefix for deserialization failures on `textDocument/completion` params.
+    pub const COMPLETION_PARAMS: &str = "completion params error";
+
+    /// Prefix for deserialization failures on `textDocument/hover` params.
+    pub const HOVER_PARAMS: &str = "hover params error";
+
+    /// Prefix for deserialization failures on `textDocument/definition` params.
+    pub const DEFINITION_PARAMS: &str = "definition params error";
+
     /// Prefix used when an unrecognised LSP method name is requested.
     ///
     /// The full error message is `"{UNSUPPORTED_METHOD} {method_name}"`.
     pub const UNSUPPORTED_METHOD: &str = "unsupported LSP method:";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// `parse_params` must include the caller-supplied label as a prefix in its
+    /// error message so that callers can identify which arm failed.
+    ///
+    /// Uses `error_prefix::INITIALIZE_PARAMS` (not a literal) to validate the
+    /// constant-based pattern: the constant is the source of truth, not a copy.
+    #[test]
+    fn parse_params_includes_label_in_error() {
+        let result = parse_params::<InitializeParams>(json!(42), error_prefix::INITIALIZE_PARAMS);
+        assert!(result.is_err(), "expected Err for malformed params, got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains(error_prefix::INITIALIZE_PARAMS),
+            "error should contain '{}', got: {err}",
+            error_prefix::INITIALIZE_PARAMS
+        );
+    }
 }
