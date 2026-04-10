@@ -29417,6 +29417,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1427,
+        "title": "Extract degenerate-geometry epsilon constants and use scientific notation in warnings",
+        "description": "In crates/reify-eval/src/lib.rs, the epsilon `1e-12` is repeated three times in the degenerate-geometry guards (lines ~3653, ~3683, ~3695) and echoed in warning strings. Two improvements:\n\n1. **Named constants:** Extract `const DEGENERATE_LENGTH_EPSILON_M: f64 = 1e-12;` and `const DEGENERATE_ANGLE_EPSILON_RAD: f64 = 1e-12;`. Reference them in both the guard conditions and warning format strings to prevent drift.\n\n2. **Scientific notation:** Change the format strings from `{}` (Display) to `{:e}` for f64 values. Near 1e-12/1e-15, Display renders as long decimal strings like `0.000000000000001` instead of `1e-15`, making the diagnostic harder to read.\n\nmemory_hints: search \"degenerate geometry epsilon extrude revolve\" for implementation context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -29429,7 +29440,7 @@
       ],
       "created": "2026-04-10T01:03:18.006Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T01:03:18.019Z"
+      "updated": "2026-04-10T01:03:23.705Z"
     }
   }
 }
