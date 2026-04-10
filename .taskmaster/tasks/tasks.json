@@ -31229,11 +31229,11 @@
         "description": "Two tests in `crates/reify-eval/src/lib.rs` use `diagnostics.iter().any(...)` without first asserting the expected diagnostic count:\n\n1. `compile_geometry_op_scale_negative_factor_returns_none` (~line 4754)\n2. `compile_geometry_op_scale_nan_factor_returns_none` (~line 4798)\n\nBoth should add `assert_eq!(diagnostics.len(), 1, \"expected exactly one diagnostic\");` before the `any()` check, matching the pattern used by other tests in the same file (e.g., line 5034-5040). This makes tests more precise by catching unexpected extra diagnostics.\n\nmemory_hints: search \"diagnostics.len() assertion convention\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:22:26.962Z",
+        "updatedAt": "2026-04-10T20:27:47.676Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -32843,7 +32843,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T20:27:43.727Z",
+      "lastModified": "2026-04-10T20:27:47.677Z",
       "taskCount": 1614,
       "completedCount": 1248,
       "tags": [
