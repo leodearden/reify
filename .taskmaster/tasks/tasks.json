@@ -29660,11 +29660,11 @@
         "description": "In `gui/src-tauri/src/tests/engine_tests.rs`, the test `get_source_location_file_key_updates_after_update_source` (line ~2200) compares `loc_after` to `loc_before` for line/column stability but never asserts concrete expected values. If both calls returned incorrect-but-equal values (e.g., both 0,0 due to a source-map bug), all four equality assertions would still pass.\n\nAdd a guard assertion before the equality comparisons:\n```rust\nassert!(loc_before.line > 0, \"sanity: line should be positive for a real span\");\n```\n\nThis catches the degenerate case where both loc values are wrong but equal.\n\nmemory_hints:\n- search \"get_source_location_file_key_updates_after_update_source\" for the test location\n- search \"loc_before.line loc_after.line equality assertion engine_tests\" for context",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T01:28:42.470Z",
+        "updatedAt": "2026-04-10T02:20:00.403Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src"
@@ -29996,9 +29996,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:19:51.079Z",
+      "lastModified": "2026-04-10T02:20:00.403Z",
       "taskCount": 1452,
-      "completedCount": 1125,
+      "completedCount": 1126,
       "tags": [
         "master"
       ]
