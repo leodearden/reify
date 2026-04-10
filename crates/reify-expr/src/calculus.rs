@@ -408,6 +408,37 @@ fn extract_explicit_domain_dim(domain_type: &Type) -> Option<DimensionVector> {
     }
 }
 
+/// Construct a perturbed domain argument from an `f64` value and optional dimension.
+///
+/// Returns `Value::Scalar { si_value: val, dimension: dim }` when `domain_dim` is
+/// `Some`, and `Value::Real(val)` when `domain_dim` is `None` (dimensionless domain).
+///
+/// This replaces the identical `make_arg` closure duplicated in all 4 numerical
+/// differential operator functions.
+fn make_domain_arg(val: f64, domain_dim: Option<DimensionVector>) -> Value {
+    match domain_dim {
+        Some(dim) => Value::Scalar {
+            si_value: val,
+            dimension: dim,
+        },
+        None => Value::Real(val),
+    }
+}
+
+/// Detect whether a lambda uses the single-Point calling convention.
+///
+/// Returns `true` when `lambda` is a `Lambda` with exactly 1 parameter *and* `n > 1`,
+/// meaning the caller should wrap perturbed coordinates in a `Value::Point` instead of
+/// passing `n` individual scalar arguments.
+///
+/// Returns `false` for non-Lambda values or when `n <= 1` (single-coordinate domain).
+fn detect_single_point_param(lambda: &Value, n: usize) -> bool {
+    match lambda {
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
+        _ => false,
+    }
+}
+
 /// Evaluate the lambda at a single perturbed point and recover `work_point`.
 ///
 /// This helper encapsulates the duplicated eval-and-recover sequence for the
@@ -532,10 +563,7 @@ pub(crate) fn compute_numerical_gradient_at_point(
     // Detect calling convention: single-Point param vs decomposed params.
     // If lambda has 1 param and n > 1, wrap perturbed coords in a Value::Point.
     // If lambda has n params, pass individual scalar values (current behavior).
-    let single_point_param = match lambda {
-        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
-        _ => false,
-    };
+    let single_point_param = detect_single_point_param(lambda, n);
 
     // Warn in debug builds when arity doesn't match and calling convention is
     // decomposed. An arity mismatch silently produces Undef via apply_lambda;
@@ -596,15 +624,7 @@ pub(crate) fn compute_numerical_gradient_at_point(
 
     // Hoist make_arg before the loop — it only captures domain_dim (Copy),
     // so constructing it once per axis would be redundant.
-    let make_arg = |val: f64| -> Value {
-        match domain_dim {
-            Some(dim) => Value::Scalar {
-                si_value: val,
-                dimension: dim,
-            },
-            None => Value::Real(val),
-        }
-    };
+    let make_arg = |val: f64| make_domain_arg(val, domain_dim);
 
     // Take ownership of coords — no clone needed.
     // work_coords[i] equals the original coords[i] bit-for-bit at the start of
@@ -822,10 +842,7 @@ pub(crate) fn compute_numerical_divergence_at_point(
         _ => DimensionVector::DIMENSIONLESS,
     };
 
-    let single_point_param = match lambda {
-        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
-        _ => false,
-    };
+    let single_point_param = detect_single_point_param(lambda, n);
 
     #[cfg(debug_assertions)]
     if let Value::Lambda { params, .. } = lambda
@@ -839,15 +856,7 @@ pub(crate) fn compute_numerical_divergence_at_point(
         );
     }
 
-    let make_arg = |val: f64| -> Value {
-        match domain_dim {
-            Some(dim) => Value::Scalar {
-                si_value: val,
-                dimension: dim,
-            },
-            None => Value::Real(val),
-        }
-    };
+    let make_arg = |val: f64| make_domain_arg(val, domain_dim);
 
     let mut work_coords = coords;
     let args_capacity = if single_point_param { 1 } else { n };
@@ -983,20 +992,9 @@ pub(crate) fn compute_numerical_curl_at_point(
         _ => DimensionVector::DIMENSIONLESS,
     };
 
-    let single_point_param = match lambda {
-        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
-        _ => false,
-    };
+    let single_point_param = detect_single_point_param(lambda, n);
 
-    let make_arg = |val: f64| -> Value {
-        match domain_dim {
-            Some(dim) => Value::Scalar {
-                si_value: val,
-                dimension: dim,
-            },
-            None => Value::Real(val),
-        }
-    };
+    let make_arg = |val: f64| make_domain_arg(val, domain_dim);
 
     let mut work_coords = coords;
     let args_capacity = if single_point_param { 1 } else { n };
@@ -1164,10 +1162,7 @@ pub(crate) fn compute_numerical_laplacian_at_point(
         _ => DimensionVector::DIMENSIONLESS,
     };
 
-    let single_point_param = match lambda {
-        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
-        _ => false,
-    };
+    let single_point_param = detect_single_point_param(lambda, n);
 
     #[cfg(debug_assertions)]
     if let Value::Lambda { params, .. } = lambda
@@ -1181,15 +1176,7 @@ pub(crate) fn compute_numerical_laplacian_at_point(
         );
     }
 
-    let make_arg = |val: f64| -> Value {
-        match domain_dim {
-            Some(dim) => Value::Scalar {
-                si_value: val,
-                dimension: dim,
-            },
-            None => Value::Real(val),
-        }
-    };
+    let make_arg = |val: f64| make_domain_arg(val, domain_dim);
 
     // Evaluate f at the center point once
     let mut center_args: Vec<Value> = if single_point_param {
