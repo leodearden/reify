@@ -189,53 +189,35 @@ for consumer in "${CONSUMERS[@]}"; do
     echo "--- Consumer: $cname ---"
 
     # (a) file contains 'source.*test_helpers.sh'
-    if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$cfile" 2>/dev/null; then
-        check "$cname sources test_helpers.sh" "true"
-    else
-        check "$cname sources test_helpers.sh" "false"
-    fi
+    if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$cfile" 2>/dev/null; then ok=true; else ok=false; fi
+    check "$cname sources test_helpers.sh" "$ok"
 
     # (b) file does NOT contain assert() function definition
-    if grep -q '^assert()' "$cfile" 2>/dev/null; then
-        check "$cname does NOT define assert() locally" "false"
-    else
-        check "$cname does NOT define assert() locally" "true"
-    fi
+    if ! grep -q '^assert()' "$cfile" 2>/dev/null; then ok=true; else ok=false; fi
+    check "$cname does NOT define assert() locally" "$ok"
 
     # (c) file does NOT contain PASS=0 or FAIL=0 initialization
-    if grep -qE '^PASS=0|^FAIL=0' "$cfile" 2>/dev/null; then
-        check "$cname does NOT init PASS/FAIL locally" "false"
-    else
-        check "$cname does NOT init PASS/FAIL locally" "true"
-    fi
+    if ! grep -qE '^PASS=0|^FAIL=0' "$cfile" 2>/dev/null; then ok=true; else ok=false; fi
+    check "$cname does NOT init PASS/FAIL locally" "$ok"
 
     # (d) file does NOT contain inline summary block
     # Look for the echo "Results:..." pattern outside a function definition
-    if grep -q 'echo "Results:.*passed.*failed"' "$cfile" 2>/dev/null; then
-        check "$cname does NOT have inline summary block" "false"
-    else
-        check "$cname does NOT have inline summary block" "true"
-    fi
+    if ! grep -q 'echo "Results:.*passed.*failed"' "$cfile" 2>/dev/null; then ok=true; else ok=false; fi
+    check "$cname does NOT have inline summary block" "$ok"
 
     # (e) scripts/ consumers must have a comment explaining cross-directory
     #     sourcing from tests/infra/ (gated to scripts/ consumers only)
     case "$consumer" in scripts/*)
         if grep -B3 -E '(source|\.)\s+.*test_helpers\.sh' "$cfile" 2>/dev/null \
-             | grep -qi 'test script.*not.*build'; then
-            check "$cname has cross-directory sourcing comment" "true"
-        else
-            check "$cname has cross-directory sourcing comment" "false"
-        fi
+             | grep -qi 'test script.*not.*build'; then ok=true; else ok=false; fi
+        check "$cname has cross-directory sourcing comment" "$ok"
         ;;
     esac
 
     # (f) all consumers must have a pre-source existence guard for test_helpers.sh
     #     matching pattern: [ -f ... ] || or test -f ... ||
-    if grep -E '\[ -f.*test_helpers\.sh.*\] \|\||test -f.*test_helpers\.sh.*\|\|' "$cfile" >/dev/null 2>&1; then
-        check "$cname has pre-source existence guard" "true"
-    else
-        check "$cname has pre-source existence guard" "false"
-    fi
+    if grep -E '\[ -f.*test_helpers\.sh.*\] \|\||test -f.*test_helpers\.sh.*\|\|' "$cfile" >/dev/null 2>&1; then ok=true; else ok=false; fi
+    check "$cname has pre-source existence guard" "$ok"
 done
 
 # ==============================================================================
