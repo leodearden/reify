@@ -161,6 +161,270 @@ mod tests {
 
     use super::*;
 
+    // ── tensor_components_f64 rejection: non-container types ─────────────────
+
+    #[test]
+    fn tensor_components_f64_real_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Real(1.0)).is_none(),
+            "Real value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_int_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Int(42)).is_none(),
+            "Int value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_undef_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Undef).is_none(),
+            "Undef value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_bool_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Bool(true)).is_none(),
+            "Bool value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_string_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::String("hello".to_string())).is_none(),
+            "String value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_list_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::List(vec![Value::Real(1.0)])).is_none(),
+            "List value should return None"
+        );
+    }
+
+    // ── tensor_components_f64 rejection: empty containers ────────────────────
+
+    #[test]
+    fn tensor_components_f64_empty_tensor_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Tensor(vec![])).is_none(),
+            "Empty Tensor should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_empty_point_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Point(vec![])).is_none(),
+            "Empty Point should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_empty_vector_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Vector(vec![])).is_none(),
+            "Empty Vector should return None"
+        );
+    }
+
+    // ── tensor_components_f64 rejection: non-numeric components ──────────────
+
+    #[test]
+    fn tensor_components_f64_vector_with_string_component_returns_none() {
+        let v = Value::Vector(vec![Value::String("x".to_string())]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector containing a String component should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_tensor_with_bool_component_returns_none() {
+        let v = Value::Tensor(vec![Value::Bool(true)]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Tensor containing a Bool component should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_vector_with_complex_component_returns_none() {
+        let v = Value::Vector(vec![Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector containing a Complex component should return None"
+        );
+    }
+
+    // ── tensor_components_f64 rejection: mixed dimensions ────────────────────
+
+    #[test]
+    fn tensor_components_f64_vector_mixed_dimensionless_and_length_returns_none() {
+        // First element is dimensionless (Real), second is LENGTH (Scalar).
+        let v = Value::Vector(vec![
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector mixing DIMENSIONLESS and LENGTH should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_tensor_mixed_length_and_mass_returns_none() {
+        let v = Value::Tensor(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Tensor mixing LENGTH and MASS should return None"
+        );
+    }
+
+    // ── tensor_components_f64 success: valid extraction paths ────────────────
+
+    #[test]
+    fn tensor_components_f64_vector_of_reals_returns_values_and_dimensionless() {
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let (vals, dim) =
+            tensor_components_f64(&v).expect("expected Some for Vector of Reals");
+        assert_eq!(vals.len(), 3, "should extract 3 components");
+        assert!((vals[0] - 1.0).abs() < f64::EPSILON);
+        assert!((vals[1] - 2.0).abs() < f64::EPSILON);
+        assert!((vals[2] - 3.0).abs() < f64::EPSILON);
+        assert_eq!(dim, DimensionVector::DIMENSIONLESS, "Real elements are dimensionless");
+    }
+
+    #[test]
+    fn tensor_components_f64_point_of_length_scalars_returns_values_and_length() {
+        let v = Value::Point(vec![
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        let (vals, dim) =
+            tensor_components_f64(&v).expect("expected Some for Point of LENGTH Scalars");
+        assert_eq!(vals.len(), 2, "should extract 2 components");
+        assert!((vals[0] - 0.5).abs() < f64::EPSILON);
+        assert!((vals[1] - 1.5).abs() < f64::EPSILON);
+        assert_eq!(dim, DimensionVector::LENGTH, "Scalar{{LENGTH}} elements have LENGTH dimension");
+    }
+
+    #[test]
+    fn tensor_components_f64_single_element_tensor_of_int_returns_value_and_dimensionless() {
+        let v = Value::Tensor(vec![Value::Int(7)]);
+        let (vals, dim) =
+            tensor_components_f64(&v).expect("expected Some for single-element Tensor of Int");
+        assert_eq!(vals.len(), 1, "should extract 1 component");
+        assert!((vals[0] - 7.0).abs() < f64::EPSILON, "Int(7) should become 7.0_f64");
+        assert_eq!(dim, DimensionVector::DIMENSIONLESS, "Int elements are dimensionless");
+    }
+
+    #[test]
+    fn tensor_components_f64_vector_of_mass_scalars_returns_values_and_mass() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 2.5,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
+        let (vals, dim) =
+            tensor_components_f64(&v).expect("expected Some for Vector of MASS Scalars");
+        assert_eq!(vals.len(), 2, "should extract 2 components");
+        assert!(
+            (vals[0] - 1.5).abs() < f64::EPSILON,
+            "first component should be 1.5"
+        );
+        assert!(
+            (vals[1] - 2.5).abs() < f64::EPSILON,
+            "second component should be 2.5"
+        );
+        assert_eq!(
+            dim,
+            DimensionVector::MASS,
+            "Scalar{{MASS}} elements have MASS dimension"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_tensor_of_reals_returns_values_and_dimensionless() {
+        let v = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let (vals, dim) =
+            tensor_components_f64(&v).expect("expected Some for Tensor of Reals");
+        assert_eq!(vals.len(), 3, "should extract 3 components");
+        assert!((vals[0] - 1.0).abs() < f64::EPSILON);
+        assert!((vals[1] - 2.0).abs() < f64::EPSILON);
+        assert!((vals[2] - 3.0).abs() < f64::EPSILON);
+        assert_eq!(
+            dim,
+            DimensionVector::DIMENSIONLESS,
+            "Real elements are dimensionless"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_vector_of_length_scalars_returns_values_and_length() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 0.1,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.2,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.3,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        let (vals, dim) =
+            tensor_components_f64(&v).expect("expected Some for Vector of LENGTH Scalars");
+        assert_eq!(vals.len(), 3, "should extract 3 components");
+        assert!((vals[0] - 0.1).abs() < f64::EPSILON);
+        assert!((vals[1] - 0.2).abs() < f64::EPSILON);
+        assert!((vals[2] - 0.3).abs() < f64::EPSILON);
+        assert_eq!(
+            dim,
+            DimensionVector::LENGTH,
+            "Scalar{{LENGTH}} elements have LENGTH dimension"
+        );
+    }
+
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
 
     // ── sanitize_value Real arm characterization tests ───────────────────────

@@ -73,12 +73,49 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
     }
 }
 
-/// Build the identity vector field F(x,y,z)=[x,y,z], compute its divergence,
-/// sample at `point` (literal type `point_literal_type`), and assert result ≈3.0.
+/// A typed sample point passed to field-sampling helpers.
 ///
-/// Used by both `divergence_identity_vector_field` (Point sample) and
-/// `divergence_accepts_vector_sample_point` (Vector sample).
-fn run_divergence_identity_test(point: Value, point_literal_type: Type, label: &str) {
+/// Encodes both the value (as a fixed-size array of `f64`) and the static type,
+/// eliminating the risk of `(Value, Type)` desynchronisation at call sites.
+///
+/// `into_value_and_type(self)` derives both `Value` and `Type` from the same
+/// array, so callers cannot accidentally pass a mismatched type.
+enum SamplePoint {
+    /// A 3-component `Value::Point` with `Type::point3(Real)`.
+    Point3([f64; 3]),
+    /// A 3-component `Value::Vector` with `Type::vec3(Real)`.
+    Vector3([f64; 3]),
+    /// A 2-component `Value::Vector` with `Type::vec2(Real)`.
+    Vector2([f64; 2]),
+}
+
+impl SamplePoint {
+    /// Consume `self` and produce the corresponding `(Value, Type)` pair.
+    fn into_value_and_type(self) -> (Value, Type) {
+        match self {
+            SamplePoint::Point3([a, b, c]) => (
+                Value::Point(vec![Value::Real(a), Value::Real(b), Value::Real(c)]),
+                Type::point3(Type::Real),
+            ),
+            SamplePoint::Vector3([a, b, c]) => (
+                Value::Vector(vec![Value::Real(a), Value::Real(b), Value::Real(c)]),
+                Type::vec3(Type::Real),
+            ),
+            SamplePoint::Vector2([a, b]) => (
+                Value::Vector(vec![Value::Real(a), Value::Real(b)]),
+                Type::vec2(Type::Real),
+            ),
+        }
+    }
+}
+
+/// Build the identity vector field F(x,y,z)=[x,y,z], apply divergence, eval, and return
+/// `(div_result, div_field_type)`.
+///
+/// The caller is responsible for sampling the returned field and asserting the result.
+/// Shared by `run_divergence_identity_test` (happy-path) and
+/// `divergence_two_element_vector_sample_point_returns_undef` (dimension-guard).
+fn build_divergence_identity_field(label: &str) -> (Value, Type) {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -138,6 +175,19 @@ fn run_divergence_identity_test(point: Value, point_literal_type: Type, label: &
         codomain: Box::new(Type::Real),
     };
 
+    (div_result, div_field_type)
+}
+
+/// Build the identity vector field F(x,y,z)=[x,y,z], compute its divergence,
+/// sample at `sample_point`, and assert result ≈3.0.
+///
+/// Used by both `divergence_identity_vector_field` (Point sample) and
+/// `divergence_accepts_vector_sample_point` (Vector sample).
+fn run_divergence_identity_test(sample_point: SamplePoint, label: &str) {
+    let (point, point_literal_type) = sample_point.into_value_and_type();
+    let (div_result, div_field_type) = build_divergence_identity_field(label);
+
+    let values = ValueMap::new();
     let sample_expr = make_function_call(
         "sample",
         vec![
@@ -162,12 +212,13 @@ fn run_divergence_identity_test(point: Value, point_literal_type: Type, label: &
     );
 }
 
-/// Build the rotation field F(x,y,z)=[-y,x,0], compute its curl, sample at
-/// `point` (literal type `point_literal_type`), and assert result ≈[0,0,2].
+/// Build the rotation field F(x,y,z)=[-y,x,0], apply curl, eval, and return
+/// `(curl_result, curl_field_type)`.
 ///
-/// Used by both `curl_rotation_field` (Point sample) and
-/// `curl_accepts_vector_sample_point` (Vector sample).
-fn run_curl_rotation_test(point: Value, point_literal_type: Type, label: &str) {
+/// The caller is responsible for sampling the returned field and asserting the result.
+/// Shared by `run_curl_rotation_test` (happy-path) and
+/// `curl_two_element_vector_sample_point_returns_undef` (dimension-guard).
+fn build_curl_rotation_field(label: &str) -> (Value, Type) {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -232,6 +283,19 @@ fn run_curl_rotation_test(point: Value, point_literal_type: Type, label: &str) {
         codomain: Box::new(Type::vec3(Type::Real)),
     };
 
+    (curl_result, curl_field_type)
+}
+
+/// Build the rotation field F(x,y,z)=[-y,x,0], compute its curl, sample at
+/// `sample_point`, and assert result ≈[0,0,2].
+///
+/// Used by both `curl_rotation_field` (Point sample) and
+/// `curl_accepts_vector_sample_point` (Vector sample).
+fn run_curl_rotation_test(sample_point: SamplePoint, label: &str) {
+    let (point, point_literal_type) = sample_point.into_value_and_type();
+    let (curl_result, curl_field_type) = build_curl_rotation_field(label);
+
+    let values = ValueMap::new();
     let sample_expr = make_function_call(
         "sample",
         vec![
@@ -246,12 +310,13 @@ fn run_curl_rotation_test(point: Value, point_literal_type: Type, label: &str) {
     assert_gradient_vector(&sample_result, &[0.0, 0.0, 2.0], 1e-3, label);
 }
 
-/// Build the quadratic scalar field f(x,y,z)=x²+y²+z², compute its laplacian,
-/// sample at `point` (literal type `point_literal_type`), and assert result ≈6.0.
+/// Build the quadratic scalar field f(x,y,z)=x²+y²+z², apply laplacian, eval, and return
+/// `(lap_result, lap_field_type)`.
 ///
-/// Used by both `laplacian_quadratic_accuracy` (Point sample) and
-/// `laplacian_accepts_vector_sample_point` (Vector sample).
-fn run_laplacian_quadratic_test(point: Value, point_literal_type: Type, label: &str) {
+/// The caller is responsible for sampling the returned field and asserting the result.
+/// Shared by `run_laplacian_quadratic_test` (happy-path) and
+/// `laplacian_two_element_vector_sample_point_returns_undef` (dimension-guard).
+fn build_laplacian_quadratic_field(label: &str) -> (Value, Type) {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -326,6 +391,19 @@ fn run_laplacian_quadratic_test(point: Value, point_literal_type: Type, label: &
         codomain: Box::new(Type::Real),
     };
 
+    (lap_result, lap_field_type)
+}
+
+/// Build the quadratic scalar field f(x,y,z)=x²+y²+z², compute its laplacian,
+/// sample at `sample_point`, and assert result ≈6.0.
+///
+/// Used by both `laplacian_quadratic_accuracy` (Point sample) and
+/// `laplacian_accepts_vector_sample_point` (Vector sample).
+fn run_laplacian_quadratic_test(sample_point: SamplePoint, label: &str) {
+    let (point, point_literal_type) = sample_point.into_value_and_type();
+    let (lap_result, lap_field_type) = build_laplacian_quadratic_field(label);
+
+    let values = ValueMap::new();
     let sample_expr = make_function_call(
         "sample",
         vec![
@@ -635,8 +713,7 @@ fn gradient_3d_sum_of_squares_accuracy() {
 #[test]
 fn divergence_identity_vector_field() {
     run_divergence_identity_test(
-        Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::point3(Type::Real),
+        SamplePoint::Point3([1.0, 2.0, 3.0]),
         "divergence of [x,y,z] at (1,2,3)",
     );
 }
@@ -648,8 +725,7 @@ fn divergence_identity_vector_field() {
 #[test]
 fn divergence_accepts_vector_sample_point() {
     run_divergence_identity_test(
-        Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::vec3(Type::Real),
+        SamplePoint::Vector3([1.0, 2.0, 3.0]),
         "divergence of [x,y,z] at Vector(1,2,3)",
     );
 }
@@ -664,8 +740,7 @@ fn divergence_accepts_vector_sample_point() {
 #[test]
 fn curl_rotation_field() {
     run_curl_rotation_test(
-        Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::point3(Type::Real),
+        SamplePoint::Point3([1.0, 2.0, 3.0]),
         "curl of [-y,x,0] at (1,2,3)",
     );
 }
@@ -677,8 +752,7 @@ fn curl_rotation_field() {
 #[test]
 fn curl_accepts_vector_sample_point() {
     run_curl_rotation_test(
-        Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::vec3(Type::Real),
+        SamplePoint::Vector3([1.0, 2.0, 3.0]),
         "curl of [-y,x,0] at Vector(1,2,3)",
     );
 }
@@ -691,68 +765,15 @@ fn curl_accepts_vector_sample_point() {
 /// that dimension guard as a regression check.
 #[test]
 fn curl_two_element_vector_sample_point_returns_undef() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
+    let label = "curl_two_element_vector_sample_point_returns_undef";
+    let (curl_result, curl_field_type) = build_curl_rotation_field(label);
 
-    // Lambda: |x, y, z| vec3(-y, x, 0)
-    let neg_y = CompiledExpr::unop(
-        UnOp::Neg,
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let body = make_function_call(
-        "vec3",
-        vec![
-            neg_y,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::literal(Value::Real(0.0), Type::Real),
-        ],
-        Type::vec3(Type::Real),
-    );
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::vec3(Type::Real);
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
-    // curl(field) → vector field
-    let curl_expr = make_function_call(
-        "curl",
-        vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
-        },
-    );
+    // vec2 type is intentional — compute_numerical_curl_at_point matches on Value shape at
+    // runtime (items.len() == 3 guard), not the declared static type. This exercises the
+    // dimension guard.
+    let (point, point_literal_type) = SamplePoint::Vector2([1.0, 2.0]).into_value_and_type();
 
     let values = ValueMap::new();
-    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
-
-    // sample(curl_field, Vector2(1.0, 2.0))  ← only 2 components, guard fires
-    let point = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
-    let point_literal_type = Type::vec2(Type::Real);
-
-    let curl_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(Type::vec3(Type::Real)),
-    };
-
     let sample_expr = make_function_call(
         "sample",
         vec![
@@ -766,7 +787,42 @@ fn curl_two_element_vector_sample_point_returns_undef() {
 
     assert!(
         matches!(sample_result, Value::Undef),
-        "curl with 2-element Vector sample point should return Value::Undef (dimension guard), got {:?}",
+        "{label}: curl with 2-element Vector sample point should return Value::Undef (dimension guard), got {:?}",
+        sample_result
+    );
+}
+
+/// Sampling a divergence field with a 2-element `Value::Vector` returns `Value::Undef`.
+///
+/// Unlike curl's explicit `items.len()==3` guard, this `Undef` arises because the
+/// identity field's 3-param lambda receives only 2 coordinates, leaving the third
+/// unbound; strict `Undef` propagation in `FunctionCall` then cascades.
+#[test]
+fn divergence_two_element_vector_sample_point_returns_undef() {
+    let label = "divergence_two_element_vector_sample_point_returns_undef";
+    let (div_result, div_field_type) = build_divergence_identity_field(label);
+
+    // vec2 type is intentional — compute_numerical_divergence_at_point accepts any non-empty
+    // dimension vector (no explicit len==3 guard). Undef arises because the identity field's
+    // 3-param lambda receives only 2 coordinates, leaving the third unbound; strict Undef
+    // propagation in FunctionCall then cascades.
+    let (point, point_literal_type) = SamplePoint::Vector2([1.0, 2.0]).into_value_and_type();
+
+    let values = ValueMap::new();
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(div_result, div_field_type),
+            CompiledExpr::literal(point, point_literal_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(sample_result, Value::Undef),
+        "{label}: divergence with 2-element Vector sample point should return Value::Undef, got {:?}",
         sample_result
     );
 }
@@ -781,8 +837,7 @@ fn curl_two_element_vector_sample_point_returns_undef() {
 #[test]
 fn laplacian_quadratic_accuracy() {
     run_laplacian_quadratic_test(
-        Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::point3(Type::Real),
+        SamplePoint::Point3([1.0, 2.0, 3.0]),
         "laplacian of x²+y²+z² at (1,2,3)",
     );
 }
@@ -794,9 +849,43 @@ fn laplacian_quadratic_accuracy() {
 #[test]
 fn laplacian_accepts_vector_sample_point() {
     run_laplacian_quadratic_test(
-        Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::vec3(Type::Real),
+        SamplePoint::Vector3([1.0, 2.0, 3.0]),
         "laplacian of x²+y²+z² at Vector(1,2,3)",
+    );
+}
+
+/// Sampling a laplacian field with a 2-element `Value::Vector` returns `Value::Undef`.
+///
+/// Unlike curl's explicit `items.len()==3` guard, this `Undef` arises because the
+/// quadratic field's 3-param lambda receives only 2 coordinates, leaving the third
+/// unbound; strict `Undef` propagation in `FunctionCall` then cascades.
+#[test]
+fn laplacian_two_element_vector_sample_point_returns_undef() {
+    let label = "laplacian_two_element_vector_sample_point_returns_undef";
+    let (lap_result, lap_field_type) = build_laplacian_quadratic_field(label);
+
+    // vec2 type is intentional — compute_numerical_laplacian_at_point accepts any non-empty
+    // dimension vector (no explicit len==3 guard). Undef arises because the quadratic field's
+    // 3-param lambda receives only 2 coordinates, leaving the third unbound; strict Undef
+    // propagation in FunctionCall then cascades.
+    let (point, point_literal_type) = SamplePoint::Vector2([1.0, 2.0]).into_value_and_type();
+
+    let values = ValueMap::new();
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(point, point_literal_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(sample_result, Value::Undef),
+        "{label}: laplacian with 2-element Vector sample point should return Value::Undef, got {:?}",
+        sample_result
     );
 }
 
@@ -3786,4 +3875,63 @@ fn divergence_dimensional_correctness_composed_source() {
         },
         "divergence_dimensional_correctness_composed_source",
     );
+}
+
+/// `SamplePoint::into_value_and_type()` produces the correct `(Value, Type)` pair
+/// for each variant — Point3 → (Value::Point, Type::point3(Real)),
+/// Vector3 → (Value::Vector, Type::vec3(Real)), Vector2 → (Value::Vector, Type::vec2(Real)).
+#[test]
+fn sample_point_enum_correctness() {
+    // Point3
+    let (val, ty) = SamplePoint::Point3([1.0, 2.0, 3.0]).into_value_and_type();
+    assert!(
+        matches!(&val, Value::Point(items) if items.len() == 3),
+        "Point3 should produce Value::Point with 3 items, got {:?}",
+        val
+    );
+    assert_eq!(
+        ty,
+        Type::point3(Type::Real),
+        "Point3 should produce Type::point3(Real)"
+    );
+    if let Value::Point(items) = &val {
+        assert_eq!(items[0], Value::Real(1.0));
+        assert_eq!(items[1], Value::Real(2.0));
+        assert_eq!(items[2], Value::Real(3.0));
+    }
+
+    // Vector3
+    let (val, ty) = SamplePoint::Vector3([1.0, 2.0, 3.0]).into_value_and_type();
+    assert!(
+        matches!(&val, Value::Vector(items) if items.len() == 3),
+        "Vector3 should produce Value::Vector with 3 items, got {:?}",
+        val
+    );
+    assert_eq!(
+        ty,
+        Type::vec3(Type::Real),
+        "Vector3 should produce Type::vec3(Real)"
+    );
+    if let Value::Vector(items) = &val {
+        assert_eq!(items[0], Value::Real(1.0));
+        assert_eq!(items[1], Value::Real(2.0));
+        assert_eq!(items[2], Value::Real(3.0));
+    }
+
+    // Vector2
+    let (val, ty) = SamplePoint::Vector2([1.0, 2.0]).into_value_and_type();
+    assert!(
+        matches!(&val, Value::Vector(items) if items.len() == 2),
+        "Vector2 should produce Value::Vector with 2 items, got {:?}",
+        val
+    );
+    assert_eq!(
+        ty,
+        Type::vec2(Type::Real),
+        "Vector2 should produce Type::vec2(Real)"
+    );
+    if let Value::Vector(items) = &val {
+        assert_eq!(items[0], Value::Real(1.0));
+        assert_eq!(items[1], Value::Real(2.0));
+    }
 }

@@ -59,6 +59,16 @@ const THIS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/build_logic_
 /// Used by source-level regression tests that read the build script's contents.
 const BUILD_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs");
 
+/// Reads this test file's own source code and returns it as a `String`.
+///
+/// Wraps `std::fs::read_to_string(THIS_FILE)` so callers don't repeat the
+/// expect message. All self-inspection tests should use this helper rather
+/// than calling `read_to_string(THIS_FILE)` directly.
+fn read_self_source() -> String {
+    std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE")
+}
+
 /// Creates base/src/, writes placeholder files for all EXPECTED_OUTPUTS,
 /// and returns the src_dir path. Deduplicates setup across stamp/output tests.
 fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
@@ -782,14 +792,15 @@ fn find_cfg_unix_test_fns(source: &str) -> Vec<String> {
 /// `#[test]` is seen, the flag `saw_test` is set. Intermediate
 /// attribute/comment lines keep the flag alive. When a line starting with
 /// `fn test_` is reached with the flag set, `extract_test_fn_body` is used to
-/// check whether the function body contains `(THIS_FILE)` as a call argument OR
+/// check whether the function body contains `(THIS_FILE)` as a call argument,
 /// the bare relative-path literal `"tests/build_logic_tests.rs"` (with literal
-/// double-quote characters). Only functions that pass this body check are collected.
+/// double-quote characters), or a call to `read_self_source()`. Only functions
+/// that pass this body check are collected.
 ///
-/// The dual criterion turns `test_self_read_paths_use_manifest_dir`'s loop into
-/// a genuine cross-property check: a test discovered via the bare-path criterion
-/// will fail the loop's `fn_body.contains("(THIS_FILE)")` assertion, catching
-/// regressions where the bare relative path is used instead of THIS_FILE.
+/// The triple criterion turns `test_self_read_paths_use_manifest_dir`'s loop
+/// into a genuine cross-property check: a test discovered via the bare-path
+/// criterion will fail the loop's assertion, catching regressions where the
+/// bare relative path is used instead of THIS_FILE or read_self_source().
 fn find_self_reading_test_fns(source: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut saw_test = false;
@@ -809,7 +820,8 @@ fn find_self_reading_test_fns(source: &str) -> Vec<String> {
                 // the THIS_FILE assertion in test_self_read_paths_use_manifest_dir.
                 if let Some(body) = extract_test_fn_body(source, &sig)
                     && (body.contains("(THIS_FILE)")
-                        || body.contains("\"tests/build_logic_tests.rs\""))
+                        || body.contains("\"tests/build_logic_tests.rs\"")
+                        || body.contains("read_self_source()"))
                 {
                     result.push(sig);
                 }
@@ -931,8 +943,7 @@ fn test_unix_permission_tests_have_root_guard() {
     // The set of unix test functions is discovered dynamically by
     // find_cfg_unix_test_fns so that newly added #[cfg(unix)] tests are
     // automatically checked without updating a hardcoded list.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file");
+    let source = read_self_source();
 
     let unix_test_fns = find_cfg_unix_test_fns(&source);
 
@@ -972,8 +983,7 @@ fn test_readonly_guard_drop_logs_error() {
     // `match { Err(e) => eprintln!(...), ... }`, `.map_err(|e| eprintln!(...))`, etc.
     // Do NOT add assertions that enforce a specific syntactic form; see
     // `test_drop_logs_error_check_is_form_agnostic` for the enforcement of this rule.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file");
+    let source = read_self_source();
 
     // Extract the Drop impl for ReadonlyGuard
     let drop_start = source
@@ -1040,8 +1050,7 @@ fn test_is_root_uses_libc_not_raw_ffi() {
     // a raw `unsafe extern "C" { fn getuid() -> u32; }` declaration.
     // Raw FFI declarations are fragile (no type-checked header), whereas libc provides
     // a well-audited, platform-tested binding.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     let fn_start = source
         .find("fn is_root()")
@@ -1262,6 +1271,14 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
         "#[test]\n",
         "fn test_with_bare_path() {\n",
         "    let _s = std::fs::read_to_string(\"tests/build_logic_tests.rs\").unwrap();\n",
+        "}\n\n",
+        // Case (g): a #[test] fn whose body calls read_self_source() with no direct
+        // (THIS_FILE) usage — should be collected by the broadened criterion.
+        // This RED test forces the step-2 impl that adds
+        // `|| body.contains("read_self_source()")` to the scanner.
+        "#[test]\n",
+        "fn test_uses_read_self_source() {\n",
+        "    let _s = read_self_source();\n",
         "}\n",
     );
 
@@ -1304,10 +1321,17 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
          literal \"tests/build_logic_tests.rs\" with literal quotes); got: {:?}",
         fns
     );
+    assert!(
+        fns.contains(&"fn test_uses_read_self_source()".to_string()),
+        "should discover test_uses_read_self_source (broadened criterion: body contains \
+         read_self_source() call); got: {:?}",
+        fns
+    );
     assert_eq!(
         fns.len(),
-        4,
-        "expected exactly 4 discovered functions (a=test_reads_this_file, a2=test_opens_this_file, e=test_with_attr_gap, f=test_with_bare_path); got: {:?}",
+        5,
+        "expected exactly 5 discovered functions (a=test_reads_this_file, a2=test_opens_this_file, \
+         e=test_with_attr_gap, f=test_with_bare_path, g=test_uses_read_self_source); got: {:?}",
         fns
     );
 }
@@ -1338,8 +1362,7 @@ fn test_self_read_paths_use_manifest_dir() {
     // while the loop asserts only the THIS_FILE criterion. A test discovered via the
     // bare-path criterion would pass the scanner but fail this assertion, catching
     // the exact regression the guard is designed to prevent.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     let self_reading_fns = find_self_reading_test_fns(&source);
 
@@ -1365,9 +1388,9 @@ fn test_self_read_paths_use_manifest_dir() {
             .unwrap_or_else(|| panic!("source should contain {}", fn_sig));
 
         assert!(
-            fn_body.contains("(THIS_FILE)"),
-            "{} must read the test file via THIS_FILE rather than a bare relative path. \
-             Function body:\n{}",
+            fn_body.contains("(THIS_FILE)") || fn_body.contains("read_self_source()"),
+            "{} must read the test file via THIS_FILE or read_self_source() rather than \
+             a bare relative path. Function body:\n{}",
             fn_sig,
             fn_body
         );
@@ -1387,8 +1410,7 @@ fn test_self_path_constants_use_manifest_dir() {
     //
     // The count-based check (>= 2) requires the exact macro invocation to appear at least twice,
     // once for each constant, so neither definition can silently regress to a hardcoded path.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     assert!(
         source.matches("env!(\"CARGO_MANIFEST_DIR\")").count() >= 2,
@@ -1406,8 +1428,7 @@ fn test_self_path_constants_guard_is_not_vacuous() {
     // this meta-test uses an exact-count check `count == 2` (guards against inflation).
     // Together they are orthogonal: a drop below 2 fails only the main test; an unexpected
     // addition above 2 fails only this meta-test, so any single failure has a unique cause.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
     let count = source.matches("env!(\"CARGO_MANIFEST_DIR\")").count();
     assert!(
         count == 2,
@@ -1498,8 +1519,7 @@ fn test_drop_logs_error_check_is_form_agnostic() {
     // A future contributor must not add assertions like `contains("if let Err"` or
     // `contains("match "` that enforce a specific error-handling form — any equivalent
     // form that logs the error is acceptable.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     let drop_logs_body =
         extract_test_fn_body(&source, "fn test_readonly_guard_drop_logs_error()")
@@ -1760,8 +1780,7 @@ fn test_no_bare_relative_path_reads() {
     // Note: path-pattern strings in this file use escaped quotes in Rust string
     // literals, so the raw source text contains \" rather than an unescaped ",
     // and the helpers find no self-match.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     // Each entry: (violation scanner, path description, constant to use instead).
     let guards: &[(fn(&str) -> Vec<(usize, &str)>, &str, &str)] = &[
@@ -1812,8 +1831,7 @@ fn test_no_bare_relative_self_path_reads() {
     // Note: pattern strings in this file use escaped quotes in Rust string
     // literals, so the raw source text contains \" rather than an unescaped ",
     // and the helper finds no self-match.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file via THIS_FILE");
+    let source = read_self_source();
 
     let violations = find_bare_self_path_violations(&source);
 

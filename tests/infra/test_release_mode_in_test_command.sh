@@ -60,7 +60,19 @@ assert "lint_command does NOT contain 'cargo test --release'" \
 echo ""
 echo "--- Test 6: at least one #[cfg(not(debug_assertions))] test exists ---"
 
-assert "gui/src-tauri/src/tests/engine_tests.rs contains #[cfg(not(debug_assertions))]" \
-    grep -q '#\[cfg(not(debug_assertions))\]' "$REPO_ROOT/gui/src-tauri/src/tests/engine_tests.rs"
+assert "at least one .rs file in workspace contains #[cfg(not(debug_assertions))]" \
+    grep -rq --exclude-dir=target --exclude-dir=.git --exclude-dir=node_modules '#\[cfg(not(debug_assertions))\]' "$REPO_ROOT" --include='*.rs'
+
+# -- Test 7: structural self-check — Test 6 must use workspace-wide grep ---------
+echo ""
+echo "--- Test 7: Test 6 is path-agnostic (structural self-check) ---"
+
+THIS_FILE="${BASH_SOURCE[0]}"
+
+assert "Test 6 grep targets REPO_ROOT as sole path (no subdirectory)" \
+    bash -c "grep -qE '^\s+grep -rq.*REPO_ROOT\"[[:space:]]' \"$THIS_FILE\""
+
+assert "Test 6 uses workspace-wide recursive grep with --include flag" \
+    bash -c "grep -qE '^\s+grep -rq.*REPO_ROOT.*--include=' \"$THIS_FILE\""
 
 test_summary
