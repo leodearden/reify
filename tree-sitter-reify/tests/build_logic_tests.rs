@@ -1402,15 +1402,17 @@ fn test_self_path_constants_use_manifest_dir() {
 #[test]
 fn test_self_path_constants_guard_is_not_vacuous() {
     // Meta-test: verifies that the count-based assertion in
-    // `test_self_path_constants_use_manifest_dir` is non-vacuous.  The number of
-    // uses of the env! macro on CARGO_MANIFEST_DIR in this file must be >= 2
-    // (one per constant definition), confirming the >= 2 threshold is meaningful.
+    // `test_self_path_constants_use_manifest_dir` is non-vacuous AND orthogonal.
+    // Design: the main test uses a lower-bound check (guards against regression);
+    // this meta-test uses an exact-count check `count == 2` (guards against inflation).
+    // Together they are orthogonal: a drop below 2 fails only the main test; an unexpected
+    // addition above 2 fails only this meta-test, so any single failure has a unique cause.
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file via THIS_FILE");
     let count = source.matches("env!(\"CARGO_MANIFEST_DIR\")").count();
     assert!(
-        count >= 2,
-        "expected at least 2 occurrences of env!(\"CARGO_MANIFEST_DIR\") in this file \
+        count == 2,
+        "expected exactly 2 occurrences of env!(\"CARGO_MANIFEST_DIR\") in this file \
          (one for THIS_FILE const, one for BUILD_RS const), but found {}",
         count
     );
