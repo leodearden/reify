@@ -356,7 +356,13 @@ git -C "$FIXTURE24" config user.email "test@test.com"
 git -C "$FIXTURE24" config user.name "Test"
 printf 'gui/package-lock.json\n' > "$FIXTURE24/.gitignore"
 
+# The || true makes the capture tolerant of the script's non-zero exit: Check 3's
+# assert fails when a lockfile is gitignored, and because check-pm-standardization.sh
+# has set -e, it short-circuits before test_summary. The explicit echo | grep avoids
+# depending on the outer bash -c to not enable pipefail, or on assert()'s internal
+# >/dev/null 2>&1 redirection swallowing the output before grep can see it.
+out24=$(bash "$FIXTURE24/scripts/check-pm-standardization.sh" 2>&1 || true)
 assert "Check 3 emits DIAGNOSTIC: when gui/package-lock.json is gitignored" \
-    bash -c "bash '$FIXTURE24/scripts/check-pm-standardization.sh' 2>&1 | grep -q 'DIAGNOSTIC:'"
+    bash -c "echo \"$out24\" | grep -q 'DIAGNOSTIC:'"
 
 test_summary
