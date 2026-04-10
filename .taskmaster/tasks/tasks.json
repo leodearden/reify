@@ -29878,15 +29878,16 @@
         "description": "Five improvements in crates/reify-eval/tests/m9_combined.rs: (1) Extract source()/eval_source() helpers to eliminate 4-line boilerplate repeated 9 times. (2) Simplify test 3 (all_constraints_satisfied) — its loop is subsumed by test 10 (total_constraint_count); keep only non-empty + no Violated check. (3) In constraint_def_labels test (lines 203-218), verify which InRange invocation is being matched by asserting constraint count or distinguishing property. (4) Add one negative/violation test that modifies a value to violate a constraint and asserts Violated result. (5) Verify and fix InRange[0]/[1] label comments in examples/m9_combined.ri:73-74 — second invocation may generate [2]/[3] instead.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:53:27.219Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:53:26.697Z",
+      "lastModified": "2026-04-10T01:53:27.220Z",
       "taskCount": 1446,
       "completedCount": 1113,
       "tags": [
