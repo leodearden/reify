@@ -29,6 +29,15 @@ assert_sync_ref_exists() {
     local ref_fn
     ref_fn=$(grep 'SYNC:' "$src_file" | grep -oE "${tgt_crate}::[a-z_]+" | head -1 | sed 's/.*:://' || true)
     if [ -z "$ref_fn" ]; then assert "SYNC in ${src_crate} references a ${tgt_crate} function" false; return; fi
+    # Limitation: this regex does not match two rare Rust function forms:
+    #   extern "C" fn foo(  — FFI declarations
+    #   default fn foo(     — specialized trait implementations
+    # As of task-1413, neither extern "C" fn nor default fn appears in any
+    # SYNC-tracked function in the codebase, so this is a future-proofing concern.
+    # Failure mode if a SYNC pair ever points at such a function: the assert will
+    # produce a misleading "fn does not exist" diagnostic from assert_sync_ref_exists
+    # even though the function is present.  Upgrade this regex the first time a
+    # concrete case arises (see task-1413 for rationale).
     assert \
         "fn ${ref_fn} exists in ${tgt_crate} (as referenced by SYNC in ${src_crate})" \
         grep -qE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?fn[[:space:]]+'"${ref_fn}"'[[:space:](<]' "$tgt_file"
