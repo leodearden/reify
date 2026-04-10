@@ -599,3 +599,115 @@ fn full_pipeline_all_constraints_satisfied() {
         result.constraint_results.len()
     );
 }
+
+// ── Step 19: full pipeline — cross-feature values ─────────────────────────────
+
+/// Eval m9_integration.ri, verify specific cross-feature values across structures:
+///   1. Widget.size = 30mm (trait-implementing structure with default param)
+///   2. Bracket has DeterminedInRange[0..2] constraints for both size and length invocations
+///   3. RecursiveChain recursive unfolding: child.span = 50mm, child.child.span = 25mm
+///   4. Plate.length = 50mm (default injected from Bounded trait — empty body)
+#[test]
+fn full_pipeline_cross_feature_values() {
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_integration.ri should exist");
+
+    let compiled = parse_and_compile(&source);
+    let checker = SimpleConstraintChecker;
+    let mut eval_engine = reify_eval::Engine::new(Box::new(checker), None);
+    let eval_result = eval_engine.eval(&compiled);
+
+    let checker2 = SimpleConstraintChecker;
+    let mut check_engine = reify_eval::Engine::new(Box::new(checker2), None);
+    let check_result = check_engine.check(&compiled);
+
+    // 1. Widget.size = 30mm = 0.03 SI (default from structure, implements Measurable)
+    let widget_size_id = ValueCellId::new("Widget", "size");
+    let widget_size = eval_result
+        .values
+        .get(&widget_size_id)
+        .expect("Widget.size should exist");
+    match widget_size {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.03).abs() < 1e-12,
+                "expected ~0.03 SI for Widget.size (30mm), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for Widget.size, got {:?}", other),
+    }
+
+    // 2. Bracket has DeterminedInRange[0] label for both size and length invocations.
+    // Both invocations are Satisfied (size=80mm in [10mm,200mm], length=100mm in [50mm,500mm]).
+    let bracket_dir0: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| {
+            e.id.entity == "Bracket" && e.label == Some("DeterminedInRange[0]".to_string())
+        })
+        .collect();
+    // Two DeterminedInRange invocations → two [0] entries
+    assert!(
+        bracket_dir0.len() >= 1,
+        "expected at least one DeterminedInRange[0] for Bracket, got 0"
+    );
+    for e in &bracket_dir0 {
+        assert_eq!(
+            e.satisfaction,
+            Satisfaction::Satisfied,
+            "Bracket DeterminedInRange[0] should be Satisfied"
+        );
+    }
+
+    // 3. RecursiveChain recursive unfolding:
+    //    child.span = 100mm/2 = 50mm = 0.05 SI
+    //    child.child.span = 50mm/2 = 25mm = 0.025 SI
+    let child_span_id = ValueCellId::new("RecursiveChain.child", "span");
+    let child_span = eval_result
+        .values
+        .get(&child_span_id)
+        .expect("RecursiveChain.child.span should exist");
+    match child_span {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.05).abs() < 1e-12,
+                "expected ~0.05 SI for RecursiveChain.child.span (50mm), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for RecursiveChain.child.span, got {:?}", other),
+    }
+
+    let grandchild_span_id = ValueCellId::new("RecursiveChain.child.child", "span");
+    let grandchild_span = eval_result
+        .values
+        .get(&grandchild_span_id)
+        .expect("RecursiveChain.child.child.span should exist");
+    match grandchild_span {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.025).abs() < 1e-12,
+                "expected ~0.025 SI for RecursiveChain.child.child.span (25mm), got {si_value}"
+            );
+        }
+        other => panic!(
+            "expected Scalar for RecursiveChain.child.child.span, got {:?}",
+            other
+        ),
+    }
+
+    // 4. Plate.length = 50mm = 0.05 SI (injected from Bounded trait, empty body structure)
+    let plate_length_id = ValueCellId::new("Plate", "length");
+    let plate_length = eval_result
+        .values
+        .get(&plate_length_id)
+        .expect("Plate.length should exist (injected from Bounded trait)");
+    match plate_length {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.05).abs() < 1e-12,
+                "expected ~0.05 SI for Plate.length (50mm from Bounded), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for Plate.length, got {:?}", other),
+    }
+}
