@@ -7,30 +7,8 @@ use std::fs;
 
 use reify_compiler::module_dag::{ModuleResolver, compile_project};
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity, ValueCellId};
-
-// ── Helper ──────────────────────────────────────────────────────────
-
-/// Parse source, assert no parse errors, compile, assert no compile errors.
-/// Returns the compiled module.
-fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    compiled
-}
+use reify_test_support::parse_and_compile;
+use reify_types::{ExportFormat, Satisfaction, ValueCellId};
 
 // ── Step 1: trait_implementing_structure ─────────────────────────────
 

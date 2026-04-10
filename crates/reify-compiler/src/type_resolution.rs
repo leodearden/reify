@@ -333,6 +333,7 @@ pub(crate) fn compile_unit(
         is_pub: decl.is_pub,
         span: decl.span,
         content_hash: hash,
+        source_module: None,
     })
 }
 

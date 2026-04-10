@@ -7,10 +7,20 @@ use reify_test_support::warn_counting_guard;
 use serde_json::json;
 use std::time::Duration;
 
+/// Mirror of `reify_lsp::bridge::error_prefix::INITIALIZE_PARAMS`, which is
+/// `pub(crate)` and therefore not accessible from integration tests.
+///
+/// This constant must stay in sync with the source-of-truth in `bridge.rs`.
+/// The `error_prefix_constants_match_actual_errors` test below detects drift
+/// at runtime: it sends a malformed `initialize` request and asserts the
+/// returned error contains this prefix — so if the bridge constant's value
+/// changes, that test will fail loudly, prompting an update here.
+const INITIALIZE_PARAMS_ERR_PREFIX: &str = "initialize params error";
+
 /// Assert that calling `handle_request` with `method` and `json!(42)` (a canonical
 /// malformed payload) returns an `Err` whose message contains `fragment`.
 ///
-/// All five "malformed params" tests share this identical assertion triple.
+/// All malformed-params tests share this identical assertion triple.
 /// The caller is responsible for constructing `lsp` (uninitialized via
 /// `InProcessLsp::new()` or fully handshook via `init_lsp()` / `initialized_lsp()`).
 async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str, fragment: &str) {
@@ -57,7 +67,7 @@ async fn assert_shutdown_returns_null(lsp: &InProcessLsp, params: &serde_json::V
 /// only need a ready server; use this helper directly when you need to configure
 /// the instance before or after initialization.
 async fn init_lsp(lsp: &InProcessLsp) {
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
+    lsp.handle_request("initialize", reify_test_support::minimal_init_params())
         .await
         .expect("init_lsp: initialize should succeed");
     lsp.handle_request("initialized", json!({}))
@@ -259,7 +269,7 @@ async fn initialize_returns_server_capabilities() {
         let lsp = InProcessLsp::new();
 
         let result = lsp
-            .handle_request("initialize", json!({"capabilities": {}}))
+            .handle_request("initialize", reify_test_support::minimal_init_params())
             .await
             .expect("initialize should succeed");
 
@@ -450,12 +460,12 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
 }
 
 /// Malformed (non-object) params should return an Err containing
-/// [`error_prefix::INITIALIZE_PARAMS`].
+/// [`INITIALIZE_PARAMS_ERR_PREFIX`].
 #[tokio::test]
 async fn initialize_with_malformed_params_returns_error() {
     hang_guard!(async {
         let lsp = InProcessLsp::new();
-        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
+        assert_malformed_params_returns_error(&lsp, "initialize", INITIALIZE_PARAMS_ERR_PREFIX)
             .await;
     });
 }
@@ -522,15 +532,15 @@ async fn initialize_with_invalid_field_type_returns_error() {
         );
         let err = result.unwrap_err();
         assert!(
-            err.contains(error_prefix::INITIALIZE_PARAMS),
+            err.contains(INITIALIZE_PARAMS_ERR_PREFIX),
             "error message should contain '{}', got: {err}",
-            error_prefix::INITIALIZE_PARAMS
+            INITIALIZE_PARAMS_ERR_PREFIX
         );
     });
 }
 
 /// Missing required `capabilities` field should return Err containing
-/// [`error_prefix::INITIALIZE_PARAMS`].
+/// [`INITIALIZE_PARAMS_ERR_PREFIX`].
 ///
 /// `json!({})` is a valid JSON object, but `InitializeParams` requires a `capabilities`
 /// field. This tests that strict serde deserialization surfaces the missing-field error
@@ -548,9 +558,9 @@ async fn initialize_with_missing_capabilities_returns_error() {
         );
         let err = result.unwrap_err();
         assert!(
-            err.contains(error_prefix::INITIALIZE_PARAMS),
+            err.contains(INITIALIZE_PARAMS_ERR_PREFIX),
             "error message should contain '{}', got: {err}",
-            error_prefix::INITIALIZE_PARAMS
+            INITIALIZE_PARAMS_ERR_PREFIX
         );
     });
 }
@@ -576,7 +586,7 @@ async fn initialize_error_does_not_corrupt_server_state() {
 
         // Second call on the same instance: should succeed and return a well-formed response.
         let ok_result = lsp
-            .handle_request("initialize", json!({"capabilities": {}}))
+            .handle_request("initialize", reify_test_support::minimal_init_params())
             .await;
         let val = ok_result.expect("initialize after a failed attempt should succeed");
         assert!(
@@ -598,7 +608,7 @@ async fn initialize_error_does_not_corrupt_server_state() {
 async fn initialized_returns_ok_null() {
     hang_guard!(async {
         let lsp = InProcessLsp::new();
-        lsp.handle_request("initialize", json!({"capabilities": {}}))
+        lsp.handle_request("initialize", reify_test_support::minimal_init_params())
             .await
             .expect("initialize should succeed before testing initialized");
 
@@ -802,6 +812,62 @@ async fn did_close_returns_ok_null() {
     });
 }
 
+/// Malformed params for `textDocument/completion` should return an Err
+/// containing "completion params error".
+///
+/// Documents that the completion arm performs strict deserialization — bad
+/// params are surfaced to the caller rather than silently ignored.
+/// Uses a fully initialized server to match the realistic call-site where
+/// completion is sent after the initialize/initialized handshake.
+#[tokio::test]
+async fn completion_with_malformed_params_returns_error() {
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/completion",
+            error_prefix::COMPLETION_PARAMS,
+        )
+        .await;
+    });
+}
+
+/// Malformed params for `textDocument/hover` should return an Err
+/// containing "hover params error".
+///
+/// Documents that the hover arm performs strict deserialization — bad
+/// params are surfaced to the caller rather than silently ignored.
+#[tokio::test]
+async fn hover_with_malformed_params_returns_error() {
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/hover",
+            error_prefix::HOVER_PARAMS,
+        )
+        .await;
+    });
+}
+
+/// Malformed params for `textDocument/definition` should return an Err
+/// containing "definition params error".
+///
+/// Documents that the definition arm performs strict deserialization — bad
+/// params are surfaced to the caller rather than silently ignored.
+#[tokio::test]
+async fn definition_with_malformed_params_returns_error() {
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/definition",
+            error_prefix::DEFINITION_PARAMS,
+        )
+        .await;
+    });
+}
+
 /// The `shutdown` request should return exactly `Ok(Value::Null)`.
 ///
 /// This documents that the shutdown arm follows the same `Ok(Value::Null)` contract
@@ -993,7 +1059,7 @@ async fn error_prefix_constants_match_actual_errors() {
         let lsp = InProcessLsp::new();
 
         // Verify each constant is contained in the error for its matching method.
-        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
+        assert_malformed_params_returns_error(&lsp, "initialize", INITIALIZE_PARAMS_ERR_PREFIX)
             .await;
         assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
             .await;
@@ -1013,6 +1079,24 @@ async fn error_prefix_constants_match_actual_errors() {
             &lsp,
             "textDocument/didClose",
             error_prefix::DID_CLOSE_PARAMS,
+        )
+        .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/completion",
+            error_prefix::COMPLETION_PARAMS,
+        )
+        .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/hover",
+            error_prefix::HOVER_PARAMS,
+        )
+        .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/definition",
+            error_prefix::DEFINITION_PARAMS,
         )
         .await;
 
@@ -1058,7 +1142,7 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
         // Uses json!(42) — the canonical malformed payload in this file — to guarantee
         // serde rejects it before server.initialize() is ever called, so workspace_root
         // and stdlib_path remain at their defaults.
-        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS).await;
+        assert_malformed_params_returns_error(&lsp, "initialize", INITIALIZE_PARAMS_ERR_PREFIX).await;
 
         // Step 2: intentionally skip the `initialized` notification.
         // The `initialized()` handler is a no-op, so skipping it produces no server-side

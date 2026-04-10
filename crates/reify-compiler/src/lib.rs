@@ -235,6 +235,7 @@ pub fn compile_with_prelude(
     // Seed prelude units into the registry so module-local code can reference them.
     // Only pub units are seeded (private units are module-internal).
     for prelude_module in prelude {
+        let module_display = prelude_module.path.to_string();
         for cu in &prelude_module.units {
             if cu.is_pub {
                 unit_registry.seed_prelude_unit(UnitEntry {
@@ -245,6 +246,7 @@ pub fn compile_with_prelude(
                     is_pub: cu.is_pub,
                     span: SourceSpan::empty(0),
                     content_hash: cu.content_hash,
+                    source_module: Some(module_display.clone()),
                 });
             }
         }
@@ -267,36 +269,57 @@ pub fn compile_with_prelude(
                     });
                 }
                 Err(dup_entry) => {
-                    // Duplicate unit name — find the original span for the error label.
+                    // Duplicate unit name — find the original entry to determine provenance.
                     let original = unit_registry.lookup(&dup_entry.name).unwrap();
-                    if original.span == SourceSpan::empty(0) {
-                        // Original is a stdlib prelude unit (seeded with empty span).
-                        // Emit a single-label diagnostic — omit the misleading
-                        // SourceSpan::empty(0) label that would point to byte 0
-                        // of the user's file.
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "duplicate unit declaration '{}' — already defined in stdlib prelude",
-                                dup_entry.name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                dup_entry.span,
-                                "duplicate of stdlib unit",
-                            )),
-                        );
-                    } else {
-                        // Module-local duplicate — show both locations.
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "duplicate unit declaration '{}'",
-                                dup_entry.name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                dup_entry.span,
-                                "duplicate declared here",
-                            ))
-                            .with_label(DiagnosticLabel::new(original.span, "first declared here")),
-                        );
+                    match &original.source_module {
+                        Some(m) if m.starts_with("std/") => {
+                            // Original is a stdlib prelude unit.
+                            // Emit a single-label diagnostic — omit the misleading
+                            // SourceSpan::empty(0) label that would point to byte 0
+                            // of the user's file.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "duplicate unit declaration '{}' — already defined in stdlib prelude",
+                                    dup_entry.name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    dup_entry.span,
+                                    "duplicate of stdlib unit",
+                                )),
+                            );
+                        }
+                        Some(m) => {
+                            // Original was seeded from a user module — name that module.
+                            // Emit a single-label diagnostic (original span is empty(0),
+                            // so omit it to avoid a misleading byte-0 label).
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "duplicate unit declaration '{}' — already defined in module '{}'",
+                                    dup_entry.name, m
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    dup_entry.span,
+                                    format!("duplicate of unit from '{}'", m),
+                                )),
+                            );
+                        }
+                        None => {
+                            // Module-local duplicate — show both source locations.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "duplicate unit declaration '{}'",
+                                    dup_entry.name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    dup_entry.span,
+                                    "duplicate declared here",
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    original.span,
+                                    "first declared here",
+                                )),
+                            );
+                        }
                     }
                 }
             }
@@ -622,6 +645,18 @@ pub fn compile_with_prelude(
     // Post-compilation pass: verify recursive structures have valid termination conditions.
     // Emits errors for recursive subs without guards or with non-terminating guard heuristics.
     check_recursive_termination(&templates, &cyclic_sccs, &mut diagnostics);
+
+    // Remix is_recursive into each recursive template's content_hash.
+    // detect_recursive_structures() sets is_recursive after each template's initial
+    // content_hash was computed, so without this step two templates with identical raw
+    // content but different recursion status would hash identically — causing incorrect
+    // incremental compilation cache hits. Non-recursive templates are untouched so
+    // existing cache entries remain valid for them.
+    for template in &mut templates {
+        if template.is_recursive {
+            template.content_hash = template.content_hash.combine(ContentHash::of(&[1u8]));
+        }
+    }
 
     // Check for duplicate function signatures: same name + same param types
     {

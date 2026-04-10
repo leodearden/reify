@@ -566,3 +566,181 @@ structure S {
             .collect::<Vec<_>>()
     );
 }
+
+// ─── Task 367: is_recursive mixed into content_hash ──────────────────────────
+
+/// Helper: parse source and compile, returning the full CompiledModule.
+fn compile_module(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    reify_compiler::compile(&parsed)
+}
+
+/// A recursive template's content_hash must differ from an identical template
+/// that is not recursive. This verifies that `is_recursive` is mixed into the hash,
+/// preventing incorrect incremental compilation cache hits.
+///
+/// Module 1 (cyclic): A references B, B references A  → A.is_recursive = true
+/// Module 2 (acyclic): A references B, B references C → A.is_recursive = false
+///
+/// Template A has identical raw content in both modules. Before the fix, both A
+/// templates have the same content_hash. After the fix they must differ.
+#[test]
+fn is_recursive_mixed_into_content_hash() {
+    // Module 1: A<->B mutual cycle — A.is_recursive = true
+    let cyclic_source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub a = A(n: n - 1) where n > 0
+}
+"#;
+
+    // Module 2: A->B->C acyclic — A.is_recursive = false
+    let acyclic_source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub c = C(n: n - 1) where n > 0
+}
+structure C {
+    param n : Int = 5
+}
+"#;
+
+    let (cyclic_templates, _) = compile_all(cyclic_source);
+    let (acyclic_templates, _) = compile_all(acyclic_source);
+
+    let a_cyclic = find_template(&cyclic_templates, "A");
+    let a_acyclic = find_template(&acyclic_templates, "A");
+
+    // Sanity checks: recursion flag is set correctly.
+    assert!(
+        a_cyclic.is_recursive,
+        "A in A<->B cycle should have is_recursive == true"
+    );
+    assert!(
+        !a_acyclic.is_recursive,
+        "A in acyclic A->B->C should have is_recursive == false"
+    );
+
+    // The content_hash MUST differ because is_recursive differs.
+    // Before the fix both hashes are equal (is_recursive not mixed in),
+    // so this assertion fails before the fix.
+    assert_ne!(
+        a_cyclic.content_hash,
+        a_acyclic.content_hash,
+        "template A with is_recursive=true must have a different content_hash \
+         than the same template with is_recursive=false (incremental correctness)"
+    );
+}
+
+/// A non-recursive template's content_hash must be identical whether or not it
+/// appears alongside a recursive cycle in the same module.
+/// This is a regression guard: the remix step must only touch recursive templates,
+/// never non-recursive ones (which would unnecessarily invalidate existing caches).
+#[test]
+fn non_recursive_template_hash_unaffected_by_other_cycles() {
+    // Module 1: A<->B mutual cycle plus an independent C
+    let combined_source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub a = A(n: n - 1) where n > 0
+}
+structure C {
+    param x : Int = 10
+}
+"#;
+
+    // Module 2: C alone (no cycle context)
+    let standalone_source = r#"
+structure C {
+    param x : Int = 10
+}
+"#;
+
+    let (combined_templates, _) = compile_all(combined_source);
+    let (standalone_templates, _) = compile_all(standalone_source);
+
+    let c_combined = find_template(&combined_templates, "C");
+    let c_standalone = find_template(&standalone_templates, "C");
+
+    // Sanity: C is not recursive in either case.
+    assert!(
+        !c_combined.is_recursive,
+        "C alongside A<->B should not be recursive"
+    );
+    assert!(
+        !c_standalone.is_recursive,
+        "C compiled alone should not be recursive"
+    );
+
+    // C's hash must be identical in both compilations.
+    assert_eq!(
+        c_combined.content_hash,
+        c_standalone.content_hash,
+        "non-recursive template C must have the same content_hash whether or not \
+         it appears in a module that also contains a recursive cycle"
+    );
+}
+
+/// The module-level content_hash must differ between two modules that have
+/// different recursion topology. Since template hashes feed into the module hash,
+/// the remix of is_recursive at the template level propagates through to the
+/// module level — ensuring incremental compilation correctly invalidates at
+/// the module granularity too.
+#[test]
+fn module_hash_changes_when_recursion_topology_changes() {
+    // Module 1: A<->B mutual cycle (A.is_recursive = true, B.is_recursive = true)
+    let cyclic_source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub a = A(n: n - 1) where n > 0
+}
+"#;
+
+    // Module 2: A->B->C linear acyclic (nothing is recursive)
+    let acyclic_source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub c = C(n: n - 1) where n > 0
+}
+structure C {
+    param n : Int = 5
+}
+"#;
+
+    let cyclic_module = compile_module(cyclic_source);
+    let acyclic_module = compile_module(acyclic_source);
+
+    // The module hashes must differ: the cyclic module has recursive templates
+    // whose hashes were remixed, so the aggregated module hash differs.
+    assert_ne!(
+        cyclic_module.content_hash,
+        acyclic_module.content_hash,
+        "module content_hash must differ between cyclic and acyclic topology \
+         (is_recursive remix propagates to module level)"
+    );
+}

@@ -2,30 +2,8 @@
 //!
 //! Tests for Engine::activate_purpose and Engine::deactivate_purpose.
 
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_test_support::{make_engine, parse_and_compile};
 use reify_types::{ModulePath, Severity};
-
-// ── Helper ──────────────────────────────────────────────────────────
-
-/// Parse source, assert no parse errors, compile, assert no compile errors.
-fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    compiled
-}
 
 // ── Step 13: activate_purpose injects constraints ─────────────────
 
@@ -44,8 +22,7 @@ purpose mfg_ready(subject : Structure) {
 "#;
 
     let compiled = parse_and_compile(source);
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
 
     // Initial eval — establishes the evaluation state
     let _result = engine.eval(&compiled);
@@ -101,8 +78,7 @@ purpose lightweight(subject : Structure) {
 "#;
 
     let compiled = parse_and_compile(source);
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
 
     // Initial eval
     let _result = engine.eval(&compiled);
@@ -190,8 +166,7 @@ purpose manufacturing_ready(subject : Structure) {
     assert_eq!(compiled.compiled_purposes[0].constraints.len(), 2);
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
     assert!(
         result.diagnostics.is_empty(),
@@ -262,8 +237,7 @@ purpose mfg_ready(subject : Structure) {
 "#;
 
     let compiled = parse_and_compile(source);
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
 
     // First eval and activate
     let _result = engine.eval(&compiled);
