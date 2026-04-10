@@ -195,7 +195,7 @@ echo "--- Test 18: Check 2 subshell enables set -euo pipefail ---"
 assert "Check 2 subshell enables set -euo pipefail" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'set -euo pipefail'"
 
-# -- Test 19: Check 2 has dual total==3 AND unique==1 assertion (task 1326) --
+# -- Test 19: Check 2 has dual total==PKG_COUNT AND unique==1 assertion (task 1366) --
 echo ""
 echo "--- Test 19: Check 2 has pre-dedup and post-dedup count assertions ---"
 
@@ -231,7 +231,7 @@ echo "--- Test 21: Check 2 logic rejects both bug scenarios ---"
 # These tests reproduce the Check 2 subshell logic exactly and run it against
 # mktemp fixture directories, independent of the real repo paths. This proves
 # the pattern catches both regression modes described in task 1326:
-#   bug 1: file missing the packageManager field → total==2, unique==1 → fail
+#   bug 1: file missing the packageManager field → total < PKG_COUNT, unique==1 → fail
 #   bug 2: file missing entirely → preflight / set -euo pipefail → fail
 FIX_DIR="$(mktemp -d)"
 trap 'rm -rf "${FIX_DIR:?}"' EXIT

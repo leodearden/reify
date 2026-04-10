@@ -32,7 +32,7 @@ done
 # Defensive shape (task 1326): the subshell enables `set -euo pipefail` so that
 # grep failures inside the pipeline (e.g. a missing package.json file) propagate
 # instead of being masked by the final `tr -d` exit status. An explicit `[ -f ]`
-# preflight provides belt-and-braces coverage. The dual assertion — total == 3
+# preflight provides belt-and-braces coverage. The dual assertion — total == PKG_COUNT
 # AND unique == 1 — catches the case where one file is missing the
 # packageManager field entirely: grep emits fewer lines, which `sort -u` would
 # otherwise silently collapse to a single unique line.
