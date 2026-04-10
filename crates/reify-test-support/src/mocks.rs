@@ -424,10 +424,10 @@ impl GeometryKernel for MockGeometryKernel {
 ///
 /// Useful for testing how consumers handle geometry operation failures.
 /// Because `execute` always fails, no valid `GeometryHandle` is ever
-/// produced. As a defensive fail-loud guard, `tessellate` and `export`
-/// both return errors immediately — any call to them indicates a
-/// regression where the engine failed to short-circuit on the execute
-/// error. `query` returns `Ok(Value::Real(0.0))` as a benign dummy.
+/// produced. As a defensive fail-loud guard, `tessellate`, `export`,
+/// and `query` all return errors immediately — any call to them
+/// indicates a regression where the engine failed to short-circuit on
+/// the execute error.
 pub struct FailingMockGeometryKernel;
 
 impl GeometryKernel for FailingMockGeometryKernel {
@@ -438,7 +438,9 @@ impl GeometryKernel for FailingMockGeometryKernel {
     }
 
     fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Ok(Value::Real(0.0))
+        Err(QueryError::QueryFailed(
+            "should not reach: execute always fails".into(),
+        ))
     }
 
     fn export(
@@ -2157,12 +2159,17 @@ mod tests {
     }
 
     #[test]
-    fn failing_kernel_query_returns_ok_real_zero() {
+    fn failing_kernel_query_returns_err_defensively() {
         let kernel = FailingMockGeometryKernel;
         let id = GeometryHandleId(1);
         let result = kernel.query(&GeometryQuery::Volume(id));
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Value::Real(0.0));
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, QueryError::QueryFailed(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
     }
 
     #[test]
