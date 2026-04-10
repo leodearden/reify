@@ -911,6 +911,60 @@ mod completion_items_tests {
     }
 }
 
+/// Malformed params for `textDocument/completion` should return an Err
+/// containing the `error_prefix::COMPLETION_PARAMS` constant.
+///
+/// Documents that the completion arm performs strict deserialization — bad
+/// params are surfaced to the caller rather than silently ignored.
+/// Uses a fully initialized server to match the realistic call-site where
+/// completion is sent after the initialize/initialized handshake.
+#[tokio::test]
+async fn completion_with_malformed_params_returns_error() {
+    let lsp = initialized_lsp().await;
+    assert_malformed_params_returns_error(
+        &lsp,
+        "textDocument/completion",
+        error_prefix::COMPLETION_PARAMS,
+    )
+    .await;
+}
+
+/// Malformed params for `textDocument/hover` should return an Err
+/// containing the `error_prefix::HOVER_PARAMS` constant.
+///
+/// Documents that the hover arm performs strict deserialization — bad
+/// params are surfaced to the caller rather than silently ignored.
+/// Uses a fully initialized server to match the realistic call-site where
+/// hover is sent after the initialize/initialized handshake.
+#[tokio::test]
+async fn hover_with_malformed_params_returns_error() {
+    let lsp = initialized_lsp().await;
+    assert_malformed_params_returns_error(
+        &lsp,
+        "textDocument/hover",
+        error_prefix::HOVER_PARAMS,
+    )
+    .await;
+}
+
+/// Malformed params for `textDocument/definition` should return an Err
+/// containing the `error_prefix::DEFINITION_PARAMS` constant.
+///
+/// Documents that the definition arm performs strict deserialization — bad
+/// params are surfaced to the caller rather than silently ignored.
+/// Uses a fully initialized server to match the realistic call-site where
+/// definition is sent after the initialize/initialized handshake.
+#[tokio::test]
+async fn definition_with_malformed_params_returns_error() {
+    let lsp = initialized_lsp().await;
+    assert_malformed_params_returns_error(
+        &lsp,
+        "textDocument/definition",
+        error_prefix::DEFINITION_PARAMS,
+    )
+    .await;
+}
+
 /// Each `error_prefix` constant must actually appear in the error message
 /// returned when the corresponding method receives malformed params.
 ///
