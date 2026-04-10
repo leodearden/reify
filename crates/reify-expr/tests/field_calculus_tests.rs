@@ -47,6 +47,32 @@ fn make_value_lambda(
     }
 }
 
+/// Unit test for `make_analytical_field`: asserts the helper returns exactly the same
+/// `(Value, Type)` pair as a hand-built inline construction.
+#[test]
+fn make_analytical_field_constructs_expected_pair() {
+    let domain = Type::point3(Type::Real);
+    let codomain = Type::vec3(Type::Real);
+    let lambda = Value::Undef;
+
+    let (got_value, got_type) =
+        make_analytical_field(domain.clone(), codomain.clone(), lambda.clone());
+
+    let expected_value = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+    let expected_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+
+    assert_eq!(got_value, expected_value);
+    assert_eq!(got_type, expected_type);
+}
+
 /// Assert that a `Value::Vector` has components matching `expected` within `tol`.
 fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &str) {
     match result {
