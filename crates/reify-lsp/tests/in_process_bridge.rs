@@ -1064,4 +1064,15 @@ mod hang_guard_tests {
         )
         .await;
     }
+
+    /// The panic message must include the caller's file name so hangs are
+    /// immediately attributable to a specific test location.
+    ///
+    /// Uses `#[should_panic(expected = "in_process_bridge.rs")]` to verify
+    /// that the auto-derived caller location appears in the panic message.
+    #[tokio::test]
+    #[should_panic(expected = "in_process_bridge.rs")]
+    async fn timeout_panic_reports_caller_location() {
+        with_hang_guard(1, tokio::time::sleep(Duration::from_secs(60))).await;
+    }
 }
