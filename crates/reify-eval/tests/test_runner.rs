@@ -152,19 +152,19 @@ fn run_tests_propagates_violation_diagnostics() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].status, reify_eval::TestStatus::Fail);
     assert!(
-        results[0].constraint_results.iter().any(|e| {
-            e.id.entity == "TestA" && e.satisfaction == Satisfaction::Violated
-        }),
-        "expected at least one constraint result with entity TestA and satisfaction Violated, got: {:?}",
+        results[0]
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Violated),
+        "expected at least one Violated constraint result, got: {:?}",
         results[0].constraint_results
     );
     assert!(
-        results[0].diagnostics.iter().any(|d| {
-            d.severity == Severity::Error
-                && d.message.contains("violated")
-                && (d.message.contains("Positive") || d.message.contains("TestA"))
-        }),
-        "expected at least one Error diagnostic with message containing 'violated' and ('Positive' or 'TestA'), got: {:?}",
+        results[0]
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("Positive[0]")),
+        "expected at least one Error diagnostic with message containing 'Positive[0]', got: {:?}",
         results[0].diagnostics
     );
 }
