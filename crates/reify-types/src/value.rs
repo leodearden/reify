@@ -2798,21 +2798,7 @@ mod tests {
         let neg_inf = Value::Real(f64::NEG_INFINITY);
         let pos_qnan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
 
-        // (a) Negative quiet NaN sorts strictly Less than -Infinity.
-        assert_eq!(neg_qnan.cmp(&neg_inf), std::cmp::Ordering::Less);
-
-        // (b) Negative quiet NaN sorts strictly Less than positive quiet NaN.
-        assert_eq!(neg_qnan.cmp(&pos_qnan), std::cmp::Ordering::Less);
-
-        // (c) PartialEq distinguishes negative NaN from positive NaN (different bit patterns).
-        assert_ne!(neg_qnan, pos_qnan);
-
-        // (d) Antisymmetry holds for neg_qnan vs pos_qnan.
-        assert_eq!(neg_qnan.cmp(&pos_qnan), pos_qnan.cmp(&neg_qnan).reverse());
-
-        // (e) Full assert_ord_consistent check for neg_qnan vs neg_inf pair (neg_qnan < neg_inf).
         assert_ord_consistent(&neg_qnan, &neg_inf, false);
-        // (f) Full assert_ord_consistent check for the cross-sign NaN pair (neg_qnan < pos_qnan).
         assert_ord_consistent(&neg_qnan, &pos_qnan, false);
     }
 
