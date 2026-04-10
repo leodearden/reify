@@ -402,14 +402,15 @@ fi
 # ==============================================================================
 # assert_sync_ref_exists behavioral test (sourceable helper)
 # Sources sync_ref_helpers.sh directly — no sed text extraction.
-# S5 hardening applied from inception: rc -eq 0 AND anchored ^  FAIL: grep.
+# S3+S5 hardening: bash -eu catches unset-var/missing-cmd regressions via rc;
+# anchored PASS/FAIL greps verify assertion output.
 # ==============================================================================
 
 echo ""
 echo "--- assert_sync_ref_exists behavioral test (sourceable helper) ---"
 
 _src_beh_rc=0
-_src_beh_out=$(bash -c "
+_src_beh_out=$(bash -eu -c "
     tmp_src=\$(mktemp)
     tmp_tgt=\$(mktemp)
     trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
@@ -434,7 +435,7 @@ fi
 
 # happy-path: SYNC comment references a fn that exists in target file → PASS
 _src_beh_happy_rc=0
-_src_beh_happy_out=$(bash -c "
+_src_beh_happy_out=$(bash -eu -c "
     tmp_src=\$(mktemp)
     tmp_tgt=\$(mktemp)
     trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
@@ -459,7 +460,7 @@ fi
 
 # mismatch-path: SYNC comment references a fn that does NOT exist in target → FAIL
 _src_beh_mismatch_rc=0
-_src_beh_mismatch_out=$(bash -c "
+_src_beh_mismatch_out=$(bash -eu -c "
     tmp_src=\$(mktemp)
     tmp_tgt=\$(mktemp)
     trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
