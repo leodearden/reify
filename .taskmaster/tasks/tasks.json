@@ -26418,13 +26418,14 @@
         "description": "Follow-up from Task 1235 review (esc-1235-1032), two test gaps in crates/reify-expr/tests/field_calculus_tests.rs.\n\nS5 (test_quality, lines 1723-1734, 2040-2051): `divergence_sample_dimensionless_returns_real` and `laplacian_sample_dimensionless_returns_real` only assert on the Value variant, not the numeric value. Both test lambdas have a known analytical answer (divergence of vec3(1,1,1) ≡ 0, laplacian of x+2y+3z ≡ 0). Destructure the Value::Real(v) arm and assert `v.abs() < 1e-4` against the analytical value. Zero fixture cost, catches numerics regressions as well.\n\nS6 (test_coverage_gap, lines 1746-1878, 2063-2206): The two new dimensional-correctness tests only cover both-sides-dimensioned cases (Length→Velocity, Length→Temperature). The mixed cases — dimensioned domain + dimensionless codomain (Point{3,Length}→Vector{3,Real}), and dimensionless domain + dimensioned codomain (Point{3,Real}→Vector{3,Velocity}) — are never exercised at the sample level. Both currently hit compute_divergence/compute_laplacian's `_ => Type::Real` fallback and end up in the dimensionless runtime branch. A divergence of Length→Real field should physically be 1/Length but no test documents this. Either add `#[test] #[ignore]` placeholders or TODO tests for the two mixed cases, or add a code comment on compute_divergence/compute_laplacian explaining the fallback intentionally loses dimensional information, so future readers don't \"fix\" the fallback without also updating the numerical call sites.\n\nMemory hints:\n- search \"Task 1235 metadata runtime dimension drift\" — parent task\n- The existing tests to enhance are in field_calculus_tests.rs around the line ranges above",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:16:36.112Z",
+        "updatedAt": "2026-04-10T00:24:09.159Z",
         "metadata": {
           "modules": [
+            "crates/reify-expr/src",
             "crates/reify-expr/tests"
           ],
           "files": [
@@ -29027,11 +29028,11 @@
         "description": "After Task 1350's centralization of the canonical-message + error-field contract in `assert_poison_recovers`, the three `tracing_warn_emitted_on_poison_into_result*` tests are fully subsumed by the `into_result_recovers_from_poisoned_*_lock` tests. Delete the warn-specific family and the `assert_into_result_poison_warn` helper.",
         "details": "Location: crates/reify-runtime/tests/concurrent_eval.rs:2017-2034 (`assert_into_result_poison_warn` helper) and 2161-2192 (three `tracing_warn_emitted_on_poison_into_result*` tests).\n\nContext: the intent split between the two test families was \"one proves the warn fires, the other proves data is recoverable.\" With the new helper-level canonical-message + error-field contract (Task 1350), both families now assert the warn contract identically via `assert_poison_recovers` — the only remaining difference is whether the caller also asserts on returned `edit_result` values. The `into_result_recovers_from_poisoned_*_lock` tests (concurrent_eval.rs:2117-2159) cover both recovery and the warn contract, making the warn-specific tests redundant.\n\nActions:\n1. Delete `assert_into_result_poison_warn` (concurrent_eval.rs:2017-2034).\n2. Delete these three tests:\n   - `tracing_warn_emitted_on_poison_into_result` (concurrent_eval.rs:2161-2170)\n   - `tracing_warn_emitted_on_poison_into_result_snapshot_values` (concurrent_eval.rs:2172-2181)\n   - `tracing_warn_emitted_on_poison_into_result_results` (concurrent_eval.rs:2183-2192)\n3. Audit each of the three `into_result_recovers_from_poisoned_*_lock` tests (concurrent_eval.rs:2117-2159) to confirm they still go through `assert_poison_recovers` via the `poison_and_recover!` macro (they do). If any field assertion in the deleted family was NOT present in the recovery family, lift it over.\n4. Verify: `cd /home/leo/src/reify && cargo test -p reify-runtime --test concurrent_eval --features test-utils` — all remaining poison_* tests must pass.\n\nNote from reviewer: \"Not introduced by this diff, but this PR is the natural moment to consolidate.\" Task 1350 was that natural moment but the suggestion arrived post-commit; this follow-up completes the consolidation.\n\nDerived from Task 1350 reviewer suggestion #5 (code_duplication), reviewer_comprehensive.\n\nmemory_hints:\n  search: \"into_result_recovers_from_poisoned tracing_warn_emitted assert_into_result_poison_warn\"\n  entities: [\"ConcurrentEvalAdapter\"]",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:07:49.524Z",
+        "updatedAt": "2026-04-10T00:24:03.225Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests"
@@ -29358,9 +29359,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:23:47.416Z",
+      "lastModified": "2026-04-10T00:24:09.159Z",
       "taskCount": 1421,
-      "completedCount": 1089,
+      "completedCount": 1090,
       "tags": [
         "master"
       ]
