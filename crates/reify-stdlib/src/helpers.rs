@@ -448,6 +448,15 @@ mod tests {
         assert!(format!("{:?}", v).contains("Real"));
     }
 
+    #[test]
+    fn assert_extraction_borrow_allows_reuse() {
+        // Construct v as an owned binding so we can pass &v and still use v afterward.
+        let v = Value::Vector(vec![Value::Real(1.0)]);
+        assert_extraction(&v, &[1.0], DimensionVector::DIMENSIONLESS, "borrow-reuse");
+        // Reusing v after the call is the whole point of the &Value signature.
+        assert!(matches!(v, Value::Vector(_)));
+    }
+
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
 
     // ── sanitize_value Real arm characterization tests ───────────────────────
