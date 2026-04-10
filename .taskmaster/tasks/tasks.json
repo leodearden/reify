@@ -29813,17 +29813,18 @@
         "description": "Follow-up from task 1386 review. `claude_bridge_tests.rs:281` defines a local `assert_traits<T: Clone + Debug + PartialEq>()` helper whose bounds are a strict subset of the canonical `assert_ipc_contract` in `tests/mod.rs:13`.\n\nAll three tested types (InboundMessage, OutboundMessage, MessageContext) derive `Serialize + Deserialize` with no lifetime parameters, so they satisfy the full `assert_ipc_contract` bounds (Serialize + DeserializeOwned + Clone + Debug + PartialEq).\n\nScope:\n1. In `gui/src-tauri/src/tests/claude_bridge_tests.rs`, replace the local `assert_traits` function and its call sites with `super::assert_ipc_contract`.\n2. Verify tests pass.\n\nmemory_hints: search \"assert_ipc_contract consolidation task 1386\" for prior context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1386"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:28:43.197Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:28:42.470Z",
+      "lastModified": "2026-04-10T01:28:43.199Z",
       "taskCount": 1443,
       "completedCount": 1106,
       "tags": [
