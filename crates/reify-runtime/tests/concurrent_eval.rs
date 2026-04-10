@@ -2021,25 +2021,6 @@ async fn five_parent_fan_in_one_changed() {
 mod poison_recovery_extended {
     use super::*;
 
-    /// Parameterized helper for the three `tracing_warn_emitted_on_poison_into_result*`
-    /// tests.  Calls `poison_fn` on a freshly-built adapter, then asserts that
-    /// `into_result()` recovers without panic and emits exactly one WARN with
-    /// all expected structured fields.
-    fn assert_into_result_poison_warn(
-        poison_fn: fn(&ConcurrentEvalAdapter),
-        expected_fields: &[(&str, &str)],
-    ) {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-        poison_fn(&adapter);
-        assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            expected_fields,
-        );
-    }
-
     /// Poisons a lock via `$poison_method` (sole-owner path — no Arc guard held),
     /// then delegates to [`assert_poison_recovers`] calling `$action_method` on
     /// `into_result` / `build_result_shared`.  Returns the [`ConcurrentEditResult`]
@@ -2165,38 +2146,6 @@ mod poison_recovery_extended {
         );
     }
 
-    /// Verify that tracing::warn! is emitted when into_result() recovers from a
-    /// poisoned values lock via the into_inner() path (Arc::try_unwrap succeeds).
-    /// Event must have lock=values, path=into_inner.
-    #[test]
-    fn tracing_warn_emitted_on_poison_into_result() {
-        assert_into_result_poison_warn(
-            ConcurrentEvalAdapter::poison_values,
-            &[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_INTO_INNER)],
-        );
-    }
-
-    /// Verify that tracing::warn! is emitted when into_result() recovers from a
-    /// poisoned snapshot_values lock via the into_inner() path.
-    /// Event must have lock=snapshot_values, path=into_inner.
-    #[test]
-    fn tracing_warn_emitted_on_poison_into_result_snapshot_values() {
-        assert_into_result_poison_warn(
-            ConcurrentEvalAdapter::poison_snapshot_values,
-            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("path", poison_fields::PATH_INTO_INNER)],
-        );
-    }
-
-    /// Verify that tracing::warn! is emitted when into_result() recovers from a
-    /// poisoned results lock via the into_inner() path.
-    /// Event must have lock=results, path=into_inner.
-    #[test]
-    fn tracing_warn_emitted_on_poison_into_result_results() {
-        assert_into_result_poison_warn(
-            ConcurrentEvalAdapter::poison_results,
-            &[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_INTO_INNER)],
-        );
-    }
 }
 
 // Tests for into_result() recovering via the shared-fallback (Err(arc)) branch.
