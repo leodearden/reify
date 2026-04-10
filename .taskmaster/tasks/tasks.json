@@ -28778,11 +28778,18 @@
         "description": "The prelude-collection loop is duplicated verbatim in module_dag.rs between compile_module (lines 168-178) and compile_project (lines 241-251), differing only in self.modules vs dag.modules. Extract a private helper fn collect_import_preludes(parsed, modules) so future changes (transitive re-exports, de-duplication, filtering) live in one place. Additionally, compile_project clones every imported CompiledModule (templates, functions, fields, constraint_defs) and then immediately drains dag.modules via remove() — the clones are pure waste. Consider changing compile_with_prelude's signature to &[&CompiledModule] so compile_project can pass references, or build the owned Vec<CompiledModule> only after draining dag.modules in the right order. Apply both the deduplication and the clone-avoidance as a single refactor. Files: crates/reify-compiler/src/module_dag.rs, crates/reify-compiler/src/lib.rs (compile_with_prelude signature).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:21:25.497Z"
+        "updatedAt": "2026-04-10T00:01:36.421Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": "1393",
@@ -28981,7 +28988,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:01:32.845Z",
+      "lastModified": "2026-04-10T00:01:36.421Z",
       "taskCount": 1406,
       "completedCount": 1079,
       "tags": [
