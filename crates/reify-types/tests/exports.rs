@@ -1,4 +1,4 @@
-//! Integration test to verify all new M3 resolution types are exported from the crate root.
+//! Integration tests to verify types are exported from the crate root.
 
 #[test]
 fn all_resolution_types_exported() {
@@ -199,5 +199,29 @@ fn all_m5_types_exported() {
             y: 0.0,
             z: 0.0,
         }),
+    };
+}
+
+#[test]
+fn presentation_info_types_exported() {
+    // DiagnosticInfo is accessible at the reify_types crate root
+    let _d = reify_types::DiagnosticInfo {
+        file_path: "test.ri".into(),
+        line: 1,
+        column: 0,
+        end_line: 1,
+        end_column: 10,
+        severity: "error".into(),
+        message: "type mismatch".into(),
+        code: None,
+    };
+
+    // SourceLocationInfo is accessible at the reify_types crate root
+    let _loc = reify_types::SourceLocationInfo {
+        file_path: "test.ri".into(),
+        line: 1,
+        column: 0,
+        end_line: 1,
+        end_column: 10,
     };
 }
