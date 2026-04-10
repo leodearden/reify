@@ -31929,11 +31929,11 @@
         "description": "Three improvements in crates/reify-expr/src/calculus.rs: (1) Lines 93-105: add doc cross-ref to Value::from_component. (2) Lines 1025-1034: add debug_assert on codomain_type in curl for consistency with divergence/laplacian. (3) Add debug_assert panic test using Type::vec3(Type::Real) as invalid codomain.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:49:57.853Z",
+        "updatedAt": "2026-04-10T07:08:49.205Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -32229,9 +32229,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:08:36.708Z",
+      "lastModified": "2026-04-10T07:08:49.205Z",
       "taskCount": 1584,
-      "completedCount": 1193,
+      "completedCount": 1194,
       "tags": [
         "master"
       ]
