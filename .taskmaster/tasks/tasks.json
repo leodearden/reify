@@ -29339,13 +29339,18 @@
         "description": "The new `crates/reify-compiler/tests/unit_declaration_tests.rs` (task 210) duplicates coverage already present in `user_defined_unit_tests.rs` and `unit_registry_tests.rs`. Consolidate and fix test-quality issues in one pass.\n\n**Redundant coverage to remove or consolidate:**\n- `cross_module_pub_unit_visible_via_prelude` (unit_declaration_tests.rs:217) duplicates `cross_module_pub_unit_visible_via_compile_with_prelude` (user_defined_unit_tests.rs:132).\n- `cross_module_private_unit_not_visible_via_prelude` (unit_declaration_tests.rs:262) duplicates `cross_module_private_unit_not_visible_via_compile_with_prelude` (user_defined_unit_tests.rs:180).\n- `duplicate_unit_name_shadowing_prelude_is_error` (unit_declaration_tests.rs:315) duplicates `local_unit_duplicating_imported_pub_unit_produces_error` in user_defined_unit_tests.rs and `local_unit_duplicate_of_prelude_emits_error` (unit_registry_tests.rs:1382).\n- `duplicate_unit_name_in_same_module_is_error` (unit_declaration_tests.rs:293) duplicates `duplicate_unit_name_emits_error` (unit_registry_tests.rs:606).\n- `user_unit_in_quantity_literal_evaluates_to_si_value_length` (unit_declaration_tests.rs:342) duplicates `quantity_literal_uses_registry_unit` (unit_registry_tests.rs:510).\n- `custom_unit_declaration_via_cross_ref_quantity_literal` (unit_declaration_tests.rs:71) overlaps `unit_cross_ref_in_conversion_expr` (unit_registry_tests.rs:622).\n- `offset_unit_degc_in_quantity_literal_converts_to_kelvin` (unit_declaration_tests.rs:139) overlaps `offset_unit_quantity_literal_applies_offset` (unit_registry_tests.rs:749).\n\n**Resolution:** Either (a) delete the duplicates from `unit_declaration_tests.rs` and add 2-3 tests for genuinely new behavior (compound ENERGY/PRESSURE dimension, negative-factor unit in quantity literal, user-defined angle unit interacting with stdlib `deg`), or (b) keep `unit_declaration_tests.rs` as the single acceptance suite and delete the overlapping tests elsewhere. Task 210's minimum of ≥12 tests is met either way.\n\n**Test-quality fixes to apply in the same pass:**\n1. **Weak unknown-unit assertion** — `unit_declaration_tests.rs:282-287` uses `d.message.contains(\"unknown\") || d.message.contains(\"hidden_mil\")`, which matches any diagnostic mentioning `hidden_mil`. Tighten to `d.message.to_lowercase().contains(\"unknown unit\") && d.message.contains(\"hidden_mil\")`, or match a stable diagnostic code. Apply the same fix to the upstream clone at `user_defined_unit_tests.rs:199-205`.\n2. **Missing dimension assertion in compound-dimension test** — `custom_unit_with_compound_dimension_area_in_quantity_literal` (`unit_declaration_tests.rs:474`) only destructures `Value::Scalar { si_value, .. }` and never verifies `dimension == DimensionVector::AREA`. A bug producing the right number with the wrong dimension would pass. Destructure `Value::Scalar { si_value, dimension, .. }` and assert `*dimension == DimensionVector::AREA`. Extend the `custom_unit_with_compound_dimension_force` test similarly with a quantity-literal-in-param variant asserting `*dimension == reify_types::dimension::FORCE`.\n3. **Test clarity — cross-ref quantity literal** — `custom_unit_declaration_via_cross_ref_quantity_literal` (`unit_declaration_tests.rs:71`) declares `unit mm : Length = 0.001`, which matches the hardcoded fallback factor. The expected `thou.factor = 0.0000254` would hold even if the compiler silently fell back to the hardcoded `mm`. Change the declared factor to a distinctive value (e.g. `unit mm : Length = 0.005`, expected thou.factor = 0.000127), or rename the unit (`unit mymm : Length = 0.001`).\n\nIf duplicates are deleted (option a), items 1 and 3 may become moot; resolve accordingly.\n\nScope: tests only.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "210"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:22:06.007Z"
+        "updatedAt": "2026-04-10T01:03:15.890Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "1421",
@@ -29405,7 +29410,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:03:06.930Z",
+      "lastModified": "2026-04-10T01:03:15.890Z",
       "taskCount": 1425,
       "completedCount": 1095,
       "tags": [
