@@ -1,0 +1,128 @@
+// M9 integration example: cross-feature integration combining all three M9 milestone features.
+//
+// Features covered:
+//   A. Constraint def 'RequireDetermined' with determined(v) predicate
+//      (cross-feature: constraint def body uses a determinacy predicate)
+//   B. Constraint def 'DeterminedInRange' with determined(v) + range predicates
+//      (cross-feature: determinacy + value-range predicates in one constraint def)
+//   C. Trait 'Measurable' with inline determinacy constraint
+//      (trait conformance + determinacy)
+//   D. Trait 'Bounded' with default param and inline determinacy constraint
+//      (trait defaults + determinacy)
+//   E. Structure 'Widget' implementing 'Measurable' + using 'RequireDetermined'
+//      (trait conformance + constraint def + determinacy — all 3 features)
+//   F. Structure 'Bracket' implementing 'Bounded' + 'Measurable' + using 'DeterminedInRange' twice
+//      (multi-trait + constraint def with determinacy — cross-feature composition)
+//   G. Structure 'RecursiveChain' with sub guard using determined(span) && depth > 0
+//      (recursive unfolding gated by a determinacy predicate)
+//   H. Structure 'Plate' with empty body — defaults + constraints injected from 'Bounded'
+//      (trait default injection + determinacy)
+//
+// All active constraints are designed to be Satisfied.
+// Total active constraint results >= 10 across all structures and instances.
+
+// ── Feature A: constraint def RequireDetermined ───────────────────────────────
+// Cross-feature: constraint def body uses a determinacy predicate as its sole predicate.
+// When invoked with a determined param, produces RequireDetermined[0] = Satisfied.
+// When invoked with an undetermined param, produces RequireDetermined[0] = Violated.
+
+/// Asserts that a Length parameter is fully determined (has a concrete value).
+constraint def RequireDetermined {
+    param v : Length
+    determined(v)
+}
+
+// ── Feature B: constraint def DeterminedInRange ───────────────────────────────
+// Cross-feature: determinacy predicate combined with value-range predicates.
+// Produces three labeled results per invocation:
+//   DeterminedInRange[0] = determined(v)
+//   DeterminedInRange[1] = v >= lo
+//   DeterminedInRange[2] = v <= hi
+
+/// Asserts that a Length value is determined and falls within [lo, hi].
+constraint def DeterminedInRange {
+    param v  : Length
+    param lo : Length
+    param hi : Length
+    determined(v)
+    v >= lo
+    v <= hi
+}
+
+// ── Feature C: trait Measurable ───────────────────────────────────────────────
+// Defines a size param with inline value and determinacy constraints.
+// Both constraints are injected into implementing structures.
+
+trait Measurable {
+    param size : Length
+    constraint size > 0mm
+    constraint determined(size)
+}
+
+// ── Feature D: trait Bounded ──────────────────────────────────────────────────
+// Defines a length param with a default (50mm) and inline constraints.
+// Default and constraints are injected into implementing structures.
+
+trait Bounded {
+    param length : Length = 50mm
+    constraint length > 0mm
+    constraint determined(length)
+}
+
+// ── Feature E: structure Widget ───────────────────────────────────────────────
+// Implements Measurable → injects (size > 0mm) and (determined(size)).
+// Explicitly invokes RequireDetermined constraint def on the size param.
+// All three M9 features interact: trait conformance, constraint def, determinacy.
+
+structure def Widget : Measurable {
+    param size : Length = 30mm
+    constraint RequireDetermined(v: size)
+}
+
+// ── Feature F: structure Bracket ─────────────────────────────────────────────
+// Implements Bounded + Measurable → injects 4 trait-level constraints.
+// Explicitly invokes DeterminedInRange twice: once for size, once for length.
+// Cross-feature: multi-trait conformance + constraint def with determinacy predicate.
+
+structure def Bracket : Bounded + Measurable {
+    param size   : Length = 80mm
+    param length : Length = 100mm
+    // size in [10mm, 200mm]: DeterminedInRange[0]=determined(size), [1]=size>=10mm, [2]=size<=200mm
+    constraint DeterminedInRange(v: size, lo: 10mm, hi: 200mm)
+    // length in [50mm, 500mm]: DeterminedInRange[0]=determined(length), [1]=length>=50mm, [2]=length<=500mm
+    constraint DeterminedInRange(v: length, lo: 50mm, hi: 500mm)
+}
+
+// ── Feature G: structure RecursiveChain ──────────────────────────────────────
+// Cross-feature: recursive sub guard uses a determinacy predicate (determined(span)).
+// Sub 'child' is created only when BOTH determined(span) is true AND depth > 0.
+// Since span always has a concrete value (either the default or a passed arg),
+// determined(span) is always true in this design, so recursion terminates on depth=0.
+//
+// With default depth=2 and span=100mm:
+//   root:       depth=2, span=100mm  (0.1  SI)  → child created (determined(span)=true, depth=2>0)
+//   child:      depth=1, span=50mm   (0.05 SI)  → grandchild created (determined(span)=true, depth=1>0)
+//   grandchild: depth=0, span=25mm   (0.025 SI) → great-grandchild NOT created (depth=0, guard false)
+
+structure def RecursiveChain {
+    param depth : Int    = 2
+    param span  : Length = 100mm
+
+    let next_span = span / 2
+
+    // Guard uses determinacy predicate: only unfold when span is determined AND depth > 0
+    sub child = RecursiveChain(depth: depth - 1, span: next_span) where determined(span) && depth > 0
+
+    // Constraints on each instance
+    constraint determined(span)
+    constraint span > 0mm
+}
+
+// ── Feature H: structure Plate ────────────────────────────────────────────────
+// Implements Bounded with an empty body.
+// The length default (50mm) and constraints (length > 0mm, determined(length))
+// are injected from the Bounded trait — no explicit members needed.
+
+structure def Plate : Bounded {
+    // Empty body — length default (50mm) and constraints injected from Bounded.
+}
