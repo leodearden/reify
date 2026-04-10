@@ -641,12 +641,12 @@ echo "--- Test 22: post-wait orphan cleanup uses SIGKILL not SIGTERM ---"
 assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)" \
     grep -qF 'kill -9 -- -$cmd_pid 2>/dev/null || true' "$LIB_PORTABLE"
 
-# Regex covers the canonical 'kill -- -$cmd_pid' form (quoted or unquoted,
-# with optional trailing || true or redirection) but NOT 'kill -s TERM',
-# 'kill -TERM', or '--signal=TERM' variants — those are not used in the file.
+# Regex matches the canonical 'kill -- -$cmd_pid' form (quoted or unquoted).
+# 'kill -9 -- ...' is excluded because [[:space:]]+ between 'kill' and '--'
+# cannot match the intervening '-9' — no prefix anchor is needed.
 # Comment lines are excluded first to avoid false matches on inline documentation.
 assert "no line uses the canonical kill -- -\$cmd_pid form (quoted or unquoted)" \
-    bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "(^|[^-9])kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
+    bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
 
 # -- Test 23: structural: both timer subshells quote the PGID argument (S1) ---
 echo ""
