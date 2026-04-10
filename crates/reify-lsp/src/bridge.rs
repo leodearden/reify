@@ -248,15 +248,26 @@ mod tests {
 
     #[test]
     fn parse_params_returns_err_with_label_prefix_on_invalid_input() {
-        let result = parse_params::<InitializeParams>(json!(42), "initialize");
+        let result = parse_params::<InitializeParams>(json!(42), error_prefix::INITIALIZE_PARAMS);
         assert!(result.is_err());
-        assert!(result.unwrap_err().starts_with("initialize params error: "));
+        let err = result.unwrap_err();
+        assert!(
+            err.starts_with(&format!("{}: ", error_prefix::INITIALIZE_PARAMS)),
+            "expected error to start with \"{}: \", got: {err:?}",
+            error_prefix::INITIALIZE_PARAMS
+        );
     }
 
     #[test]
     fn parse_params_substitutes_provided_label() {
-        let result = parse_params::<DidOpenTextDocumentParams>(json!(42), "didOpen");
+        let result =
+            parse_params::<DidOpenTextDocumentParams>(json!(42), error_prefix::DID_OPEN_PARAMS);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("didOpen params error"));
+        let err = result.unwrap_err();
+        assert!(
+            err.starts_with(&format!("{}: ", error_prefix::DID_OPEN_PARAMS)),
+            "expected error to start with \"{}: \", got: {err:?}",
+            error_prefix::DID_OPEN_PARAMS
+        );
     }
 }
