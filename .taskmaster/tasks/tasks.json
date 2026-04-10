@@ -31019,11 +31019,11 @@
         "description": "Three fixes for InstanceQualifiedAccess sub member type resolution: (1) Add regression test for non-collection sub qualified access (e.g. `sub inner = Inner()` with `inner.(TraitName::member)`) — newly-enabled code path is untested. Assert no errors and correct resolved type (not Type::Real fallback). (2) expr.rs:1507-1516: simplify to single sub_member_types lookup — it's a superset of collection_sub_member_types, making the fallback chain redundant. (3) expr.rs:1506: fix misleading \"non-collection\" comment — sub_member_types contains entries for all subs including collection ones.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:09:44.606Z",
+        "updatedAt": "2026-04-10T11:55:41.253Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -31812,11 +31812,11 @@
         "description": "Two related improvements for sub_member_types in reify-compiler:\n\n1. **Test coverage gap (from esc-1345-302 S1):** The existing `sub_member_type_resolves_without_ice` test in silent_defaults_tests.rs uses a collection sub (`sub parts : List<Inner>`), so `collection_sub_member_types` is populated and the `or_else` fallback to `sub_member_types` in expr.rs:1510-1516 is never reached. Add a companion test using a non-collection sub (e.g., `sub part : Inner` instead of `sub parts : List<Inner>`) with trait-qualified access `part.(MechTrait::diameter)`. This exercises the fallback path that was the fix's primary target.\n\n2. **Doc comment mismatch (from esc-1345-302 S2):** scope.rs:36 says `Member types for non-collection sub-components` but entity.rs:417 populates `sub_member_types` for ALL subs (confirmed by the comment at expr.rs:1506: \"sub_member_types covers ALL subs\"). Update scope.rs:36 to: `/// Member types for all sub-components: sub_name → { member_name → Type }.`\n\nmemory_hints:\n- search: \"sub_member_types scope entity population\"\n- get_entity: \"sub_member_types\"\n- search: \"non-collection sub trait-qualified access fallback expr.rs\"\n\nSource: esc-1322-29 → esc-1345-302 (S1, S2)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:33:37.107Z",
+        "updatedAt": "2026-04-10T11:55:41.294Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -31847,11 +31847,11 @@
         "description": "Two related improvements for sub_member_types in reify-compiler:\n\n1. **Test coverage gap (from esc-1345-302 S1):** The existing `sub_member_type_resolves_without_ice` test in silent_defaults_tests.rs uses a collection sub (`sub parts : List<Inner>`), so `collection_sub_member_types` is populated and the `or_else` fallback to `sub_member_types` in expr.rs:1510-1516 is never reached. Add a companion test using a non-collection sub (e.g., `sub part : Inner` instead of `sub parts : List<Inner>`) with trait-qualified access `part.(MechTrait::diameter)`. This exercises the fallback path that was the fix's primary target.\n\n2. **Doc comment mismatch (from esc-1345-302 S2):** scope.rs:36 says `Member types for non-collection sub-components` but entity.rs:417 populates `sub_member_types` for ALL subs (confirmed by the comment at expr.rs:1506: \"sub_member_types covers ALL subs\"). Update scope.rs:36 to: `/// Member types for all sub-components: sub_name → { member_name → Type }.`\n\nmemory_hints:\n- search: \"sub_member_types scope entity population\"\n- get_entity: \"sub_member_types\"\n- search: \"non-collection sub trait-qualified access fallback expr.rs\"\n\nSource: esc-1322-29 → esc-1345-302 (S1, S2)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:33:11.895Z",
+        "updatedAt": "2026-04-10T11:55:41.336Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -31865,7 +31865,7 @@
         "description": "Two related improvements for sub_member_types in reify-compiler:\n\n1. **Test coverage gap (from esc-1345-302 S1):** The existing `sub_member_type_resolves_without_ice` test in silent_defaults_tests.rs uses a collection sub (`sub parts : List<Inner>`), so `collection_sub_member_types` is populated and the `or_else` fallback to `sub_member_types` in expr.rs:1510-1516 is never reached. Add a companion test using a non-collection sub (e.g., `sub part : Inner` instead of `sub parts : List<Inner>`) with trait-qualified access `part.(MechTrait::diameter)`. This exercises the fallback path that was the fix's primary target.\n\n2. **Doc comment mismatch (from esc-1345-302 S2):** scope.rs:36 says `Member types for non-collection sub-components` but entity.rs:417 populates `sub_member_types` for ALL subs (confirmed by the comment at expr.rs:1506: \"sub_member_types covers ALL subs\"). Update scope.rs:36 to: `/// Member types for all sub-components: sub_name → { member_name → Type }.`\n\nmemory_hints:\n- search: \"sub_member_types scope entity population\"\n- get_entity: \"sub_member_types\"\n- search: \"non-collection sub trait-qualified access fallback expr.rs\"\n\nSource: esc-1322-29 → esc-1345-302 (S1, S2)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -31874,7 +31874,8 @@
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-10T11:55:41.377Z"
       },
       {
         "id": "1562",
@@ -31882,11 +31883,11 @@
         "description": "Two related improvements for sub_member_types in reify-compiler:\n\n1. **Test coverage gap (from esc-1345-302 S1):** The existing `sub_member_type_resolves_without_ice` test in silent_defaults_tests.rs uses a collection sub (`sub parts : List<Inner>`), so `collection_sub_member_types` is populated and the `or_else` fallback to `sub_member_types` in expr.rs:1510-1516 is never reached. Add a companion test using a non-collection sub (e.g., `sub part : Inner` instead of `sub parts : List<Inner>`) with trait-qualified access `part.(MechTrait::diameter)`. This exercises the fallback path that was the fix's primary target.\n\n2. **Doc comment mismatch (from esc-1345-302 S2):** scope.rs:36 says `Member types for non-collection sub-components` but entity.rs:417 populates `sub_member_types` for ALL subs (confirmed by the comment at expr.rs:1506: \"sub_member_types covers ALL subs\"). Update scope.rs:36 to: `/// Member types for all sub-components: sub_name → { member_name → Type }.`\n\nmemory_hints:\n- search: \"sub_member_types scope entity population\"\n- get_entity: \"sub_member_types\"\n- search: \"non-collection sub trait-qualified access fallback expr.rs\"\n\nSource: esc-1322-29 to esc-1345-302 (S1, S2)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:20.472Z",
+        "updatedAt": "2026-04-10T11:55:41.421Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -32596,7 +32597,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T11:55:40.785Z",
+      "lastModified": "2026-04-10T11:55:41.421Z",
       "taskCount": 1605,
       "completedCount": 1222,
       "tags": [
