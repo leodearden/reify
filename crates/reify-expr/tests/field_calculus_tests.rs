@@ -841,6 +841,41 @@ fn laplacian_accepts_vector_sample_point() {
     );
 }
 
+/// Sampling a laplacian field with a 2-element `Value::Vector` returns `Value::Undef`.
+///
+/// Unlike curl's explicit `items.len()==3` guard, this `Undef` arises because the
+/// quadratic field's 3-param lambda receives only 2 coordinates, leaving the third
+/// unbound; strict `Undef` propagation in `FunctionCall` then cascades.
+#[test]
+fn laplacian_two_element_vector_sample_point_returns_undef() {
+    let label = "laplacian_two_element_vector_sample_point_returns_undef";
+    let (lap_result, lap_field_type) = build_laplacian_quadratic_field(label);
+
+    // vec2 type is intentional — compute_numerical_laplacian_at_point accepts any non-empty
+    // dimension vector (no explicit len==3 guard). Undef arises because the quadratic field's
+    // 3-param lambda receives only 2 coordinates, leaving the third unbound; strict Undef
+    // propagation in FunctionCall then cascades.
+    let (point, point_literal_type) = SamplePoint::Vector2([1.0, 2.0]).into_value_and_type();
+
+    let values = ValueMap::new();
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(point, point_literal_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(sample_result, Value::Undef),
+        "{label}: laplacian with 2-element Vector sample point should return Value::Undef, got {:?}",
+        sample_result
+    );
+}
+
 // ── Step 5: Codomain type tests ───────────────────────────────────────────────
 
 /// Gradient of a Real→Real field produces a Field with scalar (Real) codomain.
