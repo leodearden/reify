@@ -3787,3 +3787,62 @@ fn divergence_dimensional_correctness_composed_source() {
         "divergence_dimensional_correctness_composed_source",
     );
 }
+
+/// `SamplePoint::into_value_and_type()` produces the correct `(Value, Type)` pair
+/// for each variant — Point3 → (Value::Point, Type::point3(Real)),
+/// Vector3 → (Value::Vector, Type::vec3(Real)), Vector2 → (Value::Vector, Type::vec2(Real)).
+#[test]
+fn sample_point_enum_correctness() {
+    // Point3
+    let (val, ty) = SamplePoint::Point3([1.0, 2.0, 3.0]).into_value_and_type();
+    assert!(
+        matches!(&val, Value::Point(items) if items.len() == 3),
+        "Point3 should produce Value::Point with 3 items, got {:?}",
+        val
+    );
+    assert_eq!(
+        ty,
+        Type::point3(Type::Real),
+        "Point3 should produce Type::point3(Real)"
+    );
+    if let Value::Point(items) = &val {
+        assert_eq!(items[0], Value::Real(1.0));
+        assert_eq!(items[1], Value::Real(2.0));
+        assert_eq!(items[2], Value::Real(3.0));
+    }
+
+    // Vector3
+    let (val, ty) = SamplePoint::Vector3([1.0, 2.0, 3.0]).into_value_and_type();
+    assert!(
+        matches!(&val, Value::Vector(items) if items.len() == 3),
+        "Vector3 should produce Value::Vector with 3 items, got {:?}",
+        val
+    );
+    assert_eq!(
+        ty,
+        Type::vec3(Type::Real),
+        "Vector3 should produce Type::vec3(Real)"
+    );
+    if let Value::Vector(items) = &val {
+        assert_eq!(items[0], Value::Real(1.0));
+        assert_eq!(items[1], Value::Real(2.0));
+        assert_eq!(items[2], Value::Real(3.0));
+    }
+
+    // Vector2
+    let (val, ty) = SamplePoint::Vector2([1.0, 2.0]).into_value_and_type();
+    assert!(
+        matches!(&val, Value::Vector(items) if items.len() == 2),
+        "Vector2 should produce Value::Vector with 2 items, got {:?}",
+        val
+    );
+    assert_eq!(
+        ty,
+        Type::vec2(Type::Real),
+        "Vector2 should produce Type::vec2(Real)"
+    );
+    if let Value::Vector(items) = &val {
+        assert_eq!(items[0], Value::Real(1.0));
+        assert_eq!(items[1], Value::Real(2.0));
+    }
+}
