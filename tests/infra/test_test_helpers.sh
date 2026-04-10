@@ -717,6 +717,45 @@ else
 fi
 check "trap line has defensive comment about single main-shell EXIT trap invariant" "$ok"
 
+echo ""
+echo "--- Robustness: EXPR_FILE guard fires when reify-expr source file absent ---"
+
+_expr_guard_beh_dir=$(mktemp -d -p "$_robust_tmpdir")
+mkdir -p "$_expr_guard_beh_dir/tests"
+cp "$SYNC_FILE" "$_expr_guard_beh_dir/tests/sync_comments_test.sh"
+_expr_guard_beh_rc=0
+_expr_guard_beh_out=$(bash "$_expr_guard_beh_dir/tests/sync_comments_test.sh" 2>&1) || _expr_guard_beh_rc=$?
+
+if [ "$_expr_guard_beh_rc" -ne 0 ]; then ok=true; else ok=false; fi
+check "EXPR_FILE guard: exits non-zero when reify-expr source file absent" "$ok"
+
+if echo "$_expr_guard_beh_out" | grep -q 'ERROR:'; then ok=true; else ok=false; fi
+check "EXPR_FILE guard: output contains ERROR:" "$ok"
+
+if echo "$_expr_guard_beh_out" | grep -q 'reify-expr'; then ok=true; else ok=false; fi
+check "EXPR_FILE guard: error message names reify-expr path" "$ok"
+
+echo ""
+echo "--- Robustness: STDLIB_FILE guard fires when reify-stdlib source file absent ---"
+
+_stdlib_guard_beh_dir=$(mktemp -d -p "$_robust_tmpdir")
+mkdir -p "$_stdlib_guard_beh_dir/crates/reify-expr/src"
+mkdir -p "$_stdlib_guard_beh_dir/tests"
+printf '// SYNC: reify-stdlib::sanitize_value\nfn stub() {}\n' \
+    > "$_stdlib_guard_beh_dir/crates/reify-expr/src/sanitize.rs"
+cp "$SYNC_FILE" "$_stdlib_guard_beh_dir/tests/sync_comments_test.sh"
+_stdlib_guard_beh_rc=0
+_stdlib_guard_beh_out=$(bash "$_stdlib_guard_beh_dir/tests/sync_comments_test.sh" 2>&1) || _stdlib_guard_beh_rc=$?
+
+if [ "$_stdlib_guard_beh_rc" -ne 0 ]; then ok=true; else ok=false; fi
+check "STDLIB_FILE guard: exits non-zero when reify-stdlib source file absent" "$ok"
+
+if echo "$_stdlib_guard_beh_out" | grep -q 'ERROR:'; then ok=true; else ok=false; fi
+check "STDLIB_FILE guard: output contains ERROR:" "$ok"
+
+if echo "$_stdlib_guard_beh_out" | grep -q 'reify-stdlib'; then ok=true; else ok=false; fi
+check "STDLIB_FILE guard: error message names reify-stdlib path" "$ok"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
