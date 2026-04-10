@@ -595,15 +595,14 @@ else
 fi
 check "robustness check descriptions avoid ambiguous should-FAIL phrasing" "$ok"
 
-# Self-check: fixture_clean uses unified single-line form (no duplicate descriptions).
-# The old if/else form placed the same description on both branches, which is
-# ambiguous in CI output.  The unified form has the description exactly once.
-if [ "$(grep -c 'if-guard pattern returns true for clean file' "${BASH_SOURCE[0]}")" -le 1 ]; then
-    ok=true
-else
-    ok=false
-fi
-check "fixture_clean check description appears at most once (no if/else duplicate)" "$ok"
+# Self-check: no check() call descriptions are duplicated across lines.
+# Duplicate descriptions (same string on the true and false branches of an
+# if/else) are ambiguous in CI output.  The unified ok=true/false form
+# (check "desc" "$ok") ensures each description appears exactly once.
+dup_count=$(grep -oE 'check "[^"]+"' "${BASH_SOURCE[0]}" \
+    | sort | uniq -d | wc -l)
+if [ "$dup_count" -eq 0 ]; then ok=true; else ok=false; fi
+check "no duplicate check descriptions in this file" "$ok"
 
 # Self-check: robustness section registers trap-based fixture cleanup.
 if grep -q 'trap cleanup_robust EXIT' "${BASH_SOURCE[0]}"; then
