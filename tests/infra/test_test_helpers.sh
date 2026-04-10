@@ -309,6 +309,20 @@ else
     check "extract_fn non-empty guard present for expr_body" "false"
 fi
 
+# (e2) sync_comments_test.sh empty-guard short-circuits via test_summary before diff
+# WHY: check (e) only confirms the guard exists; it does NOT confirm the guard
+# short-circuits.  Without test_summary; inside the guard's braces, a failed
+# assert still records a FAIL but execution falls through to the diff assertion.
+# On empty expr_body, diff <(printf '') <(printf '') returns rc=0, masking the
+# regression with a spurious PASS.  This structural check is the fast pre-flight
+# counterpart to the expensive behavioral test at the
+# "extract_fn non-empty guard short-circuit behavioral test" section below.
+if _has_expr_body_empty_guard_short_circuit "$SYNC_FILE"; then
+    check "extract_fn empty-guard short-circuits via test_summary for expr_body" "true"
+else
+    check "extract_fn empty-guard short-circuits via test_summary for expr_body" "false"
+fi
+
 # (f) sync_comments_test.sh sources sync_ref_helpers.sh (function moved out)
 if grep -qE '(source|\.)\s+.*sync_ref_helpers\.sh' "$SYNC_FILE" 2>/dev/null; then
     check "sync_comments_test.sh sources sync_ref_helpers.sh" "true"
