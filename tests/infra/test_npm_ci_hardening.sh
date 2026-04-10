@@ -388,21 +388,10 @@ assert "23c: non-npm@ packageManager (yarn@1.22.0 in all files) -> exit non-zero
 # Checks 1 and 2 pass (npm@10.9.0 in all files, total=3, unique=1)
 # Check 3 fails (.gitignore lists gui/package-lock.json so git check-ignore returns 0)
 # Check 4 passes (gui/pnpm-lock.yaml still in .gitignore)
-FIXTURE_23D="$(mktemp -d)"
-_TMPDIRS+=("$FIXTURE_23D")
-
-mkdir -p "$FIXTURE_23D/scripts"
-mkdir -p "$FIXTURE_23D/tests/infra"
-mkdir -p "$FIXTURE_23D/gui/sidecar"
-mkdir -p "$FIXTURE_23D/tree-sitter-reify"
-
-cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_23D/scripts/"
-cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_23D/tests/infra/"
+setup_fixture_dir FIXTURE_23D
 
 # .gitignore: BOTH pnpm-lock.yaml (Check 4 pass) AND gui/package-lock.json (Check 3 fail)
 printf 'gui/pnpm-lock.yaml\ngui/package-lock.json\n' > "$FIXTURE_23D/.gitignore"
-
-git -C "$FIXTURE_23D" init -q
 
 # All three files use consistent npm@10.9.0 — Checks 1 and 2 pass
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
