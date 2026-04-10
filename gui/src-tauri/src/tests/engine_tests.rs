@@ -961,6 +961,33 @@ fn get_source_location_returns_none_without_module() {
     );
 }
 
+/// get_source_location returns None when module_name has been cleared (broken invariant).
+///
+/// Focused regression complement to the bundled `resolve_source_fallback_when_module_name_missing`
+/// test (line 1168), which asserts both get_diagnostics and get_source_location in one test.
+/// This dedicated test provides independent failure attribution for get_source_location alone:
+/// if get_source_location regresses while get_diagnostics remains intact, this test reports
+/// against the right method. Parallels the focused `resolve_source_returns_none_when_module_name_broken`
+/// test (line 1823) which checks the resolve_source helper directly.
+#[test]
+fn get_source_location_returns_none_when_module_name_broken() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Deliberately break the module_name invariant while leaving compiled and source_map intact.
+    session.break_module_name_for_test();
+
+    let loc = session.get_source_location("Bracket.width");
+    assert!(
+        loc.is_none(),
+        "get_source_location should return None when module_name is broken"
+    );
+}
+
 /// get_diagnostics and get_source_location return the same file key.
 ///
 /// After load_from_source with a warning-producing source, both methods must resolve
@@ -2160,11 +2187,15 @@ fn resolve_source_returns_updated_content_after_update_source() {
     );
 }
 
-/// get_source_location returns the updated file_path after update_source changes the module name.
+/// get_source_location returns the updated file_path after update_source changes the module name,
+/// and line/column positions remain stable when the source text is identical.
 ///
 /// After load_from_source with 'initial' then update_source("updated.ri", ...),
 /// get_source_location must use the new module name key "updated.ri" for the file_path,
-/// not the stale "initial.ri". Fills test-analyst gap S11.
+/// not the stale "initial.ri". Fills test-analyst gap S11. Additionally, because both
+/// calls pass the same source text, the byte span for S.width is unchanged and
+/// byte_offset_to_line_col must produce identical line/column/end_line/end_column values —
+/// guarding against update_source corrupting source-map content.
 #[test]
 fn get_source_location_file_key_updates_after_update_source() {
     let checker = SimpleConstraintChecker;
@@ -2196,5 +2227,23 @@ fn get_source_location_file_key_updates_after_update_source() {
     assert_eq!(
         loc_after.file_path, "updated.ri",
         "after update_source: file_path should be 'updated.ri', not 'initial.ri'"
+    );
+
+    // Line/column positions must be unchanged when update_source uses identical source text.
+    assert_eq!(
+        loc_after.line, loc_before.line,
+        "line should be unchanged when update_source uses identical source text"
+    );
+    assert_eq!(
+        loc_after.column, loc_before.column,
+        "column should be unchanged when update_source uses identical source text"
+    );
+    assert_eq!(
+        loc_after.end_line, loc_before.end_line,
+        "end_line should be unchanged when update_source uses identical source text"
+    );
+    assert_eq!(
+        loc_after.end_column, loc_before.end_column,
+        "end_column should be unchanged when update_source uses identical source text"
     );
 }
