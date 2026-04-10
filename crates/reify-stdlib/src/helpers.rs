@@ -381,6 +381,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tensor_components_f64_tensor_of_reals_returns_values_and_dimensionless() {
+        let v = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let (vals, dim) =
+            tensor_components_f64(&v).expect("expected Some for Tensor of Reals");
+        assert_eq!(vals.len(), 3, "should extract 3 components");
+        assert!((vals[0] - 1.0).abs() < f64::EPSILON);
+        assert!((vals[1] - 2.0).abs() < f64::EPSILON);
+        assert!((vals[2] - 3.0).abs() < f64::EPSILON);
+        assert_eq!(
+            dim,
+            DimensionVector::DIMENSIONLESS,
+            "Real elements are dimensionless"
+        );
+    }
+
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
 
     // ── sanitize_value Real arm characterization tests ───────────────────────
