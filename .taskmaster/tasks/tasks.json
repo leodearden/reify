@@ -29317,11 +29317,11 @@
         "description": "Follow-up from Task 1278 review (esc-1278-130, S3). Pre-existing latent bug made more reachable by Task 1278's broadened accept set.\n\nLocation: `tests/sync_comments_test.sh:47-55`\n\nThe `extract_fn` helper currently strips only `pub`/`pub(...)` from the captured signature line:\n```sh\nextract_fn() {\n    local fn_name=\"$1\" file=\"$2\"\n    awk '/^[^/]*fn '\"$fn_name\"'[(<]/,/^}/' \"$file\" |\n        sed 's/^pub([^)]*) *//' |\n        sed 's/^pub //'\n}\n```\n\nIf either copy of `sanitize_value` ever picks up a `const`/`async`/`unsafe` qualifier (which the regex now correctly admits after Task 1278), the body diff would falsely fail because one side would carry the qualifier in the captured first line and the other would not. This is not currently a bug because neither copy uses qualifiers, but the escalation explicitly notes it is \"more reachable as a result of the broader accept set.\"\n\nFix: extend the `sed` chain in `extract_fn` to also strip leading `const `, `async `, and `unsafe ` in any valid combination from the captured signature line, or normalise both signatures before diffing. Verify that order-tolerant stripping works:\n- `const unsafe fn sanitize_value(` → `fn sanitize_value(`\n- `async unsafe fn sanitize_value(` → `fn sanitize_value(`\n- `pub(crate) const unsafe fn sanitize_value(` → `fn sanitize_value(`\n\nAdd corresponding Section 3 extract_fn fixture tests in `tests/infra/test_sync_comments_grep.sh` exercising the qualifier-stripping path.\n\nVerify with:\n- `bash tests/infra/test_sync_comments_grep.sh`\n- `bash tests/sync_comments_test.sh`\n\nSource: esc-1278-130 S3 (steward-triage from Task 1278 post-merge review)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T17:35:48.169Z",
+        "updatedAt": "2026-04-10T20:44:43.701Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh",
@@ -32851,9 +32851,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T20:42:13.193Z",
+      "lastModified": "2026-04-10T20:44:43.704Z",
       "taskCount": 1614,
-      "completedCount": 1252,
+      "completedCount": 1253,
       "tags": [
         "master"
       ]
