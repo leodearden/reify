@@ -28146,11 +28146,11 @@
         "description": "Follow-up from Task 1322 review (esc-1322-29, suggestions S4/S5). Task 1322 hardened only Section 1 of tests/infra/test_sync_comments_grep.sh. Sections 2 (lines 167, 170) and Section 3 (lines 182-220) still use the fragile `bash -c \"...\"` form with parent-shell interpolation of `$SYNC_TEST`, `$_SECT3_HELPER`, and heredoc-style embedded scripts that must escape every `\\\\$`.\n\nWhile these interpolated values are trusted *paths* (not extracted regexes) and so are not currently broken, the file now has two conventions side-by-side, which undermines the \"hardened-everywhere\" story and makes it easy to regress Section 1 by copying from Sections 2/3.\n\n**Work:**\n\n1. **S5 (consistency):** Apply the same env-passing pattern used in Section 1 to Sections 2 and 3. Export `SYNC_TEST` and `_SECT3_HELPER` (or equivalent scoped names) once, and switch the outer quotes of each `bash -c` to single-quotes so the child shell reads the variables from its own environment instead of parent-shell interpolation. For Section 3, the heredoc-style embedded scripts should likewise stop using `\\\\$`-escapes by running inside a single-quoted outer.\n\n2. **S4 (scoping):** While touching these sections, consider the naming/scope of `PATTERN`. `export PATTERN` promotes a very generic name to the environment for the remainder of the script, including Section 3 subshells that `source sync_comments_test.sh`. If that file (now or in future) references a local `PATTERN` variable, the exported one will shadow it. Either (a) rename to `FN_EXISTENCE_PATTERN` and update Section 1 assertions accordingly, or (b) `unset PATTERN` at the end of Section 1 (before the Section 2 header) so it does not leak into sourced scripts downstream. Option (a) is cleaner; option (b) is a narrower cleanup.\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh` (all existing assertions must still pass) and `bash tests/infra/run_all.sh` (broader infra suite).\n\nSource: esc-1322-29 (steward-triage from Task 1322 post-merge review)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:32:40.657Z",
+        "updatedAt": "2026-04-10T07:41:50.811Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh"
@@ -32255,9 +32255,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:29:13.215Z",
+      "lastModified": "2026-04-10T07:41:50.811Z",
       "taskCount": 1585,
-      "completedCount": 1203,
+      "completedCount": 1204,
       "tags": [
         "master"
       ]
