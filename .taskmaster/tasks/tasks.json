@@ -27975,11 +27975,11 @@
         "description": "The updated `extract_fn` awk script at tests/sync_comments_test.sh:51-63 uses a range pattern `/^[^/]*fn NAME[(<]/,/^}/`. If either copy of sanitize_value is ever moved somewhere the start pattern doesn't match, awk silently outputs nothing and `diff` compares two empty outputs — passing vacuously.",
         "details": "Add a guard after extraction, e.g.:\n```bash\n[ -s \"$tmp_a\" ] || { echo \"FAIL: extract_fn produced empty output for $src_file\"; exit 1; }\n[ -s \"$tmp_b\" ] || { echo \"FAIL: extract_fn produced empty output for $tgt_file\"; exit 1; }\n```\nso the test fails loudly if the function body could not be extracted. Verify by temporarily breaking the extract_fn pattern and confirming the test fails rather than passing silently.\n\nSource: review triage of task 159 (auto(free) grammar + compiler threading).",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T10:17:13.848Z",
+        "updatedAt": "2026-04-10T10:32:19.842Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh",
@@ -32506,9 +32506,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T10:32:17.228Z",
+      "lastModified": "2026-04-10T10:32:19.842Z",
       "taskCount": 1600,
-      "completedCount": 1214,
+      "completedCount": 1215,
       "tags": [
         "master"
       ]
