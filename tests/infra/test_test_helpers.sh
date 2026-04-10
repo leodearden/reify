@@ -560,6 +560,24 @@ else
 fi
 check "mk_fixture is subshell-safe (no array append lost in command substitution)" "$ok"
 
+# Self-check: _ws_label uses a comprehensive case statement with readable labels.
+# Grep for the literal case-arm assignment; this string is absent until step-2 adds it.
+if grep -q "_ws_label='(1 space)'" "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "_ws_label case statement maps single-space to readable label" "$ok"
+
+# Self-check: defensive trap comment warns about the single main-shell EXIT trap.
+# Grep for the comment marker; this string is absent until step-3 adds it.
+if grep -q '# only main-shell EXIT trap' "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "trap line has defensive comment about single main-shell EXIT trap invariant" "$ok"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
