@@ -2889,6 +2889,21 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "unexpected value")]
+    fn test_assert_boundary_set_iteration_order_variant_mismatch() {
+        // Meta-test: mirrors test_assert_ieee754_total_order_real_wrong_order and
+        // _wrong_count for assert_boundary_set_iteration_order, proving that the
+        // helper propagates panics from the extract closure.
+        //
+        // build produces Value::Real entries, but extract only matches Value::Complex;
+        // every element falls through to the `_` arm and panics with "unexpected value".
+        assert_boundary_set_iteration_order(Value::Real, |v| match v {
+            Value::Complex { im, .. } => *im,
+            _ => panic!("unexpected value"),
+        });
+    }
+
+    #[test]
     fn value_ord_real_negative_nan() {
         // Under f64::total_cmp() (IEEE 754 totalOrder), negative NaN bit patterns
         // sort before -Infinity: neg_qNaN < neg_sNaN < -Inf < ... < +Inf < pos_sNaN < pos_qNaN.
