@@ -113,6 +113,7 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
                 );
             }
         }
+        Value::Undef => panic!("{label}: gradient returned Undef, expected Vector"),
         _ => panic!("{label}: expected Value::Vector, got {:?}", result),
     }
 }
