@@ -7,7 +7,7 @@ use reify_test_support::{
 };
 use reify_types::ExportFormat;
 
-use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
+use reify_types::{DiagnosticInfo, SourceLocationInfo};
 
 use crate::engine::{EngineSession, module_key, parse_value_string};
 
