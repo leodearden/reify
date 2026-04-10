@@ -53,9 +53,10 @@ assert_sync_ref_exists reify-expr reify-stdlib "$EXPR_FILE" "$STDLIB_FILE"
 assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 
 # Helper: extract from the fn signature line to the next line that begins with }
-# at column 0.  Content above the fn keyword is naturally excluded by the awk
-# range anchor, so doc comments and SYNC markers (which may legitimately differ
-# between the two copies) do not affect the body comparison.
+# at column 0.  Content above the fn keyword is excluded by the `/^[^/]*fn/`
+# range anchor, which also skips commented-out function signatures, so doc
+# comments and SYNC markers (which may legitimately differ between the two
+# copies) do not affect the body comparison.
 extract_fn() {
     local fn_name="$1" file="$2"
     # Match fn with optional visibility prefix (pub, pub(crate), etc.); strip the
