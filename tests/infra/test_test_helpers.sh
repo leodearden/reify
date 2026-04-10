@@ -263,8 +263,13 @@ SYNC_REF_HELPERS_FILE="$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
 # _has_if_n_guard catches any 'if [ -n' conditional regardless of
 # the variable name — so $marker, $fn_name, $ref_fn, $_expr_ref_fn, etc. all
 # count as prohibited defensive guards.
+# _has_expr_body_empty_guard_short_circuit checks that the empty-guard for
+# expr_body short-circuits via test_summary on the same line. NOTE: if the
+# guard is ever reformatted to span multiple lines, this per-line grep will
+# need to be replaced with an awk-based multiline matcher.
 _has_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
 _has_if_n_guard() { grep -qE 'if \[ -n' "$1" 2>/dev/null; }
+_has_expr_body_empty_guard_short_circuit() { grep -qE '\[ -z "\$expr_body".*test_summary' "$1" 2>/dev/null; }
 
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
