@@ -31932,15 +31932,16 @@
         "description": "In tests/infra/test_portable_timeout.sh:707, replace `echo \"$func_text\" | grep -c` with `printf '%s\\n' \"$func_text\" | grep -c` for POSIX-safe pipe input, avoiding hypothetical echo flag interpretation if func_text contains lines starting with -e or -n.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T06:50:53.111Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T06:50:52.466Z",
+      "lastModified": "2026-04-10T06:50:53.111Z",
       "taskCount": 1572,
       "completedCount": 1182,
       "tags": [
