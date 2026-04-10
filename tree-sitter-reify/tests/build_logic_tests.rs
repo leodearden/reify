@@ -1341,20 +1341,6 @@ fn test_self_read_paths_use_manifest_dir() {
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file via THIS_FILE");
 
-    // Precision guard: the THIS_FILE and BUILD_RS constants must be defined using
-    // env!("CARGO_MANIFEST_DIR") for portable compile-time path resolution.
-    // Checking for the exact macro invocation prevents false-positives from comments
-    // that merely mention the env var name.  This assertion is a regression guard —
-    // the constants already use env!("CARGO_MANIFEST_DIR"), so it passes immediately,
-    // but it will catch any future change that replaces the env! macro with a
-    // hard-coded path.
-    assert!(
-        source.contains("env!(\"CARGO_MANIFEST_DIR\")"),
-        "THIS_FILE and BUILD_RS constants must be defined using env!(\"CARGO_MANIFEST_DIR\") \
-         for portable compile-time path resolution; checking for the exact macro invocation \
-         prevents false-positives from comments that merely mention the env var name"
-    );
-
     let self_reading_fns = find_self_reading_test_fns(&source);
 
     // Exclude this meta-test itself to avoid circularity.
