@@ -408,8 +408,13 @@ echo "--- Robustness: assert_sync_ref_exists pattern tolerates whitespace ---"
 for ws in '' ' ' '  ' $'\t'; do
     fixture=$(mk_fixture)
     printf 'assert_sync_ref_exists%s() {\n  : trivial body\n}\n' "$ws" > "$fixture"
-    _ws_label="${ws:-(empty)}"
-    case "$ws" in $'\t') _ws_label='(tab)' ;; esac
+    case "$ws" in
+        '')     _ws_label='(empty)'   ;;
+        ' ')    _ws_label='(1 space)' ;;
+        '  ')   _ws_label='(2 spaces)' ;;
+        $'\t')  _ws_label='(tab)'    ;;
+        *)      _ws_label="(${#ws} chars)" ;;
+    esac
     if _has_assert_sync_ref_exists "$fixture" 2>/dev/null; then ok=true; else ok=false; fi
     check "_has_assert_sync_ref_exists accepts whitespace variant: ${_ws_label}" "$ok"
 done
