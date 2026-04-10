@@ -27869,11 +27869,11 @@
         "description": "Add characterization tests for uncovered branches of the `assert_gradient_vector` helper in crates/reify-expr/tests/gradient_tests.rs. Task 1011 added tests for (a) the happy path with exact-match values and (b) the non-Vector panic arm, but left three behavior paths unexercised: (1) tolerance logic (current happy-path uses values identical to expected, so `(val - exp).abs() < tol` is trivially true even if tol were 0), (2) length mismatch panic branch, and (3) non-numeric component panic branch (`comp.as_f64().unwrap_or_else(panic!)`).\n\nAdd:\n1. A passing test that uses within-tolerance-but-not-exact values, e.g. `Value::Vector([Real(1.00005), Real(2.0), Real(3.0)])` with expected `[1.0, 2.0, 3.0]` and `tol=1e-4` — exercises the tolerance comparison.\n2. A `#[should_panic(expected = \"components, expected\")]` test that passes a 2-element Vector against a 3-element expected slice.\n3. A `#[should_panic(expected = \"should be numeric\")]` test that passes `Value::Vector([Value::Undef, Real(2.0), Real(3.0)])` with expected `[1.0, 2.0, 3.0]`.\n\nMemory hints: review task 1011 (esc-1011-14) for context; the helper lives at crates/reify-expr/tests/gradient_tests.rs around lines 84-121.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:34:54.222Z",
+        "updatedAt": "2026-04-10T07:44:12.759Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -32266,9 +32266,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:44:12.310Z",
+      "lastModified": "2026-04-10T07:44:12.760Z",
       "taskCount": 1586,
-      "completedCount": 1205,
+      "completedCount": 1206,
       "tags": [
         "master"
       ]
