@@ -853,6 +853,35 @@ fn strip_line_comments(line: &str) -> String {
     s
 }
 
+/// Generic scanner: returns all lines in `source` whose non-comment code portion
+/// contains any of the given `needles`, as `(1-based line number, original line)` pairs.
+///
+/// Each line is first passed through [`strip_line_comments`] so that patterns inside
+/// `//` or `/* */` comments are ignored.  Only the code portion is checked.
+///
+/// `needles` should include any surrounding delimiter characters that must be present
+/// (e.g., a needle of `"\"build.rs\""` matches the literal text `"build.rs"` with
+/// surrounding double-quote characters).
+///
+/// **Self-avoidance**: callers that define needle strings in this file use escaped
+/// quotes (`\"…\"`) in Rust string literals, which in the raw source text appear as
+/// the two-character sequence `\"` — that does NOT match the unescaped `"` delimiter
+/// encoded in the needle value, so helper definitions do not trigger false positives.
+fn find_bare_literal_violations<'src>(
+    source: &'src str,
+    needles: &[&str],
+) -> Vec<(usize, &'src str)> {
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_i, line)| {
+            let code = strip_line_comments(line);
+            needles.iter().any(|&needle| code.contains(needle))
+        })
+        .map(|(i, line)| (i + 1, line))
+        .collect()
+}
+
 /// Scans `source` for lines that contain a bare `"build.rs"` or `"./build.rs"` string
 /// literal (with literal double-quote characters) in non-comment code, and returns the
 /// matching lines as `(1-based line number, original line)` pairs.
@@ -865,46 +894,32 @@ fn strip_line_comments(line: &str) -> String {
 /// the two-character sequence `\"` — that does NOT match the unescaped `"` used as the
 /// search boundary, so this helper's own source does not trigger a false positive.
 fn find_bare_build_rs_violations(source: &str) -> Vec<(usize, &str)> {
-    source
-        .lines()
-        .enumerate()
-        .filter(|(_i, line)| {
-            let code = strip_line_comments(line);
-            code.contains("\"build.rs\"") || code.contains("\"./build.rs\"")
-        })
-        .map(|(i, line)| (i + 1, line))
-        .collect()
+    find_bare_literal_violations(source, &["\"build.rs\"", "\"./build.rs\""])
 }
 
 /// Scans `source` for lines that contain a bare `"tests/build_logic_tests.rs"` or
 /// `"./tests/build_logic_tests.rs"` string literal (with literal double-quote characters)
-/// in non-comment code, and returns the matching lines as `(1-based line number, original
-/// line)` pairs.
+/// in non-comment code, and returns matching lines as `(1-based line number, original line)`
+/// pairs.
 ///
-/// Both the unprefixed and dot-slash-prefixed forms are detected so that a contributor
-/// cannot bypass the guard by writing `"./tests/build_logic_tests.rs"` instead of
-/// `"tests/build_logic_tests.rs"`.  This mirrors the behaviour of the sibling helper
-/// [`find_bare_build_rs_violations`], which detects both `"build.rs"` and `"./build.rs"`.
-///
-/// Each line is first passed through [`strip_line_comments`] so that the patterns inside
+/// Each line is first passed through [`strip_line_comments`] so that patterns inside
 /// `//` or `/* */` comments are ignored.  Only the code portion is checked.
 ///
+/// Delegates to [`find_bare_literal_violations`] with both path variants.
+///
 /// **Self-avoidance**: pattern strings defined in this file use escaped quotes
-/// (`\"tests/build_logic_tests.rs\"` / `\"./tests/build_logic_tests.rs\"`) in Rust string
-/// literals, which in the raw source text appear as the two-character sequence `\"` — that
-/// does NOT match the unescaped `"` used as the search boundary, so this helper's own
-/// source does not trigger a false positive.
+/// (`\"tests/build_logic_tests.rs\"`) in Rust string literals, which in the raw source
+/// text appear as the two-character sequence `\"` — that does NOT match the unescaped
+/// `"` used as the search boundary, so this helper's own source does not trigger a
+/// false positive.
 fn find_bare_self_path_violations(source: &str) -> Vec<(usize, &str)> {
-    source
-        .lines()
-        .enumerate()
-        .filter(|(_i, line)| {
-            let code = strip_line_comments(line);
-            code.contains("\"tests/build_logic_tests.rs\"")
-                || code.contains("\"./tests/build_logic_tests.rs\"")
-        })
-        .map(|(i, line)| (i + 1, line))
-        .collect()
+    find_bare_literal_violations(
+        source,
+        &[
+            "\"tests/build_logic_tests.rs\"",
+            "\"./tests/build_logic_tests.rs\"",
+        ],
+    )
 }
 
 #[test]
@@ -1326,20 +1341,6 @@ fn test_self_read_paths_use_manifest_dir() {
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file via THIS_FILE");
 
-    // Precision guard: the THIS_FILE and BUILD_RS constants must be defined using
-    // env!("CARGO_MANIFEST_DIR") for portable compile-time path resolution.
-    // Checking for the exact macro invocation prevents false-positives from comments
-    // that merely mention the env var name.  This assertion is a regression guard —
-    // the constants already use env!("CARGO_MANIFEST_DIR"), so it passes immediately,
-    // but it will catch any future change that replaces the env! macro with a
-    // hard-coded path.
-    assert!(
-        source.contains("env!(\"CARGO_MANIFEST_DIR\")"),
-        "THIS_FILE and BUILD_RS constants must be defined using env!(\"CARGO_MANIFEST_DIR\") \
-         for portable compile-time path resolution; checking for the exact macro invocation \
-         prevents false-positives from comments that merely mention the env var name"
-    );
-
     let self_reading_fns = find_self_reading_test_fns(&source);
 
     // Exclude this meta-test itself to avoid circularity.
@@ -1372,6 +1373,47 @@ fn test_self_read_paths_use_manifest_dir() {
             fn_body
         );
     }
+}
+
+#[test]
+fn test_self_path_constants_use_manifest_dir() {
+    // Regression guard: the `THIS_FILE` and `BUILD_RS` constants must be defined using
+    // the `env!` macro on `CARGO_MANIFEST_DIR` for portable compile-time path resolution.
+    //
+    // Single responsibility: asserts only that the constant *definitions* use the portable
+    // env! macro form — orthogonal to `test_self_read_paths_use_manifest_dir`, which asserts
+    // that each self-reading *test function* references `THIS_FILE` (not a bare relative path).
+    // Splitting these checks yields unambiguous failure messages: a broken constant definition
+    // fails only here; a test that bypasses THIS_FILE fails only in the other test.
+    //
+    // The count-based check (>= 2) requires the exact macro invocation to appear at least twice,
+    // once for each constant, so neither definition can silently regress to a hardcoded path.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+
+    assert!(
+        source.matches("env!(\"CARGO_MANIFEST_DIR\")").count() >= 2,
+        "THIS_FILE and BUILD_RS constants must be defined using env!(\"CARGO_MANIFEST_DIR\") \
+         for portable compile-time path resolution; at least two occurrences required \
+         (one per constant)"
+    );
+}
+
+#[test]
+fn test_self_path_constants_guard_is_not_vacuous() {
+    // Meta-test: verifies that the count-based assertion in
+    // `test_self_path_constants_use_manifest_dir` is non-vacuous.  The number of
+    // uses of the env! macro on CARGO_MANIFEST_DIR in this file must be >= 2
+    // (one per constant definition), confirming the >= 2 threshold is meaningful.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+    let count = source.matches("env!(\"CARGO_MANIFEST_DIR\")").count();
+    assert!(
+        count >= 2,
+        "expected at least 2 occurrences of env!(\"CARGO_MANIFEST_DIR\") in this file \
+         (one for THIS_FILE const, one for BUILD_RS const), but found {}",
+        count
+    );
 }
 
 #[test]
@@ -1451,173 +1493,232 @@ fn test_strip_line_comments() {
 }
 
 #[test]
-fn test_find_bare_build_rs_violations() {
-    // Helpers that verify detection and non-detection.
-    fn detected(line: &str) -> bool {
-        !find_bare_build_rs_violations(line).is_empty()
+fn test_find_bare_literal_violations_generic() {
+    // Helper: returns the detected line numbers for a given source and needles.
+    fn line_nums(source: &str, needles: &[&str]) -> Vec<usize> {
+        find_bare_literal_violations(source, needles)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect()
     }
 
-    // ── Should be detected ────────────────────────────────────────────────
-    // Use escaped quotes in these string literals so that the raw source text
-    // contains \"build.rs\" (backslash + quote) rather than unescaped "build.rs",
-    // preventing test_no_bare_relative_build_rs_reads from flagging this test body.
-    // The runtime *value* of each string still has unescaped quotes, so the helper
-    // correctly detects them.
-    //
-    // exact read_to_string call
+    // ── Single needle: detection in non-comment code ─────────────────────────
+    // Use escaped quotes so the raw source contains \" (backslash+quote) rather
+    // than a bare unescaped quote, preventing a future guard test from flagging
+    // this code as a violation.
     assert!(
-        detected("read_to_string(\"build.rs\")"),
-        "exact call should be detected"
+        !line_nums("read_to_string(\"needle.rs\")", &["\"needle.rs\""]).is_empty(),
+        "needle in code should be detected"
     );
-    // whitespace inside parentheses
-    assert!(
-        detected("read_to_string( \"build.rs\" )"),
-        "whitespace variant should be detected"
-    );
-    // relative path prefix
-    assert!(
-        detected("read_to_string(\"./build.rs\")"),
-        "relative path variant should be detected"
-    );
-    // different function, same path
-    assert!(detected("File::open(\"build.rs\")"), "File::open variant should be detected");
 
-    // ── Should NOT be detected ─────────────────────────────────────────────
-    // uses a named constant (no string literal)
-    assert!(!detected("read_to_string(BUILD_RS)"), "constant usage must not be detected");
-    // full-line // comment
+    // ── Single needle: non-detection in // comment ────────────────────────────
     assert!(
-        !detected("// read_to_string(\"build.rs\")"),
-        "full-line // comment must not be detected"
+        line_nums("// read_to_string(\"needle.rs\")", &["\"needle.rs\""]).is_empty(),
+        "needle inside // comment must not be detected"
     );
-    // trailing // comment after code
+
+    // ── Single needle: non-detection in /* */ block comment ───────────────────
     assert!(
-        !detected("let x = 0; // read_to_string(\"build.rs\")"),
-        "inline // comment must not be detected"
+        line_nums("/* read_to_string(\"needle.rs\") */", &["\"needle.rs\""]).is_empty(),
+        "needle inside /* */ block comment must not be detected"
     );
-    // block comment containing the pattern
+
+    // ── 1-based line numbering on multi-line input ────────────────────────────
+    let src = "ok\nread_to_string(\"needle.rs\")\nok";
+    let result = find_bare_literal_violations(src, &["\"needle.rs\""]);
+    assert_eq!(result.len(), 1, "should detect exactly one violation");
+    assert_eq!(result[0].0, 2, "line numbering should be 1-based (hit is on line 2)");
+
+    // ── Multiple needles: any match triggers detection ────────────────────────
+    let multi = find_bare_literal_violations(
+        "File::open(\"other.rs\")",
+        &["\"needle.rs\"", "\"other.rs\""],
+    );
     assert!(
-        !detected("/* read_to_string(\"build.rs\") */"),
-        "/* */ block comment must not be detected"
+        !multi.is_empty(),
+        "second needle should also trigger detection"
     );
+
+    // ── No false positives when no needle matches ─────────────────────────────
+    assert!(
+        line_nums("let x = 5;", &["\"needle.rs\""]).is_empty(),
+        "source with no needle must not produce violations"
+    );
+}
+
+/// Shared test helper for bare-literal violation detection functions.
+///
+/// For each `(source_line, description)` pair in `positive_cases`: asserts that
+/// `finder_fn` returns at least one violation, using `description` in the failure
+/// message.
+/// For each `(source_line, description)` pair in `negative_cases`: asserts that
+/// `finder_fn` returns no violations.
+fn assert_bare_literal_detection(
+    finder_fn: fn(&str) -> Vec<(usize, &str)>,
+    positive_cases: &[(&str, &str)],
+    negative_cases: &[(&str, &str)],
+) {
+    for (input, label) in positive_cases {
+        assert!(
+            !finder_fn(input).is_empty(),
+            "{label}: expected a violation in {input:?}"
+        );
+    }
+    for (input, label) in negative_cases {
+        assert!(
+            finder_fn(input).is_empty(),
+            "{label}: expected no violations in {input:?}"
+        );
+    }
+}
+
+#[test]
+fn test_find_bare_self_path_violations() {
+    // Use escaped quotes so the raw source contains \" rather than a bare ".
+    // At runtime the values contain bare quotes, so the helper detects them.
+    assert_bare_literal_detection(
+        find_bare_self_path_violations,
+        &[
+            (
+                "read_to_string(\"tests/build_logic_tests.rs\")",
+                "bare path without ./ should be detected",
+            ),
+            (
+                "read_to_string(\"./tests/build_logic_tests.rs\")",
+                "bare ./relative path should be detected",
+            ),
+            (
+                "File::open(\"tests/build_logic_tests.rs\")",
+                "File::open variant should be detected",
+            ),
+            (
+                "read_to_string( \"tests/build_logic_tests.rs\" )",
+                "whitespace variant should be detected",
+            ),
+        ],
+        &[
+            ("read_to_string(THIS_FILE)", "constant usage must not be detected"),
+            (
+                "// read_to_string(\"tests/build_logic_tests.rs\")",
+                "full-line // comment must not be detected",
+            ),
+            (
+                "let x = 0; // read_to_string(\"tests/build_logic_tests.rs\")",
+                "inline // comment must not be detected",
+            ),
+            (
+                "/* read_to_string(\"tests/build_logic_tests.rs\") */",
+                "/* */ block comment must not be detected",
+            ),
+        ],
+    );
+
+    // self-avoidance: escaped quotes in a string literal definition do not
+    // form the bare-quote pattern the helper searches for.
+    let self_ref = r#"let p = "\"tests/build_logic_tests.rs\"";"#;
+    assert!(
+        find_bare_self_path_violations(self_ref).is_empty(),
+        "escaped-quote self-reference must not be detected"
+    );
+
+    // Multi-line 1-based line numbering check.
+    let src = "ok\nread_to_string(\"tests/build_logic_tests.rs\")\nok";
+    let hits = find_bare_self_path_violations(src);
+    assert_eq!(hits.len(), 1, "should detect exactly one violation");
+    assert_eq!(hits[0].0, 2, "line numbering must be 1-based (hit is on line 2)");
+}
+
+#[test]
+fn test_find_bare_build_rs_violations() {
+    // Use escaped quotes so the raw source contains \" rather than a bare ".
+    // At runtime the values contain bare quotes, so the helper detects them.
+    assert_bare_literal_detection(
+        find_bare_build_rs_violations,
+        &[
+            ("read_to_string(\"build.rs\")", "exact call should be detected"),
+            ("read_to_string( \"build.rs\" )", "whitespace variant should be detected"),
+            ("read_to_string(\"./build.rs\")", "relative path variant should be detected"),
+            ("File::open(\"build.rs\")", "File::open variant should be detected"),
+        ],
+        &[
+            ("read_to_string(BUILD_RS)", "constant usage must not be detected"),
+            (
+                "// read_to_string(\"build.rs\")",
+                "full-line // comment must not be detected",
+            ),
+            (
+                "let x = 0; // read_to_string(\"build.rs\")",
+                "inline // comment must not be detected",
+            ),
+            (
+                "/* read_to_string(\"build.rs\") */",
+                "/* */ block comment must not be detected",
+            ),
+        ],
+    );
+
     // self-avoidance: escaped quotes in string literal definition.
-    // The runtime value of this string is: let p = "\"build.rs\"";
-    // (backslash + quote chars). find_bare_build_rs_violations checks for an
-    // unescaped " immediately before build.rs, which is absent here.
     let self_reference = r#"let p = "\"build.rs\"";"#;
-    assert!(!detected(self_reference), "escaped-quote self-reference must not be detected");
+    assert!(
+        find_bare_build_rs_violations(self_reference).is_empty(),
+        "escaped-quote self-reference must not be detected"
+    );
 
-    // Multi-line input: verify 1-based line numbering
+    // Multi-line input: verify 1-based line numbering.
     let hits = find_bare_build_rs_violations("ok\nread_to_string(\"build.rs\")\nok");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0, 2);
 }
 
 #[test]
-fn test_find_bare_self_path_violations() {
-    // Helpers that verify detection and non-detection.
-    fn detected(line: &str) -> bool {
-        !find_bare_self_path_violations(line).is_empty()
-    }
-
-    // ── Should be detected ────────────────────────────────────────────────
-    // Use escaped quotes in these string literals so that the raw source text
-    // contains \"tests/build_logic_tests.rs\" (backslash + quote) rather than
-    // unescaped "tests/build_logic_tests.rs", preventing the file-level meta-test
-    // from flagging this test body.
-    // The runtime *value* of each string still has unescaped quotes, so the helper
-    // correctly detects them.
-    //
-    // exact read_to_string call
-    assert!(
-        detected("read_to_string(\"tests/build_logic_tests.rs\")"),
-        "exact call should be detected"
-    );
-    // whitespace inside parentheses
-    assert!(
-        detected("read_to_string( \"tests/build_logic_tests.rs\" )"),
-        "whitespace variant should be detected"
-    );
-    // different function, same path
-    assert!(
-        detected("File::open(\"tests/build_logic_tests.rs\")"),
-        "File::open variant should be detected"
-    );
-    // dot-slash prefix variant (reviewer S1: helper must also detect \"./tests/build_logic_tests.rs\")
-    assert!(
-        detected("read_to_string(\"./tests/build_logic_tests.rs\")"),
-        "dot-slash relative path variant should be detected"
-    );
-    assert!(
-        detected("File::open(\"./tests/build_logic_tests.rs\")"),
-        "dot-slash File::open variant should be detected"
-    );
-
-    // ── Should NOT be detected ─────────────────────────────────────────────
-    // uses a named constant (no string literal)
-    assert!(!detected("read_to_string(THIS_FILE)"), "constant usage must not be detected");
-    // full-line // comment
-    assert!(
-        !detected("// read_to_string(\"tests/build_logic_tests.rs\")"),
-        "full-line // comment must not be detected"
-    );
-    // trailing // comment after code
-    assert!(
-        !detected("let x = 0; // read_to_string(\"tests/build_logic_tests.rs\")"),
-        "inline // comment must not be detected"
-    );
-    // block comment containing the pattern
-    assert!(
-        !detected("/* read_to_string(\"tests/build_logic_tests.rs\") */"),
-        "/* */ block comment must not be detected"
-    );
-    // self-avoidance: escaped quotes in string literal definition.
-    // The runtime value of this string contains backslash+quote around the path,
-    // not unescaped quotes. find_bare_self_path_violations checks for an
-    // unescaped " immediately before tests/build_logic_tests.rs, which is absent.
-    let self_reference = r#"let p = "\"tests/build_logic_tests.rs\"";"#;
-    assert!(!detected(self_reference), "escaped-quote self-reference must not be detected");
-
-    // Multi-line input: verify 1-based line numbering
-    let hits = find_bare_self_path_violations(
-        "ok\nread_to_string(\"tests/build_logic_tests.rs\")\nok",
-    );
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].0, 2);
-}
-
-#[test]
-fn test_no_bare_relative_build_rs_reads() {
+#[allow(clippy::type_complexity)]
+fn test_no_bare_relative_path_reads() {
     // Source-level regression guard: this file must not contain any bare
-    // "build.rs" or "./build.rs" string literals in non-comment code. Every
-    // source-inspection test that reads build.rs must use the `BUILD_RS`
-    // constant (resolved at compile time via CARGO_MANIFEST_DIR) rather than a
-    // fragile relative path.
+    // relative-path string literals for the files it reads (build.rs or this
+    // test file itself) in non-comment code. Each reader must use the
+    // compile-time constants BUILD_RS or THIS_FILE (resolved via
+    // CARGO_MANIFEST_DIR) rather than fragile relative paths.
     //
-    // Detection uses find_bare_build_rs_violations, which strips `//` and
-    // `/* */` comments before scanning each line — catching inline comments
-    // that the old full-line-only filter missed.
+    // Detection strips `//` and `/* */` comments before scanning each line
+    // so that inline-commented examples do not trigger false positives.
     //
-    // Note: pattern strings in this file use escaped quotes (\"build.rs\") in
-    // Rust string literals, so the raw source text contains \" rather than an
-    // unescaped ", and the helper finds no self-match.
+    // Note: path-pattern strings in this file use escaped quotes in Rust string
+    // literals, so the raw source text contains \" rather than an unescaped ",
+    // and the helpers find no self-match.
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file via THIS_FILE");
 
-    let violations = find_bare_build_rs_violations(&source);
+    // Each entry: (violation scanner, path description, constant to use instead).
+    let guards: &[(fn(&str) -> Vec<(usize, &str)>, &str, &str)] = &[
+        (
+            find_bare_build_rs_violations,
+            "\"build.rs\" or \"./build.rs\"",
+            "BUILD_RS",
+        ),
+        (
+            find_bare_self_path_violations,
+            "\"tests/build_logic_tests.rs\" or \"./tests/build_logic_tests.rs\"",
+            "THIS_FILE",
+        ),
+    ];
 
-    assert!(
-        violations.is_empty(),
-        "Found {} bare \"build.rs\" or \"./build.rs\" literal(s) in non-comment code. \
-         Use the BUILD_RS constant instead (defined via CARGO_MANIFEST_DIR). \
-         Violations:\n{}",
-        violations.len(),
-        violations
-            .iter()
-            .map(|(n, l)| format!("  line {}: {}", n, l.trim()))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
+    for (finder_fn, path_desc, constant_name) in guards {
+        let violations = finder_fn(&source);
+        assert!(
+            violations.is_empty(),
+            "Found {} bare {} literal(s) in non-comment code. \
+             Use the {} constant instead (defined via CARGO_MANIFEST_DIR). \
+             Violations:\n{}",
+            violations.len(),
+            path_desc,
+            constant_name,
+            violations
+                .iter()
+                .map(|(n, l)| format!("  line {}: {}", n, l.trim()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
 }
 
 #[test]
