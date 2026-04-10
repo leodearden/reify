@@ -32402,16 +32402,16 @@
         "description": "Four minor quality issues in `crates/reify-test-support/src/helpers.rs` (all introduced or touched by task 1332):\n\n1. **Extract private `parse_or_panic` (lines 19-36, 46-63, 72-96).** The three public helpers `parse_and_compile`, `parse_and_compile_with_stdlib`, and `parse_compile_expect_err` each inline the same 6-line parse-and-assert prologue. Extract `fn parse_or_panic(source: &str) -> reify_syntax::ParsedModule` and reuse it.\n\n2. **`test_parse_compile_expect_err_needle_match` (lines 125-131) uses `\"unknown\"` as the needle.** That's ambiguous — the source contains `let x = unknown_variable`, so either the error message or the echoed identifier can satisfy the match. Use the full identifier `\"unknown_variable\"` (guaranteed to appear because we control the source) or assert against a diagnostic code/kind.\n\n3. **`test_parse_and_compile_with_stdlib` (lines 134-148) couples to stdlib Material shape.** The test passes stdlib-specific source (`structure Steel : Material { param density: Real = 7850 … }`) and breaks if Material is renamed or its fields change, even when the helper itself is correct. Replace with the minimum source that unambiguously proves stdlib was loaded — e.g., reference a well-known stdlib primitive and assert its presence in `compiled.types`/`templates`, and optionally add a negative-control assertion that the same source produces an error under plain `parse_and_compile` (no stdlib).\n\n4. **`test_make_engine` (lines 103-112) uses geometry-bearing source.** `bracket_source` contains `let body = box(width, height, thickness)` — a geometry call — and `make_engine()` has no kernel, so the eval produces diagnostics and only the scalar params survive. The `!result.values.is_empty()` assertion technically passes but doesn't prove the engine is wired correctly. Replace with a geometry-free source (e.g., `structure Foo { param x: Real = 42 }`) and assert the specific `ValueCellId` resolves to the expected `Value`.\n\nAll four items are in the same ~170-line file, so they can be addressed in a single small PR.\n\n**Priority:** low. Test-quality / brittleness cleanup, not correctness.\n\n**Source:** review of task 1332 (esc-1332-348, reviewer_comprehensive suggestions 2, 3, 5, 7).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:14:03.550Z"
+        "updatedAt": "2026-04-10T08:16:44.122Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T08:16:42.935Z",
+      "lastModified": "2026-04-10T08:16:44.123Z",
       "taskCount": 1596,
       "completedCount": 1207,
       "tags": [
