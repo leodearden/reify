@@ -32082,11 +32082,11 @@
         "description": "Polish the assert_extraction helper in crates/reify-stdlib/src/helpers.rs: improve multi-line formatting of assertion messages and ensure the &Value signature is documented consistently. Low priority cleanup.\n\nmemory_hints: search \"assert_extraction\" in helpers.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:22.451Z"
+        "updatedAt": "2026-04-10T07:05:12.403Z"
       },
       {
         "id": "1581",
@@ -32147,7 +32147,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:05:11.738Z",
+      "lastModified": "2026-04-10T07:05:12.403Z",
       "taskCount": 1584,
       "completedCount": 1182,
       "tags": [
