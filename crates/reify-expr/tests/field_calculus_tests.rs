@@ -287,26 +287,14 @@ fn build_divergence_identity_field(label: &str) -> (Value, Type) {
     let domain_type = Type::point3(Type::Real);
     let codomain_type = Type::vec3(Type::Real);
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), codomain_type, lambda);
 
     // divergence(field) → scalar field
     let div_expr = make_function_call(
         "divergence",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::Real),
-        },
+        divergence_result_type(domain_type.clone()),
     );
 
     let values = ValueMap::new();
@@ -318,12 +306,7 @@ fn build_divergence_identity_field(label: &str) -> (Value, Type) {
         div_result
     );
 
-    let div_field_type = Type::Field {
-        domain: Box::new(domain_type),
-        codomain: Box::new(Type::Real),
-    };
-
-    (div_result, div_field_type)
+    (div_result, divergence_result_type(domain_type))
 }
 
 /// Build the identity vector field F(x,y,z)=[x,y,z], compute its divergence,
@@ -395,26 +378,14 @@ fn build_curl_rotation_field(label: &str) -> (Value, Type) {
     let domain_type = Type::point3(Type::Real);
     let codomain_type = Type::vec3(Type::Real);
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), codomain_type, lambda);
 
     // curl(field) → vector field
     let curl_expr = make_function_call(
         "curl",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
-        },
+        curl_result_type(domain_type.clone()),
     );
 
     let values = ValueMap::new();
@@ -426,12 +397,7 @@ fn build_curl_rotation_field(label: &str) -> (Value, Type) {
         curl_result
     );
 
-    let curl_field_type = Type::Field {
-        domain: Box::new(domain_type),
-        codomain: Box::new(Type::vec3(Type::Real)),
-    };
-
-    (curl_result, curl_field_type)
+    (curl_result, curl_result_type(domain_type))
 }
 
 /// Build the rotation field F(x,y,z)=[-y,x,0], compute its curl, sample at
@@ -503,26 +469,14 @@ fn build_laplacian_quadratic_field(label: &str) -> (Value, Type) {
     let domain_type = Type::point3(Type::Real);
     let codomain_type = Type::Real;
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), codomain_type, lambda);
 
     // laplacian(field) → scalar field
     let lap_expr = make_function_call(
         "laplacian",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::Real),
-        },
+        laplacian_result_type(domain_type.clone()),
     );
 
     let values = ValueMap::new();
@@ -534,12 +488,7 @@ fn build_laplacian_quadratic_field(label: &str) -> (Value, Type) {
         lap_result
     );
 
-    let lap_field_type = Type::Field {
-        domain: Box::new(domain_type),
-        codomain: Box::new(Type::Real),
-    };
-
-    (lap_result, lap_field_type)
+    (lap_result, laplacian_result_type(domain_type))
 }
 
 /// Build the quadratic scalar field f(x,y,z)=x²+y²+z², compute its laplacian,
@@ -768,16 +717,7 @@ fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
     let params: Vec<(&str, ValueCellId)> = names[..n].iter().copied().zip(ids).collect();
     let lambda = make_value_lambda(params, body, ValueMap::new());
 
-    let field = Value::Field {
-        domain_type: domain.clone(),
-        codomain_type: codomain.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-    let field_type = Type::Field {
-        domain: Box::new(domain),
-        codomain: Box::new(codomain),
-    };
+    let (field, field_type) = make_analytical_field(domain, codomain, lambda);
 
     let op_expr = make_function_call(
         op,
