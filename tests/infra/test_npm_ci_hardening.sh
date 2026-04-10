@@ -357,7 +357,7 @@ done
 out23a=$(cd "$FIXTURE_DIR" && bash scripts/check-pm-standardization.sh 2>&1); status23a=$?
 
 assert "23a: consistent packageManager versions -> exit 0" \
-    bash -c "[ '$status23a' = '0' ]"
+    bash -c '[ "$1" = "0" ]' _ "$status23a"
 
 assert "23a: no DIAGNOSTIC: emitted when no npm lockfiles are gitignored" \
     bash -c '! printf "%s\n" "$1" | grep -q DIAGNOSTIC:' _ "$out23a"
