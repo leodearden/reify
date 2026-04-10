@@ -235,8 +235,31 @@ mod tests {
     #[test]
     fn build_isolated_module_preserves_shared_infrastructure() {
         use super::build_isolated_module;
-        // A module with a constraint def and a test template — constraint_defs should be preserved.
-        let source = "constraint def Positive { param v : Real\n v > 0 }\n@test structure TestA { param x : Real\n constraint Positive(x) }";
+        // Rich source that populates every shared-infrastructure collection so
+        // equality assertions cannot trivially pass as 0==0.
+        let source = r#"
+fn double(x: Real) -> Real { x * 2 }
+
+enum Quality { Standard, Premium }
+
+trait Measurable {
+    param size : Real
+}
+
+type Alias = Real
+
+field def temp : Point3 -> Scalar { source = analytical { |p| p } }
+
+constraint def Positive {
+    param v : Real
+    v > 0
+}
+
+@test structure TestA {
+    param x : Real
+    constraint Positive(x)
+}
+"#;
         let module = parse_and_compile_inline(source);
         let test_templates = module.test_templates();
         let target = test_templates.iter().find(|t| t.name == "TestA").expect("TestA not found");
