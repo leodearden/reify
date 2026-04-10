@@ -871,8 +871,8 @@ pub(crate) fn compute_numerical_gradient_at_point(
 /// the lambda always receives a `Point` regardless of the caller's input variant.
 ///
 /// `codomain_type` is the divergence field's already-divided codomain (stamped by
-/// compute_divergence). Mirrors the gradient handler's trust-the-declaration pattern:
-/// no further division is performed here — `result_dim` is extracted directly from it.
+/// `compute_divergence`). Follows the trust-the-declaration pattern established in
+/// `compute_numerical_gradient_at_point`: no further division is performed here.
 ///
 /// Returns:
 /// - Scalar with the declared codomain dimension for dimensioned fields
@@ -1001,11 +1001,11 @@ pub(crate) fn compute_numerical_divergence_at_point(
 /// the lambda always receives a `Point` regardless of the caller's input variant.
 ///
 /// `codomain_type` is the curl field's already-divided codomain (stamped by
-/// compute_curl). Mirrors the divergence handler's trust-the-declaration pattern:
-/// no further division is performed here — `result_dim` is extracted directly from it.
+/// `compute_curl`). Follows the trust-the-declaration pattern established in
+/// `compute_numerical_gradient_at_point`: no further division is performed here.
 ///
 /// Returns:
-/// - Vector3 of Real or Scalar components (Scalar when result_dim is non-dimensionless)
+/// - Vector3 of Real or Scalar components (dimensioned when codomain has a dimension)
 /// - Undef if any evaluation fails
 pub(crate) fn compute_numerical_curl_at_point(
     lambda: &Value,
@@ -1150,8 +1150,8 @@ pub(crate) fn compute_numerical_curl_at_point(
 /// the lambda always receives a `Point` regardless of the caller's input variant.
 ///
 /// `codomain_type` is the Laplacian field's already-divided codomain (stamped by
-/// compute_laplacian). Mirrors the gradient handler's trust-the-declaration pattern:
-/// no further division is performed here — `result_dim` is extracted directly from it.
+/// `compute_laplacian`). Follows the trust-the-declaration pattern established in
+/// `compute_numerical_gradient_at_point`: no further division is performed here.
 ///
 /// Returns:
 /// - Scalar with the declared codomain dimension for dimensioned fields
