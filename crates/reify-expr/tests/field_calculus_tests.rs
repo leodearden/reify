@@ -68,6 +68,49 @@ fn make_analytical_field(domain: Type, codomain: Type, lambda: Value) -> (Value,
     (field, field_type)
 }
 
+/// Result `Type::Field` for a `divergence` operator: domain → Real.
+fn divergence_result_type(domain: Type) -> Type {
+    Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(Type::Real),
+    }
+}
+
+/// Result `Type::Field` for a `curl` operator: domain → Vec3(Real).
+fn curl_result_type(domain: Type) -> Type {
+    Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    }
+}
+
+/// Result `Type::Field` for a `laplacian` operator: domain → Real.
+fn laplacian_result_type(domain: Type) -> Type {
+    Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(Type::Real),
+    }
+}
+
+/// Result `Type::Field` for a `gradient` operator: domain → Vec_n(Real).
+///
+/// Dispatches on `n`: uses `Type::vec2`/`Type::vec3` for n=2/3 and the
+/// generic `Type::Vector { n, quantity }` struct literal for other values.
+fn gradient_result_type(domain: Type, n: usize) -> Type {
+    let codomain = match n {
+        2 => Type::vec2(Type::Real),
+        3 => Type::vec3(Type::Real),
+        _ => Type::Vector {
+            n,
+            quantity: Box::new(Type::Real),
+        },
+    };
+    Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    }
+}
+
 /// Unit test for `make_analytical_field`: asserts the helper returns exactly the same
 /// `(Value, Type)` pair as a hand-built inline construction.
 #[test]
