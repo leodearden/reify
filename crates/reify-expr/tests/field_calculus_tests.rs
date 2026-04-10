@@ -3728,81 +3728,24 @@ fn divergence_dimensional_correctness_1d() {
     );
 }
 
-/// Divergence of a 2D vector field: Point{2,Length} → Vector{2,Velocity}
-/// has codomain dimension Velocity/Length = 1/Time.
-///
-/// Exercises the n=2 arm of compute_divergence. Both `point2` and `vec2`
-/// helpers are available in ty.rs. Expected to pass immediately (coverage expansion).
+/// Confirms dimension-agnostic behavior for a 2D vector field (`Point{2}` → `Vector{2}`) —
+/// `compute_divergence`'s `Point{n, quantity}` arm accepts any `n>=1`.
 #[test]
 fn divergence_dimensional_correctness_2d() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-
-    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
-
-    let domain_type = Type::point2(Type::Scalar {
-        dimension: DimensionVector::LENGTH,
-    });
-    let codomain_type = Type::vec2(Type::Scalar {
-        dimension: velocity_dim,
-    });
-
-    // Lambda: |x, y| x + y — metadata-only, not sampled.
-    let body = CompiledExpr::binop(
-        BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id)],
-        body,
-        ValueMap::new(),
-    );
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
-    let div_expr = make_function_call(
+    run_dim_metadata_test(
         "divergence",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
+        Type::point2(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::vec2(Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME),
+        }),
+        FieldSourceKind::Analytical,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME).div(&DimensionVector::LENGTH),
+        },
+        "divergence_dimensional_correctness_2d",
     );
-
-    let values = ValueMap::new();
-    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(&div_result, Value::Field { .. }),
-        "divergence of Point{{2,Length}}→Vector{{2,Velocity}} should return a Field, got {:?}",
-        div_result
-    );
-
-    if let Value::Field { codomain_type, .. } = &div_result {
-        let expected_dim = velocity_dim.div(&DimensionVector::LENGTH);
-        match codomain_type {
-            Type::Scalar { dimension } => {
-                assert_eq!(
-                    *dimension, expected_dim,
-                    "divergence 2D codomain should be Velocity/Length=1/Time ({:?}), got {:?}",
-                    expected_dim, dimension
-                );
-            }
-            other => panic!(
-                "divergence_dimensional_correctness_2d: expected Scalar codomain, got {:?}",
-                other
-            ),
-        }
-    }
 }
 
 /// Divergence of Point{3,Length} → Vector{3,Length}: the quotient Length/Length
