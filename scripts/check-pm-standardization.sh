@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Validation script for package manager standardization (task 618).
 # Checks static repo state: packageManager fields, lockfile gitignore status.
-# Redundant config-file-content checks (4-9) were removed by task 816 — those
-# are validated by actual execution on each commit and CI cycle.
+# Redundant config-file-content checks (5-9) were removed by task 816; Check 4
+# (pnpm-lock.yaml gitignored) was reinstated as a static-state check.
 
 set -euo pipefail
 
@@ -20,6 +20,7 @@ PKG_FILES='gui/package.json gui/sidecar/package.json tree-sitter-reify/package.j
 # shellcheck disable=SC2086
 set -- $PKG_FILES
 PKG_COUNT=$#
+LOCK_FILES='gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json'
 
 echo "=== check-pm-standardization ==="
 
@@ -61,7 +62,6 @@ assert "all package.json files agree on packageManager version" bash -c "
 # ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
 echo ""
 echo "Check 3: npm lockfiles not gitignored"
-LOCK_FILES='gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json'
 assert "no npm lockfiles are gitignored" \
     bash -c "! (cd '$ROOT' && git check-ignore $LOCK_FILES)"
 if (cd "$ROOT" && git check-ignore $LOCK_FILES >/dev/null 2>&1); then

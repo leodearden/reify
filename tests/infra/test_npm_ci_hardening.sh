@@ -11,6 +11,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+_TMPDIRS=()
+cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
+
 echo "=== npm ci hardening tests ==="
 
 # -- Test 1: check-pm-standardization.sh location ----------------------------
@@ -77,18 +81,18 @@ assert "Check 1 grep pattern includes 'npm@' prefix match" \
 echo ""
 echo "--- Test 6: script has cross-file packageManager consistency check ---"
 
-assert "script contains 'sort -u' for cross-file consistency comparison" \
-    grep -q 'sort -u' "$SCRIPT"
+assert "Check 2 block uses 'sort -u' for cross-file consistency comparison" \
+    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'sort -u'"
 
-assert "script references 'packageManager' in consistency logic" \
-    grep -q 'packageManager' "$SCRIPT"
+assert "Check 2 block references 'packageManager' in consistency logic" \
+    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'packageManager'"
 
 # -- Test 7: git check-ignore is NOT called inside a for loop ----------------
 echo ""
 echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
 
 assert "bare git check-ignore (without -v) is not inside for/done loops" \
-    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for /,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
+    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for [^;]*; *do/,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
 
 # -- Test 8: wc -l output is stripped for cross-platform portability ----------
 echo ""
@@ -97,8 +101,8 @@ echo "--- Test 8: wc -l output has whitespace stripped (cross-platform) ---"
 assert "script does not use bare 'wc -l)' without whitespace stripping" \
     bash -c "! grep -qE 'wc -l\)' '$SCRIPT'"
 
-assert "script uses 'tr -d' to strip wc whitespace" \
-    grep -q 'tr -d' "$SCRIPT"
+assert "script pipes 'wc -l' into 'tr -d' to strip whitespace" \
+    grep -qE 'wc -l[[:space:]]*\|[[:space:]]*tr -d' "$SCRIPT"
 
 # -- Test 9: orchestrator command placement and existence guards ---------------
 echo ""
@@ -234,7 +238,7 @@ echo "--- Test 21: Check 2 logic rejects both bug scenarios ---"
 #   bug 1: file missing the packageManager field → total < PKG_COUNT, unique==1 → fail
 #   bug 2: file missing entirely → preflight / set -euo pipefail → fail
 FIX_DIR="$(mktemp -d)"
-trap 'rm -rf "${FIX_DIR:?}"' EXIT
+_TMPDIRS+=("$FIX_DIR")
 
 CHECK2_HELPER="$FIX_DIR/check2_logic.sh"
 cat > "$CHECK2_HELPER" <<'CHECK2EOF'
@@ -309,5 +313,71 @@ assert "script derives PKG_COUNT from positional parameter count (PKG_COUNT=\$#)
 
 assert "Check 2 block references PKG_COUNT in the total assertion" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'PKG_COUNT'"
+
+# -- Test 23: behavioral integration tests (task 1328) ------------------------
+echo ""
+echo "--- Test 23: behavioral integration tests ---"
+
+FIXTURE_DIR="$(mktemp -d)"
+_TMPDIRS+=("$FIXTURE_DIR")
+
+# Create directory layout mirroring the repo structure expected by the script
+mkdir -p "$FIXTURE_DIR/scripts"
+mkdir -p "$FIXTURE_DIR/tests/infra"
+mkdir -p "$FIXTURE_DIR/gui/sidecar"
+mkdir -p "$FIXTURE_DIR/tree-sitter-reify"
+
+# Copy the real script and test helpers into the fixture
+cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_DIR/scripts/"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_DIR/tests/infra/"
+
+# .gitignore: pnpm-lock.yaml gitignored (Check 4); package-lock.json files NOT listed (Check 3)
+echo "gui/pnpm-lock.yaml" > "$FIXTURE_DIR/.gitignore"
+
+# Initialize a git repo so 'git check-ignore' works inside Check 3
+git -C "$FIXTURE_DIR" init -q
+
+# Write consistent packageManager versions for Test 23a
+for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+    printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_DIR/$pkg"
+done
+
+# Test 23a: all files agree on the same version -> script exits 0
+assert "23a: consistent packageManager versions -> exit 0" \
+    bash -c "cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh"
+
+# Test 23b: introduce a version mismatch -> script exits non-zero
+printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/package.json"
+
+assert "23b: mismatched packageManager versions -> exit non-zero" \
+    bash -c "! (cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh)"
+
+# -- Test 24: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ----------
+echo ""
+echo "--- Test 24: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ---"
+
+assert "LOCK_FILES is defined before the first 'Check 1:' echo" \
+    bash -c "
+        lock_line=\$(grep -n '^LOCK_FILES=' '$SCRIPT' | head -1 | cut -d: -f1)
+        check1_line=\$(grep -n 'echo \"Check 1:' '$SCRIPT' | head -1 | cut -d: -f1)
+        [ -n \"\$lock_line\" ] && [ -n \"\$check1_line\" ] && [ \"\$lock_line\" -lt \"\$check1_line\" ]
+    "
+
+# -- Test 25: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ----------
+echo ""
+echo "--- Test 25: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ---"
+
+FIXTURE24="$(mktemp -d)"
+_TMPDIRS+=("$FIXTURE24")
+mkdir -p "$FIXTURE24/scripts" "$FIXTURE24/tests/infra"
+cp "$SCRIPT" "$FIXTURE24/scripts/check-pm-standardization.sh"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE24/tests/infra/test_helpers.sh"
+git -C "$FIXTURE24" init -q
+git -C "$FIXTURE24" config user.email "test@test.com"
+git -C "$FIXTURE24" config user.name "Test"
+printf 'gui/package-lock.json\n' > "$FIXTURE24/.gitignore"
+
+assert "Check 3 emits DIAGNOSTIC: when gui/package-lock.json is gitignored" \
+    bash -c "bash '$FIXTURE24/scripts/check-pm-standardization.sh' 2>&1 | grep -q 'DIAGNOSTIC:'"
 
 test_summary

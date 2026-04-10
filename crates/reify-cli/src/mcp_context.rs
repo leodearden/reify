@@ -225,7 +225,8 @@ impl ReifyToolContext for CliToolContext {
                 let kind_str = match cell_decl.kind {
                     ValueCellKind::Param => "Param",
                     ValueCellKind::Let => "Let",
-                    ValueCellKind::Auto { .. } => "Auto",
+                    ValueCellKind::Auto { free: true } => "Auto(free)",
+                    ValueCellKind::Auto { free: false } => "Auto",
                 };
 
                 let det_str = match determinacy {
