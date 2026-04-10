@@ -1140,6 +1140,75 @@ fn build_modify_missing_arg_no_kernel_error() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // Assertions are filled in step-2 of plan 1286.
-    let _ = (ops_ref, result);
+    // (1) Kernel was called exactly once — for the Box — but never for the Fillet
+    {
+        let ops = ops_ref.lock().unwrap();
+        assert_eq!(
+            ops.len(),
+            1,
+            "kernel.execute() should be called only for the Box (not the Fillet), \
+             got {} kernel ops",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[0].op, reify_types::GeometryOp::Box { .. }),
+            "expected the only recorded kernel op to be Box, got: {:?}",
+            ops[0].op
+        );
+    }
+
+    // (2) No geometry output — Fillet failed to compile
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when Fillet's required 'radius' arg is missing"
+    );
+
+    // (3) Warning about the missing 'radius' arg for Fillet
+    let has_missing_arg_warning = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning
+            && d.message.contains("missing required geometry argument")
+            && d.message.contains("radius")
+            && d.message.contains("Fillet")
+    });
+    assert!(
+        has_missing_arg_warning,
+        "expected a Warning diagnostic about missing 'radius' arg for Fillet, got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (4) Error about failed compile
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (5) No 'geometry error' diagnostic — kernel was never called for the Fillet
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for Fillet), \
+         but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("geometry error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
