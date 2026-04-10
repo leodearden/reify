@@ -29058,6 +29058,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1409,
+        "title": "Extract shared helper for missing-arg-no-kernel-error test assertions",
+        "description": "Refactor the duplicated diagnostic-assertion block shared by `build_primitive_missing_arg_no_kernel_error` (lines 972-1070) and `build_modify_missing_arg_no_kernel_error` (lines 1097-1214) in `crates/reify-eval/tests/geometry_error_handling.rs`.\n\nThe five-assertion structure — (1) kernel op count/kind, (2) geometry_output=None, (3) missing-arg warning, (4) compile-error, (5) no 'geometry error' — is nearly verbatim between the two tests. Both are likely to evolve together.\n\nExtract a helper such as:\n```rust\nfn assert_compile_failure_diagnostics(\n    result: &BuildResult,\n    expected_missing_arg: &str,\n    expected_kind_label: &str,\n) { ... }\n```\n\ntaking the result, the expected missing arg name, and the expected kind label ('Box', 'Fillet', etc.). The helper can live in-file or move to `reify-test-support` if we expect sibling coverage (Transform/Pattern/Sweep) — which is plausible given the rest of the file's structure.\n\nAfter extraction, each sibling test shrinks to its differentiating setup (which op is malformed, which kernel ops should be recorded).\n\n**Not blocking** — the reviewer explicitly noted tests are often kept self-contained for clarity. Consider this if/when a third sibling test is added.\n\n**Source:** Review suggestion S4 from Task 1286 (esc-1286-133).\n\nmemory_hints: search \"build_modify_missing_arg_no_kernel_error assert_compile_failure_diagnostics helper\" entity \"geometry_error_handling\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -29070,7 +29081,7 @@
       ],
       "created": "2026-04-10T00:10:19.854Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T00:10:19.872Z"
+      "updated": "2026-04-10T00:10:31.047Z"
     }
   }
 }
