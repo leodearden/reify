@@ -2700,15 +2700,21 @@ mod tests {
         }
     }
 
-    /// Asserts that `floats` contains exactly 7 bit-distinct f64 values in the
-    /// IEEE 754 totalOrder sequence:
+    /// Asserts that `floats` contains exactly `BOUNDARY_REALS.len()` bit-distinct
+    /// f64 values in the IEEE 754 totalOrder sequence:
     ///   NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
     ///
     /// Positions are identified by property (sign, magnitude, is_nan, is_infinite)
     /// rather than by index so the helper is robust to future reorderings of the
     /// input array.
     fn assert_ieee754_total_order_real(floats: &[f64]) {
-        assert_eq!(floats.len(), 7, "expected exactly 7 bit-distinct boundary values");
+        assert_eq!(
+            floats.len(),
+            BOUNDARY_REALS.len(),
+            "expected exactly {} bit-distinct boundary values, got {}",
+            BOUNDARY_REALS.len(),
+            floats.len()
+        );
 
         let neg_inf_idx = floats
             .iter()
