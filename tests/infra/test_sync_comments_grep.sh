@@ -237,9 +237,10 @@ assert "extract_fn: fn foobar( NOT extracted when fn_name=foo (prefix collision)
         [ -z \"\$out\" ]
     "
 
-# reject: embedded-fn false-positive guard — "let y = fn foo(x);" must NOT be extracted
-# RED test: the current loose awk pattern ^[^/]*fn foo[(<] matches the embedded fn line
-# because 'let y = fn foo(x);' is not anchored to a fn declaration.
+# reject: embedded-fn false-positive guard — "let y = fn foo(x);" must NOT be extracted.
+# Regression guard: the old loose awk pattern ^[^/]*fn foo[(<] would match this embedded
+# fn line because "let y =" is not a fn declaration.  The structured-modifier anchoring
+# (const/async/unsafe) rejects it.
 assert "extract_fn: 'let y = fn foo(x);' NOT extracted for fn_name=foo (embedded-fn false-positive)" \
     bash -c "
         tmp=\$(mktemp)
@@ -321,6 +322,34 @@ assert "extract_fn: pub(crate) const fn foo( extracted correctly for fn_name=foo
         out=\$(extract_fn foo \"\$tmp\")
         rm -f \"\$tmp\"
         [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'const fn foo('
+    "
+
+# accept: async unsafe fn foo( — multi-modifier combination (Rust grammar order) must be extracted
+assert "extract_fn: async unsafe fn foo( extracted correctly for fn_name=foo" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'async unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'async unsafe fn foo('
+    "
+
+# accept: pub(crate) const unsafe fn foo( — full modifier chain must be extracted
+assert "extract_fn: pub(crate) const unsafe fn foo( extracted correctly for fn_name=foo" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'pub(crate) const unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'const unsafe fn foo('
     "
 
 test_summary
