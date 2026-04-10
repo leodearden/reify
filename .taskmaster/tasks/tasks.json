@@ -22921,11 +22921,11 @@
         "description": "Two related issues from Task 209 review:\n\n1. **Silent overwrite (S4):** seed_prelude_unit has last-wins semantics. If entry imports two siblings (A, B) that both declare `pub unit foo` with different definitions, whichever was inserted last wins silently with no diagnostic. Detect this and emit a diagnostic for conflicting units from different prelude modules.\n\n2. **Missing test coverage (S5):** Add tests for:\n   - Transitive visibility: entry imports A, A imports B with pub unit → unit should NOT propagate to entry (locks in design choice)\n   - Diamond case: A imports B and C, both pub-export same unit → should trigger collision diagnostic (pairs with fix above)\n   - Pub unit from dep that shadows a stdlib unit name\n\nmemory_hints: search \"seed_prelude_unit last-wins overwrite\", search \"compile_project prelude unit seeding\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:58:18.331Z",
+        "updatedAt": "2026-04-10T06:49:54.765Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -31920,7 +31920,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T06:49:53.399Z",
+      "lastModified": "2026-04-10T06:49:54.765Z",
       "taskCount": 1571,
       "completedCount": 1180,
       "tags": [
