@@ -69,7 +69,7 @@ pub(crate) fn substitute_expr(
         },
         ExprKind::StringLiteral(s) => ExprKind::StringLiteral(s.clone()),
         ExprKind::BoolLiteral(b) => ExprKind::BoolLiteral(*b),
-        ExprKind::Auto => ExprKind::Auto,
+        ExprKind::Auto { free } => ExprKind::Auto { free: *free },
         ExprKind::EnumAccess { type_name, variant } => ExprKind::EnumAccess {
             type_name: type_name.clone(),
             variant: variant.clone(),
@@ -363,7 +363,19 @@ pub(crate) fn compile_entity(
                         reify_syntax::MemberDecl::Param(param) => {
                             let composite_name = format!("{}.{}", port_decl.name, param.name);
                             let ty = if let Some(type_expr) = &param.type_expr {
-                                resolve_type_name(&type_expr.name).unwrap_or(Type::Real)
+                                resolve_type_name(&type_expr.name).unwrap_or_else(|| {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "unresolved type name '{}' in port parameter",
+                                            type_expr.name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            type_expr.span,
+                                            "unknown type",
+                                        )),
+                                    );
+                                    Type::Real
+                                })
                             } else {
                                 Type::Real
                             };
@@ -522,21 +534,34 @@ pub(crate) fn compile_entity(
                 let cell_type = scope
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
-                    .unwrap_or(Type::Real);
+                    .unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "internal compiler error: unresolved name '{}' in pass 2",
+                                param.name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                param.span,
+                                "ICE: name should have been registered in pass 1",
+                            )),
+                        );
+                        Type::Real
+                    });
 
-                // Check if the default is ExprKind::Auto
-                let is_auto = matches!(
-                    param.default.as_ref(),
-                    Some(reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::Auto,
-                        ..
-                    })
-                );
+                // Check if the default is ExprKind::Auto and extract the free flag
+                let auto_free: Option<bool> =
+                    param.default.as_ref().and_then(|expr| {
+                        if let reify_syntax::ExprKind::Auto { free } = &expr.kind {
+                            Some(*free)
+                        } else {
+                            None
+                        }
+                    });
 
-                let decl = if is_auto {
+                let decl = if let Some(free) = auto_free {
                     ValueCellDecl {
                         id,
-                        kind: ValueCellKind::Auto { free: false },
+                        kind: ValueCellKind::Auto { free },
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
@@ -853,20 +878,33 @@ pub(crate) fn compile_entity(
                             let cell_type = scope
                                 .resolve(&composite_name)
                                 .map(|(_, ty)| ty.clone())
-                                .unwrap_or(Type::Real);
+                                .unwrap_or_else(|| {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "internal compiler error: unresolved name '{}' in pass 2",
+                                            composite_name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            param.span,
+                                            "ICE: name should have been registered in pass 1",
+                                        )),
+                                    );
+                                    Type::Real
+                                });
 
-                            let is_auto = matches!(
-                                param.default.as_ref(),
-                                Some(reify_syntax::Expr {
-                                    kind: reify_syntax::ExprKind::Auto,
-                                    ..
-                                })
-                            );
+                            let auto_free: Option<bool> =
+                                param.default.as_ref().and_then(|expr| {
+                                    if let reify_syntax::ExprKind::Auto { free } = &expr.kind {
+                                        Some(*free)
+                                    } else {
+                                        None
+                                    }
+                                });
 
-                            let decl = if is_auto {
+                            let decl = if let Some(free) = auto_free {
                                 ValueCellDecl {
                                     id,
-                                    kind: ValueCellKind::Auto { free: false },
+                                    kind: ValueCellKind::Auto { free },
                                     visibility: Visibility::Public,
                                     cell_type,
                                     default_expr: None,

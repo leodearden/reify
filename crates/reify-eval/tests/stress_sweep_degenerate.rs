@@ -4,6 +4,8 @@
 //!   - zero_extrude_distance: evaluator skips extrude when distance=0
 //!   - revolve_zero_angle: evaluator skips revolve when angle=0
 //!   - revolve_720_degrees: valid edge-case double full revolution (4π)
+//!   - negative_extrude_distance_is_valid: negative distance passes through (reverse direction)
+//!   - negative_revolve_angle_is_valid: negative angle passes through (clockwise rotation)
 //!   - loft_one_profile_rejected: compiler rejects loft with < 2 profiles
 //!   - self_intersecting_path_sweep: kernel failure produces diagnostic
 //!   - sweep_degenerate_ri_parses: fixture parses and compiles without errors
@@ -12,52 +14,7 @@ use std::f64::consts::PI;
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
-use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, ModulePath, QueryError, Severity, TessError, Type, Value,
-};
-
-// ---------------------------------------------------------------------------
-// FailingMockGeometryKernel — execute() always returns Err
-// (copied from geometry_error_handling.rs pattern)
-// ---------------------------------------------------------------------------
-
-struct FailingMockGeometryKernel;
-
-impl GeometryKernel for FailingMockGeometryKernel {
-    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        Err(GeometryError::OperationFailed(
-            "simulated kernel failure".into(),
-        ))
-    }
-
-    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Ok(Value::Real(0.0))
-    }
-
-    fn export(
-        &self,
-        _handle: GeometryHandleId,
-        _format: ExportFormat,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<(), ExportError> {
-        writer
-            .write_all(b"BOGUS_EXPORT")
-            .map_err(|e| ExportError::IoError(e.to_string()))
-    }
-
-    fn tessellate(
-        &self,
-        _handle: GeometryHandleId,
-        _tolerance: f64,
-    ) -> Result<Mesh, TessError> {
-        Ok(Mesh {
-            vertices: vec![],
-            indices: vec![],
-            normals: None,
-        })
-    }
-}
+use reify_types::{ExportFormat, GeometryOp, ModulePath, Severity, Type, Value};
 
 // ---------------------------------------------------------------------------
 // step-13: zero_extrude_distance — failing test
@@ -254,6 +211,185 @@ fn revolve_720_degrees() {
                 (angle_rad - angle_720_rad).abs() < 1e-9,
                 "Revolve angle should be 4π ({}) radians, got {}",
                 angle_720_rad,
+                angle_rad
+            );
+        }
+        other => panic!("expected GeometryOp::Revolve at op index 1, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// step-1: negative_extrude_distance_is_valid — characterization test
+// ---------------------------------------------------------------------------
+
+/// Build an Extrude op with distance=-10mm (negative — reverse direction).
+///
+/// A negative extrude distance is a valid, physically meaningful operation:
+/// it means "extrude along the *negative* profile normal (reverse direction)".
+/// The evaluator's rejection threshold (`lib.rs` line 3647) uses `.abs()`:
+///   `distance.as_f64().filter(|v| v.is_finite() && v.abs() >= 1e-12)?`
+/// so finite negatives with magnitude ≥ 1e-12 pass through unchanged.
+///
+/// Complementary unit test: `compile_geometry_op_extrude_near_zero_distance_returns_none`
+/// in `lib.rs` (line 4481) proves *magnitude-zero* rejects; this test proves
+/// *negative-magnitude* dispatches.
+///
+/// This test will fail if someone changes `v.abs() >= 1e-12` to `v >= 1e-12`,
+/// which would silently regress the reverse-direction-extrude use case.
+#[test]
+fn negative_extrude_distance_is_valid() {
+    let e = "TestNegExtrude";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Sphere (profile provider at Step(0))
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+
+    // Op 1: Extrude referencing Step(0), distance = -10mm (reverse direction — valid)
+    let extrude_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Extrude,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("profile".into(), mm_literal(5.0)), // placeholder expr
+            ("distance".into(), mm_literal(-10.0)), // NEGATIVE — reverse direction
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, extrude_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test_neg_extrude"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let _result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 geometry ops (sphere + extrude), got {}",
+        ops.len()
+    );
+
+    let profile_handle = ops[0].result_handle;
+
+    match &ops[1].op {
+        GeometryOp::Extrude { profile, distance } => {
+            assert_eq!(
+                *profile, profile_handle,
+                "Extrude profile should be handle from op 0 ({:?}), got {:?}",
+                profile_handle, profile
+            );
+            let dist_si = distance.as_f64().expect("distance should be a numeric value");
+            // Sign must be preserved — negative means reverse direction, not normalized to abs.
+            assert!(
+                dist_si < 0.0,
+                "Extrude distance must be negative (reverse direction), got {}",
+                dist_si
+            );
+            assert!(
+                (dist_si - (-0.01)).abs() < 1e-9,
+                "Extrude distance should be -0.01 m (-10 mm in SI), got {}",
+                dist_si
+            );
+        }
+        other => panic!("expected GeometryOp::Extrude at op index 1, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// step-2: negative_revolve_angle_is_valid — characterization test
+// ---------------------------------------------------------------------------
+
+/// Build a Revolve op with angle=-π (−180° — clockwise rotation under right-hand rule).
+///
+/// A negative revolve angle is a valid, physically meaningful operation:
+/// under the right-hand rule, a negative angle means "clockwise rotation about
+/// the axis". The evaluator's rejection threshold (`lib.rs` line 3667) uses `.abs()`:
+///   `if angle_rad.abs() < 1e-12 { return None; }`
+/// so finite negatives with magnitude ≥ 1e-12 pass through unchanged.
+///
+/// Complementary unit test: `compile_geometry_op_revolve_near_zero_angle_returns_none`
+/// in `lib.rs` (line 4551) proves *magnitude-zero* rejects; this test proves
+/// *negative-magnitude* dispatches.
+///
+/// This test will fail if someone changes `angle_rad.abs() < 1e-12` to
+/// `angle_rad < 1e-12`, which would silently regress the clockwise-revolve use case.
+#[test]
+fn negative_revolve_angle_is_valid() {
+    let e = "TestNegRevolve";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+
+    // Op 0: Sphere (profile provider at Step(0))
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+
+    let angle_neg_180_rad = -PI; // -180° in radians (clockwise)
+
+    // Op 1: Revolve around z-axis with angle=-π (clockwise — valid)
+    let revolve_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("profile".into(), mm_literal(5.0)),
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)), // z-axis
+            ("angle".into(), real_literal(angle_neg_180_rad)), // NEGATIVE angle — clockwise
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, revolve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test_neg_revolve"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let _result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 geometry ops (sphere + revolve), got {}",
+        ops.len()
+    );
+
+    match &ops[1].op {
+        GeometryOp::Revolve { angle_rad, .. } => {
+            // Sign must be preserved — negative means clockwise, not normalized to abs.
+            assert!(
+                *angle_rad < 0.0,
+                "Revolve angle must be negative (clockwise rotation), got {}",
+                angle_rad
+            );
+            assert!(
+                (angle_rad - angle_neg_180_rad).abs() < 1e-9,
+                "Revolve angle should be -π ({}) radians, got {}",
+                angle_neg_180_rad,
                 angle_rad
             );
         }
