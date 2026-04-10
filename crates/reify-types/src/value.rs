@@ -2798,7 +2798,9 @@ mod tests {
         let neg_inf = Value::Real(f64::NEG_INFINITY);
         let pos_qnan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
 
+        // neg_qnan < neg_inf under f64::total_cmp().
         assert_ord_consistent(&neg_qnan, &neg_inf, false);
+        // neg_qnan < pos_qnan (cross-sign NaN pair).
         assert_ord_consistent(&neg_qnan, &pos_qnan, false);
     }
 
