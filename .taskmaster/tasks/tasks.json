@@ -21044,7 +21044,7 @@
         "description": "Three small documentation and test consistency improvements for the `initialized` notification contract in bridge.rs:\n\n1. **Extend breaking-change doc section** (bridge.rs:97-103): The `# Breaking change` doc section only mentions `initialize` but `initialized` also changed behavior (from silently constructing `InitializedParams {}` and discarding caller params to strict deserialization). Add: \"The `initialized` notification previously ignored its `params` argument entirely, constructing `InitializedParams {}` unconditionally. It now performs strict deserialization and returns `Err` if `params` cannot be parsed into `InitializedParams`.\"\n\n2. **Add initialize call in test** (in_process_bridge.rs:404-420): The `initialized_with_malformed_params_returns_error` test doesn't call `initialize` first, unlike every other test that exercises `initialized`. Add `lsp.handle_request(\"initialize\", json!({\"capabilities\": {}})).await.expect(\"initialize should succeed\");` before the malformed params call for consistency.\n\n3. **Document stable error prefix contract** (in_process_bridge.rs:397-402): The test doc comment should explicitly state that the prefix `\"initialized params error\"` is part of the public error contract. Callers may match on this prefix to identify deserialization failures.\n\nMemory hints: search \"bridge.rs breaking change doc\", search \"initialized test contract\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -21057,7 +21057,7 @@
             "crates/reify-lsp/tests/in_process_bridge.rs"
           ]
         },
-        "updatedAt": "2026-04-10T08:38:46.933Z"
+        "updatedAt": "2026-04-10T11:08:25.129Z"
       },
       {
         "id": "985",
@@ -32544,9 +32544,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T11:08:22.866Z",
+      "lastModified": "2026-04-10T11:08:25.129Z",
       "taskCount": 1601,
-      "completedCount": 1218,
+      "completedCount": 1219,
       "tags": [
         "master"
       ]
