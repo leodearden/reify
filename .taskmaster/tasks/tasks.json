@@ -27529,11 +27529,11 @@
         "description": "Review suggestions S2+S5 from task 1039 review, both in tree-sitter-reify/tests/build_logic_tests.rs.\n\nS2 (test coherence, lines 1329-1341): The `env!(\"CARGO_MANIFEST_DIR\")` precision guard was added inside `test_self_read_paths_use_manifest_dir`, but that test's stated purpose is to iterate over self-reading functions and assert they use `THIS_FILE`. Checking how the `THIS_FILE` / `BUILD_RS` constants themselves are defined is orthogonal. Bundling both in one test muddies failure messages — a future reader won't immediately know whether the constants' definition broke or a specific test function lacks `(THIS_FILE)`.\n\nS5 (style, line 1546): The comment `// dot-slash prefix variant (reviewer S1: helper must also detect \\\"./tests/build_logic_tests.rs\\\")` bakes a pointer to a review suggestion (\"reviewer S1\") into committed source. Future readers without the review thread will find this reference meaningless.\n\nRequired changes:\n1. Move the `env!(\"CARGO_MANIFEST_DIR\")` assertion out of `test_self_read_paths_use_manifest_dir` into its own `#[test] fn test_self_path_constants_use_manifest_dir()` so each guard has one responsibility and failure messages are unambiguous.\n2. On line 1546, drop the `(reviewer S1: helper must also detect ...)` parenthetical; the rest of the comment already explains the intent.\n3. Verify: `cargo test -p tree-sitter-reify test_self_path_constants_use_manifest_dir test_self_read_paths_use_manifest_dir test_find_bare_self_path_violations`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:22:55.394Z",
+        "updatedAt": "2026-04-10T00:02:07.640Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/tests/build_logic_tests.rs"
@@ -28988,9 +28988,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:01:56.805Z",
+      "lastModified": "2026-04-10T00:02:07.641Z",
       "taskCount": 1406,
-      "completedCount": 1080,
+      "completedCount": 1081,
       "tags": [
         "master"
       ]
