@@ -29981,11 +29981,11 @@
         "description": "Two test coverage gaps in crates/reify-expr/src/calculus.rs from task 1223 review:\n\n1. **Type-level operator integration tests (lines 1685-2038):** The new unit tests cover extracted helpers individually, but there are no integration tests verifying that the refactored `compute_gradient`, `compute_divergence`, `compute_curl`, and `compute_laplacian` still produce correct results end-to-end. Add at least one test per operator (e.g., `compute_gradient` on an Analytical scalar field) asserting the returned `Value::Field` has the expected `codomain_type` and `source: FieldSourceKind::Gradient`. This catches semantic drift in the refactored validation + fallback logic.\n\n2. **Non-numeric element test for items_to_f64_vec (line 416-428):** There is no direct test exercising the `as_f64() => None` path with a non-numeric element (e.g., `Value::Bool(true)`). The existing test `extract_coords_vector_with_nan_element_returns_none` only covers NaN. Add a test like `extract_coords_point_with_non_numeric_element_returns_none` using `Value::Point(vec![Value::Real(1.0), Value::Bool(true)])`.\n\nmemory_hints: search \"compute_gradient compute_divergence FieldSourceKind\" for operator implementations; search \"items_to_f64_vec extract_coords\" for the helper",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:50:52.138Z",
+        "updatedAt": "2026-04-10T07:05:06.693Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src"
@@ -32117,7 +32117,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:05:06.340Z",
+      "lastModified": "2026-04-10T07:05:06.693Z",
       "taskCount": 1584,
       "completedCount": 1182,
       "tags": [
