@@ -249,6 +249,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tensor_components_f64_vector_with_complex_component_returns_none() {
+        let v = Value::Vector(vec![Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector containing a Complex component should return None"
+        );
+    }
+
     // ── tensor_components_f64 rejection: mixed dimensions ────────────────────
 
     #[test]
