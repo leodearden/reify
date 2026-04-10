@@ -713,6 +713,21 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
         [ "$gap" -ge 5 ]
     '
 
+# -- Test 24c (meta): grep -cF count distinguishes 1- vs 2-occurrence inputs --
+echo ""
+echo "--- Test 24c (meta): grep -cF count correctly distinguishes 1 vs 2 occurrences ---"
+
+# Verifies the 'grep -cF "local _pt_kill_grace=2" <<< $var' idiom used by
+# the Test 24b uniqueness guard correctly reports 1 for a single occurrence
+# and 2 for two occurrences.  Self-contained; does not depend on lib_portable.sh.
+_pt_single=$'portable_timeout ()\n{\n    local _pt_kill_grace=2\n    echo done\n}'
+assert "grep -cF count == 1 for single occurrence of 'local _pt_kill_grace=2'" \
+    bash -c '[ "$(grep -cF "local _pt_kill_grace=2" <<< "$1")" -eq 1 ]' _ "$_pt_single"
+
+_pt_double=$'portable_timeout ()\n{\n    local _pt_kill_grace=2\n    local _pt_kill_grace=2\n    echo done\n}'
+assert "grep -cF count == 2 for two occurrences of 'local _pt_kill_grace=2'" \
+    bash -c '[ "$(grep -cF "local _pt_kill_grace=2" <<< "$1")" -eq 2 ]' _ "$_pt_double"
+
 # -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
 echo ""
 echo "--- Test 25a: structural: SAFETY_NET_GREP_LINE marker is present ---"
