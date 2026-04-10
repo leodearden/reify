@@ -423,3 +423,30 @@ fn registry_handler_receives_params_and_context() {
         .unwrap();
     assert_eq!(result["phase"], "idle");
 }
+
+// --- Re-export identity tests ---
+
+#[test]
+fn diagnostic_info_is_reexported_from_reify_types() {
+    use std::any::TypeId;
+    // After reify-mcp re-exports DiagnosticInfo from reify-types, both paths must
+    // resolve to the *same* type (same TypeId). This guards against a newtype wrapper
+    // accidentally breaking the identity.
+    assert_eq!(
+        TypeId::of::<reify_mcp::DiagnosticInfo>(),
+        TypeId::of::<reify_types::DiagnosticInfo>(),
+        "reify_mcp::DiagnosticInfo must be the same type as reify_types::DiagnosticInfo"
+    );
+}
+
+#[test]
+fn source_location_info_is_reexported_from_reify_types() {
+    use std::any::TypeId;
+    // After reify-mcp re-exports SourceLocationInfo from reify-types, both paths must
+    // resolve to the *same* type (same TypeId).
+    assert_eq!(
+        TypeId::of::<reify_mcp::SourceLocationInfo>(),
+        TypeId::of::<reify_types::SourceLocationInfo>(),
+        "reify_mcp::SourceLocationInfo must be the same type as reify_types::SourceLocationInfo"
+    );
+}
