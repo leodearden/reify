@@ -1622,6 +1622,37 @@ mod tests {
         );
     }
 
+    /// Verify that `compute_numerical_laplacian_at_point` panics (in debug mode) when
+    /// `codomain_type` is not `Type::Real` or `Type::Scalar`.
+    ///
+    /// Same pattern as the divergence test above. The debug_assert fires before any
+    /// coordinate extraction, so the lambda/point/domain_type need not be functionally correct.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "divergence/laplacian codomain must be scalar")]
+    fn laplacian_unexpected_codomain_panics_in_debug() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        let x_id = ValueCellId::new("$lambda0.S", "x");
+        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("x".to_string(), x_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let _result = compute_numerical_laplacian_at_point(
+            &lambda,
+            &Value::Real(1.0),
+            &Type::Real,
+            &Type::Bool,
+            &ctx,
+        );
+    }
+
     // --- eval_perturbed_point unit tests ---
 
     /// Verify the happy path for `eval_perturbed_point` with `single_point_param=true`.
