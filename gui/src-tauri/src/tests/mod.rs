@@ -8,6 +8,11 @@ mod mcp_dispatch_tests;
 mod types_tests;
 mod watcher_tests;
 
+/// Compile-time assertion that a type satisfies the full GUI IPC contract:
+/// serializable, deserializable (owned), cloneable, debuggable, and comparable.
+fn assert_ipc_contract<T: serde::Serialize + serde::de::DeserializeOwned + Clone + std::fmt::Debug + PartialEq>() {
+}
+
 // Step 11: Module structure verification — importing all public types.
 #[test]
 fn public_api_types_are_accessible() {
@@ -26,6 +31,15 @@ fn public_api_types_are_accessible() {
     assert_clone_debug::<FileData>();
     // DiagnosticInfo is the MCP canonical replacement for the removed GUI-local type
     assert_clone_debug::<DiagnosticInfo>();
+
+    // Verify full IPC contract (Serialize + DeserializeOwned + Clone + Debug + PartialEq)
+    assert_ipc_contract::<GuiState>();
+    assert_ipc_contract::<MeshData>();
+    assert_ipc_contract::<ValueData>();
+    assert_ipc_contract::<ConstraintData>();
+    assert_ipc_contract::<SourceLocationInfo>();
+    assert_ipc_contract::<FileData>();
+    assert_ipc_contract::<DiagnosticInfo>();
 
     // Verify AppState and EngineSession are usable as types
     let _ = std::any::type_name::<AppState>();
