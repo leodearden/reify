@@ -1864,4 +1864,64 @@ mod tests {
     fn extract_explicit_domain_dim_bool_returns_none() {
         assert_eq!(extract_explicit_domain_dim(&Type::Bool), None);
     }
+
+    // --- make_domain_arg unit tests ---
+
+    #[test]
+    fn make_domain_arg_none_returns_real() {
+        assert_eq!(make_domain_arg(3.14, None), Value::Real(3.14));
+    }
+
+    #[test]
+    fn make_domain_arg_some_length_returns_scalar() {
+        assert_eq!(
+            make_domain_arg(2.5, Some(DimensionVector::LENGTH)),
+            Value::Scalar {
+                si_value: 2.5,
+                dimension: DimensionVector::LENGTH,
+            }
+        );
+    }
+
+    // --- detect_single_point_param unit tests ---
+
+    /// Lambda with 1 param and n=3 → wraps in Point, returns true.
+    #[test]
+    fn detect_single_point_param_one_param_n_gt_1_returns_true() {
+        let lambda = make_test_lambda(); // 1-param lambda
+        assert!(detect_single_point_param(&lambda, 3));
+    }
+
+    /// Lambda with 3 params and n=3 → decomposed path, returns false.
+    #[test]
+    fn detect_single_point_param_three_params_n_3_returns_false() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+        let a_id = ValueCellId::new("$lambda0.S", "a");
+        let b_id = ValueCellId::new("$lambda0.S", "b");
+        let c_id = ValueCellId::new("$lambda0.S", "c");
+        let body = CompiledExpr::value_ref(a_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![
+                ("a".to_string(), a_id),
+                ("b".to_string(), b_id),
+                ("c".to_string(), c_id),
+            ],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+        assert!(!detect_single_point_param(&lambda, 3));
+    }
+
+    /// Lambda with 1 param and n=1 → not "single point" (n not > 1), returns false.
+    #[test]
+    fn detect_single_point_param_one_param_n_1_returns_false() {
+        let lambda = make_test_lambda(); // 1-param lambda
+        assert!(!detect_single_point_param(&lambda, 1));
+    }
+
+    /// Non-Lambda value → always false.
+    #[test]
+    fn detect_single_point_param_non_lambda_returns_false() {
+        assert!(!detect_single_point_param(&Value::Real(1.0), 3));
+    }
 }
