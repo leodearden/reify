@@ -30205,11 +30205,11 @@
         "description": "Two follow-up improvements to the `assert_extraction` test helper in `crates/reify-stdlib/src/helpers.rs` (introduced by Task 1453):\n\n1. **Line formatting (readability):** The 6 success-path test calls (lines ~337-363) are 200-280 characters wide single lines. Break each call across multiple lines or extract a `let v = Value::…` binding before calling `assert_extraction(v, …)` — keeps lines under ~100-120 chars while preserving the deduplication win.\n\n2. **Signature consistency (test_quality):** `assert_extraction` takes `input: Value` by move (line 164), then immediately borrows it to call `tensor_components_f64(&input)`. Change the signature to `fn assert_extraction(input: &Value, …)` and update callers to pass `&Value::…` or bind-and-reference. This matches the function-under-test's `&Value` parameter and allows callers to reuse the input for Debug prints on failure.\n\nMemory hints: search \"tensor_components_f64 helpers\", get_entity \"helpers.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:08:58.750Z",
+        "updatedAt": "2026-04-10T07:11:53.150Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib/src"
@@ -30337,11 +30337,11 @@
         "description": "Two fixes in tests/infra/test_portable_timeout.sh: (1) Line 649: remove dead `(^|[^-9])` prefix from kill regex — the `kill[[:space:]]+--` pattern already discriminates correctly. (2) Line 707: add count verification after the case-sanity-check to ensure exactly 1 occurrence of `local _pt_kill_grace=2` before parameter substitution, preventing silent partial replacement if a second occurrence is introduced.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:49:55.604Z",
+        "updatedAt": "2026-04-10T07:11:52.511Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -32244,7 +32244,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:11:43.165Z",
+      "lastModified": "2026-04-10T07:11:53.150Z",
       "taskCount": 1584,
       "completedCount": 1197,
       "tags": [
