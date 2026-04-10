@@ -57,7 +57,7 @@ async fn assert_shutdown_returns_null(lsp: &InProcessLsp, params: &serde_json::V
 /// only need a ready server; use this helper directly when you need to configure
 /// the instance before or after initialization.
 async fn init_lsp(lsp: &InProcessLsp) {
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
+    lsp.handle_request("initialize", reify_test_support::minimal_init_params())
         .await
         .expect("init_lsp: initialize should succeed");
     lsp.handle_request("initialized", json!({}))
@@ -259,7 +259,7 @@ async fn initialize_returns_server_capabilities() {
         let lsp = InProcessLsp::new();
 
         let result = lsp
-            .handle_request("initialize", json!({"capabilities": {}}))
+            .handle_request("initialize", reify_test_support::minimal_init_params())
             .await
             .expect("initialize should succeed");
 
@@ -576,7 +576,7 @@ async fn initialize_error_does_not_corrupt_server_state() {
 
         // Second call on the same instance: should succeed and return a well-formed response.
         let ok_result = lsp
-            .handle_request("initialize", json!({"capabilities": {}}))
+            .handle_request("initialize", reify_test_support::minimal_init_params())
             .await;
         let val = ok_result.expect("initialize after a failed attempt should succeed");
         assert!(
@@ -598,7 +598,7 @@ async fn initialize_error_does_not_corrupt_server_state() {
 async fn initialized_returns_ok_null() {
     hang_guard!(async {
         let lsp = InProcessLsp::new();
-        lsp.handle_request("initialize", json!({"capabilities": {}}))
+        lsp.handle_request("initialize", reify_test_support::minimal_init_params())
             .await
             .expect("initialize should succeed before testing initialized");
 

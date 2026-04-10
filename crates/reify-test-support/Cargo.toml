@@ -9,4 +9,5 @@ description = "Test builders, fixtures, and mock implementations for Reify"
 reify-types.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
