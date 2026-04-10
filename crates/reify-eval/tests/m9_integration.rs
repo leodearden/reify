@@ -391,3 +391,70 @@ structure Item : Verifiable {
         other => panic!("expected Scalar for Item.value, got {:?}", other),
     }
 }
+
+// ── Step 13: recursive structure with determinacy guard ───────────────────────
+
+/// Cross-feature: a recursive structure whose sub guard combines a determinacy predicate
+/// (determined(span)) with a depth counter (depth > 0).
+///
+/// With defaults depth=2, span=100mm:
+///   root:        depth=2, span=100mm  (0.1  SI) → child created
+///   child:       depth=1, span=50mm   (0.05 SI) → grandchild created
+///   grandchild:  depth=0, span=25mm   (0.025 SI) → great-grandchild NOT created (depth=0)
+///
+/// `determined(span)` is always true here (span is always passed or defaulted).
+/// Recursion halts when `depth > 0` becomes false.
+#[test]
+fn recursive_structure_gated_by_determinacy() {
+    let source = r#"
+structure def RecursiveChain {
+    param depth : Int    = 2
+    param span  : Length = 100mm
+    let next_span = span / 2
+    sub child = RecursiveChain(depth: depth - 1, span: next_span) where determined(span) && depth > 0
+}
+"#;
+    let result = eval_source(source);
+
+    // child.span = 100mm / 2 = 50mm = 0.05 SI
+    let child_span_id = ValueCellId::new("RecursiveChain.child", "span");
+    let child_span = result
+        .values
+        .get(&child_span_id)
+        .unwrap_or_else(|| panic!("RecursiveChain.child.span should exist"));
+    match child_span {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.05).abs() < 1e-12,
+                "expected ~0.05 SI for RecursiveChain.child.span (50mm), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for RecursiveChain.child.span, got {:?}", other),
+    }
+
+    // grandchild.span = 50mm / 2 = 25mm = 0.025 SI
+    let grandchild_span_id = ValueCellId::new("RecursiveChain.child.child", "span");
+    let grandchild_span = result
+        .values
+        .get(&grandchild_span_id)
+        .unwrap_or_else(|| panic!("RecursiveChain.child.child.span should exist"));
+    match grandchild_span {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.025).abs() < 1e-12,
+                "expected ~0.025 SI for RecursiveChain.child.child.span (25mm), got {si_value}"
+            );
+        }
+        other => panic!(
+            "expected Scalar for RecursiveChain.child.child.span, got {:?}",
+            other
+        ),
+    }
+
+    // great-grandchild must NOT exist (depth=0 at grandchild level → guard false)
+    let great_grandchild_span_id = ValueCellId::new("RecursiveChain.child.child.child", "span");
+    assert!(
+        !result.values.contains(&great_grandchild_span_id),
+        "RecursiveChain.child.child.child.span should not exist (depth=0 stops unfolding)"
+    );
+}
