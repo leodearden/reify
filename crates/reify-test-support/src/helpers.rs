@@ -100,6 +100,7 @@ mod tests {
     use crate::fixtures::bracket_source;
     use reify_types::Severity;
 
+    #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_make_engine() {
         let compiled = super::parse_and_compile(bracket_source());
