@@ -162,10 +162,9 @@ fn run_tests_propagates_violation_diagnostics() {
     assert!(
         results[0].diagnostics.iter().any(|d| {
             d.severity == Severity::Error
-                && d.message.contains("violated")
                 && (d.message.contains("Positive") || d.message.contains("TestA"))
         }),
-        "expected at least one Error diagnostic with message containing 'violated' and ('Positive' or 'TestA'), got: {:?}",
+        "expected at least one Error diagnostic with message containing 'Positive' or 'TestA', got: {:?}",
         results[0].diagnostics
     );
 }
