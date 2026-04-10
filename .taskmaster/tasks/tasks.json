@@ -31260,11 +31260,11 @@
         "description": "The self-check at lines 611-619 of tests/infra/test_test_helpers.sh validates that all file-local helpers use symmetric positive `_has_` naming, but it only checks for `_has_assert_sync_ref_exists` and `_has_if_n_guard`. The newly added `_has_expr_body_empty_guard_short_circuit` helper (line 248) is not included. If someone renames or removes that helper, the self-check won't catch the inconsistency.\n\nFix: Add `&& grep -qE '^_has_expr_body_empty_guard_short_circuit\\(\\)' \"${BASH_SOURCE[0]}\"` to the self-check condition at line 613.\n\nMemory hints: search(\"self-check _has_ helpers symmetric naming test_test_helpers.sh\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:22:35.155Z",
+        "updatedAt": "2026-04-10T11:55:39.846Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh"
@@ -31294,11 +31294,11 @@
         "description": "The self-check at lines 611-619 of tests/infra/test_test_helpers.sh validates that all file-local helpers use symmetric positive `_has_` naming, but it only checks for `_has_assert_sync_ref_exists` and `_has_if_n_guard`. The newly added `_has_expr_body_empty_guard_short_circuit` helper (line 248) is not included. If someone renames or removes that helper, the self-check won't catch the inconsistency.\n\nFix: Add `&& grep -qE '^_has_expr_body_empty_guard_short_circuit\\(\\)' \"${BASH_SOURCE[0]}\"` to the self-check condition at line 613.\n\nMemory hints: search(\"self-check _has_ helpers symmetric naming test_test_helpers.sh\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:22:19.049Z",
+        "updatedAt": "2026-04-10T11:55:39.890Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh"
@@ -31328,11 +31328,11 @@
         "description": "The self-check at lines 611-619 of tests/infra/test_test_helpers.sh validates that all file-local helpers use symmetric positive `_has_` naming, but it only checks for `_has_assert_sync_ref_exists` and `_has_if_n_guard`. The newly added `_has_expr_body_empty_guard_short_circuit` helper (line 248) is not included. If someone renames or removes that helper, the self-check won't catch the inconsistency.\n\nFix: Add `&& grep -qE '^_has_expr_body_empty_guard_short_circuit\\(\\)' \"${BASH_SOURCE[0]}\"` to the self-check condition at line 613.\n\nMemory hints: search(\"self-check _has_ helpers symmetric naming test_test_helpers.sh\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:22:44.782Z",
+        "updatedAt": "2026-04-10T11:55:39.931Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh"
@@ -31345,11 +31345,11 @@
         "description": "The self-check at lines 611-619 of tests/infra/test_test_helpers.sh validates that all file-local helpers use symmetric positive `_has_` naming, but it only checks for `_has_assert_sync_ref_exists` and `_has_if_n_guard`. The newly added `_has_expr_body_empty_guard_short_circuit` helper (line 248) is not included. If someone renames or removes that helper, the self-check won't catch the inconsistency.\n\nFix: Add `&& grep -qE '^_has_expr_body_empty_guard_short_circuit\\(\\)' \"${BASH_SOURCE[0]}\"` to the self-check condition at line 613.\n\nMemory hints: search(\"self-check _has_ helpers symmetric naming test_test_helpers.sh\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:23:27.303Z",
+        "updatedAt": "2026-04-10T11:55:39.971Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh"
@@ -31379,11 +31379,11 @@
         "description": "The self-check at lines 611-619 of tests/infra/test_test_helpers.sh validates that all file-local helpers use symmetric positive `_has_` naming, but it only checks for `_has_assert_sync_ref_exists` and `_has_if_n_guard`. The newly added `_has_expr_body_empty_guard_short_circuit` helper (line 248) is not included. If someone renames or removes that helper, the self-check won't catch the inconsistency.\n\nFix: Add `&& grep -qE '^_has_expr_body_empty_guard_short_circuit\\(\\)' \"${BASH_SOURCE[0]}\"` to the self-check condition at line 613.\n\nMemory hints: search(\"self-check _has_ helpers symmetric naming test_test_helpers.sh\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:22:47.952Z",
+        "updatedAt": "2026-04-10T11:55:40.013Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh"
@@ -31396,11 +31396,11 @@
         "description": "The self-check at lines 611-619 of tests/infra/test_test_helpers.sh validates that all file-local helpers use symmetric positive `_has_` naming, but it only checks for `_has_assert_sync_ref_exists` and `_has_if_n_guard`. The newly added `_has_expr_body_empty_guard_short_circuit` helper (line 248) is not included. If someone renames or removes that helper, the self-check won't catch the inconsistency.\n\nFix: Add `&& grep -qE '^_has_expr_body_empty_guard_short_circuit\\(\\)' \"${BASH_SOURCE[0]}\"` to the self-check condition at line 613.\n\nMemory hints: search(\"self-check _has_ helpers symmetric naming test_test_helpers.sh\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:23:34.163Z",
+        "updatedAt": "2026-04-10T11:55:40.055Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh"
@@ -31474,11 +31474,11 @@
         "description": "The self-check at lines 611-619 of tests/infra/test_test_helpers.sh validates that all file-local helpers use symmetric positive _has_ naming, but only checks _has_assert_sync_ref_exists and _has_if_n_guard. The new _has_expr_body_empty_guard_short_circuit helper (line 248) is missing. Fix: add a grep for it to the self-check condition at line 613.\n\nMemory hints: search(\"self-check _has_ helpers symmetric naming test_test_helpers.sh\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:24:01.410Z",
+        "updatedAt": "2026-04-10T11:55:40.095Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh"
@@ -32596,7 +32596,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T11:55:39.114Z",
+      "lastModified": "2026-04-10T11:55:40.095Z",
       "taskCount": 1605,
       "completedCount": 1222,
       "tags": [
