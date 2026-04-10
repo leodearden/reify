@@ -203,6 +203,32 @@ mod tests {
         );
     }
 
+    // ── tensor_components_f64 rejection: empty containers ────────────────────
+
+    #[test]
+    fn tensor_components_f64_empty_tensor_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Tensor(vec![])).is_none(),
+            "Empty Tensor should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_empty_point_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Point(vec![])).is_none(),
+            "Empty Point should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_empty_vector_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Vector(vec![])).is_none(),
+            "Empty Vector should return None"
+        );
+    }
+
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
 
     // ── sanitize_value Real arm characterization tests ───────────────────────
