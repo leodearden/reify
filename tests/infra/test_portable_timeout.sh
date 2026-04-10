@@ -358,7 +358,7 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
         kill "$pt_pid" 2>/dev/null || true
         wait "$pt_pid" 2>/dev/null || true
 
-        # Safety-net: kill any lingering sentinel sleep 31337 processes.
+        # SAFETY_NET_GREP_LINE — Safety-net: kill any lingering sentinel sleep 31337 processes.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
             | "$_abs_grep" -E "[[:space:]]sleep 31337$" \
             | while read -r _spid _rest; do kill "$_spid" 2>/dev/null || true; done
