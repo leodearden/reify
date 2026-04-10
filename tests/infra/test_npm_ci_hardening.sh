@@ -461,4 +461,20 @@ assert "setup_fixture_dir: fixture is a git work tree" \
 assert "setup_fixture_dir: appended to _TMPDIRS cleanup array" \
     bash -c "[ '${#_TMPDIRS[@]}' -gt '$tmpdirs_before' ]"
 
+# -- Test 27: setup_fixture_dir rejects empty/missing varname argument ----------
+echo ""
+echo "--- Test 27: setup_fixture_dir argument validation guard ---"
+
+tmpdirs_baseline_t27=${#_TMPDIRS[@]}
+guard_err_t27=$(setup_fixture_dir "" 2>&1 || true)
+guard_rc_t27=0
+setup_fixture_dir "" 2>/dev/null || guard_rc_t27=$?
+
+assert "setup_fixture_dir: rejects empty varname with non-zero return" \
+    test "$guard_rc_t27" -ne 0
+assert "setup_fixture_dir: guard fires before _TMPDIRS mutation" \
+    test "${#_TMPDIRS[@]}" -eq "$tmpdirs_baseline_t27"
+assert "setup_fixture_dir: error message mentions function name" \
+    bash -c 'printf "%s\n" "$1" | grep -qi setup_fixture_dir' _ "$guard_err_t27"
+
 test_summary
