@@ -408,6 +408,57 @@ fn extract_explicit_domain_dim(domain_type: &Type) -> Option<DimensionVector> {
     }
 }
 
+/// Convert a slice of `Value` items to a `Vec<f64>`, returning `None` if any item is
+/// non-numeric, NaN, or infinite.
+///
+/// Shared by [`extract_coords`] and [`extract_point_coords`] to avoid duplicating the
+/// per-element finite-check loop.
+fn items_to_f64_vec(items: &[Value]) -> Option<Vec<f64>> {
+    if items.is_empty() {
+        return None;
+    }
+    let mut v = Vec::with_capacity(items.len());
+    for item in items {
+        match item.as_f64() {
+            Some(f) if f.is_finite() => v.push(f),
+            _ => return None,
+        }
+    }
+    Some(v)
+}
+
+/// Extract f64 coordinates from a `Value` — wide variant.
+///
+/// Accepts `Real`, `Int`, `Scalar`, `Point`, and `Vector`. Returns `None` for any
+/// other variant, and for `Real`/`Scalar` values that are NaN or infinite.
+///
+/// Used by `compute_numerical_gradient_at_point` and `compute_numerical_laplacian_at_point`.
+fn extract_coords(point: &Value) -> Option<Vec<f64>> {
+    match point {
+        Value::Real(r) if r.is_finite() => Some(vec![*r]),
+        Value::Real(_) => None, // NaN or Inf
+        Value::Int(i) => Some(vec![*i as f64]), // i64 can never be NaN/Inf
+        Value::Scalar { si_value, .. } if si_value.is_finite() => Some(vec![*si_value]),
+        Value::Scalar { .. } => None, // NaN or Inf
+        Value::Point(items) | Value::Vector(items) => items_to_f64_vec(items),
+        _ => None,
+    }
+}
+
+/// Extract f64 coordinates from a `Value` — point/vector only variant.
+///
+/// Accepts only `Point` and `Vector`; returns `None` for any other variant and for empty
+/// collections.
+///
+/// Used by `compute_numerical_divergence_at_point` (directly) and
+/// `compute_numerical_curl_at_point` (with an additional `len == 3` guard).
+fn extract_point_coords(point: &Value) -> Option<Vec<f64>> {
+    match point {
+        Value::Point(items) | Value::Vector(items) => items_to_f64_vec(items),
+        _ => None,
+    }
+}
+
 /// Construct a perturbed domain argument from an `f64` value and optional dimension.
 ///
 /// Returns `Value::Scalar { si_value: val, dimension: dim }` when `domain_dim` is
@@ -533,29 +584,11 @@ pub(crate) fn compute_numerical_gradient_at_point(
     // Decompose point into f64 coordinates.
     // Guard every extracted value with is_finite() — NaN/Inf coordinates
     // would produce NaN step sizes and silently corrupt gradient results.
-    let coords: Vec<f64> = match point {
-        Value::Real(r) if r.is_finite() => vec![*r],
-        Value::Real(_) => return Value::Undef, // NaN or Inf
-        Value::Int(i) => vec![*i as f64],      // i64 can never be NaN/Inf
-        Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
-        Value::Scalar { .. } => return Value::Undef, // NaN or Inf
-        Value::Point(items) | Value::Vector(items) => {
-            let mut v = Vec::with_capacity(items.len());
-            for item in items {
-                match item.as_f64() {
-                    Some(f) if f.is_finite() => v.push(f),
-                    _ => return Value::Undef, // None (non-numeric) or NaN/Inf
-                }
-            }
-            v
-        }
-        _ => return Value::Undef,
+    let Some(coords) = extract_coords(point) else {
+        return Value::Undef;
     };
 
     let n = coords.len();
-    if n == 0 {
-        return Value::Undef;
-    }
 
     // Determine if domain is dimensioned (for constructing perturbed args)
     let domain_dim = extract_explicit_domain_dim(domain_type);
@@ -813,24 +846,11 @@ pub(crate) fn compute_numerical_divergence_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
-    let coords: Vec<f64> = match point {
-        Value::Point(items) | Value::Vector(items) => {
-            let mut v = Vec::with_capacity(items.len());
-            for item in items {
-                match item.as_f64() {
-                    Some(f) if f.is_finite() => v.push(f),
-                    _ => return Value::Undef,
-                }
-            }
-            v
-        }
-        _ => return Value::Undef,
+    let Some(coords) = extract_point_coords(point) else {
+        return Value::Undef;
     };
 
     let n = coords.len();
-    if n == 0 {
-        return Value::Undef;
-    }
 
     let domain_dim = extract_explicit_domain_dim(domain_type);
 
@@ -964,17 +984,8 @@ pub(crate) fn compute_numerical_curl_at_point(
     ctx: &EvalContext,
 ) -> Value {
     // Only defined for 3D Point domains
-    let coords: Vec<f64> = match point {
-        Value::Point(items) | Value::Vector(items) if items.len() == 3 => {
-            let mut v = Vec::with_capacity(3);
-            for item in items {
-                match item.as_f64() {
-                    Some(f) if f.is_finite() => v.push(f),
-                    _ => return Value::Undef,
-                }
-            }
-            v
-        }
+    let coords = match extract_point_coords(point) {
+        Some(c) if c.len() == 3 => c,
         _ => return Value::Undef,
     };
 
@@ -1128,29 +1139,11 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
-    let coords: Vec<f64> = match point {
-        Value::Real(r) if r.is_finite() => vec![*r],
-        Value::Real(_) => return Value::Undef,
-        Value::Int(i) => vec![*i as f64],
-        Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
-        Value::Scalar { .. } => return Value::Undef,
-        Value::Point(items) | Value::Vector(items) => {
-            let mut v = Vec::with_capacity(items.len());
-            for item in items {
-                match item.as_f64() {
-                    Some(f) if f.is_finite() => v.push(f),
-                    _ => return Value::Undef,
-                }
-            }
-            v
-        }
-        _ => return Value::Undef,
+    let Some(coords) = extract_coords(point) else {
+        return Value::Undef;
     };
 
     let n = coords.len();
-    if n == 0 {
-        return Value::Undef;
-    }
 
     let domain_dim = extract_explicit_domain_dim(domain_type);
 
