@@ -29979,6 +29979,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1452,
+        "title": "Dedup task-1434 float-boundary tests and add Complex re / Orientation w coverage",
+        "description": "The 3 cross-variant float-boundary tests added by task-1434 (value_set_scalar_boundary_iteration_order, value_set_complex_boundary_im_iteration_order, value_set_orientation_boundary_z_iteration_order) in crates/reify-types/src/value.rs duplicate both the BOUNDARY_REALS constant (line 1948) and the assert_ieee754_total_order_real() helper (line 2710) that already exist. Each test inlines a local 7-element f64 array and ~25 lines of position-finding + assertion logic.\n\n**What to do:**\n\n1. Refactor the 3 task-1434 tests to use `BOUNDARY_REALS` instead of local arrays, and call `assert_ieee754_total_order_real(&sorted)` instead of inlining the position/assertion block. This matches the pattern already used by the task-974 tests above them (lines 3092-3208).\n\n2. Add a companion test `value_set_complex_boundary_re_iteration_order` that varies the `re` component with a fixed `im` value (e.g., im=0.0) to directly exercise the `re` arm of the Complex Ord chain (dimension → re → im).\n\n3. Add a companion test `value_set_orientation_boundary_w_iteration_order` that varies the `w` component with fixed x=0, y=0, z=0 to guard against component-order regressions in the Orientation Ord chain (w → x → y → z).\n\n**memory_hints:** search \"BOUNDARY_REALS assert_ieee754_total_order_real helper\", get_entity \"Value Ord total_cmp\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -29991,7 +30002,7 @@
       ],
       "created": "2026-04-10T02:19:30.512Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T02:19:30.529Z"
+      "updated": "2026-04-10T02:19:37.979Z"
     }
   }
 }
