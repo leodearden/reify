@@ -350,6 +350,107 @@ fn run_laplacian_quadratic_test(point: Value, point_literal_type: Type, label: &
     );
 }
 
+/// Run a metadata-only dimensional-correctness test for a calculus operator.
+///
+/// Builds a dummy `Value::Field` with the given `domain_type`, `codomain_type`, and
+/// `source`, creates a no-op lambda (body = `value_ref` to the first parameter),
+/// applies the named operator via `make_function_call`, and asserts:
+///   1. The result is `Value::Field { source: <expected from op>, .. }`.
+///   2. The result's `codomain_type` equals `expected_codomain`.
+///
+/// The lambda body is never sampled because `compute_laplacian` / `compute_divergence`
+/// derive the result codomain purely from type metadata.
+///
+/// `op` must be `"laplacian"` or `"divergence"`; other values cause a panic with `label`.
+/// `domain_type` must have arity 1–3; `Type::Point { n, .. }` yields `n` params,
+/// all other types yield 1 param (named `"x"`).
+#[allow(dead_code)]
+fn run_dim_metadata_test(
+    op: &str,
+    domain_type: Type,
+    codomain_type: Type,
+    source: FieldSourceKind,
+    expected_codomain: Type,
+    label: &str,
+) {
+    // Derive arity from domain type.
+    let n: usize = match &domain_type {
+        Type::Point { n, .. } => *n,
+        _ => 1,
+    };
+    assert!(
+        (1..=3).contains(&n),
+        "{label}: arity {n} out of range 1..=3"
+    );
+
+    // Build n ValueCellIds from ["x", "y", "z"].
+    let names = ["x", "y", "z"];
+    let ids: Vec<ValueCellId> = names[..n]
+        .iter()
+        .map(|&name| ValueCellId::new("$lambda0.S", name))
+        .collect();
+
+    // Dummy body: value_ref to the first parameter (never evaluated).
+    let body = CompiledExpr::value_ref(ids[0].clone(), Type::Real);
+
+    // Build lambda.
+    let params: Vec<(&str, ValueCellId)> = names[..n].iter().copied().zip(ids).collect();
+    let lambda = make_value_lambda(params, body, ValueMap::new());
+
+    // Wrap in Value::Field.
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source,
+        lambda: Box::new(lambda),
+    };
+
+    // Wrap in Type::Field.
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Build the function call.
+    let expr = make_function_call(
+        op,
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type,
+    );
+
+    // Evaluate with empty bindings.
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    // Derive expected source kind from op.
+    let expected_source = match op {
+        "laplacian" => FieldSourceKind::Laplacian,
+        "divergence" => FieldSourceKind::Divergence,
+        other => panic!("{label}: unknown op {other:?}"),
+    };
+
+    // Destructure via let-else (review S2).
+    let Value::Field {
+        codomain_type: actual_codomain,
+        source: actual_source,
+        ..
+    } = &result
+    else {
+        panic!("{label}: {op} should return a Field, got {result:?}");
+    };
+
+    assert_eq!(
+        *actual_source, expected_source,
+        "{label}: expected source {:?}, got {:?}",
+        expected_source, actual_source
+    );
+    assert_eq!(
+        *actual_codomain, expected_codomain,
+        "{label}: expected codomain {:?}, got {:?}",
+        expected_codomain, actual_codomain
+    );
+}
+
 // ── Step 1: Gradient accuracy tests ──────────────────────────────────────────
 
 /// Gradient of f(x) = x*x at x=3.0 should be ≈6.0.
