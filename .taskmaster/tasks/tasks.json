@@ -30913,11 +30913,11 @@
         "description": "Four small post-review cleanups from Task 1402's review triage (esc-1402-234). Bundle them because they all live in the same two files.\n\n(1) crates/reify-runtime/tests/concurrent_eval.rs:1625-1640 — the `assert_poison_recovers` doc says \"This helper covers **9 of the 11**\" and then lists bullets that sum to 11 (5 helper-method sites + 6 into_result sites), not 9. A reader scanning the bullets can easily conclude the list IS the 9 covered sites, with the exclusions mentioned only as an afterthought. Rewrite as two explicitly labeled groups: \"Covered (9 sites): 3 helper-method read/exclusive sites (values/read, snapshot_values/read, results/exclusive) + 6 into_result/build_result_shared sites\" and \"Not covered (2 sites): write_values (access=write), write_snapshot_values (access=write) — see poison_evaluate tests\". Or use a small markdown table.\n\n(2) crates/reify-runtime/tests/concurrent_eval.rs:2666-2706 — the two new async tests `evaluate_emits_access_write_for_poisoned_values` and `evaluate_emits_access_write_for_poisoned_snapshot_values` call `let _ = evaluate_with_recovery(&adapter, node);` and discard the Result. If a future regression causes `evaluate()` to panic before the write-site warn fires, `catch_unwind` inside `evaluate_with_recovery` returns Err, that Err is silently discarded, and the only remaining failure signal is \"missing field\" — not \"panic\". Neighboring tests (`tracing_warn_emitted_on_poison_evaluate`, `evaluate_recovers_poisoned_results`) use `.expect(...)`. Replace both with `evaluate_with_recovery(&adapter, node).expect(\"evaluate() should recover from poisoned values lock\");` (and the snapshot_values analogue).\n\n(3) crates/reify-test-support/src/tracing_support.rs:1528-1529 — trailing blank line before the closing `}` of `warn_capturing_structured_fields_are_captured` (left over from removing an old `(iv)` catch_unwind block). Delete the blank line.\n\n(4) crates/reify-runtime/tests/concurrent_eval.rs:2147 — trailing blank line before the closing `}` of the `poison_recovery_extended` module (left over from removing the three `tracing_warn_emitted_on_poison_into_result*` tests). Delete the blank line.\n\nVerify with: `cargo test -p reify-runtime --features test-utils concurrent_eval::poison` and `cargo test -p reify-test-support --features test-utils tracing_support::tests::warn_capturing`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:25:51.325Z",
+        "updatedAt": "2026-04-10T11:55:50.412Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests",
@@ -30931,11 +30931,11 @@
         "description": "Four small post-review cleanups from Task 1402's review triage (esc-1402-234). Bundle them because they all live in the same two files.\n\n(1) crates/reify-runtime/tests/concurrent_eval.rs:1625-1640 — the `assert_poison_recovers` doc says \"This helper covers **9 of the 11**\" and then lists bullets that sum to 11 (5 helper-method sites + 6 into_result sites), not 9. A reader scanning the bullets can easily conclude the list IS the 9 covered sites, with the exclusions mentioned only as an afterthought. Rewrite as two explicitly labeled groups: \"Covered (9 sites): 3 helper-method read/exclusive sites (values/read, snapshot_values/read, results/exclusive) + 6 into_result/build_result_shared sites\" and \"Not covered (2 sites): write_values (access=write), write_snapshot_values (access=write) — see poison_evaluate tests\". Or use a small markdown table.\n\n(2) crates/reify-runtime/tests/concurrent_eval.rs:2666-2706 — the two new async tests `evaluate_emits_access_write_for_poisoned_values` and `evaluate_emits_access_write_for_poisoned_snapshot_values` call `let _ = evaluate_with_recovery(&adapter, node);` and discard the Result. If a future regression causes `evaluate()` to panic before the write-site warn fires, `catch_unwind` inside `evaluate_with_recovery` returns Err, that Err is silently discarded, and the only remaining failure signal is \"missing field\" — not \"panic\". Neighboring tests (`tracing_warn_emitted_on_poison_evaluate`, `evaluate_recovers_poisoned_results`) use `.expect(...)`. Replace both with `evaluate_with_recovery(&adapter, node).expect(\"evaluate() should recover from poisoned values lock\");` (and the snapshot_values analogue).\n\n(3) crates/reify-test-support/src/tracing_support.rs:1528-1529 — trailing blank line before the closing `}` of `warn_capturing_structured_fields_are_captured` (left over from removing an old `(iv)` catch_unwind block). Delete the blank line.\n\n(4) crates/reify-runtime/tests/concurrent_eval.rs:2147 — trailing blank line before the closing `}` of the `poison_recovery_extended` module (left over from removing the three `tracing_warn_emitted_on_poison_into_result*` tests). Delete the blank line.\n\nVerify with: `cargo test -p reify-runtime --features test-utils concurrent_eval::poison` and `cargo test -p reify-test-support --features test-utils tracing_support::tests::warn_capturing`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:19:21.400Z",
+        "updatedAt": "2026-04-10T11:55:50.457Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests",
@@ -30949,11 +30949,11 @@
         "description": "Four small post-review cleanups from Task 1402's review triage (esc-1402-234). Bundle them because they all live in the same two files.\n\n(1) crates/reify-runtime/tests/concurrent_eval.rs:1625-1640 — the `assert_poison_recovers` doc says \"This helper covers **9 of the 11**\" and then lists bullets that sum to 11 (5 helper-method sites + 6 into_result sites), not 9. A reader scanning the bullets can easily conclude the list IS the 9 covered sites, with the exclusions mentioned only as an afterthought. Rewrite as two explicitly labeled groups: \"Covered (9 sites): 3 helper-method read/exclusive sites (values/read, snapshot_values/read, results/exclusive) + 6 into_result/build_result_shared sites\" and \"Not covered (2 sites): write_values (access=write), write_snapshot_values (access=write) — see poison_evaluate tests\". Or use a small markdown table.\n\n(2) crates/reify-runtime/tests/concurrent_eval.rs:2666-2706 — the two new async tests `evaluate_emits_access_write_for_poisoned_values` and `evaluate_emits_access_write_for_poisoned_snapshot_values` call `let _ = evaluate_with_recovery(&adapter, node);` and discard the Result. If a future regression causes `evaluate()` to panic before the write-site warn fires, `catch_unwind` inside `evaluate_with_recovery` returns Err, that Err is silently discarded, and the only remaining failure signal is \"missing field\" — not \"panic\". Neighboring tests (`tracing_warn_emitted_on_poison_evaluate`, `evaluate_recovers_poisoned_results`) use `.expect(...)`. Replace both with `evaluate_with_recovery(&adapter, node).expect(\"evaluate() should recover from poisoned values lock\");` (and the snapshot_values analogue).\n\n(3) crates/reify-test-support/src/tracing_support.rs:1528-1529 — trailing blank line before the closing `}` of `warn_capturing_structured_fields_are_captured` (left over from removing an old `(iv)` catch_unwind block). Delete the blank line.\n\n(4) crates/reify-runtime/tests/concurrent_eval.rs:2147 — trailing blank line before the closing `}` of the `poison_recovery_extended` module (left over from removing the three `tracing_warn_emitted_on_poison_into_result*` tests). Delete the blank line.\n\nVerify with: `cargo test -p reify-runtime --features test-utils concurrent_eval::poison` and `cargo test -p reify-test-support --features test-utils tracing_support::tests::warn_capturing`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:33:16.748Z",
+        "updatedAt": "2026-04-10T11:55:50.498Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests",
@@ -31001,11 +31001,11 @@
         "description": "Four small post-review cleanups from Task 1402 review triage (esc-1402-234), bundled because they all live in the same two files.\n\n(1) crates/reify-runtime/tests/concurrent_eval.rs:1625-1640 — assert_poison_recovers doc says \"covers 9 of the 11\" then lists bullets that sum to 11 (5+6), not 9. Rewrite as explicit \"Covered (9): 3 helper-method read/exclusive sites + 6 into_result/build_result_shared sites\" and \"Not covered (2): write_values, write_snapshot_values — see poison_evaluate tests\".\n\n(2) crates/reify-runtime/tests/concurrent_eval.rs:2666-2706 — evaluate_emits_access_write_for_poisoned_values and evaluate_emits_access_write_for_poisoned_snapshot_values discard Result via `let _ = evaluate_with_recovery(&adapter, node);`. Replace with `.expect(\"evaluate() should recover from poisoned values lock\");` to match neighboring convention and surface panics clearly.\n\n(3) crates/reify-test-support/src/tracing_support.rs:1528 — delete trailing blank line before closing `}` of warn_capturing_structured_fields_are_captured.\n\n(4) crates/reify-runtime/tests/concurrent_eval.rs:2147 — delete trailing blank line before closing `}` of poison_recovery_extended module.\n\nVerify: `cargo test -p reify-runtime --features test-utils concurrent_eval::poison` and `cargo test -p reify-test-support --features test-utils tracing_support::tests::warn_capturing`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T11:12:58.504Z",
+        "updatedAt": "2026-04-10T11:55:50.541Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests",
@@ -31054,11 +31054,11 @@
         "description": "Four small post-review cleanups from Task 1402 review triage (esc-1402-234), bundled because they all live in the same two files.\n\n(1) crates/reify-runtime/tests/concurrent_eval.rs:1625-1640 — assert_poison_recovers doc says covers 9 of the 11 then lists bullets that sum to 11 (5+6), not 9. Rewrite as explicit Covered (9): 3 helper-method read/exclusive sites + 6 into_result/build_result_shared sites and Not covered (2): write_values, write_snapshot_values — see poison_evaluate tests.\n\n(2) crates/reify-runtime/tests/concurrent_eval.rs:2666-2706 — evaluate_emits_access_write_for_poisoned_values and evaluate_emits_access_write_for_poisoned_snapshot_values discard Result via let _ = evaluate_with_recovery(adapter, node). Replace with .expect(evaluate should recover from poisoned values lock) to match neighboring convention and surface panics clearly.\n\n(3) crates/reify-test-support/src/tracing_support.rs:1528 — delete trailing blank line before closing brace of warn_capturing_structured_fields_are_captured.\n\n(4) crates/reify-runtime/tests/concurrent_eval.rs:2147 — delete trailing blank line before closing brace of poison_recovery_extended module.\n\nVerify: cargo test -p reify-runtime --features test-utils concurrent_eval::poison, and cargo test -p reify-test-support --features test-utils tracing_support::tests::warn_capturing.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:13:18.189Z",
+        "updatedAt": "2026-04-10T11:55:50.584Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests",
@@ -31072,11 +31072,11 @@
         "description": "Four post-review cleanups from Task 1402 review triage (esc-1402-234) bundled into one follow-up.\n\n(1) crates/reify-runtime/tests/concurrent_eval.rs:1625-1640 — assert_poison_recovers doc says 'covers 9 of 11' then lists bullets that sum to 11 (5 helper-method + 6 into_result). Rewrite as Covered (9): 3 helper-method read/exclusive sites + 6 into_result sites; Not covered (2): write_values, write_snapshot_values — see poison_evaluate tests.\n\n(2) crates/reify-runtime/tests/concurrent_eval.rs:2666-2706 — evaluate_emits_access_write_for_poisoned_values and its snapshot_values sibling discard Result via 'let _ = evaluate_with_recovery'. Replace with .expect('evaluate should recover from poisoned values lock') to match neighbor convention.\n\n(3) crates/reify-test-support/src/tracing_support.rs:1528 — delete trailing blank line before closing brace of warn_capturing_structured_fields_are_captured.\n\n(4) crates/reify-runtime/tests/concurrent_eval.rs:2147 — delete trailing blank line before closing brace of poison_recovery_extended module.\n\nVerify: cargo test -p reify-runtime --features test-utils concurrent_eval::poison and cargo test -p reify-test-support --features test-utils tracing_support::tests::warn_capturing.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:12:48.870Z",
+        "updatedAt": "2026-04-10T11:55:50.624Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests"
@@ -31106,11 +31106,11 @@
         "description": "Two fixes from review of task 1402: (1) concurrent_eval.rs:1609-1616: split coverage scope doc into \"Covered (9 sites)\" and \"Not covered (2 sites: write_values, write_snapshot_values)\" for clarity. (2) concurrent_eval.rs:2833-2872: replace `let _ = evaluate_with_recovery(...)` with `.expect(\"evaluate() should recover...\")` in both write-site tests, matching surrounding convention and giving clearer panic signals.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:10:57.854Z",
+        "updatedAt": "2026-04-10T11:55:50.667Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests"
@@ -31174,11 +31174,11 @@
         "description": "Four post-review cleanups from Task 1402 review triage (esc-1402-234) bundled into one follow-up.\n\n(1) crates/reify-runtime/tests/concurrent_eval.rs:1625-1640 — assert_poison_recovers doc says 'covers 9 of 11' then lists bullets that sum to 11 (5 helper-method + 6 into_result). Rewrite as Covered (9): 3 helper-method read/exclusive sites + 6 into_result sites; Not covered (2): write_values, write_snapshot_values — see poison_evaluate tests.\n\n(2) crates/reify-runtime/tests/concurrent_eval.rs:2666-2706 — evaluate_emits_access_write_for_poisoned_values and its snapshot_values sibling discard Result via 'let _ = evaluate_with_recovery'. Replace with .expect('evaluate should recover from poisoned values lock') to match neighbor convention.\n\n(3) crates/reify-test-support/src/tracing_support.rs:1528 — delete trailing blank line before closing brace of warn_capturing_structured_fields_are_captured.\n\n(4) crates/reify-runtime/tests/concurrent_eval.rs:2147 — delete trailing blank line before closing brace of poison_recovery_extended module.\n\nVerify: cargo test -p reify-runtime --features test-utils concurrent_eval::poison and cargo test -p reify-test-support --features test-utils tracing_support::tests::warn_capturing.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:13:27.891Z",
+        "updatedAt": "2026-04-10T11:55:50.709Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests"
@@ -31191,11 +31191,11 @@
         "description": "Four post-review cleanups from Task 1402 (esc-1402-234). (1) Rewrite assert_poison_recovers Coverage scope section to distinguish covered 9 vs not-covered 2 sites. (2) Replace let _ = evaluate_with_recovery with .expect() in two write-path tests. (3-4) Remove trailing blank lines in tracing_support.rs:1528 and concurrent_eval.rs:2147.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:14:11.227Z",
+        "updatedAt": "2026-04-10T11:55:50.749Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests",
@@ -32597,7 +32597,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T11:55:49.529Z",
+      "lastModified": "2026-04-10T11:55:50.749Z",
       "taskCount": 1605,
       "completedCount": 1222,
       "tags": [
