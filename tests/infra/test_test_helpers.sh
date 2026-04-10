@@ -569,11 +569,8 @@ check "mk_fixture is subshell-safe (no array append lost in command substitution
 echo ""
 echo "--- Pipeline divergence documented in test_helpers.sh ---"
 
-if grep -q 'tests/infra/test_tree_sitter_pipeline.sh' "$HELPER_FILE" 2>/dev/null; then
-    check "test_helpers.sh documents pipeline divergence" "true"
-else
-    check "test_helpers.sh documents pipeline divergence" "false"
-fi
+if grep -q 'tests/infra/test_tree_sitter_pipeline.sh' "$HELPER_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "test_helpers.sh documents pipeline divergence" "$ok"
 
 # -- Summary -------------------------------------------------------------------
 echo ""
