@@ -29754,15 +29754,16 @@
         "description": "Add a symmetric negative test asserting DIAGNOSTIC: is absent when no lockfiles are gitignored, and harden Test 24's output capture to be independent of pipefail/assert behavior.\n\nMemory hints: search \"DIAGNOSTIC check-pm-standardization test_npm_ci_hardening\" for prior context.",
         "details": "Two improvements from review of task 1360:\n\n1. **Negative DIAGNOSTIC test (new Test 22a-bis or extension to Test 22a):** Test 22a runs the script in a fixture where no lockfiles are gitignored and asserts exit 0, but does NOT explicitly verify `DIAGNOSTIC:` is absent in stdout. Test 24 verifies DIAGNOSTIC: IS emitted when a lockfile is gitignored. Without the negative test, a regression that always emits DIAGNOSTIC: (e.g. removing the `if` guard in Check 3) would still pass both tests — a false green. Fix: capture Test 22a stdout and assert `! grep -q DIAGNOSTIC:`.\n\n2. **Harden Test 24 output capture:** Test 24 currently runs `bash script 2>&1 | grep -q 'DIAGNOSTIC:'`. This depends on (a) assert() not short-circuiting the script, and (b) no pipefail in the outer bash -c. Make explicit: `out=$(bash script 2>&1 || true); echo \"$out\" | grep -q 'DIAGNOSTIC:'`. Add a short comment documenting the dependency.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:23:53.785Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:23:48.479Z",
+      "lastModified": "2026-04-10T01:23:53.785Z",
       "taskCount": 1440,
       "completedCount": 1104,
       "tags": [
