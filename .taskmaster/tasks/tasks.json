@@ -31894,6 +31894,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1570,
+        "title": "entity.rs: deduplicate sub_member_types HashMap + ICE fallback return literal Undef",
+        "description": "Two follow-up improvements: (1) entity.rs:417-447: collapse duplicate HashMap building for sub_member_types and collection_sub_member_types into single build. (2) expr.rs:1518-1530: ICE fallback should return CompiledExpr::literal(Value::Undef, Type::Real) instead of value_ref with fabricated type, matching other error paths in the same match arm.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -31906,7 +31917,7 @@
       ],
       "created": "2026-04-10T06:44:45.217Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T06:46:31.843Z"
+      "updated": "2026-04-10T06:46:36.524Z"
     }
   }
 }
