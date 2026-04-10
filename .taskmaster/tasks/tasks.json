@@ -6537,12 +6537,15 @@
           "311",
           "237"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
-            "crates/reify-eval",
-            "crates/reify-compiler"
+            "crates/reify-compiler/src",
+            "crates/reify-eval/src",
+            "crates/reify-kernel-occt/cpp",
+            "crates/reify-kernel-occt/src",
+            "crates/reify-types/src"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -6552,7 +6555,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-10T02:08:13.187Z"
+        "updatedAt": "2026-04-10T02:14:03.790Z"
       },
       {
         "id": "324",
@@ -29923,7 +29926,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:13:52.624Z",
+      "lastModified": "2026-04-10T02:14:03.791Z",
       "taskCount": 1447,
       "completedCount": 1121,
       "tags": [
