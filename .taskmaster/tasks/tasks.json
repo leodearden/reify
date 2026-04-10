@@ -29989,7 +29989,13 @@
         "metadata": {
           "modules": [
             "crates/reify-expr/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add integration tests for refactored type-level calculus operators"
+            ]
+          }
         }
       },
       {
@@ -31897,7 +31903,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:05:06.340Z"
+        "updatedAt": "2026-04-10T07:05:06.340Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: bridge.rs: fix doc arm count, stale test comment, add hang_guard to new tests"
+            ]
+          }
+        }
       },
       {
         "id": "1567",
@@ -31993,7 +32007,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:05:07.141Z"
+        "updatedAt": "2026-04-10T07:05:07.141Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add _has_expr_body_empty_guard_short_circuit to self-check in test_test_helpers.sh"
+            ]
+          }
+        }
       },
       {
         "id": "1575",
@@ -32048,11 +32070,11 @@
         "description": "Three _test_* functions in test_sync_comments_grep.sh share identical setup boilerplate. Extract a shared helper function to reduce duplication. Source: review of task 1345 (S1).",
         "details": "Files: test_sync_comments_grep.sh\\n\\nmemory_hints:\\n- search: \"sync_comments_grep test setup\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:21.873Z"
+        "updatedAt": "2026-04-10T07:05:11.737Z"
       },
       {
         "id": "1580",
@@ -32100,7 +32122,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:05:07.038Z"
+        "updatedAt": "2026-04-10T07:05:07.038Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract shared test helpers and fix assertion precision in m9_integration.rs"
+            ]
+          }
+        }
       },
       {
         "id": "1584",
@@ -32117,7 +32147,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:05:07.141Z",
+      "lastModified": "2026-04-10T07:05:11.738Z",
       "taskCount": 1584,
       "completedCount": 1182,
       "tags": [
