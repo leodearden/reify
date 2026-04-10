@@ -108,7 +108,7 @@ pub struct NodeCache {
     pub result_hash: ContentHash,
     /// Freshness of the cached value.
     pub freshness: Freshness,
-    /// Which value cells were read during evaluation of this node.
+    /// Statically extracted value cell dependencies for this node.
     pub dependency_trace: DependencyTrace,
     /// The version at which this cache entry was last validated.
     pub basis_version: VersionId,
