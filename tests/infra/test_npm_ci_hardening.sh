@@ -11,6 +11,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+_TMPDIRS=()
+cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
+
 echo "=== npm ci hardening tests ==="
 
 # -- Test 1: check-pm-standardization.sh location ----------------------------
@@ -195,5 +199,22 @@ assert "LOCK_FILES is defined before the first 'Check 1:' echo" \
         check1_line=\$(grep -n 'echo \"Check 1:' '$SCRIPT' | head -1 | cut -d: -f1)
         [ -n \"\$lock_line\" ] && [ -n \"\$check1_line\" ] && [ \"\$lock_line\" -lt \"\$check1_line\" ]
     "
+
+# -- Test 19: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ----------
+echo ""
+echo "--- Test 19: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ---"
+
+FIXTURE19="$(mktemp -d)"
+_TMPDIRS+=("$FIXTURE19")
+mkdir -p "$FIXTURE19/scripts" "$FIXTURE19/tests/infra"
+cp "$SCRIPT" "$FIXTURE19/scripts/check-pm-standardization.sh"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE19/tests/infra/test_helpers.sh"
+git -C "$FIXTURE19" init -q
+git -C "$FIXTURE19" config user.email "test@test.com"
+git -C "$FIXTURE19" config user.name "Test"
+printf 'gui/package-lock.json\n' > "$FIXTURE19/.gitignore"
+
+assert "Check 3 emits DIAGNOSTIC: when gui/package-lock.json is gitignored" \
+    bash -c "bash '$FIXTURE19/scripts/check-pm-standardization.sh' 2>&1 | grep -q 'DIAGNOSTIC:'"
 
 test_summary
