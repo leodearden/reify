@@ -29562,7 +29562,7 @@
         "description": "Add a dedicated sanitize_orientation_z_nan_returns_undef test in both crates/reify-stdlib/src/complex.rs and crates/reify-expr/src/sanitize.rs that sets only z: f64::NAN and asserts the result is Undef. This completes the per-component characterization matrix (w/x/y/z x NaN/Inf/-Inf) — currently z:NaN is only covered indirectly by the all-components-nonfinite test.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -29575,7 +29575,8 @@
             "crates/reify-stdlib/src",
             "crates/reify-expr/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-10T16:26:16.878Z"
       },
       {
         "id": "1426",
@@ -32673,7 +32674,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:26:10.710Z",
+      "lastModified": "2026-04-10T16:26:16.883Z",
       "taskCount": 1605,
       "completedCount": 1229,
       "tags": [
