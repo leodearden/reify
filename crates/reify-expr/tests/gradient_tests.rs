@@ -140,6 +140,51 @@ fn test_assert_gradient_vector_panics_on_non_vector() {
     assert_gradient_vector(&Value::Undef, &[1.0, 2.0, 3.0], 1e-4, "non-vector");
 }
 
+/// Characterization test: `assert_gradient_vector` accepts a within-tolerance Value::Vector.
+///
+/// Calls the helper with Value::Vector([Real(1.00005), Real(2.0), Real(3.0)]) and
+/// expected &[1.0, 2.0, 3.0] with tol=1e-4.  The first component differs by 5e-5,
+/// which is strictly less than 1e-4, exercising the `(val - exp).abs() < tol` branch
+/// that the exact-match happy-path test left trivially true.
+#[test]
+fn test_assert_gradient_vector_accepts_within_tolerance() {
+    let result = Value::Vector(vec![
+        Value::Real(1.00005),
+        Value::Real(2.0),
+        Value::Real(3.0),
+    ]);
+    assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "within tolerance");
+}
+
+/// Characterization test: `assert_gradient_vector` panics when vector length mismatches.
+///
+/// Constructs a 2-element Value::Vector but passes a 3-element expected slice.
+/// This exercises the `assert_eq!(components.len(), expected.len(), ...)` branch
+/// (helper lines 94-100).  The panic message contains "components, expected" verbatim.
+#[test]
+#[should_panic(expected = "components, expected")]
+fn test_assert_gradient_vector_panics_on_length_mismatch() {
+    let result = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
+    assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "length mismatch");
+}
+
+/// Characterization test: `assert_gradient_vector` panics when a component is non-numeric.
+///
+/// Constructs a Value::Vector whose first element is Value::Undef.  `Value::Undef.as_f64()`
+/// returns None (verified in crates/reify-types/src/value.rs:264-271), which triggers the
+/// `unwrap_or_else` panic at helper lines 102-104.  The panic message contains
+/// "should be numeric" verbatim.
+#[test]
+#[should_panic(expected = "should be numeric")]
+fn test_assert_gradient_vector_panics_on_non_numeric_component() {
+    let result = Value::Vector(vec![
+        Value::Undef,
+        Value::Real(2.0),
+        Value::Real(3.0),
+    ]);
+    assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "non-numeric component");
+}
+
 /// Sampling a field with a wrong-size Tensor point returns Undef.
 ///
 /// Build a 3D analytical field whose lambda expects 3 decomposed coordinate
