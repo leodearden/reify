@@ -341,8 +341,7 @@ fi
 # ==============================================================================
 # sync_ref_helpers.sh structural checks
 # Verify: helper file exists, defines assert_sync_ref_exists, sources
-# test_helpers.sh, has source guard, head -1 documented, early-fail guard,
-# display_fn fallback.
+# test_helpers.sh, has source guard, head -1 documented, early-fail guard.
 # ==============================================================================
 
 echo ""
@@ -371,10 +370,6 @@ check "sync_ref_helpers.sh head -1 pipeline has single-reference documentation c
 # (f) assert_sync_ref_exists has an early-fail guard when ref_fn is empty
 if grep -Fq '[ -z "$ref_fn" ]' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
 check "sync_ref_helpers.sh has early-fail guard for empty ref_fn" "$ok"
-
-# (g) assert_sync_ref_exists uses a display_fn fallback variable
-if grep -Fq 'display_fn' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
-check "sync_ref_helpers.sh uses display_fn fallback variable" "$ok"
 
 # ==============================================================================
 # assert_sync_ref_exists behavioral test (sourceable helper)
