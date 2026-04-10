@@ -362,14 +362,15 @@ check "sync_ref_helpers.sh uses display_fn fallback variable" "$ok"
 # ==============================================================================
 # assert_sync_ref_exists behavioral test (sourceable helper)
 # Sources sync_ref_helpers.sh directly — no sed text extraction.
-# S5 hardening applied from inception: rc -eq 0 AND anchored ^  FAIL: grep.
+# S3+S5 hardening: bash -eu catches unset-var/missing-cmd regressions via rc;
+# anchored PASS/FAIL greps verify assertion output.
 # ==============================================================================
 
 echo ""
 echo "--- assert_sync_ref_exists behavioral test (sourceable helper) ---"
 
 _src_beh_rc=0
-_src_beh_out=$(bash -c "
+_src_beh_out=$(bash -eu -c "
     tmp_src=\$(mktemp)
     tmp_tgt=\$(mktemp)
     trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
@@ -390,6 +391,62 @@ if echo "$_src_beh_out" | grep -q '^  FAIL:'; then
     check "guard fires: assert records anchored FAIL when ref_fn extraction yields nothing" "true"
 else
     check "guard fires: assert records anchored FAIL when ref_fn extraction yields nothing (got: $_src_beh_out)" "false"
+fi
+
+# happy-path: SYNC comment references a fn that exists in target file → PASS
+_src_beh_happy_rc=0
+_src_beh_happy_out=$(bash -eu -c "
+    tmp_src=\$(mktemp)
+    tmp_tgt=\$(mktemp)
+    trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
+    echo '// SYNC: mirror of reify-bogus::some_fn' > \"\$tmp_src\"
+    echo 'pub fn some_fn() {}' > \"\$tmp_tgt\"
+    source '${SYNC_REF_HELPERS_FILE}'
+    PASS=0; FAIL=0
+    assert_sync_ref_exists src-crate reify-bogus \"\$tmp_src\" \"\$tmp_tgt\"
+" 2>&1) || _src_beh_happy_rc=$?
+
+if [ "$_src_beh_happy_rc" -eq 0 ]; then
+    check "happy-path subshell exits cleanly (rc=0)" "true"
+else
+    check "happy-path subshell exits cleanly (rc=0, got rc=$_src_beh_happy_rc)" "false"
+fi
+
+if echo "$_src_beh_happy_out" | grep -q '^  PASS:'; then
+    check "happy-path: assert records anchored PASS when referenced fn exists in target" "true"
+else
+    check "happy-path: assert records anchored PASS when referenced fn exists in target (got: $_src_beh_happy_out)" "false"
+fi
+
+# mismatch-path: SYNC comment references a fn that does NOT exist in target → FAIL
+_src_beh_mismatch_rc=0
+_src_beh_mismatch_out=$(bash -eu -c "
+    tmp_src=\$(mktemp)
+    tmp_tgt=\$(mktemp)
+    trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
+    echo '// SYNC: mirror of reify-bogus::expected_fn' > \"\$tmp_src\"
+    echo 'pub fn different_fn() {}' > \"\$tmp_tgt\"
+    source '${SYNC_REF_HELPERS_FILE}'
+    PASS=0; FAIL=0
+    assert_sync_ref_exists src-crate reify-bogus \"\$tmp_src\" \"\$tmp_tgt\"
+" 2>&1) || _src_beh_mismatch_rc=$?
+
+if [ "$_src_beh_mismatch_rc" -eq 0 ]; then
+    check "mismatch-path subshell exits cleanly (rc=0)" "true"
+else
+    check "mismatch-path subshell exits cleanly (rc=0, got rc=$_src_beh_mismatch_rc)" "false"
+fi
+
+if echo "$_src_beh_mismatch_out" | grep -q '^  FAIL:'; then
+    check "mismatch-path: assert records anchored FAIL when referenced fn absent from target" "true"
+else
+    check "mismatch-path: assert records anchored FAIL when referenced fn absent from target (got: $_src_beh_mismatch_out)" "false"
+fi
+
+if echo "$_src_beh_mismatch_out" | grep '^  FAIL:' | grep -q 'expected_fn'; then
+    check "mismatch-path FAIL message names the missing fn (fn-existence path, not guard path)" "true"
+else
+    check "mismatch-path FAIL message names the missing fn (fn-existence path, not guard path) (got: $_src_beh_mismatch_out)" "false"
 fi
 
 
@@ -567,6 +624,18 @@ else
     ok=false
 fi
 check "mk_fixture is subshell-safe (no array append lost in command substitution)" "$ok"
+
+# Self-check: all behavioral assert_sync_ref_exists subshells use bash with -eu flag.
+# Count subshell-initiating lines (_src_beh_*_out assignments using bash with strict mode).
+# Must equal 3 (guard, happy-path, mismatch-path).
+_eu_flag="-eu"
+_beh_eu_count=$(grep -cE "_src_beh.*_out=\\\$\(bash ${_eu_flag} -c" "${BASH_SOURCE[0]}" || true)
+if [ "$_beh_eu_count" -eq 3 ]; then
+    ok=true
+else
+    ok=false
+fi
+check "all 3 behavioral subshells use bash -eu -c (S3 hardening, got $_beh_eu_count)" "$ok"
 
 # Self-check: _ws_label uses a comprehensive case statement with readable labels.
 # Grep for the literal case-arm assignment; this string is absent until step-2 adds it.
