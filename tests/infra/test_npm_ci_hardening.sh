@@ -199,17 +199,17 @@ assert "Check 2 subshell enables set -euo pipefail" \
 echo ""
 echo "--- Test 19: Check 2 has pre-dedup and post-dedup count assertions ---"
 
-# Without the pre-dedup total==3 assertion, a package.json missing the
-# packageManager field would be silently accepted: grep emits 2 matching lines,
-# but `sort -u` still collapses them to 1 unique line.
+# Without the pre-dedup total==PKG_COUNT assertion, a package.json missing the
+# packageManager field would be silently accepted: grep emits fewer matching
+# lines, but `sort -u` still collapses them to 1 unique line.
 assert "Check 2 block computes a pre-dedup 'total' variable" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'total='"
 
 assert "Check 2 block computes a post-dedup 'unique' variable" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'unique='"
 
-assert "Check 2 asserts total equals 3 (catches missing packageManager field)" \
-    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q \"total.* = '3'\""
+assert "Check 2 total assertion references \$PKG_COUNT not a literal number (task 1366)" \
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -qF '\$PKG_COUNT'"
 
 assert "Check 2 asserts unique equals 1 (catches version disagreement)" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q \"unique.* = '1'\""
