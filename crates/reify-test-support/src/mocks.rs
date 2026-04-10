@@ -3,10 +3,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex};
 
 use reify_types::{
-    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId, ConstraintResult,
-    ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError, GeometryHandle,
-    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind,
-    ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueCellId, ValueMap,
+    AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId,
+    ConstraintResult, ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError,
+    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError,
+    ReprKind, ResolutionProblem, Satisfaction, SolveResult, TessError, Type, Value, ValueCellId,
+    ValueMap,
 };
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
@@ -17,6 +18,20 @@ pub fn empty_problem() -> ResolutionProblem {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+    }
+}
+
+/// Standard single-param convenience for constraint-solving tests.
+///
+/// Returns an `AutoParam` with `param_type = Type::length()`, `bounds = None`,
+/// `free = false`, and `id = cell_id`.  Callers that need a `Vec` can wrap with
+/// `vec![single_auto_param(cell_id)]`.
+pub fn single_auto_param(cell_id: ValueCellId) -> AutoParam {
+    AutoParam {
+        id: cell_id,
+        param_type: Type::length(),
+        bounds: None,
+        free: false,
     }
 }
 
