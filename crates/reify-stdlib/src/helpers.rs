@@ -124,6 +124,37 @@ pub(crate) fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value
     sanitize_value(Value::from_component(mag, dimension))
 }
 
+/// Extract numeric components and consistent dimension from a Tensor value.
+///
+/// Returns `Some((values, dimension))` if:
+/// - `v` is a `Value::Tensor`, `Value::Point`, or `Value::Vector` with at least one element.
+/// - All components support `as_f64()`.
+/// - All components share the same dimension (or all are dimensionless).
+///
+/// Returns `None` for non-Tensor/Point/Vector values, empty containers, non-numeric
+/// components, or containers with mixed dimensions.
+pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
+    let items = match v {
+        Value::Tensor(items) | Value::Point(items) | Value::Vector(items) if !items.is_empty() => {
+            items
+        }
+        _ => return None,
+    };
+    let first_dim = items[0].dimension();
+    let mut vals = Vec::with_capacity(items.len());
+    for item in items {
+        if item.dimension() != first_dim {
+            return None; // mixed dimensions
+        }
+        match item.as_f64() {
+            Some(x) => vals.push(x),
+            None => return None, // non-numeric component
+        }
+    }
+    Some((vals, first_dim))
+}
+
+// SYNC: mirror of reify-expr::sanitize.rs tests — keep in sync
 #[cfg(test)]
 mod tests {
     use reify_types::DimensionVector;
@@ -222,34 +253,219 @@ mod tests {
             other => panic!("expected Scalar{{0.001, LENGTH}}, got {:?}", other),
         }
     }
-}
 
-/// Extract numeric components and consistent dimension from a Tensor value.
-///
-/// Returns `Some((values, dimension))` if:
-/// - `v` is a `Value::Tensor`, `Value::Point`, or `Value::Vector` with at least one element.
-/// - All components support `as_f64()`.
-/// - All components share the same dimension (or all are dimensionless).
-///
-/// Returns `None` for non-Tensor/Point/Vector values, empty containers, non-numeric
-/// components, or containers with mixed dimensions.
-pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
-    let items = match v {
-        Value::Tensor(items) | Value::Point(items) | Value::Vector(items) if !items.is_empty() => {
-            items
-        }
-        _ => return None,
-    };
-    let first_dim = items[0].dimension();
-    let mut vals = Vec::with_capacity(items.len());
-    for item in items {
-        if item.dimension() != first_dim {
-            return None; // mixed dimensions
-        }
-        match item.as_f64() {
-            Some(x) => vals.push(x),
-            None => return None, // non-numeric component
+    // ── sanitize_value Complex arm characterization tests ─────────────────────
+
+    #[test]
+    fn sanitize_complex_nan_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with NaN re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_nan_im_returns_undef() {
+        let v = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with NaN im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_inf_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::INFINITY,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with +Inf re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_neg_inf_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::NEG_INFINITY,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with -Inf re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_inf_im_returns_undef() {
+        let v = Value::Complex {
+            re: 0.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with +Inf im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_neg_inf_im_returns_undef() {
+        let v = Value::Complex {
+            re: 0.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with -Inf im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_finite_passthrough() {
+        let v = Value::Complex {
+            re: 3.0,
+            im: -4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        match sanitize_value(v) {
+            Value::Complex { re, im, .. } => {
+                assert!((re - 3.0).abs() < f64::EPSILON);
+                assert!((im - (-4.0)).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Complex{{re:3.0, im:-4.0}}, got {:?}", other),
         }
     }
-    Some((vals, first_dim))
+
+    // ── sanitize_value Orientation arm characterization tests ─────────────────
+
+    #[test]
+    fn sanitize_orientation_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN w should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::INFINITY,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with +Inf x should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_neg_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: f64::NEG_INFINITY,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with -Inf z should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_nan_y_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: f64::NAN,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN y should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_x_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::NAN,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN x should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_w_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::INFINITY,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with +Inf w should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_all_components_nonfinite_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NAN,
+            x: f64::INFINITY,
+            y: f64::NEG_INFINITY,
+            z: f64::NAN,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with all non-finite components should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_valid_passthrough() {
+        let v = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        match sanitize_value(v) {
+            Value::Orientation { w, x, y, z } => {
+                assert!((w - 1.0).abs() < f64::EPSILON);
+                assert!((x - 0.0).abs() < f64::EPSILON);
+                assert!((y - 0.0).abs() < f64::EPSILON);
+                assert!((z - 0.0).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Orientation{{1,0,0,0}}, got {:?}", other),
+        }
+    }
 }
