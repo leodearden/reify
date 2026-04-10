@@ -1911,4 +1911,89 @@ mod tests {
     fn detect_single_point_param_non_lambda_returns_false() {
         assert!(!detect_single_point_param(&Value::Real(1.0), 3));
     }
+
+    // --- extract_coords unit tests (wide: Real, Int, Scalar, Point, Vector) ---
+
+    #[test]
+    fn extract_coords_real_finite_returns_singleton() {
+        assert_eq!(extract_coords(&Value::Real(1.5)), Some(vec![1.5]));
+    }
+
+    #[test]
+    fn extract_coords_real_nan_returns_none() {
+        assert_eq!(extract_coords(&Value::Real(f64::NAN)), None);
+    }
+
+    #[test]
+    fn extract_coords_int_returns_singleton() {
+        assert_eq!(extract_coords(&Value::Int(3)), Some(vec![3.0]));
+    }
+
+    #[test]
+    fn extract_coords_scalar_finite_returns_si_value() {
+        assert_eq!(
+            extract_coords(&Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            }),
+            Some(vec![2.0])
+        );
+    }
+
+    #[test]
+    fn extract_coords_scalar_inf_returns_none() {
+        assert_eq!(
+            extract_coords(&Value::Scalar {
+                si_value: f64::INFINITY,
+                dimension: DimensionVector::LENGTH,
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_coords_point_returns_f64_vec() {
+        let point = Value::Point(vec![
+            Value::Real(1.0),
+            Value::Real(2.0),
+            Value::Real(3.0),
+        ]);
+        assert_eq!(extract_coords(&point), Some(vec![1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn extract_coords_vector_with_nan_element_returns_none() {
+        let vec_val = Value::Vector(vec![Value::Real(1.0), Value::Real(f64::NAN)]);
+        assert_eq!(extract_coords(&vec_val), None);
+    }
+
+    #[test]
+    fn extract_coords_bool_returns_none() {
+        assert_eq!(extract_coords(&Value::Bool(true)), None);
+    }
+
+    // --- extract_point_coords unit tests (point/vector only) ---
+
+    #[test]
+    fn extract_point_coords_point_returns_f64_vec() {
+        let point = Value::Point(vec![Value::Real(4.0), Value::Real(5.0)]);
+        assert_eq!(extract_point_coords(&point), Some(vec![4.0, 5.0]));
+    }
+
+    #[test]
+    fn extract_point_coords_vector_returns_f64_vec() {
+        let vec_val = Value::Vector(vec![Value::Real(7.0), Value::Real(8.0), Value::Real(9.0)]);
+        assert_eq!(extract_point_coords(&vec_val), Some(vec![7.0, 8.0, 9.0]));
+    }
+
+    /// Real → None (key difference from extract_coords which returns Some([r])).
+    #[test]
+    fn extract_point_coords_real_returns_none() {
+        assert_eq!(extract_point_coords(&Value::Real(1.0)), None);
+    }
+
+    #[test]
+    fn extract_point_coords_empty_point_returns_none() {
+        assert_eq!(extract_point_coords(&Value::Point(vec![])), None);
+    }
 }
