@@ -32350,6 +32350,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1595,
+        "title": "Migrate reify-compiler tests to shared parse_and_compile helper",
+        "description": "Two local copies of `fn parse_and_compile` remain after task 1332's consolidation:\n- crates/reify-compiler/tests/unit_registry_tests.rs:14 — uses `ModulePath::single(\"unit_test\")`\n- crates/reify-compiler/tests/type_alias_compile_tests.rs:12 — uses `ModulePath::single(\"alias_test\")`\n\nreify-compiler already has `reify-test-support` as a dev-dependency (Cargo.toml:13), so the migration is just a use-site swap.\n\n**Important behavior difference:** The shared `reify_test_support::parse_and_compile` asserts zero error-severity diagnostics, but the local copies in these two files return the raw `CompiledModule` without filtering. The existing callers use a separate `errors_only(module)` helper to inspect diagnostics, and some tests intentionally compile source that produces errors (e.g., cycle detection, unknown aliases). Those tests must NOT use the asserting shared helper.\n\nRecommended approach:\n1. Find all call sites in each file.\n2. For tests that expect success, migrate to `reify_test_support::parse_and_compile`.\n3. For tests that expect errors, use `reify_test_support::parse_compile_expect_err(source, needle)` or keep a local `parse_no_assert` helper that just calls `reify_syntax::parse` + `compile` without the assert.\n4. Remove the local `parse_and_compile` fn once all call sites are migrated.\n5. Verify no test depends on the `\"unit_test\"` or `\"alias_test\"` module-path strings (grep those literals).\n\n**Priority:** low. Code-reuse / drift-prevention.\n\n**Source:** review of task 1332 (esc-1332-348, reviewer_comprehensive suggestion 4, code_reuse).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -32362,7 +32373,7 @@
       ],
       "created": "2026-04-10T07:44:24.240Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T08:12:24.895Z"
+      "updated": "2026-04-10T08:12:36.511Z"
     }
   }
 }
