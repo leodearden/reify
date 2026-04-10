@@ -32003,6 +32003,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1579,
+        "title": "Extract shared setup helper in test_sync_comments_grep.sh",
+        "description": "Three _test_* functions in test_sync_comments_grep.sh share identical setup boilerplate. Extract a shared helper function to reduce duplication. Source: review of task 1345 (S1).",
+        "details": "Files: test_sync_comments_grep.sh\\n\\nmemory_hints:\\n- search: \"sync_comments_grep test setup\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -32015,7 +32026,7 @@
       ],
       "created": "2026-04-10T06:51:02.836Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T07:02:32.368Z"
+      "updated": "2026-04-10T07:02:32.809Z"
     }
   }
 }
