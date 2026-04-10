@@ -31908,10 +31908,11 @@
         "description": "Two follow-up improvements: (1) entity.rs:417-447: collapse duplicate HashMap building for sub_member_types and collection_sub_member_types into single build. (2) expr.rs:1518-1530: ICE fallback should return CompiledExpr::literal(Value::Undef, Type::Real) instead of value_ref with fabricated type, matching other error paths in the same match arm.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T06:49:58.733Z"
       },
       {
         "id": "1571",
@@ -31927,7 +31928,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T06:49:58.284Z",
+      "lastModified": "2026-04-10T06:49:58.733Z",
       "taskCount": 1571,
       "completedCount": 1180,
       "tags": [
