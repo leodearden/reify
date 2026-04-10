@@ -32309,10 +32309,11 @@
         "description": "In crates/reify-stdlib/src/orientation.rs line 218, elementary_rotation_quat's match on axis has a catch-all `_ => (1.0, 0.0, 0.0, 0.0)` that silently returns the identity quaternion for invalid axis values. The only caller (orient_euler) constructs axes through a match on 12 fixed convention strings, each yielding axis values in {0, 1, 2}, so the catch-all is unreachable in practice. Per silent-defaults convention, replace with unreachable!(\"elementary_rotation_quat called with axis > 2 — axes always come from orient_euler match\") to convert a latent silent-identity-default into a loud bug signal.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T08:13:58.626Z"
       },
       {
         "id": "1591",
@@ -32383,7 +32384,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T08:13:57.596Z",
+      "lastModified": "2026-04-10T08:13:58.626Z",
       "taskCount": 1596,
       "completedCount": 1206,
       "tags": [
