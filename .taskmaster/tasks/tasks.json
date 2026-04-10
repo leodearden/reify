@@ -32317,6 +32317,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1592,
+        "title": "test_test_helpers.sh: dynamic _has_* self-check instead of enumerated list",
+        "description": "In tests/infra/test_test_helpers.sh (lines 618-627), replace the enumerated AND-chained grep list for _has_* helpers with a dynamic invariant check: count `^_has_[a-z_]*()` definitions and assert every such helper is used at least once. Eliminates the maintenance cost of manually updating the self-check when adding new helpers.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -32329,7 +32340,7 @@
       ],
       "created": "2026-04-10T07:44:24.240Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T08:11:00.680Z"
+      "updated": "2026-04-10T08:11:02.580Z"
     }
   }
 }
