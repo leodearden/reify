@@ -32061,11 +32061,11 @@
         "description": "In tests/infra/test_portable_timeout.sh:707, replace `echo \"$func_text\" | grep -c` with `printf '%s\\n' \"$func_text\" | grep -c` for POSIX-safe pipe input, avoiding hypothetical echo flag interpretation if func_text contains lines starting with -e or -n.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:22:23.445Z",
+        "updatedAt": "2026-04-10T16:27:28.264Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -32674,7 +32674,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:27:01.040Z",
+      "lastModified": "2026-04-10T16:27:28.264Z",
       "taskCount": 1605,
       "completedCount": 1229,
       "tags": [
