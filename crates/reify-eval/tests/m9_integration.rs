@@ -59,3 +59,41 @@ fn check_source(source: &str) -> reify_eval::CheckResult {
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     engine.check(&compiled)
 }
+
+// ── Step 1: .ri file parses and compiles ─────────────────────────────────────
+
+/// Read examples/m9_integration.ri, parse it, assert no parse errors, compile,
+/// assert no error-severity diagnostics, assert at least one template exists.
+/// This is the baseline test confirming the capstone example file is valid.
+#[test]
+fn ri_file_parses_and_compiles() {
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_integration.ri should exist");
+
+    // Step A: parse
+    let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in m9_integration.ri: {:?}",
+        parsed.errors
+    );
+
+    // Step B: compile — no error diagnostics
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compile errors in m9_integration.ri: {:?}",
+        errors
+    );
+
+    // Step C: at least one template (structures are present)
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected at least one template in m9_integration.ri, got none"
+    );
+}
