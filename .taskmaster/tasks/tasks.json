@@ -25842,11 +25842,11 @@
         "description": "Task 1220 widened `compute_numerical_divergence_at_point`, `compute_numerical_curl_at_point`, and `compute_numerical_laplacian_at_point` in crates/reify-expr/src/lib.rs to accept `Value::Vector` alongside `Value::Point`, but the widening is silent and undocumented (S4). Additionally, curl's `single_point_param = params.len() == 1 && n > 1` guard at line ~1505 is dead code because `n` is hardcoded to 3 immediately above (S1).\n\nFix:\n1. Add a one-line comment above each `Value::Point(items) | Value::Vector(items)` arm at lib.rs ~1332, ~1481, ~1644 explaining: \"Accept both Point and Vector — they share structural representation; gradient already does this, and `sample(field, gradient(field)(p))` returns a Vector that callers may legitimately re-feed.\"\n2. Update the doc comments on each helper (the `///` block introducing each function) to explicitly state they accept Vector as well as Point.\n3. In `compute_numerical_curl_at_point` at ~line 1505, either drop the `&& n > 1` clause (it's a no-op since `n = 3`) or add `// && n > 1 mirrors divergence/laplacian; n is constant 3 here` so the intent is clear for future readers.\n\nNote: the wrapper inside `eval_perturbed_point` re-wraps coordinates as `Value::Point` before calling `apply_lambda` regardless of the caller variant — the lambda always sees a Point. Mention this in the comment if useful.\n\nmemory_hints: Task 1220 (esc-1220-999) introduced this widening. Search \"compute_numerical_divergence_at_point Value::Vector\" for context.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T02:16:43.943Z",
+        "updatedAt": "2026-04-10T02:31:42.692Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -30095,9 +30095,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:31:40.982Z",
+      "lastModified": "2026-04-10T02:31:42.692Z",
       "taskCount": 1457,
-      "completedCount": 1132,
+      "completedCount": 1133,
       "tags": [
         "master"
       ]
