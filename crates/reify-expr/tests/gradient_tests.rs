@@ -3708,6 +3708,137 @@ fn gradient_codomain_type_with_dimensioned_domain() {
     }
 }
 
+/// Companion to `gradient_codomain_type_with_dimensioned_domain` using a non-linear lambda.
+///
+/// Non-linear coefficient k=Scalar{2.0, MASS/LENGTH²}, f(x) = k·x² has dimension MASS.
+/// df/dx = 2·k·x has dimension MASS/LENGTH and non-trivial magnitude 12.0 at x=3.0m.
+/// Exercises the numerical-sensitivity / FP-restore path that the linear sibling skips,
+/// and verifies the structural codomain_type assertion on the gradient field.
+#[test]
+fn gradient_codomain_type_nonlinear_dimensioned_domain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    let dim_length = DimensionVector::LENGTH;
+    let dim_mass = DimensionVector::MASS;
+    let dim_length_sq = dim_length.mul(&dim_length);
+    let dim_mass_per_length = dim_mass.div(&dim_length);
+    let dim_mass_per_length_sq = dim_mass.div(&dim_length_sq);
+
+    let scalar_length = Type::Scalar { dimension: dim_length };
+    let scalar_length_sq = Type::Scalar { dimension: dim_length_sq };
+    let scalar_mass = Type::Scalar { dimension: dim_mass };
+    let scalar_mass_per_length = Type::Scalar { dimension: dim_mass_per_length };
+    let scalar_mass_per_length_sq = Type::Scalar { dimension: dim_mass_per_length_sq };
+
+    // Lambda: |x| k * (x * x), k = Scalar{2.0, MASS/LENGTH²}
+    // x is Scalar[LENGTH], x*x = Scalar[LENGTH²], k*(x*x) = Scalar[MASS].
+    let x_x = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), scalar_length.clone()),
+        CompiledExpr::value_ref(x_id.clone(), scalar_length.clone()),
+        scalar_length_sq,
+    );
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: dim_mass_per_length_sq,
+            },
+            scalar_mass_per_length_sq,
+        ),
+        x_x,
+        scalar_mass.clone(),
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = scalar_length.clone();
+    let codomain_type = scalar_mass;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(scalar_mass_per_length.clone()),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    match &grad_result {
+        Value::Field {
+            codomain_type: ct, ..
+        } => {
+            assert_eq!(
+                ct, &scalar_mass_per_length,
+                "gradient codomain_type should be Scalar{{MASS/LENGTH}}, got {:?}",
+                ct
+            );
+        }
+        _ => panic!("gradient should return a Field, got {:?}", grad_result),
+    }
+
+    // Sample the gradient field at x = 3.0m.
+    // f(x) = k·x², f'(x) = 2·k·x. At x=3.0: 2·2.0·3.0 = 12.0 [MASS/LENGTH].
+    let grad_field_type = Type::Field {
+        domain: Box::new(scalar_length.clone()),
+        codomain: Box::new(scalar_mass_per_length.clone()),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 3.0,
+                    dimension: dim_length,
+                },
+                scalar_length,
+            ),
+        ],
+        scalar_mass_per_length.clone(),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &sample_result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert!(
+                (si_value - 12.0).abs() < 1e-4,
+                "gradient of 2·x² at x=3.0m should be ~12.0, got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension, dim_mass_per_length,
+                "gradient dimension should be MASS/LENGTH, got {:?}",
+                dimension
+            );
+        }
+        _ => panic!(
+            "gradient sample should return Scalar with MASS/LENGTH dimension, got {:?}",
+            sample_result
+        ),
+    }
+}
+
 /// Tests for gradient behavior when `codomain_type` does not match the lambda's runtime
 /// return type.
 ///
