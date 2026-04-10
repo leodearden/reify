@@ -490,6 +490,33 @@ fn detect_single_point_param(lambda: &Value, n: usize) -> bool {
     }
 }
 
+/// Initialise the two scratch buffers used by each axis iteration of the numerical
+/// differential operator functions.
+///
+/// Returns `(work_args, work_point)`:
+/// - `work_args`: an empty `Vec<Value>` with capacity 1 (single-point path) or `n`
+///   (decomposed path).
+/// - `work_point`: pre-populated with `make_domain_arg(coords[j], domain_dim)` for all `j`
+///   when `single_point_param` is true; empty otherwise.
+fn init_work_buffers(
+    coords: &[f64],
+    single_point_param: bool,
+    domain_dim: Option<DimensionVector>,
+) -> (Vec<Value>, Vec<Value>) {
+    let n = coords.len();
+    let args_capacity = if single_point_param { 1 } else { n };
+    let work_args = Vec::with_capacity(args_capacity);
+    let work_point = if single_point_param {
+        coords
+            .iter()
+            .map(|&v| make_domain_arg(v, domain_dim))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (work_args, work_point)
+}
+
 /// Evaluate the lambda at a single perturbed point and recover `work_point`.
 ///
 /// This helper encapsulates the duplicated eval-and-recover sequence for the
@@ -664,23 +691,11 @@ pub(crate) fn compute_numerical_gradient_at_point(
     // every axis iteration: at the bottom of the loop, work_coords[i] is restored
     // via direct assignment (`work_coords[i] = coord_i`), which is an exact
     // bit-identical restore of the value captured at the top of the iteration.
-    let mut work_coords = coords;
-    // Capacity: 1 for single_point_param (wraps in a Point), n for decomposed.
-    let args_capacity = if single_point_param { 1 } else { n };
-    let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
-
-    // work_point: reusable inner Vec for the single_point_param path.
-    // Pre-allocated once; only the perturbed element is updated each axis,
-    // eliminating the per-axis .collect() allocation on the caller side.
-    // (apply_lambda still clones the Vec once per eval when populating its
-    // eval_map, so the savings are roughly halving inner-Vec allocations,
-    // not reducing to O(1) overall.)
+    // Take ownership of coords — no clone needed.
     // Invariant: work_point[j] == make_arg(work_coords[j]) at axis start.
-    let mut work_point: Vec<Value> = if single_point_param {
-        work_coords.iter().map(|&v| make_arg(v)).collect()
-    } else {
-        Vec::new()
-    };
+    let mut work_coords = coords;
+    let (mut work_args, mut work_point) =
+        init_work_buffers(&work_coords, single_point_param, domain_dim);
 
     let mut gradient_components = Vec::with_capacity(n);
 
@@ -879,13 +894,8 @@ pub(crate) fn compute_numerical_divergence_at_point(
     let make_arg = |val: f64| make_domain_arg(val, domain_dim);
 
     let mut work_coords = coords;
-    let args_capacity = if single_point_param { 1 } else { n };
-    let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
-    let mut work_point: Vec<Value> = if single_point_param {
-        work_coords.iter().map(|&v| make_arg(v)).collect()
-    } else {
-        Vec::new()
-    };
+    let (mut work_args, mut work_point) =
+        init_work_buffers(&work_coords, single_point_param, domain_dim);
 
     let mut divergence = 0.0_f64;
 
@@ -1008,13 +1018,8 @@ pub(crate) fn compute_numerical_curl_at_point(
     let make_arg = |val: f64| make_domain_arg(val, domain_dim);
 
     let mut work_coords = coords;
-    let args_capacity = if single_point_param { 1 } else { n };
-    let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
-    let mut work_point: Vec<Value> = if single_point_param {
-        work_coords.iter().map(|&v| make_arg(v)).collect()
-    } else {
-        Vec::new()
-    };
+    let (mut work_args, mut work_point) =
+        init_work_buffers(&work_coords, single_point_param, domain_dim);
 
     // Jacobian columns: jac[j][i] = ∂Fi/∂xj
     let mut jac = [[0.0_f64; 3]; 3];
