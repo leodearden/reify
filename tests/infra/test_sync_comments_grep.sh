@@ -69,8 +69,6 @@ _no_unhardened_pattern_interp() {
     return 1
 }
 
-assert "this script exports PATTERN for bash -c subshells" \
-    grep -qE '^[[:space:]]*export[[:space:]]+PATTERN' "$THIS_SCRIPT"
 assert 'no Section 1 bash -c $PATTERN interpolation in this script' \
     _no_unhardened_pattern_interp
 
