@@ -769,6 +769,28 @@ printf -v _24d_regex '%s' 'grep' ' -c' '([^F]|$)'
 assert "count-grep uses include -cF flag (no bare count-grep)" \
     bash -c '! grep -nE "$2" "$1"' _ "${BASH_SOURCE[0]}" "$_24d_regex"
 
+# -- Test 24e (meta): validate the Test 24d guard regex discrimination --------
+echo ""
+echo "--- Test 24e (meta): guard regex discriminates bare vs -cF correctly ---"
+
+# Verifies _24d_regex (assembled above) correctly matches a flagless count-grep
+# invocation and correctly rejects count-grep -cF.  Mirrors the Test 22b and
+# Test 24c meta-assertion shape: feed two synthetic inputs, assert discrimination.
+#
+# Synthetic strings are assembled via printf to avoid placing any source
+# substring that the guard regex would detect in this source file.
+#
+# NOTE: assertion polarity is temporarily INVERTED for both sub-assertions
+# (step-3 TDD red commit).  Step-4 will flip both to the correct polarity.
+
+# positive: flagless count-grep should match (inverted: '!' makes this FAIL)
+assert "Test 24d regex matches flagless count-grep invocation" \
+    bash -c '! printf "%s%s\n" "grep" " -c pattern" | grep -qE "$1"' _ "$_24d_regex"
+
+# negative: count-grep -cF should NOT match (inverted: missing '!' makes this FAIL)
+assert "Test 24d regex does not match count-grep -cF invocation" \
+    bash -c 'printf "%s%s\n" "grep" " -cF pattern" | grep -qE "$1"' _ "$_24d_regex"
+
 # -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
 echo ""
 echo "--- Test 25a: structural: SAFETY_NET_GREP_LINE marker is present ---"
