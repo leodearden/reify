@@ -29733,15 +29733,16 @@
         "description": "In `crates/reify-expr/tests/field_calculus_tests.rs`, the `run_dim_metadata_test` helper (line ~414-418) passes the input field's `codomain_type` as the third argument to `make_function_call`, but the actual result type of a laplacian/divergence is the *expected* codomain (e.g. `Temperature/Length²`, not `Temperature`). The eval engine computes the result independently so this doesn't affect test outcomes, but the `CompiledExpr` node carries an incorrect type annotation.\n\nFix: Change line ~417 from `codomain_type` to `expected_codomain.clone()` as the third argument to `make_function_call`.\n\nMemory hints:\n- search \"run_dim_metadata_test helper pattern field_calculus_tests\" for helper context\n- search \"task 1417 dimensional correctness refactor\" for parent task context",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:20:32.401Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:20:31.994Z",
+      "lastModified": "2026-04-10T01:20:32.401Z",
       "taskCount": 1439,
       "completedCount": 1102,
       "tags": [
