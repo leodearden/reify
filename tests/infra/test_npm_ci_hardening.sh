@@ -323,7 +323,7 @@ assert "22a: consistent packageManager versions -> exit 0" \
     bash -c "[ '$status22a' = '0' ]"
 
 assert "22a: no DIAGNOSTIC: emitted when no npm lockfiles are gitignored" \
-    bash -c "! echo \"$out22a\" | grep -q 'DIAGNOSTIC:'"
+    bash -c '! printf "%s\n" "$1" | grep -q DIAGNOSTIC:' _ "$out22a"
 
 # Test 22b: introduce a version mismatch -> script exits non-zero
 printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/package.json"
@@ -363,6 +363,6 @@ printf 'gui/package-lock.json\n' > "$FIXTURE24/.gitignore"
 # >/dev/null 2>&1 redirection swallowing the output before grep can see it.
 out24=$(bash "$FIXTURE24/scripts/check-pm-standardization.sh" 2>&1 || true)
 assert "Check 3 emits DIAGNOSTIC: when gui/package-lock.json is gitignored" \
-    bash -c "echo \"$out24\" | grep -q 'DIAGNOSTIC:'"
+    bash -c 'printf "%s\n" "$1" | grep -q DIAGNOSTIC:' _ "$out24"
 
 test_summary
