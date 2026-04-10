@@ -251,3 +251,56 @@ structure S {
         "DeterminedInRange[2] (v <= hi) should be Satisfied (50mm <= 100mm)"
     );
 }
+
+// ── Step 9: trait with constraint def invocation ──────────────────────────────
+
+/// Cross-feature: a trait body invokes a constraint def. The constraint def invocation
+/// should be injected into the implementing structure as if it were declared there.
+/// Widget : Sized { size = 50mm } should have Positive[0] = Satisfied and
+/// Widget.size should evaluate to 0.05 SI (50mm).
+#[test]
+fn trait_with_constraint_def_invocation() {
+    let source = r#"
+constraint def Positive {
+    param v : Length
+    v > 0mm
+}
+trait Sized {
+    param size : Length
+    constraint Positive(v: size)
+}
+structure Widget : Sized {
+    param size : Length = 50mm
+}
+"#;
+    let check_result = check_source(source);
+    let eval_result = eval_source(source);
+
+    // Widget should have Positive[0] = Satisfied
+    let entry = check_result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Widget" && e.label == Some("Positive[0]".to_string()))
+        .expect("expected Widget to have constraint with label 'Positive[0]'");
+    assert_eq!(
+        entry.satisfaction,
+        Satisfaction::Satisfied,
+        "Positive[0] should be Satisfied for Widget.size=50mm > 0mm"
+    );
+
+    // Widget.size = 50mm = 0.05 SI
+    let size_id = ValueCellId::new("Widget", "size");
+    let size_val = eval_result
+        .values
+        .get(&size_id)
+        .expect("Widget.size should exist in eval result");
+    match size_val {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.05).abs() < 1e-12,
+                "expected 0.05 SI for Widget.size (50mm), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for Widget.size, got {:?}", other),
+    }
+}
