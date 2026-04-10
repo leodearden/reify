@@ -185,4 +185,15 @@ echo "--- Test 17: Check 3 has 'git check-ignore -v' diagnostic fallback ---"
 assert "Check 3 has 'git check-ignore -v' diagnostic fallback" \
     grep -q 'git check-ignore -v' "$SCRIPT"
 
+# -- Test 18: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ----------
+echo ""
+echo "--- Test 18: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ---"
+
+assert "LOCK_FILES is defined before the first 'Check 1:' echo" \
+    bash -c "
+        lock_line=\$(grep -n '^LOCK_FILES=' '$SCRIPT' | head -1 | cut -d: -f1)
+        check1_line=\$(grep -n 'echo \"Check 1:' '$SCRIPT' | head -1 | cut -d: -f1)
+        [ -n \"\$lock_line\" ] && [ -n \"\$check1_line\" ] && [ \"\$lock_line\" -lt \"\$check1_line\" ]
+    "
+
 test_summary
