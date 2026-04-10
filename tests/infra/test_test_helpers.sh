@@ -239,8 +239,13 @@ SYNC_REF_HELPERS_FILE="$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
 # `if` and `[`) are not handled (grep is line-oriented; see design decisions).
 # Variable names are not constrained — $marker, $fn_name, $ref_fn,
 # $_expr_ref_fn, etc. all count as prohibited defensive guards.
+# _has_expr_body_empty_guard_short_circuit checks that the empty-guard for
+# expr_body short-circuits via test_summary on the same line. NOTE: if the
+# guard is ever reformatted to span multiple lines, this per-line grep will
+# need to be replaced with an awk-based multiline matcher.
 _has_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
 _has_if_n_guard() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -qE '(if|&&|\|\|)[[:space:]]*(\[\[?|test)[[:space:]]+(-n|![[:space:]]+-z)'; }
+_has_expr_body_empty_guard_short_circuit() { grep -qE '\[ -z "\$expr_body".*test_summary' "$1" 2>/dev/null; }
 
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
@@ -265,6 +270,17 @@ check "extract_fn output captured to expr_body variable" "$ok"
 # (e) sync_comments_test.sh has a non-empty guard for the captured expr_body variable
 if grep -Fq '[ -z "$expr_body"' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
 check "extract_fn non-empty guard present for expr_body" "$ok"
+
+# (e2) sync_comments_test.sh empty-guard short-circuits via test_summary before diff
+# WHY: check (e) only confirms the guard exists; it does NOT confirm the guard
+# short-circuits.  Without test_summary; inside the guard's braces, a failed
+# assert still records a FAIL but execution falls through to the diff assertion.
+# On empty expr_body, diff <(printf '') <(printf '') returns rc=0, masking the
+# regression with a spurious PASS.  This structural check is the fast pre-flight
+# counterpart to the expensive behavioral test at the
+# "extract_fn non-empty guard short-circuit behavioral test" section below.
+if _has_expr_body_empty_guard_short_circuit "$SYNC_FILE"; then ok=true; else ok=false; fi
+check "extract_fn empty-guard short-circuits via test_summary for expr_body" "$ok"
 
 # (f) sync_comments_test.sh sources sync_ref_helpers.sh (function moved out)
 if grep -qE '(source|\.)\s+.*sync_ref_helpers\.sh' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
@@ -515,6 +531,27 @@ fixture_historical=$(mk_fixture)
 printf 'if [ -n "$_expr_ref_fn" ]; then echo skip; fi\n' > "$fixture_historical"
 if _has_if_n_guard "$fixture_historical" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects historical \$_expr_ref_fn (ff0880bfe regression pin)" "$ok"
+
+echo ""
+echo "--- Robustness: empty-guard short-circuit pattern ---"
+
+# Negative fixture: guard WITHOUT test_summary; — helper must return non-zero.
+# This reproduces the exact regression the new check is designed to catch:
+# the guard is present but does not short-circuit, so execution falls through
+# to the diff assertion, producing a spurious PASS on empty expr_body.
+fixture_no_summary=$(mk_fixture)
+printf '[ -z "$expr_body" ] && { assert "extract_fn sanitize_value found in reify-expr" false; }\n' \
+    > "$fixture_no_summary"
+if ! _has_expr_body_empty_guard_short_circuit "$fixture_no_summary" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_expr_body_empty_guard_short_circuit rejects guard without test_summary" "$ok"
+
+# Positive fixture: guard WITH test_summary; — helper must return zero.
+# Confirms the helper does not false-positive on a correctly written guard.
+fixture_with_summary=$(mk_fixture)
+printf '[ -z "$expr_body" ] && { assert "extract_fn sanitize_value found in reify-expr" false; test_summary; }\n' \
+    > "$fixture_with_summary"
+if _has_expr_body_empty_guard_short_circuit "$fixture_with_summary" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_expr_body_empty_guard_short_circuit accepts guard with test_summary" "$ok"
 
 # Positive-direction mirror of the historical pin above: a legitimate early-fail
 # guard using `-z` (not `-n`) must NOT be detected.  The regex uses alternation
