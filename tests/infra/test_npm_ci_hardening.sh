@@ -343,8 +343,15 @@ for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.j
 done
 
 # Test 23a: all files agree on the same version -> script exits 0
+# Capture combined stdout+stderr so we can pin both the exit status and the
+# absence of DIAGNOSTIC: emissions with two separate named assertions.
+out23a=$(cd "$FIXTURE_DIR" && bash scripts/check-pm-standardization.sh 2>&1); status23a=$?
+
 assert "23a: consistent packageManager versions -> exit 0" \
-    bash -c "cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh"
+    bash -c "[ '$status23a' = '0' ]"
+
+assert "23a: no DIAGNOSTIC: emitted when no npm lockfiles are gitignored" \
+    bash -c '! printf "%s\n" "$1" | grep -q DIAGNOSTIC:' _ "$out23a"
 
 # Test 23b: introduce a version mismatch -> script exits non-zero
 printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/package.json"
@@ -432,7 +439,13 @@ git -C "$FIXTURE24" config user.email "test@test.com"
 git -C "$FIXTURE24" config user.name "Test"
 printf 'gui/package-lock.json\n' > "$FIXTURE24/.gitignore"
 
+# The || true makes the capture tolerant of the script's non-zero exit: Check 3's
+# assert fails when a lockfile is gitignored, and because check-pm-standardization.sh
+# has set -e, it short-circuits before test_summary. The explicit echo | grep avoids
+# depending on the outer bash -c to not enable pipefail, or on assert()'s internal
+# >/dev/null 2>&1 redirection swallowing the output before grep can see it.
+out24=$(bash "$FIXTURE24/scripts/check-pm-standardization.sh" 2>&1 || true)
 assert "Check 3 emits DIAGNOSTIC: when gui/package-lock.json is gitignored" \
-    bash -c "bash '$FIXTURE24/scripts/check-pm-standardization.sh' 2>&1 | grep -q 'DIAGNOSTIC:'"
+    bash -c 'printf "%s\n" "$1" | grep -q DIAGNOSTIC:' _ "$out24"
 
 test_summary

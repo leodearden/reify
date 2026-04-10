@@ -704,8 +704,16 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
             *"local _pt_kill_grace=2"*) ;;
             *) echo "SANITY FAIL: local _pt_kill_grace=2 not found in portable_timeout" >&2; exit 1 ;;
         esac
-        _grace_count=$(echo "$func_text" | grep -c "local _pt_kill_grace=2")
-        [ "$_grace_count" -eq 1 ] || { echo "SANITY FAIL: expected exactly 1 local _pt_kill_grace=2 in portable_timeout, found $_grace_count" >&2; exit 1; }
+        # Count-exactly-1 check: bash ${var/pat/repl} replaces only the first
+        # occurrence, so a second local _pt_kill_grace=2 in portable_timeout
+        # would silently leave the default in place at runtime (the later
+        # local declaration overrides the first).  Fail loudly here with a
+        # clear count instead of a mysterious timing failure below.
+        _grace_count=$(printf "%s\n" "$func_text" | grep -cF "local _pt_kill_grace=2")
+        if [ "$_grace_count" -ne 1 ]; then
+            echo "SANITY FAIL: expected exactly 1 '"'"'local _pt_kill_grace=2'"'"' in portable_timeout, found $_grace_count" >&2
+            exit 1
+        fi
         eval "${func_text/local _pt_kill_grace=2/local _pt_kill_grace=5}"
 
         t_start=$("$_abs_date" +%s)
