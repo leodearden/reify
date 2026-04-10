@@ -359,31 +359,7 @@ mod tests {
 
     #[test]
     fn tensor_components_f64_vector_of_length_scalars_returns_values_and_length() {
-        let v = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 0.1,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.2,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Scalar {
-                si_value: 0.3,
-                dimension: DimensionVector::LENGTH,
-            },
-        ]);
-        let (vals, dim) =
-            tensor_components_f64(&v).expect("expected Some for Vector of LENGTH Scalars");
-        assert_eq!(vals.len(), 3, "should extract 3 components");
-        assert!((vals[0] - 0.1).abs() < f64::EPSILON);
-        assert!((vals[1] - 0.2).abs() < f64::EPSILON);
-        assert!((vals[2] - 0.3).abs() < f64::EPSILON);
-        assert_eq!(
-            dim,
-            DimensionVector::LENGTH,
-            "Scalar{{LENGTH}} elements have LENGTH dimension"
-        );
+        assert_extraction(Value::Vector(vec![Value::Scalar { si_value: 0.1, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 0.2, dimension: DimensionVector::LENGTH }, Value::Scalar { si_value: 0.3, dimension: DimensionVector::LENGTH }]), &[0.1, 0.2, 0.3], DimensionVector::LENGTH, "Vector of LENGTH Scalars");
     }
 
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
