@@ -24,7 +24,7 @@ fi
 source "$REPO_ROOT/tests/infra/test_helpers.sh" || { echo "ERROR: failed to source test_helpers.sh"; exit 1; }
 
 [ -f "$REPO_ROOT/tests/infra/sync_ref_helpers.sh" ] || { echo "ERROR: sync_ref_helpers.sh not found"; exit 1; }
-source "$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
+source "$REPO_ROOT/tests/infra/sync_ref_helpers.sh" || { echo "ERROR: failed to source sync_ref_helpers.sh"; exit 1; }
 
 # reify-expr's copy must reference reify-stdlib::sanitize_value
 assert \
