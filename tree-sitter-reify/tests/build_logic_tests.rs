@@ -1349,15 +1349,14 @@ fn test_self_read_paths_use_manifest_dir() {
         .filter(|sig| !sig.contains("test_self_read_paths_use_manifest_dir"))
         .collect();
 
-    // Sanity-check: the scanner must find at least 6 self-reading tests (the
-    // deterministic count after self-filter on this codebase is 6). This catches a
+    // Sanity-check: the scanner must find at least 6 self-reading tests. This catches a
     // broken scanner that silently returns empty or near-empty. The threshold is a
     // lower bound rather than an exact count because the real file may gain more
     // self-reading tests over time.
     assert!(
         self_reading_fns.len() >= 6,
         "find_self_reading_test_fns should discover at least 6 self-reading test functions \
-         after excluding this meta-test (actual count is 6); but found {:?}",
+         after excluding this meta-test; but found {:?}",
         self_reading_fns
     );
 
