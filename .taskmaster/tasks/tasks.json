@@ -29483,7 +29483,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-stdlib/src/complex.rs",
+            "crates/reify-expr/src/sanitize.rs"
+          ],
+          "modules": [
+            "crates/reify-stdlib/src",
+            "crates/reify-expr/src"
+          ]
+        }
       },
       {
         "id": 1426,
@@ -29494,7 +29504,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": 1427,
