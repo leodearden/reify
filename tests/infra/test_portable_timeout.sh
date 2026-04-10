@@ -648,6 +648,19 @@ assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)
 assert "no line uses the canonical kill -- -\$cmd_pid form (quoted or unquoted)" \
     bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "(^|[^-9])kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
 
+# -- Test 22b (meta): simplified kill regex discrimination semantics -----------
+echo ""
+echo "--- Test 22b (meta): simplified kill regex matches/rejects correctly ---"
+
+# Verifies the simplified regex (without the dead '(^|[^-9])' prefix) correctly
+# matches 'kill -- -$cmd_pid' and correctly rejects 'kill -9 -- -$cmd_pid'.
+# Self-contained; does not depend on lib_portable.sh content.
+assert "simplified kill regex matches canonical kill -- -\$cmd_pid" \
+    bash -c 'printf "%s\n" "kill -- -\$cmd_pid" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"'
+
+assert "simplified kill regex rejects kill -9 -- -\$cmd_pid" \
+    bash -c '! printf "%s\n" "kill -9 -- -\$cmd_pid" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"'
+
 # -- Test 23: structural: both timer subshells quote the PGID argument (S1) ---
 echo ""
 echo "--- Test 23: timer subshells use quoted PGID argument for SIGKILL ---"
