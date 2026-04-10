@@ -28566,11 +28566,11 @@
         "description": "The old per-file `FailingMockGeometryKernel` in tessellation.rs had `tessellate()` return `Err(TessError::TessellationFailed(\"should not reach\".into()))` — a deliberate fail-loud guard against unexpected downstream calls after `execute()` fails. The consolidated version in reify-test-support returns `Ok(empty mesh)`, silently masking any regression where `tessellate` is erroneously invoked on a handle that was never created.\n\nFix: Change `FailingMockGeometryKernel::tessellate()` in `crates/reify-test-support/src/mocks.rs` to return `Err(TessError::TessellationFailed(\"should not reach: execute always fails\".into()))`. Update the corresponding unit test `failing_kernel_tessellate_returns_ok_empty_mesh` to assert the error case instead. Optionally, consider whether `export()` should also return a defensive error rather than writing `b\"BOGUS_EXPORT\"`.\n\nmemory_hints: search \"FailingMockGeometryKernel test support mocks\" for the extraction context from task 1179.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:05:06.513Z",
+        "updatedAt": "2026-04-10T00:07:49.156Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support/src"
@@ -29024,7 +29024,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:07:47.676Z",
+      "lastModified": "2026-04-10T00:07:49.156Z",
       "taskCount": 1406,
       "completedCount": 1085,
       "tags": [
