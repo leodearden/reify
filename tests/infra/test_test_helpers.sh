@@ -615,6 +615,15 @@ printf 'something && [ -z "$var" ] && do_work\n' > "$fixture_z_and"
 if ! _has_if_n_guard "$fixture_z_and" 2>/dev/null; then ok=true; else ok=false; fi
 check "if-guard pattern tolerates compound && -z: && [ -z" "$ok"
 
+# Positive-direction -z pin: compound || single-bracket form
+# `something || [ -z "$var" ] && do_work`.
+# Mirrors the && pin above but with || trigger, covering the third
+# trigger-keyword variant in the (if|&&|\|\|) alternation.
+fixture_z_or=$(mk_fixture)
+printf 'something || [ -z "$var" ] && do_work\n' > "$fixture_z_or"
+if ! _has_if_n_guard "$fixture_z_or" 2>/dev/null; then ok=true; else ok=false; fi
+check "if-guard pattern tolerates compound || -z: || [ -z" "$ok"
+
 # Double-bracket form: `if [[ -n "$var" ]]`
 # Requires regex to match `[[` as well as `[`.
 fixture_double_bracket=$(mk_fixture)
