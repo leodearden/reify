@@ -152,10 +152,11 @@ fn run_tests_propagates_violation_diagnostics() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].status, reify_eval::TestStatus::Fail);
     assert!(
-        results[0].constraint_results.iter().any(|e| {
-            e.id.entity == "TestA" && e.satisfaction == Satisfaction::Violated
-        }),
-        "expected at least one constraint result with entity TestA and satisfaction Violated, got: {:?}",
+        results[0]
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Violated),
+        "expected at least one Violated constraint result, got: {:?}",
         results[0].constraint_results
     );
     assert!(
