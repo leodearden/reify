@@ -31399,11 +31399,11 @@
         "description": "The self-check at lines 611-619 of tests/infra/test_test_helpers.sh validates that all file-local helpers use symmetric positive _has_ naming, but only checks _has_assert_sync_ref_exists and _has_if_n_guard. The new _has_expr_body_empty_guard_short_circuit helper (line 248) is missing. Fix: add a grep for it to the self-check condition at line 613.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:32:37.844Z",
+        "updatedAt": "2026-04-10T07:29:13.215Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh"
@@ -32255,9 +32255,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:20:07.334Z",
+      "lastModified": "2026-04-10T07:29:13.215Z",
       "taskCount": 1585,
-      "completedCount": 1202,
+      "completedCount": 1203,
       "tags": [
         "master"
       ]
