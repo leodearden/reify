@@ -29861,15 +29861,16 @@
         "description": "The existing tensor_components_f64 tests in helpers.rs cover the core paths but miss several useful boundary cases. Add the following tests:\n\n1. **MASS positive-path test:** A Vector (or Tensor) of two MASS Scalars should return the values and MASS dimension. Currently the MASS dimension only appears in a mixed-dimension rejection test; a positive-path test for a non-LENGTH, non-DIMENSIONLESS dimension strengthens coverage.\n\n2. **Complex value rejection test:** A Vector containing a Value::Complex element should return None. Documents that complex components are not silently extracted via as_f64().\n\n3. **More container-variant success-path coverage:** Add a success test for Tensor with multiple Real elements and/or Vector with uniform Scalar elements. Currently success paths only cover Vector(Reals), Point(Scalars), and Tensor(single Int).\n\n4. **List rejection test:** `tensor_components_f64(&Value::List(vec![Value::Real(1.0)])).is_none()` — confirms List is not an accepted container type.\n\nAlso refactor the existing success-path tests (lines ~291-340) to use `.expect()` instead of `match + panic!` for more idiomatic Rust.\n\nMemory hints: search \"tensor_components_f64 helpers\", search \"expect vs match panic test idiom\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:31:45.358Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:31:44.574Z",
+      "lastModified": "2026-04-10T01:31:45.358Z",
       "taskCount": 1445,
       "completedCount": 1107,
       "tags": [
