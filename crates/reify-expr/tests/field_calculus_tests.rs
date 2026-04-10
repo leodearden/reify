@@ -3877,6 +3877,123 @@ fn divergence_dimensional_correctness_composed_source() {
     );
 }
 
+// ── Step 13: Scalar{DIMENSIONLESS} codomain downgrade coverage (Task 1291) ───────
+
+/// Exercises the explicit `Scalar{DIMENSIONLESS} → Real` fallback arm in
+/// `compute_divergence` (calculus.rs:229-231).
+///
+/// For a `Point{3,Scalar<Length>} → Vec3(Scalar{DIMENSIONLESS})` field, the
+/// `divergence_fallback` is set to `Type::Real` because the codomain component type
+/// is `Scalar{DIMENSIONLESS}`. `dim_quotient_type` then returns the fallback because
+/// `cd == DIMENSIONLESS`, so `result_codomain = Type::Real`.
+///
+/// This arm is distinct from:
+/// - The `_` wildcard arm (hit when codomain is non-Scalar-DIMENSIONLESS)
+/// - The `dim_quotient_type` dimensional-quotient arm (only reached when both cd and
+///   dd are non-DIMENSIONLESS)
+#[test]
+fn divergence_scalar_dimensionless_codomain_downgrade() {
+    let domain = Type::point3(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    });
+    let codomain = Type::vec3(Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    });
+
+    let field_result = eval_field_op("divergence", domain.clone(), codomain);
+
+    let Value::Field {
+        codomain_type: ref actual_codomain,
+        ..
+    } = field_result
+    else {
+        panic!(
+            "divergence_scalar_dimensionless_codomain_downgrade: expected Field, got {:?}",
+            field_result
+        );
+    };
+    assert_eq!(
+        *actual_codomain,
+        Type::Real,
+        "divergence of Point{{3,Length}}→Vec3(DIMENSIONLESS) should have codomain Type::Real, \
+         got {:?}",
+        actual_codomain
+    );
+
+    let sampled = sample_field(field_result, domain);
+    assert!(
+        matches!(&sampled, Value::Real(_)),
+        "divergence_scalar_dimensionless_codomain_downgrade: sampled value should be \
+         Value::Real, got {:?}",
+        sampled
+    );
+}
+
+/// Exercises the explicit `Scalar{DIMENSIONLESS} → Real` fallback arm in
+/// `compute_gradient` (calculus.rs:120-122).
+///
+/// For a `Point{3,Real} → Scalar{DIMENSIONLESS}` field, `gradient_fallback` is set to
+/// `Type::Real` because the codomain is `Scalar{DIMENSIONLESS}`. `dim_quotient_type`
+/// returns the fallback because `cd == DIMENSIONLESS`, so `gradient_quantity = Type::Real`.
+/// With `n = 3`, `result_codomain = Vector{3, Real}`.
+///
+/// This arm is distinct from:
+/// - The `_` wildcard arm (hit when codomain is non-Scalar-DIMENSIONLESS)
+/// - The `dim_quotient_type` dimensional-quotient arm (only reached when both cd and
+///   dd are non-DIMENSIONLESS)
+#[test]
+fn gradient_scalar_dimensionless_codomain_downgrade() {
+    let domain = Type::point3(Type::Real);
+    let codomain = Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    };
+
+    let field_result = eval_field_op("gradient", domain.clone(), codomain);
+
+    let Value::Field {
+        codomain_type: ref actual_codomain,
+        ..
+    } = field_result
+    else {
+        panic!(
+            "gradient_scalar_dimensionless_codomain_downgrade: expected Field, got {:?}",
+            field_result
+        );
+    };
+    assert_eq!(
+        *actual_codomain,
+        Type::vec3(Type::Real),
+        "gradient of Point{{3,Real}}→Scalar{{DIMENSIONLESS}} should have codomain Vec3(Real), \
+         got {:?}",
+        actual_codomain
+    );
+
+    let sampled = sample_field(field_result, domain);
+    match &sampled {
+        Value::Vector(comps) => {
+            assert_eq!(
+                comps.len(),
+                3,
+                "gradient result should be a 3-vector, got {} components",
+                comps.len()
+            );
+            for (i, comp) in comps.iter().enumerate() {
+                assert!(
+                    matches!(comp, Value::Real(_)),
+                    "gradient_scalar_dimensionless_codomain_downgrade: component {i} should \
+                     be Value::Real, got {:?}",
+                    comp
+                );
+            }
+        }
+        other => panic!(
+            "gradient_scalar_dimensionless_codomain_downgrade: sampled value should be \
+             Value::Vector, got {:?}",
+            other
+        ),
+    }
+}
+
 /// `SamplePoint::into_value_and_type()` produces the correct `(Value, Type)` pair
 /// for each variant — Point3 → (Value::Point, Type::point3(Real)),
 /// Vector3 → (Value::Vector, Type::vec3(Real)), Vector2 → (Value::Vector, Type::vec2(Real)).
