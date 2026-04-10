@@ -736,7 +736,6 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
         # would silently leave the default in place at runtime (the later
         # local declaration overrides the first).  Fail loudly here with a
         # clear count instead of a mysterious timing failure below.
-        # Uses the grep -cF <<< idiom validated by Test 24c.
         _pt_grace_count=$(grep -cF "local _pt_kill_grace=2" <<< "$func_text")
         [ "$_pt_grace_count" -eq 1 ] || { echo "SANITY FAIL: expected exactly 1 occurrence of local _pt_kill_grace=2, found $_pt_grace_count" >&2; exit 1; }
         eval "${func_text/local _pt_kill_grace=2/local _pt_kill_grace=5}"
@@ -748,29 +747,13 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
         [ "$gap" -ge 5 ]
     '
 
-# -- Meta: Test 24c block is gone and Test 24b's stale cross-reference removed -
-# Test 24c validated a well-known grep/bash behaviour with no project-code
-# dependency; its removal is guarded by two structural checks:
-# (a) no comment line starting with '# -- Test 24c' in this file
-# (b) no occurrence of the phrase 'validated by Test 24c' (stale cross-ref)
+# -- Meta: Test 24c block is gone and Test 24b stale cross-reference removed --
+# (a) No comment line starting with '# -- Test 24c' (anchored to the header form)
+# (b) No comment line with the stale 'Uses the grep -cF <<< idiom' cross-ref
+#     (the original was: '# Uses the grep -cF <<< idiom validated by Test 24c.')
 assert "Test 24c block absent and stale cross-reference removed from Test 24b" \
-    bash -c '! grep -qE '"'"'^# -- Test 24c'"'"' "$1" && ! grep -qF '"'"'validated by Test 24c'"'"' "$1"' \
+    bash -c '! grep -qE '"'"'^# -- Test 24c'"'"' "$1" && ! grep -qE '"'"'^\s+# Uses the grep -cF <<< idiom'"'"' "$1"' \
     _ "${BASH_SOURCE[0]}"
-
-# -- Test 24c (meta): grep -cF count distinguishes 1- vs 2-occurrence inputs --
-echo ""
-echo "--- Test 24c (meta): grep -cF count correctly distinguishes 1 vs 2 occurrences ---"
-
-# Verifies the 'grep -cF "local _pt_kill_grace=2" <<< $var' idiom used by
-# the Test 24b uniqueness guard correctly reports 1 for a single occurrence
-# and 2 for two occurrences.  Self-contained; does not depend on lib_portable.sh.
-_pt_single=$'portable_timeout ()\n{\n    local _pt_kill_grace=2\n    echo done\n}'
-assert "grep -cF count == 1 for single occurrence of 'local _pt_kill_grace=2'" \
-    bash -c '[ "$(grep -cF "local _pt_kill_grace=2" <<< "$1")" -eq 1 ]' _ "$_pt_single"
-
-_pt_double=$'portable_timeout ()\n{\n    local _pt_kill_grace=2\n    local _pt_kill_grace=2\n    echo done\n}'
-assert "grep -cF count == 2 for two occurrences of 'local _pt_kill_grace=2'" \
-    bash -c '[ "$(grep -cF "local _pt_kill_grace=2" <<< "$1")" -eq 2 ]' _ "$_pt_double"
 
 # -- Test 24d (structural): all count-grep uses in this file include -cF ------
 echo ""
@@ -797,8 +780,9 @@ echo ""
 echo "--- Test 24e (meta): guard regex discriminates bare vs -cF correctly ---"
 
 # Verifies _24d_regex (assembled above) correctly matches a flagless count-grep
-# invocation and correctly rejects count-grep -cF.  Mirrors the Test 22b and
-# Test 24c meta-assertion shape: feed two synthetic inputs, assert discrimination.
+# invocation and correctly rejects count-grep -cF.  Mirrors the Test 22b
+# positive/negative meta-assertion shape: feed two synthetic inputs and assert
+# the regex discriminates correctly.
 #
 # Synthetic strings are assembled via printf to avoid placing any source
 # substring that the guard regex would detect in this source file.
@@ -810,6 +794,7 @@ assert "Test 24d regex matches flagless count-grep invocation" \
 # negative: count-grep -cF should NOT match
 assert "Test 24d regex does not match count-grep -cF invocation" \
     bash -c '! printf "%s%s\n" "grep" " -cF pattern" | grep -qE "$1"' _ "$_24d_regex"
+
 
 # -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
 echo ""
