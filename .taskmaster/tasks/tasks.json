@@ -24473,11 +24473,11 @@
         "description": "Add a unit test verifying that two different guard cells holding the same value produce distinct fingerprints. The doc comment at line 267 of crates/reify-eval/src/lib.rs states \"two different cells holding the same value still produce distinct hashes\" — this invariant has no test coverage.\n\nTest outline: create two groups with cells (\"A\",\"g\") and (\"B\",\"g\"), both set to `Value::Bool(true)`. Assert the fingerprint differs from a single-group fingerprint and from swapping the cells, confirming the cell ID is included in the hash.\n\nAlso, while adding the test, use the `make_guard_group` helper consistently — the existing test `guard_state_fingerprint_single_group_present_value` (line 4863) manually constructs `GuardedGroupInfo` inline instead of using it.\n\nSource: review suggestions S3+S4 on task 1140 (esc-1140-841).\n\nmemory_hints: search \"guard_state_fingerprint tests\" in reify-eval",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T20:47:24.082Z",
+        "updatedAt": "2026-04-10T22:20:51.168Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -32913,9 +32913,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T22:19:03.590Z",
+      "lastModified": "2026-04-10T22:20:51.179Z",
       "taskCount": 1616,
-      "completedCount": 1262,
+      "completedCount": 1263,
       "tags": [
         "master"
       ]
