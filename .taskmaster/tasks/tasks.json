@@ -31850,6 +31850,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1566,
+        "title": "bridge.rs: fix doc arm count, stale test comment, add hang_guard to new tests",
+        "description": "Three fixes: (1) bridge.rs:227-229: \"All nine deserializing arms\" → \"All eight deserializing arms\". (2) in_process_bridge.rs:13: update stale \"All five malformed-params tests\" count. (3) in_process_bridge.rs:954-995: wrap 3 new standalone tests in with_hang_guard. Also restore 3 missing sweep assertions (completion/hover/definition) dropped by merge conflict ecb267280.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -31862,7 +31873,7 @@
       ],
       "created": "2026-04-10T06:44:45.217Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T06:46:06.223Z"
+      "updated": "2026-04-10T06:46:12.953Z"
     }
   }
 }
