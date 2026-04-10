@@ -32358,7 +32358,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:14:00.084Z"
+        "updatedAt": "2026-04-10T08:14:00.084Z",
+        "metadata": {
+          "modules": [
+            "tests/infra/test_test_helpers.sh"
+          ]
+        }
       },
       {
         "id": 1593,
