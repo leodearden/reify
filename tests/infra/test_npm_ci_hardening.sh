@@ -347,4 +347,32 @@ done
 assert "22c: non-npm@ packageManager (yarn@1.22.0 in all files) -> exit non-zero (Check 1 fails)" \
     bash -c "! (cd '$FIXTURE_22C' && bash scripts/check-pm-standardization.sh)"
 
+# Test 22d: consistent npm@ versions but gui/package-lock.json gitignored
+# Checks 1 and 2 pass (npm@10.9.0 in all files, total=3, unique=1)
+# Check 3 fails (.gitignore lists gui/package-lock.json so git check-ignore returns 0)
+# Check 4 passes (gui/pnpm-lock.yaml still in .gitignore)
+FIXTURE_22D="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR" "$FIXTURE_22C" "$FIXTURE_22D" "${FIX_DIR:?}"' EXIT
+
+mkdir -p "$FIXTURE_22D/scripts"
+mkdir -p "$FIXTURE_22D/tests/infra"
+mkdir -p "$FIXTURE_22D/gui/sidecar"
+mkdir -p "$FIXTURE_22D/tree-sitter-reify"
+
+cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_22D/scripts/"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_22D/tests/infra/"
+
+# .gitignore: BOTH pnpm-lock.yaml (Check 4 pass) AND gui/package-lock.json (Check 3 fail)
+printf 'gui/pnpm-lock.yaml\ngui/package-lock.json\n' > "$FIXTURE_22D/.gitignore"
+
+git -C "$FIXTURE_22D" init -q
+
+# All three files use consistent npm@10.9.0 — Checks 1 and 2 pass
+for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+    printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_22D/$pkg"
+done
+
+assert "22d: gui/package-lock.json gitignored -> exit non-zero (Check 3 fails)" \
+    bash -c "! (cd '$FIXTURE_22D' && bash scripts/check-pm-standardization.sh)"
+
 test_summary
