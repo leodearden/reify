@@ -32297,10 +32297,11 @@
         "description": "In gui/src-tauri/src/engine.rs, the doc comments on `break_module_name_for_test` (lines 541-547) and `break_source_map_for_test` (lines 549-558) reference behaviour that was removed by the f67b161b0 refactor: \"any get_* call will panic\" and \"the expect() on ... fires correctly\". After the refactor, resolve_source returns None via the `?` operator and callers (get_diagnostics, get_source_location) degrade gracefully. Update the doc comments to reflect graceful-degradation behaviour: these helpers now exercise the None-return path of resolve_source, not a panic guard. The struct-level invariant doc comment at line 22-42 was already updated by f67b161b0 but these helper docs were missed.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T08:13:57.595Z"
       },
       {
         "id": "1590",
@@ -32382,7 +32383,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T08:13:57.000Z",
+      "lastModified": "2026-04-10T08:13:57.596Z",
       "taskCount": 1596,
       "completedCount": 1206,
       "tags": [
