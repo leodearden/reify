@@ -139,22 +139,32 @@ impl InProcessLsp {
                 } else {
                     params
                 };
-                let p = parse_params::<InitializedParams>(params, error_prefix::INITIALIZED_PARAMS)?;
+                let p =
+                    parse_params::<InitializedParams>(params, error_prefix::INITIALIZED_PARAMS)?;
                 server.initialized(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didOpen" => {
-                let p = parse_params::<DidOpenTextDocumentParams>(params, error_prefix::DID_OPEN_PARAMS)?;
+                let p = parse_params::<DidOpenTextDocumentParams>(
+                    params,
+                    error_prefix::DID_OPEN_PARAMS,
+                )?;
                 server.did_open(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didChange" => {
-                let p = parse_params::<DidChangeTextDocumentParams>(params, error_prefix::DID_CHANGE_PARAMS)?;
+                let p = parse_params::<DidChangeTextDocumentParams>(
+                    params,
+                    error_prefix::DID_CHANGE_PARAMS,
+                )?;
                 server.did_change(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didClose" => {
-                let p = parse_params::<DidCloseTextDocumentParams>(params, error_prefix::DID_CLOSE_PARAMS)?;
+                let p = parse_params::<DidCloseTextDocumentParams>(
+                    params,
+                    error_prefix::DID_CLOSE_PARAMS,
+                )?;
                 server.did_close(p).await;
                 Ok(Value::Null)
             }
@@ -175,7 +185,8 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/definition" => {
-                let p = parse_params::<GotoDefinitionParams>(params, error_prefix::DEFINITION_PARAMS)?;
+                let p =
+                    parse_params::<GotoDefinitionParams>(params, error_prefix::DEFINITION_PARAMS)?;
                 let result = server
                     .goto_definition(p)
                     .await
