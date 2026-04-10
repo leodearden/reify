@@ -19,6 +19,7 @@ THIS_SCRIPT="${BASH_SOURCE[0]}"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
+exec 3>&2
 
 echo "=== sync_comments grep pattern meta-test ==="
 
@@ -51,15 +52,86 @@ assert "pattern extraction from sync_comments_test.sh succeeded" \
 assert "extracted pattern contains expected fn name" \
     bash -c '[[ "$PATTERN" == *sanitize_value* ]]'
 
-# Split assignment so the detection regex does not appear as a contiguous
-# literal in this file, which would trip its own self-check below.
+# Split assignment so the regex target never appears contiguously in this
+# file — prevents the self-check below from matching its own definition.
 _CHECK='bash'; _CHECK+=' -c ".*\$\{?PATTERN'
-_no_unhardened_pattern_interp() { ! grep -nE "$_CHECK" "$THIS_SCRIPT"; }
+_no_unhardened_pattern_interp() {
+    local m
+    m=$(grep -nE "$_CHECK" "$THIS_SCRIPT" 2>/dev/null) || true
+    if [ -z "$m" ]; then
+        return 0
+    fi
+    printf 'UNHARDENED PATTERN INTERPOLATION FOUND:\n%s\n' "$m" >&3
+    return 1
+}
 
 assert "this script exports PATTERN for bash -c subshells" \
     grep -qE '^[[:space:]]*export[[:space:]]+PATTERN' "$THIS_SCRIPT"
 assert 'no Section 1 bash -c $PATTERN interpolation in this script' \
     _no_unhardened_pattern_interp
+
+# -- S3: behavioral assertion that PATTERN is actually exported at runtime -----
+assert 'PATTERN is actually exported (behavioral)' \
+    bash -c '[ -n "${PATTERN+x}" ] && env | grep -q "^PATTERN="'
+
+# -- S1: meta-assertion that _CHECK= has an explanatory comment above it -------
+_test_comment_above_check() {
+    grep -B1 '^_CHECK=' "$THIS_SCRIPT" | head -1 | grep -q '^#'
+}
+assert "_CHECK= definition has an explanatory comment directly above it" \
+    _test_comment_above_check
+
+# -- S2: regression guards for the hardening self-check regex ------------------
+_test_braced_form_caught() {
+    local frag1='bash'
+    local frag2=' -c "echo ${PATTERN}"'
+    local tmp rc=0
+    tmp=$(mktemp)
+    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
+    local saved="$THIS_SCRIPT"
+    THIS_SCRIPT="$tmp"
+    _no_unhardened_pattern_interp 3>/dev/null 2>/dev/null || rc=$?
+    THIS_SCRIPT="$saved"
+    rm -f "$tmp"
+    [ "$rc" -ne 0 ]
+}
+_test_plain_form_still_caught() {
+    local frag1='bash'
+    local frag2=' -c "echo $PATTERN"'
+    local tmp rc=0
+    tmp=$(mktemp)
+    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
+    local saved="$THIS_SCRIPT"
+    THIS_SCRIPT="$tmp"
+    _no_unhardened_pattern_interp 3>/dev/null 2>/dev/null || rc=$?
+    THIS_SCRIPT="$saved"
+    rm -f "$tmp"
+    [ "$rc" -ne 0 ]
+}
+assert 'braced ${PATTERN} form is caught by _CHECK regex' \
+    _test_braced_form_caught
+assert 'plain $PATTERN form is still caught by _CHECK regex (regression)' \
+    _test_plain_form_still_caught
+
+# -- S6: loud diagnostic header on _no_unhardened_pattern_interp failure -------
+_test_loud_header_on_failure() {
+    local frag1='bash'
+    local frag2=' -c "echo $PATTERN"'
+    local tmp out
+    tmp=$(mktemp)
+    out=$(mktemp)
+    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
+    local saved_script="$THIS_SCRIPT"
+    THIS_SCRIPT="$tmp"
+    _no_unhardened_pattern_interp 3>"$out" 2>/dev/null || true
+    THIS_SCRIPT="$saved_script"
+    local result
+    result=$(cat "$out")
+    rm -f "$tmp" "$out"
+    echo "$result" | grep -q 'UNHARDENED PATTERN INTERPOLATION FOUND:'
+}
+assert '_no_unhardened_pattern_interp emits loud diagnostic header on failure' \
+    _test_loud_header_on_failure
 
 # -- Accept cases: pattern must match these valid Rust fn declarations ----------
 
