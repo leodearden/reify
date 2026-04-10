@@ -392,6 +392,80 @@ structure Item : Verifiable {
     }
 }
 
+// ── Step 15/16: recursive structure — undetermined arg propagation ────────────
+
+/// Cross-feature: recursive structure where an undetermined Length param (`next_value`,
+/// no default) is passed as an arg to the child's `value` param.
+///
+/// Note: the compiler requires recursive guards to reference an Int or Bool param
+/// (e.g., `depth > 0`). A pure `determined(next_value)` guard is rejected at compile
+/// time ("recursive sub guard does not reference any Int or Bool parameter"). We use
+/// `depth > 0` as the guard and carry `next_value` as the arg.
+///
+/// With `depth=1`:
+///   - root:  value=50mm (0.05 SI, has default), next_value=Undetermined
+///   - child: value=Undef (passed next_value, which is Undef), depth=0
+///   - grandchild: NOT created (depth=0, guard false)
+///
+/// Cross-feature assertions:
+///   1. eval: root.value = 0.05 SI, child.value = Undef (undetermined arg propagation)
+///   2. check: constraint determined(next_value) = Violated at root (next_value has no default)
+#[test]
+fn recursive_structure_determinacy_terminates_on_undetermined() {
+    let source = r#"
+structure def TermTree {
+    param value      : Length = 50mm
+    param next_value : Length
+    param depth      : Int    = 1
+    sub child = TermTree(value: next_value, depth: depth - 1) where depth > 0
+    constraint determined(next_value)
+}
+"#;
+    let eval_result = eval_source(source);
+    let check_result = check_source(source);
+
+    // root.value = 50mm = 0.05 SI (has default)
+    let value_id = ValueCellId::new("TermTree", "value");
+    let value = eval_result
+        .values
+        .get(&value_id)
+        .expect("TermTree.value should exist");
+    match value {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.05).abs() < 1e-12,
+                "expected ~0.05 SI for TermTree.value (50mm), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for TermTree.value, got {:?}", other),
+    }
+
+    // child.value = Undef: next_value (no default) is passed as arg → Undef propagates.
+    // The undetermined Length param propagates through recursive instantiation.
+    let child_value_id = ValueCellId::new("TermTree.child", "value");
+    let child_val = eval_result
+        .values
+        .get(&child_value_id)
+        .expect("TermTree.child.value should exist (child is created when depth=1>0)");
+    assert_eq!(
+        *child_val,
+        Value::Undef,
+        "TermTree.child.value should be Undef (next_value has no default → Undef arg propagation)"
+    );
+
+    // Cross-feature: constraint determined(next_value) = Violated at root (next_value is Undetermined)
+    let det_constraint = check_result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "TermTree")
+        .expect("expected constraint result for TermTree (determined(next_value))");
+    assert_ne!(
+        det_constraint.satisfaction,
+        Satisfaction::Satisfied,
+        "determined(next_value) should NOT be Satisfied when next_value has no default"
+    );
+}
+
 // ── Step 13/14: recursive structure with determinacy constraint ───────────────
 
 /// Cross-feature: a recursive structure that uses depth > 0 as its unfolding guard
