@@ -29283,11 +29283,11 @@
         "description": "Review suggestion from task 1321 review (reviewer_comprehensive, category: vacuous_regression_guard).\n\nLocation: tree-sitter-reify/tests/build_logic_tests.rs:1378-1400 (the new test introduced by task 1321).\n\nProblem: The new `test_self_path_constants_use_manifest_dir` asserts `source.contains(\"env!(\\\"CARGO_MANIFEST_DIR\\\")\")` against the file's own contents. But the test's own doc-comment at line 1381 contains the literal text `env!(\"CARGO_MANIFEST_DIR\")` inside backticks. Verified: exactly 3 occurrences of that string exist in the file — lines 56, 60 (the real THIS_FILE / BUILD_RS constants) and line 1381 (the comment). If a future change replaces BOTH constants with hard-coded relative paths, the test would still pass because the comment alone would satisfy the contains-check. The regression guard is therefore vacuous — it cannot fail in the way its prose claims.\n\nFix (reviewer-recommended, option b is strictly stronger): change the assertion to require `source.matches(\"env!(\\\"CARGO_MANIFEST_DIR\\\")\").count() >= 2`. This enforces that BOTH THIS_FILE and BUILD_RS use the macro, catches a regression in either constant individually, and makes the comment self-referential text a non-issue. Alternatively, match the more specific pattern `concat!(env!(\"CARGO_MANIFEST_DIR\")` which only appears in the const declarations (not the comment).\n\nWhile fixing: also rephrase the doc comment to refer to the macro indirectly — e.g., \"the env! macro on CARGO_MANIFEST_DIR\" — so any future blanket-text scan cannot be tripped by the doc.\n\nVerify: `cargo test -p tree-sitter-reify test_self_path_constants_use_manifest_dir` passes, and mutation-check by temporarily replacing one of the two const definitions with a bare relative path and confirming the test now fails.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:22:12.066Z",
+        "updatedAt": "2026-04-10T01:07:22.537Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/tests/build_logic_tests.rs"
@@ -29623,7 +29623,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:07:21.996Z",
+      "lastModified": "2026-04-10T01:07:22.538Z",
       "taskCount": 1432,
       "completedCount": 1097,
       "tags": [
