@@ -648,6 +648,19 @@ assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)
 assert "no line uses the canonical kill -- -\$cmd_pid form (quoted or unquoted)" \
     bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
 
+# -- Test 22b (meta): simplified kill regex discrimination semantics -----------
+echo ""
+echo "--- Test 22b (meta): simplified kill regex matches/rejects correctly ---"
+
+# Verifies the simplified regex (without the dead '(^|[^-9])' prefix) correctly
+# matches 'kill -- -$cmd_pid' and correctly rejects 'kill -9 -- -$cmd_pid'.
+# Self-contained; does not depend on lib_portable.sh content.
+assert "simplified kill regex matches canonical kill -- -\$cmd_pid" \
+    bash -c 'printf "%s\n" "kill -- -\$cmd_pid" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"'
+
+assert "simplified kill regex rejects kill -9 -- -\$cmd_pid" \
+    bash -c '! printf "%s\n" "kill -9 -- -\$cmd_pid" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"'
+
 # -- Test 23: structural: both timer subshells quote the PGID argument (S1) ---
 echo ""
 echo "--- Test 23: timer subshells use quoted PGID argument for SIGKILL ---"
@@ -709,11 +722,9 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
         # would silently leave the default in place at runtime (the later
         # local declaration overrides the first).  Fail loudly here with a
         # clear count instead of a mysterious timing failure below.
-        _grace_count=$(printf "%s\n" "$func_text" | grep -cF "local _pt_kill_grace=2")
-        if [ "$_grace_count" -ne 1 ]; then
-            echo "SANITY FAIL: expected exactly 1 '"'"'local _pt_kill_grace=2'"'"' in portable_timeout, found $_grace_count" >&2
-            exit 1
-        fi
+        # Uses the grep -cF <<< idiom validated by Test 24c.
+        _pt_grace_count=$(grep -cF "local _pt_kill_grace=2" <<< "$func_text")
+        [ "$_pt_grace_count" -eq 1 ] || { echo "SANITY FAIL: expected exactly 1 occurrence of local _pt_kill_grace=2, found $_pt_grace_count" >&2; exit 1; }
         eval "${func_text/local _pt_kill_grace=2/local _pt_kill_grace=5}"
 
         t_start=$("$_abs_date" +%s)
@@ -722,6 +733,21 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
         gap=$((t_end - t_start))
         [ "$gap" -ge 5 ]
     '
+
+# -- Test 24c (meta): grep -cF count distinguishes 1- vs 2-occurrence inputs --
+echo ""
+echo "--- Test 24c (meta): grep -cF count correctly distinguishes 1 vs 2 occurrences ---"
+
+# Verifies the 'grep -cF "local _pt_kill_grace=2" <<< $var' idiom used by
+# the Test 24b uniqueness guard correctly reports 1 for a single occurrence
+# and 2 for two occurrences.  Self-contained; does not depend on lib_portable.sh.
+_pt_single=$'portable_timeout ()\n{\n    local _pt_kill_grace=2\n    echo done\n}'
+assert "grep -cF count == 1 for single occurrence of 'local _pt_kill_grace=2'" \
+    bash -c '[ "$(grep -cF "local _pt_kill_grace=2" <<< "$1")" -eq 1 ]' _ "$_pt_single"
+
+_pt_double=$'portable_timeout ()\n{\n    local _pt_kill_grace=2\n    local _pt_kill_grace=2\n    echo done\n}'
+assert "grep -cF count == 2 for two occurrences of 'local _pt_kill_grace=2'" \
+    bash -c '[ "$(grep -cF "local _pt_kill_grace=2" <<< "$1")" -eq 2 ]' _ "$_pt_double"
 
 # -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
 echo ""
