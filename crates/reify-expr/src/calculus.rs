@@ -1189,6 +1189,11 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
+    debug_assert!(
+        matches!(codomain_type, Type::Real | Type::Scalar { .. }),
+        "divergence/laplacian codomain must be scalar, got {:?}",
+        codomain_type
+    );
     // Accept Point, Vector, Real, Int, and Scalar — the wide extract_coords variant.
     // eval_perturbed_point re-wraps as Value::Point, so the lambda always sees a Point.
     let Some(coords) = extract_coords(point) else {
