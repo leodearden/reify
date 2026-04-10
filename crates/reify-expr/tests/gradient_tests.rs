@@ -1016,6 +1016,9 @@ fn gradient_dimensioned_field() {
 
     // Expected: Vector3 with components ~2.0, ~3.0, ~4.0 in dimension kg/m
     let expected_dim = dim_kg.div(&dim_m);
+    // Inline match retained: this site asserts dimensioned Value::Scalar components
+    // (with a specific DimensionVector), which assert_gradient_vector cannot check
+    // because it uses as_f64(), which discards dimension information.
     match &sample_result {
         Value::Vector(components) => {
             assert_eq!(components.len(), 3, "gradient should have 3 components");
@@ -1290,6 +1293,9 @@ fn gradient_dimensioned_scalar_lambda_args() {
     // Expected: Vector3 with components ≈2.0, ≈4.0, ≈6.0 in dimension m (=m²/m)
     // df/dx = 2x = 2*1 = 2, df/dy = 2y = 2*2 = 4, df/dz = 2z = 2*3 = 6
     let expected_dim = dim_m; // m²/m = m
+    // Inline match retained: this site asserts dimensioned Value::Scalar components
+    // (with a specific DimensionVector), which assert_gradient_vector cannot check
+    // because it uses as_f64(), which discards dimension information.
     match &sample_result {
         Value::Vector(components) => {
             assert_eq!(components.len(), 3, "gradient should have 3 components");
