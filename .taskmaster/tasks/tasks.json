@@ -28981,11 +28981,11 @@
         "description": "Close the `access = \"write\"` coverage gap for `write_values` and `write_snapshot_values` that was dropped when `structured_field_emission` was deleted in Task 1350, and fix the now-overstated `assert_poison_recovers` doc comment.",
         "details": "Background — Task 1350 deleted the per-site `structured_field_emission` module (crates/reify-runtime/tests/concurrent_eval.rs:2386-2672), which was the only place asserting `access = \"write\"` for the two write-path warn sites `write_values` (concurrent_eval.rs:119) and `write_snapshot_values` (concurrent_eval.rs:139). The surviving `tracing_warn_emitted_on_poison_evaluate` test (concurrent_eval.rs:2558-2581) only asserts `assert_any_event_has_fields(&[(\"lock\", \"values\")])` and never touches the snapshot_values write path at all. A typo changing `access=\"write\"` to `\"writte\"` or a dropped field on the write helpers would slip past every surviving test.\n\nSeparately, the doc comment on `assert_poison_recovers` (concurrent_eval.rs:1606-1623) claims the canonical-message and `error`-field invariants fire \"for every warn site across all 3 families\" and \"collapses 11 per-site string literals into one authoritative check.\" In reality, the helper only fires when a test routes through it. The evaluate-based tests (`tracing_warn_emitted_on_poison_evaluate` and the three `evaluate_recovers_poisoned_*`) bypass the helper, and `all_three_locks_poisoned_shared_fallback_recovers_with_three_warns` wires the subscriber manually. So the contract covers 9 of 11 sites, not all 11.\n\nActions:\n\n1. Extend `tracing_warn_emitted_on_poison_evaluate` (concurrent_eval.rs:2558-2581) to assert the specific pairs `[(\"lock\", \"values\"), (\"access\", \"write\")]` via `capture.assert_any_event_has_fields(...)`.\n\n2. Add a mirror test `tracing_warn_emitted_on_poison_evaluate_snapshot_values` that calls `adapter.poison_snapshot_values()` and asserts `[(\"lock\", \"snapshot_values\"), (\"access\", \"write\")]` on at least one captured event. Verifies the write path on snapshot_values is still observable.\n\n3. Reword the `assert_poison_recovers` doc comment (concurrent_eval.rs:1606-1623) to say \"applied on every callsite that uses this helper\" and explicitly list which warn sites fall outside the helper (write_values, write_snapshot_values at concurrent_eval.rs:119/139, plus the bulk shared-fallback test). Better alternative: route the evaluate-based and triple-fallback tests through the helper (or a sibling helper) so the claim becomes true — but this is optional; reword-only is acceptable.\n\n4. Verify: `cd /home/leo/src/reify && cargo test -p reify-runtime --test concurrent_eval --features test-utils` — all poison_* tests must still pass.\n\nDerived from Task 1350 reviewer suggestion #1 (test_coverage_regression) + #2 (misleading_documentation), reviewer_comprehensive.\n\nmemory_hints:\n  search: \"assert_poison_recovers write_values write_snapshot_values evaluate tracing\"\n  entities: [\"ConcurrentEvalAdapter\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:09:12.853Z",
+        "updatedAt": "2026-04-10T01:07:21.996Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests"
@@ -29623,7 +29623,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:07:21.421Z",
+      "lastModified": "2026-04-10T01:07:21.996Z",
       "taskCount": 1432,
       "completedCount": 1097,
       "tags": [
