@@ -29784,10 +29784,11 @@
         "description": "sub_member_types is a strict superset of collection_sub_member_types (both populated from child_tmpl.value_cells in entity.rs:417-447). The .or_else() fallback at expr.rs:1512-1517 is unreachable dead code. The HashMap construction in entity.rs:434-446 duplicates 418-430.\n\nAudit all usages of collection_sub_member_types (expr.rs:115, expr.rs:767-769, expr.rs:1514, entity.rs:444, scope.rs:18) and determine whether collection_sub_member_types can be replaced by sub_member_types + collection_sub_names everywhere. If so, remove the field from CompilationScope entirely. If some usages genuinely need it, at minimum: (1) remove the dead .or_else() at expr.rs:1512, (2) extract the duplicated HashMap construction in entity.rs into a helper.\n\nmemory_hints: search \"collection_sub_member_types superset sub_member_types\" for prior analysis; get_entity \"CompilationScope\" for scope structure.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:27:15.570Z"
       },
       {
         "id": "1442",
@@ -29804,7 +29805,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:27:14.998Z",
+      "lastModified": "2026-04-10T01:27:15.570Z",
       "taskCount": 1442,
       "completedCount": 1105,
       "tags": [
