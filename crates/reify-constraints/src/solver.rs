@@ -1365,8 +1365,9 @@ mod tests {
 
         assert!(missing.is_empty(), "expected no missing params; got {:?}", missing);
         // Empty `missing` means verify_uniqueness will not emit a WARN for this input.
-        // The explicit tracing-silence integration test was removed during the Task 1250
-        // refactor; coverage of the no-warn path is now implicit via this assertion.
+        // The explicit tracing-silence integration test was removed when end-to-end
+        // tracing coverage was consolidated into unit tests; coverage of the no-warn
+        // path is now implicit via this assertion (empty missing => no WARN emitted).
         assert_eq!(perturbed.len(), 1);
         // solution 0.25 < mid 0.5 → lo + 0.9*(hi-lo) = 0.0 + 0.9*1.0 = 0.9
         assert!(
