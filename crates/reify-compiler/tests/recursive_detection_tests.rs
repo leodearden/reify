@@ -644,3 +644,56 @@ structure C {
          than the same template with is_recursive=false (incremental correctness)"
     );
 }
+
+/// A non-recursive template's content_hash must be identical whether or not it
+/// appears alongside a recursive cycle in the same module.
+/// This is a regression guard: the remix step must only touch recursive templates,
+/// never non-recursive ones (which would unnecessarily invalidate existing caches).
+#[test]
+fn non_recursive_template_hash_unaffected_by_other_cycles() {
+    // Module 1: A<->B mutual cycle plus an independent C
+    let combined_source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub a = A(n: n - 1) where n > 0
+}
+structure C {
+    param x : Int = 10
+}
+"#;
+
+    // Module 2: C alone (no cycle context)
+    let standalone_source = r#"
+structure C {
+    param x : Int = 10
+}
+"#;
+
+    let (combined_templates, _) = compile_all(combined_source);
+    let (standalone_templates, _) = compile_all(standalone_source);
+
+    let c_combined = find_template(&combined_templates, "C");
+    let c_standalone = find_template(&standalone_templates, "C");
+
+    // Sanity: C is not recursive in either case.
+    assert!(
+        !c_combined.is_recursive,
+        "C alongside A<->B should not be recursive"
+    );
+    assert!(
+        !c_standalone.is_recursive,
+        "C compiled alone should not be recursive"
+    );
+
+    // C's hash must be identical in both compilations.
+    assert_eq!(
+        c_combined.content_hash,
+        c_standalone.content_hash,
+        "non-recursive template C must have the same content_hash whether or not \
+         it appears in a module that also contains a recursive cycle"
+    );
+}
