@@ -32084,15 +32084,16 @@
         "description": "There is no integration test that loads a .ri file and verifies the constraint-violated path. Add a test that loads a .ri file with intentionally violated constraints and asserts SolveResult::Violated. Source: review of task 220 (S7).",
         "details": "Files: tests/m9_integration.rs, test fixtures.\\n\\nmemory_hints:\\n- search: \"m9_integration .ri file test\"\\n- search: \"SolveResult Violated ri file\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T07:04:18.633Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:04:18.127Z",
+      "lastModified": "2026-04-10T07:04:18.633Z",
       "taskCount": 1584,
       "completedCount": 1182,
       "tags": [
