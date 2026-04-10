@@ -162,24 +162,24 @@ const HANG_GUARD_SECS: u64 = 5;
 
 /// Wrap `f` in a timeout and panic with a descriptive message if the timeout fires.
 ///
-/// This helper guards pre-handshake tests against infinite hangs:
+/// This helper guards async bridge tests against infinite hangs:
 /// a future that blocks forever (e.g. waiting on a channel that never receives)
-/// will be detected within `seconds` seconds and surface as a named panic rather
-/// than causing the test suite to hang silently.
+/// will be detected within `seconds` seconds and surface as a panic that
+/// includes the caller's file:line location rather than causing the test suite
+/// to hang silently.
 ///
 /// # Panics
 ///
-/// Panics with `"{test_name} must not hang (timed out after {seconds}s)"` if
-/// `f` does not complete within `seconds` seconds.
-async fn with_hang_guard<F: std::future::Future<Output = ()>>(
-    seconds: u64,
-    test_name: &str,
-    f: F,
-) {
+/// Panics with `"{caller} must not hang (timed out after {seconds}s)"` if
+/// `f` does not complete within `seconds` seconds, where `{caller}` is the
+/// auto-derived file:line of the call site (via `#[track_caller]`).
+#[track_caller]
+async fn with_hang_guard<F: std::future::Future<Output = ()>>(seconds: u64, f: F) {
+    let caller = std::panic::Location::caller();
     tokio::time::timeout(Duration::from_secs(seconds), f)
         .await
         .unwrap_or_else(|_| {
-            panic!("{test_name} must not hang (timed out after {seconds}s)")
+            panic!("{caller} must not hang (timed out after {seconds}s)")
         });
 }
 
@@ -203,7 +203,7 @@ async fn set_default_guard_captures_warn_on_current_thread() {
 
 #[tokio::test]
 async fn initialize_returns_server_capabilities() {
-    with_hang_guard(HANG_GUARD_SECS, "initialize_returns_server_capabilities", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
 
         let result = lsp
@@ -392,7 +392,7 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
 /// [`error_prefix::INITIALIZE_PARAMS`].
 #[tokio::test]
 async fn initialize_with_malformed_params_returns_error() {
-    with_hang_guard(HANG_GUARD_SECS, "initialize_with_malformed_params_returns_error", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
         assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
             .await;
@@ -407,7 +407,7 @@ async fn initialize_with_malformed_params_returns_error() {
 /// — deserialization failures are surfaced to the caller even for one-way messages.
 #[tokio::test]
 async fn notification_with_malformed_params_returns_error() {
-    with_hang_guard(HANG_GUARD_SECS, "notification_with_malformed_params_returns_error", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
         assert_malformed_params_returns_error(
             &lsp,
@@ -424,7 +424,7 @@ async fn notification_with_malformed_params_returns_error() {
 /// This documents the `other => Err(...)` arm of `handle_request`'s match expression.
 #[tokio::test]
 async fn unsupported_method_returns_error() {
-    with_hang_guard(HANG_GUARD_SECS, "unsupported_method_returns_error", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
 
         let result = lsp.handle_request("textDocument/foobar", json!({})).await;
@@ -449,7 +449,7 @@ async fn unsupported_method_returns_error() {
 /// "initialize params error".
 #[tokio::test]
 async fn initialize_with_invalid_field_type_returns_error() {
-    with_hang_guard(HANG_GUARD_SECS, "initialize_with_invalid_field_type_returns_error", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
 
         // processId is an Option<u32> in InitializeParams — passing a string makes
@@ -480,7 +480,7 @@ async fn initialize_with_invalid_field_type_returns_error() {
 /// rather than silently substituting a default.
 #[tokio::test]
 async fn initialize_with_missing_capabilities_returns_error() {
-    with_hang_guard(HANG_GUARD_SECS, "initialize_with_missing_capabilities_returns_error", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
 
         let result = lsp.handle_request("initialize", json!({})).await;
@@ -507,7 +507,7 @@ async fn initialize_with_missing_capabilities_returns_error() {
 /// pre-initialized state.
 #[tokio::test]
 async fn initialize_error_does_not_corrupt_server_state() {
-    with_hang_guard(HANG_GUARD_SECS, "initialize_error_does_not_corrupt_server_state", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
 
         // First call: should fail.
@@ -541,7 +541,7 @@ async fn initialize_error_does_not_corrupt_server_state() {
 /// arm separately.
 #[tokio::test]
 async fn initialized_returns_ok_null() {
-    with_hang_guard(HANG_GUARD_SECS, "initialized_returns_ok_null", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
         lsp.handle_request("initialize", json!({"capabilities": {}}))
             .await
@@ -591,7 +591,7 @@ async fn did_open_returns_ok_null() {
 /// surfaced to the caller rather than silently ignored.
 #[tokio::test]
 async fn initialized_with_malformed_params_returns_error() {
-    with_hang_guard(HANG_GUARD_SECS, "initialized_with_malformed_params_returns_error", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
         assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
             .await;
@@ -771,7 +771,7 @@ async fn shutdown_with_null_params_returns_ok_null() {
 /// a panic or an unexpected error being introduced on this path.
 #[tokio::test]
 async fn shutdown_before_initialize() {
-    with_hang_guard(HANG_GUARD_SECS, "shutdown_before_initialize", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
         assert_shutdown_returns_null(&lsp, &json!({})).await;
     })
@@ -787,7 +787,7 @@ async fn shutdown_before_initialize() {
 /// path because the shutdown arm in the bridge ignores params entirely.
 #[tokio::test]
 async fn shutdown_before_initialize_with_null_params() {
-    with_hang_guard(HANG_GUARD_SECS, "shutdown_before_initialize_with_null_params", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
         assert_shutdown_returns_null(&lsp, &json!(null)).await;
     })
@@ -808,7 +808,7 @@ async fn shutdown_before_initialize_with_null_params() {
 /// shutdown arm does not consult initialization state.
 #[tokio::test]
 async fn shutdown_ignores_unexpected_params() {
-    with_hang_guard(HANG_GUARD_SECS, "shutdown_ignores_unexpected_params", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         // Object with unexpected extra fields — bridge must not reject this.
         let lsp = InProcessLsp::new();
         assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
@@ -919,7 +919,7 @@ mod completion_items_tests {
 /// otherwise this test will fail at runtime, catching the drift immediately.
 #[tokio::test]
 async fn error_prefix_constants_match_actual_errors() {
-    with_hang_guard(HANG_GUARD_SECS, "error_prefix_constants_match_actual_errors", async {
+    with_hang_guard(HANG_GUARD_SECS, async {
         let lsp = InProcessLsp::new();
 
         // Verify each constant is contained in the error for its matching method.
@@ -984,7 +984,6 @@ async fn error_prefix_constants_match_actual_errors() {
 async fn downstream_ops_after_malformed_initialize_without_initialized() {
     with_hang_guard(
         HANG_GUARD_SECS,
-        "downstream_ops_after_malformed_initialize_without_initialized",
         async {
         let lsp = InProcessLsp::new();
 
@@ -1050,7 +1049,7 @@ mod hang_guard_tests {
     /// A future that completes immediately should not panic.
     #[tokio::test]
     async fn completes_fast_future() {
-        with_hang_guard(5, "completes_fast_future", async {}).await;
+        with_hang_guard(5, async {}).await;
     }
 
     /// A future that exceeds the timeout should panic with "must not hang".
@@ -1058,8 +1057,7 @@ mod hang_guard_tests {
     #[should_panic(expected = "must not hang")]
     async fn panics_on_timeout() {
         with_hang_guard(
-            0,
-            "panics_on_timeout",
+            1,
             tokio::time::sleep(Duration::from_secs(60)),
         )
         .await;
