@@ -500,11 +500,8 @@ check "_has_if_n_guard detects non-underscore ref variable" "$ok"
 # Clean fixture with no if-guard: helper should return 0 (no guard → true).
 fixture_clean=$(mk_fixture)
 printf '# no guards here\necho hello\n' > "$fixture_clean"
-if ! _has_if_n_guard "$fixture_clean" 2>/dev/null; then
-    check "if-guard pattern returns true for clean file (no guard)" "true"
-else
-    check "if-guard pattern returns true for clean file (no guard)" "false"
-fi
+if ! _has_if_n_guard "$fixture_clean" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard reports no-guard for clean file (no false positive)" "$ok"
 
 # Fixture with a non-ref-named guard variable ($marker): the broadened regex
 # 'if \[ -n' matches regardless of the variable name, so this guard is
