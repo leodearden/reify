@@ -352,6 +352,61 @@ printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/pack
 assert "23b: mismatched packageManager versions -> exit non-zero" \
     bash -c "! (cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh)"
 
+# Test 23c: all files use the SAME non-npm@ packageManager (yarn@1.22.0)
+# Check 1 fails (no npm@ prefix); Check 2 still passes (total=3, unique=1 — same value everywhere)
+# Checks 3 and 4 pass because lockfile/.gitignore state is correct
+FIXTURE_23C="$(mktemp -d)"
+_TMPDIRS+=("$FIXTURE_23C")
+
+mkdir -p "$FIXTURE_23C/scripts"
+mkdir -p "$FIXTURE_23C/tests/infra"
+mkdir -p "$FIXTURE_23C/gui/sidecar"
+mkdir -p "$FIXTURE_23C/tree-sitter-reify"
+
+cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_23C/scripts/"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_23C/tests/infra/"
+
+# .gitignore: pnpm-lock.yaml gitignored (Check 4 pass); npm lockfiles NOT listed (Check 3 pass)
+echo "gui/pnpm-lock.yaml" > "$FIXTURE_23C/.gitignore"
+
+git -C "$FIXTURE_23C" init -q
+
+# All three files use the SAME non-npm@ value — Check 2 still passes (total=3, unique=1)
+for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+    printf '{"packageManager":"yarn@1.22.0"}\n' > "$FIXTURE_23C/$pkg"
+done
+
+assert "23c: non-npm@ packageManager (yarn@1.22.0 in all files) -> exit non-zero (Check 1 fails)" \
+    bash -c "! (cd '$FIXTURE_23C' && bash scripts/check-pm-standardization.sh)"
+
+# Test 23d: consistent npm@ versions but gui/package-lock.json gitignored
+# Checks 1 and 2 pass (npm@10.9.0 in all files, total=3, unique=1)
+# Check 3 fails (.gitignore lists gui/package-lock.json so git check-ignore returns 0)
+# Check 4 passes (gui/pnpm-lock.yaml still in .gitignore)
+FIXTURE_23D="$(mktemp -d)"
+_TMPDIRS+=("$FIXTURE_23D")
+
+mkdir -p "$FIXTURE_23D/scripts"
+mkdir -p "$FIXTURE_23D/tests/infra"
+mkdir -p "$FIXTURE_23D/gui/sidecar"
+mkdir -p "$FIXTURE_23D/tree-sitter-reify"
+
+cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_23D/scripts/"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_23D/tests/infra/"
+
+# .gitignore: BOTH pnpm-lock.yaml (Check 4 pass) AND gui/package-lock.json (Check 3 fail)
+printf 'gui/pnpm-lock.yaml\ngui/package-lock.json\n' > "$FIXTURE_23D/.gitignore"
+
+git -C "$FIXTURE_23D" init -q
+
+# All three files use consistent npm@10.9.0 — Checks 1 and 2 pass
+for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+    printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_23D/$pkg"
+done
+
+assert "23d: gui/package-lock.json gitignored -> exit non-zero (Check 3 fails)" \
+    bash -c "! (cd '$FIXTURE_23D' && bash scripts/check-pm-standardization.sh)"
+
 # -- Test 24: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ----------
 echo ""
 echo "--- Test 24: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ---"
