@@ -29642,15 +29642,16 @@
         "description": "In `crates/reify-types/src/value.rs`, the task-974 float-boundary iteration-order tests (lines 3082-3369) only exercise `Value::Real`. The doc comments on `Value::Set` and `Value::Map` explicitly call out `Value::Scalar`, `Value::Complex`, and `Value::Orientation` as also using `total_cmp` in their `Ord` impls. A regression in one of those arms (e.g. Scalar comparing dimension strings before the float, or Complex comparing real-then-imaginary) would not be caught.\n\n**What to do:**\nAdd at least one cross-variant boundary test for each:\n- `Value::Scalar` entries with the same dimension but boundary float values (NEG_INFINITY, -0.0, +0.0, NAN, etc.) — verify total_cmp ordering through the Scalar Ord path.\n- `Value::Complex` entries with identical real parts but boundary-valued imaginary parts — verify total_cmp is exercised on the imaginary component.\n- `Value::Orientation` entries with boundary float components — verify total_cmp through the quaternion comparison path.\n\nThese can be Set-based tests using the assert helper from the dedup task, or standalone.\n\n**memory_hints:** search \"Value Ord total_cmp implementation Scalar Complex Orientation\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:08:45.807Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:08:45.539Z",
+      "lastModified": "2026-04-10T01:08:45.807Z",
       "taskCount": 1434,
       "completedCount": 1097,
       "tags": [
