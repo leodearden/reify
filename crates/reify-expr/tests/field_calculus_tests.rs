@@ -1863,14 +1863,25 @@ fn divergence_sample_dimensional_correctness_returns_scalar() {
     let div_result = eval_field_op("divergence", domain.clone(), codomain);
     let sampled = sample_field(div_result, domain);
 
-    // Expected: Scalar[Velocity/Length = 1/Time]
+    // Expected: Scalar[Velocity/Length = 1/Time], si_value ≈ 3.0.
+    // The identity body `vec3(x, y, z)` from eval_field_op has divergence
+    // ∂x/∂x + ∂y/∂y + ∂z/∂z = 1 + 1 + 1 = 3.0 (exact analytical value).
     let one_over_time = velocity_dim.div(&DimensionVector::LENGTH);
     match sampled {
-        Value::Scalar { dimension, .. } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 dimension, one_over_time,
                 "divergence sample dimension should be 1/Time ({:?}), got {:?}",
                 one_over_time, dimension,
+            );
+            assert!(
+                (si_value - 3.0).abs() < 1e-4,
+                "divergence sample si_value should be ≈3.0 (identity-field divergence), \
+                 got {}",
+                si_value,
             );
         }
         Value::Real(_) => panic!(
@@ -1972,6 +1983,109 @@ fn laplacian_sample_dimensional_correctness_returns_scalar() {
         ),
         other => panic!(
             "laplacian_sample_dimensional_correctness_returns_scalar: \
+             expected Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Numerical accuracy regression: sampling the Laplacian of a dimensioned
+/// quadratic scalar field f(x,y,z) = x²+y²+z² on Point{3,Length}→Scalar<Temperature>
+/// should return `Value::Scalar { si_value ≈ 6.0, dimension: Temperature/Length² }`.
+///
+/// Companion to `laplacian_sample_dimensional_correctness_returns_scalar`, which
+/// only checks dimensional tagging with the linear body from `eval_field_op`.
+/// This test locks in the numerical value (∇²(x²+y²+z²) = 2+2+2 = 6.0) that was
+/// lost when the Task 1291 refactor replaced the quadratic body with a linear one
+/// whose Laplacian is 0.0.
+#[test]
+fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x*x + y*y + z*z
+    let xx = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let yy = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let zz = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(BinOp::Add, xx, yy, Type::Real),
+        zz,
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain = Type::point3(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    });
+    let codomain = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
+
+    let field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain.clone()),
+        codomain: Box::new(codomain.clone()),
+    };
+
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain, // placeholder result_type; not used by the evaluator
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    let sampled = sample_field(lap_result, domain);
+
+    // Expected: Scalar[Temperature/Length², si_value ≈ 6.0].
+    let temp_per_len_sq = DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2));
+    match sampled {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension, temp_per_len_sq,
+                "laplacian quadratic sample dimension should be Temperature/Length² \
+                 ({:?}), got {:?}",
+                temp_per_len_sq, dimension,
+            );
+            assert!(
+                (si_value - 6.0).abs() < 1e-2,
+                "laplacian quadratic sample si_value should be ≈6.0 \
+                 (∇²(x²+y²+z²) = 6), got {}",
+                si_value,
+            );
+        }
+        other => panic!(
+            "laplacian_sample_dimensional_quadratic_returns_scalar_six: \
              expected Value::Scalar, got {:?}",
             other
         ),
