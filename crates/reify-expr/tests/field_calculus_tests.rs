@@ -110,11 +110,12 @@ impl SamplePoint {
 }
 
 /// Build the identity vector field F(x,y,z)=[x,y,z], compute its divergence,
-/// sample at `point` (literal type `point_literal_type`), and assert result ≈3.0.
+/// sample at `sample_point`, and assert result ≈3.0.
 ///
 /// Used by both `divergence_identity_vector_field` (Point sample) and
 /// `divergence_accepts_vector_sample_point` (Vector sample).
-fn run_divergence_identity_test(point: Value, point_literal_type: Type, label: &str) {
+fn run_divergence_identity_test(sample_point: SamplePoint, label: &str) {
+    let (point, point_literal_type) = sample_point.into_value_and_type();
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -671,8 +672,7 @@ fn gradient_3d_sum_of_squares_accuracy() {
 #[test]
 fn divergence_identity_vector_field() {
     run_divergence_identity_test(
-        Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::point3(Type::Real),
+        SamplePoint::Point3([1.0, 2.0, 3.0]),
         "divergence of [x,y,z] at (1,2,3)",
     );
 }
@@ -684,8 +684,7 @@ fn divergence_identity_vector_field() {
 #[test]
 fn divergence_accepts_vector_sample_point() {
     run_divergence_identity_test(
-        Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::vec3(Type::Real),
+        SamplePoint::Vector3([1.0, 2.0, 3.0]),
         "divergence of [x,y,z] at Vector(1,2,3)",
     );
 }
