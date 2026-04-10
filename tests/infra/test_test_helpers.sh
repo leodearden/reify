@@ -771,6 +771,14 @@ else
 fi
 check "self-check comments contain no stale 'absent until step-N adds it' phrasing" "$ok"
 
+# Self-check: defensive trap comment has no drifting 'lines ~NNN' references.
+if ! grep -qE 'lines [~][34][0-9]{2}' "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "defensive trap comment has no drifting 'lines ~NNN' references" "$ok"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
