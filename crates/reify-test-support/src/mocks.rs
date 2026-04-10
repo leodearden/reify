@@ -586,7 +586,7 @@ mod tests {
     use super::*;
     use crate::assert_value_approx;
     use crate::values::{meters, mm2, mm3, point3};
-    use reify_types::{CompiledExpr, Type, Value, ValueMap};
+    use reify_types::{AutoParam, CompiledExpr, Type, Value, ValueMap};
     use std::sync::Barrier;
 
     #[test]
@@ -597,6 +597,16 @@ mod tests {
         assert!(p.current_values.is_empty());
         assert!(p.objective.is_none());
         assert!(p.functions.is_empty());
+    }
+
+    #[test]
+    fn single_auto_param_has_standard_defaults() {
+        let cell_id = ValueCellId::new("X", "y");
+        let param = single_auto_param(cell_id.clone());
+        assert_eq!(param.id, cell_id);
+        assert_eq!(param.param_type, Type::length());
+        assert_eq!(param.bounds, None);
+        assert!(!param.free);
     }
 
     #[test]
