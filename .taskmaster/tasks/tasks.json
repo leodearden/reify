@@ -29433,7 +29433,8 @@
             "crates/reify-lsp/src/bridge.rs"
           ],
           "modules": [
-            "crates/reify-lsp/src"
+            "crates/reify-lsp/src",
+            "crates/reify-lsp/tests"
           ]
         },
         "updatedAt": "2026-04-10T01:07:25.397Z"
