@@ -61,7 +61,7 @@ echo ""
 echo "--- Test 6: at least one #[cfg(not(debug_assertions))] test exists ---"
 
 assert "at least one .rs file in workspace contains #[cfg(not(debug_assertions))]" \
-    grep -rq '#\[cfg(not(debug_assertions))\]' "$REPO_ROOT" --include='*.rs'
+    grep -rq --exclude-dir=target --exclude-dir=.git --exclude-dir=node_modules '#\[cfg(not(debug_assertions))\]' "$REPO_ROOT" --include='*.rs'
 
 # -- Test 7: structural self-check — Test 6 must use workspace-wide grep ---------
 echo ""
