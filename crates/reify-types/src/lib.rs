@@ -8,6 +8,7 @@ pub mod hash;
 pub mod identity;
 pub mod persistent;
 pub mod provenance;
+pub mod source_location;
 pub mod traits;
 pub mod ty;
 pub mod value;
