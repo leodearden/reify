@@ -32508,11 +32508,11 @@
         "description": "Revert the pub(crate) change to error_prefix::INITIALIZE_PARAMS in crates/reify-lsp/src/bridge.rs:233 back to pub. This change broke the single-source-of-truth design: (1) Module docstring now falsely claims \"no parallel string\" and \"compile-error on rename\". (2) Only INITIALIZE_PARAMS restricted while 8 siblings remain pub — arbitrary inconsistency. (3) Reintroduced duplicate INITIALIZE_PARAMS_ERR_PREFIX in tests/in_process_bridge.rs:18. (4) Mixed import patterns in error_prefix_constants_match_actual_errors test. (5) Semver concern doesn't apply — reify-lsp is an internal crate. Revert to pub, delete the file-local mirror, restore the import in the integration test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:05:33.288Z",
+        "updatedAt": "2026-04-10T16:09:39.962Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/src",
@@ -32660,9 +32660,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:05:54.099Z",
+      "lastModified": "2026-04-10T16:09:39.964Z",
       "taskCount": 1605,
-      "completedCount": 1223,
+      "completedCount": 1224,
       "tags": [
         "master"
       ]
