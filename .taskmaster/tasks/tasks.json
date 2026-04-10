@@ -28073,11 +28073,11 @@
         "description": "Deduplicate and harden the per-site structured_field_emission tests added in Task 600, which now overlap with the migrated poison_recovery / poison_recovery_extended / poison_shared_fallback / poison_evaluate suites that already call assert_poison_recovers(..., expected_fields).",
         "details": "Background: Task 600 landed two sets of structured-field coverage: (a) the original per-site module `structured_field_emission` at crates/reify-runtime/tests/concurrent_eval.rs:2386-2672 (≈290 lines, 11 tests, one per warn site), and (b) updated assertions inside the existing poison_* suites after migrating them to assert_poison_recovers(..., expected_fields). The per-site module was the TDD-failing scaffold from commit 1faade68a/a471aac41; its role as a contract guard is now redundant.\n\nActions:\n\n1. Delete the entire `structured_field_emission` module (crates/reify-runtime/tests/concurrent_eval.rs:2386-2672). Rationale: the migrated poison_* suites already cover every site and also assert on data content, so they subsume the per-site checks and cost less to maintain.\n\n2. Before deleting, audit the per-site module for any assertion NOT covered by the migrated suites and lift those into the migrated tests. In particular: add at least one assertion per family (helper recovery, into_result inline recovery, shared_fallback inline recovery) that `capture.fields_by_event().iter().any(|m| m.contains_key(\"error\"))` so the `error = %e` field cannot silently disappear. Reviewer suggestion #1.\n\n3. Centralize the fixed message check in `assert_poison_recovers` (single `message == \"lock poisoned, recovering\"` check) or add `capture.assert_any_message_equals(&str)` in reify-test-support so the exact-equality check lives in one place instead of 11 per-site sites. This addresses reviewer suggestion #6 (brittleness from repeated string literals).\n\n4. After deletion, verify the remaining tests still compile and pass:\n   - cd /home/leo/src/reify && cargo test -p reify-runtime --test concurrent_eval --features test-utils\n\n5. Ensure the field contract (lock/access/path/error/message) is still enforced end-to-end by the migrated suites. If any site loses coverage, add it back inside the relevant existing module (poison_recovery / poison_shared_fallback / poison_evaluate) instead of recreating structured_field_emission.\n\nNote: suggestion #4 (misleading test names like `read_values_emits_...` calling public methods) becomes moot once structured_field_emission is deleted. No rename needed.\n\nmemory_hints:\n  search: \"structured tracing fields lock poisoning ConcurrentEvalAdapter Task 600\"\n  entities: [\"ConcurrentEvalAdapter\"]",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:39:23.059Z",
+        "updatedAt": "2026-04-10T00:07:47.676Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests",
@@ -29024,9 +29024,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:07:25.409Z",
+      "lastModified": "2026-04-10T00:07:47.676Z",
       "taskCount": 1406,
-      "completedCount": 1084,
+      "completedCount": 1085,
       "tags": [
         "master"
       ]
