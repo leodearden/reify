@@ -32295,6 +32295,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1590,
+        "title": "Replace unreachable catch-all in elementary_rotation_quat with unreachable!()",
+        "description": "In crates/reify-stdlib/src/orientation.rs line 218, elementary_rotation_quat's match on axis has a catch-all `_ => (1.0, 0.0, 0.0, 0.0)` that silently returns the identity quaternion for invalid axis values. The only caller (orient_euler) constructs axes through a match on 12 fixed convention strings, each yielding axis values in {0, 1, 2}, so the catch-all is unreachable in practice. Per silent-defaults convention, replace with unreachable!(\"elementary_rotation_quat called with axis > 2 — axes always come from orient_euler match\") to convert a latent silent-identity-default into a loud bug signal.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -32307,7 +32318,7 @@
       ],
       "created": "2026-04-10T07:44:24.240Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T08:04:10.449Z"
+      "updated": "2026-04-10T08:04:16.383Z"
     }
   }
 }
