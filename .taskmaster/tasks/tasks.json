@@ -31949,11 +31949,11 @@
         "description": "Four improvements: (1) lib.rs:634: replace ContentHash::of(&[1u8]) with ContentHash::of_str(\"is_recursive\") and hoist above loop. (2) recursive_detection_tests.rs: refactor compile_all to call compile_module. (3) Add comment noting is_recursive_mixed_into_content_hash assumes non-transitive hash.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:49:58.284Z"
+        "updatedAt": "2026-04-10T07:08:36.236Z"
       },
       {
         "id": "1569",
@@ -32229,9 +32229,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:08:32.520Z",
+      "lastModified": "2026-04-10T07:08:36.236Z",
       "taskCount": 1584,
-      "completedCount": 1190,
+      "completedCount": 1191,
       "tags": [
         "master"
       ]
