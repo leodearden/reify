@@ -31676,7 +31676,12 @@
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:30:42.379Z"
+        "updatedAt": "2026-04-10T06:30:42.379Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src"
+          ]
+        }
       },
       {
         "id": 1554,
