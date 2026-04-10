@@ -199,21 +199,21 @@ echo "--- Test 18: Check 2 subshell enables set -euo pipefail ---"
 assert "Check 2 subshell enables set -euo pipefail" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'set -euo pipefail'"
 
-# -- Test 19: Check 2 has dual total==3 AND unique==1 assertion (task 1326) --
+# -- Test 19: Check 2 has dual total==PKG_COUNT AND unique==1 assertion (task 1366) --
 echo ""
 echo "--- Test 19: Check 2 has pre-dedup and post-dedup count assertions ---"
 
-# Without the pre-dedup total==3 assertion, a package.json missing the
-# packageManager field would be silently accepted: grep emits 2 matching lines,
-# but `sort -u` still collapses them to 1 unique line.
+# Without the pre-dedup total==PKG_COUNT assertion, a package.json missing the
+# packageManager field would be silently accepted: grep emits fewer matching
+# lines, but `sort -u` still collapses them to 1 unique line.
 assert "Check 2 block computes a pre-dedup 'total' variable" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'total='"
 
 assert "Check 2 block computes a post-dedup 'unique' variable" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'unique='"
 
-assert "Check 2 asserts total equals 3 (catches missing packageManager field)" \
-    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q \"total.* = '3'\""
+assert "Check 2 total assertion references \$PKG_COUNT not a literal number (task 1366)" \
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -qF '\$PKG_COUNT'"
 
 assert "Check 2 asserts unique equals 1 (catches version disagreement)" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q \"unique.* = '1'\""
@@ -235,7 +235,7 @@ echo "--- Test 21: Check 2 logic rejects both bug scenarios ---"
 # These tests reproduce the Check 2 subshell logic exactly and run it against
 # mktemp fixture directories, independent of the real repo paths. This proves
 # the pattern catches both regression modes described in task 1326:
-#   bug 1: file missing the packageManager field → total==2, unique==1 → fail
+#   bug 1: file missing the packageManager field → total < PKG_COUNT, unique==1 → fail
 #   bug 2: file missing entirely → preflight / set -euo pipefail → fail
 FIX_DIR="$(mktemp -d)"
 _TMPDIRS+=("$FIX_DIR")
@@ -245,12 +245,13 @@ cat > "$CHECK2_HELPER" <<'CHECK2EOF'
 #!/usr/bin/env bash
 # Mirror of scripts/check-pm-standardization.sh Check 2 subshell body.
 set -euo pipefail
+expected=$#
 for f in "$@"; do
     [ -f "$f" ] || exit 1
 done
 total=$(grep -ohE '"packageManager"\s*:\s*"[^"]+"' "$@" | wc -l | tr -d ' ')
 unique=$(grep -ohE '"packageManager"\s*:\s*"[^"]+"' "$@" | sort -u | wc -l | tr -d ' ')
-[ "$total" = '3' ] && [ "$unique" = '1' ]
+[ "$total" = "$expected" ] && [ "$unique" = '1' ]
 CHECK2EOF
 chmod +x "$CHECK2_HELPER"
 
@@ -286,9 +287,36 @@ printf '{\n  "packageManager": "npm@10.1.0"\n}\n' > "$FIX_DIR/case_d/p3.json"
 assert "Check 2 logic rejects differing packageManager versions" \
     bash -c "! '$CHECK2_HELPER' '$FIX_DIR/case_d/p1.json' '$FIX_DIR/case_d/p2.json' '$FIX_DIR/case_d/p3.json'"
 
-# -- Test 22: behavioral integration tests (task 1328) ------------------------
+# Case E: four files all agreeing → PASS (proves dynamic count works for N≠3)
+# This fails until CHECK2_HELPER uses expected=$# instead of hardcoded '3'.
+mkdir -p "$FIX_DIR/case_e"
+for i in 1 2 3 4; do
+    printf '{\n  "packageManager": "npm@10.0.0"\n}\n' > "$FIX_DIR/case_e/p${i}.json"
+done
+assert "Check 2 logic accepts four files all agreeing on packageManager (N≠3)" \
+    "$CHECK2_HELPER" \
+    "$FIX_DIR/case_e/p1.json" "$FIX_DIR/case_e/p2.json" \
+    "$FIX_DIR/case_e/p3.json" "$FIX_DIR/case_e/p4.json"
+
+# -- Test 22: script derives PKG_COUNT dynamically from PKG_FILES (task 1366) -
 echo ""
-echo "--- Test 22: behavioral integration tests ---"
+echo "--- Test 22: script derives PKG_COUNT dynamically from PKG_FILES ---"
+
+# The magic number '3' in Check 2's total assertion must be replaced by a
+# PKG_COUNT variable that is computed from PKG_FILES so that adding a new
+# package.json path to PKG_FILES automatically adjusts the assertion.
+assert "script uses 'set -- \$PKG_FILES' to load positional parameters" \
+    bash -c "grep -qE 'set -- \\\$PKG_FILES' '$SCRIPT'"
+
+assert "script derives PKG_COUNT from positional parameter count (PKG_COUNT=\$#)" \
+    bash -c "grep -qE 'PKG_COUNT=\\\$#' '$SCRIPT'"
+
+assert "Check 2 block references PKG_COUNT in the total assertion" \
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'PKG_COUNT'"
+
+# -- Test 23: behavioral integration tests (task 1328) ------------------------
+echo ""
+echo "--- Test 23: behavioral integration tests ---"
 
 FIXTURE_DIR="$(mktemp -d)"
 _TMPDIRS+=("$FIXTURE_DIR")
@@ -309,24 +337,24 @@ echo "gui/pnpm-lock.yaml" > "$FIXTURE_DIR/.gitignore"
 # Initialize a git repo so 'git check-ignore' works inside Check 3
 git -C "$FIXTURE_DIR" init -q
 
-# Write consistent packageManager versions for Test 22a
+# Write consistent packageManager versions for Test 23a
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
     printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_DIR/$pkg"
 done
 
-# Test 22a: all files agree on the same version -> script exits 0
-assert "22a: consistent packageManager versions -> exit 0" \
+# Test 23a: all files agree on the same version -> script exits 0
+assert "23a: consistent packageManager versions -> exit 0" \
     bash -c "cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh"
 
-# Test 22b: introduce a version mismatch -> script exits non-zero
+# Test 23b: introduce a version mismatch -> script exits non-zero
 printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/package.json"
 
-assert "22b: mismatched packageManager versions -> exit non-zero" \
+assert "23b: mismatched packageManager versions -> exit non-zero" \
     bash -c "! (cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh)"
 
-# -- Test 23: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ----------
+# -- Test 24: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ----------
 echo ""
-echo "--- Test 23: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ---"
+echo "--- Test 24: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ---"
 
 assert "LOCK_FILES is defined before the first 'Check 1:' echo" \
     bash -c "
@@ -335,9 +363,9 @@ assert "LOCK_FILES is defined before the first 'Check 1:' echo" \
         [ -n \"\$lock_line\" ] && [ -n \"\$check1_line\" ] && [ \"\$lock_line\" -lt \"\$check1_line\" ]
     "
 
-# -- Test 24: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ----------
+# -- Test 25: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ----------
 echo ""
-echo "--- Test 24: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ---"
+echo "--- Test 25: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ---"
 
 FIXTURE24="$(mktemp -d)"
 _TMPDIRS+=("$FIXTURE24")
