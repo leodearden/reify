@@ -885,6 +885,11 @@ pub(crate) fn compute_numerical_divergence_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
+    debug_assert!(
+        matches!(codomain_type, Type::Real | Type::Scalar { .. }),
+        "divergence/laplacian codomain must be scalar, got {:?}",
+        codomain_type
+    );
     // Accept both Point and Vector — they share structural representation.
     // eval_perturbed_point re-wraps as Value::Point, so the lambda always sees a Point.
     let Some(coords) = extract_point_coords(point) else {
