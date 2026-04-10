@@ -29833,15 +29833,16 @@
         "description": "Three improvements to `tests/infra/test_release_mode_in_test_command.sh` Tests 6-7:\n\n1. **Exclude non-source dirs from workspace grep (line 64):** Test 6's `grep -rq ... \"$REPO_ROOT\" --include='*.rs'` traverses `target/`, `.git/`, `node_modules/`. Add `--exclude-dir=target --exclude-dir=.git --exclude-dir=node_modules` to avoid scanning build artifacts as the cache grows.\n\n2. **Use flexible whitespace in Test 7 self-check (line 76):** The second assertion `'^    grep -rq.*REPO_ROOT.*--include='` requires exactly 4 leading spaces. Change to `'^\\s+grep -rq.*REPO_ROOT.*--include='` (with `grep -qE`) so reformatting (tabs, different indent levels) doesn't break the self-check.\n\n3. **Strengthen Test 7 path-agnostic guard (lines 72-73):** The first assertion only guards against the specific `engine_tests` filename. Replace with a positive check ensuring Test 6's grep line uses `\"$REPO_ROOT\"` as the sole path argument without subdirectory segments appended.\n\nmemory_hints:\n- search: \"infra test self-check patterns and conventions\"\n- search: \"test_release_mode_in_test_command.sh\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:30:57.334Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:30:54.595Z",
+      "lastModified": "2026-04-10T01:30:57.335Z",
       "taskCount": 1444,
       "completedCount": 1107,
       "tags": [
