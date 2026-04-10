@@ -312,6 +312,12 @@ assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC ma
 assert "extract_fn comment describes allowed prefixes for broad awk pattern" \
     bash -c 'grep "^#" "$SYNC_TEST" | grep -qF "Allowed prefixes"'
 
+assert "sync_ref_helpers.sh documents extern fn limitation" \
+    grep -qF 'extern "C" fn' "$SYNC_REF_HELPERS"
+
+assert "sync_ref_helpers.sh documents default fn limitation" \
+    grep -qF 'default fn' "$SYNC_REF_HELPERS"
+
 echo ""
 echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
 
