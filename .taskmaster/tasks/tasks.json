@@ -31872,6 +31872,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1568,
+        "title": "Recursive detection: domain-tag hash, hoist constant, DRY compile_all, test comment",
+        "description": "Four improvements: (1) lib.rs:634: replace ContentHash::of(&[1u8]) with ContentHash::of_str(\"is_recursive\") and hoist above loop. (2) recursive_detection_tests.rs: refactor compile_all to call compile_module. (3) Add comment noting is_recursive_mixed_into_content_hash assumes non-transitive hash.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -31884,7 +31895,7 @@
       ],
       "created": "2026-04-10T06:44:45.217Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T06:46:17.134Z"
+      "updated": "2026-04-10T06:46:22.243Z"
     }
   }
 }
