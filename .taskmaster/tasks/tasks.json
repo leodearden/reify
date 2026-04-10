@@ -30899,11 +30899,11 @@
         "description": "Three improvements in crates/reify-expr/src/calculus.rs: (1) Lines 93-105: add doc comment cross-referencing Value::from_component and explaining why wrap_scalar_result doesn't normalize dimensionless Scalar→Real. (2) Lines 1025-1034: add debug_assert on codomain_type in compute_numerical_curl_at_point for consistency with divergence/laplacian guards. (3) Lines 1554-1619: add debug_assert panic test using Type::vec3(Type::Real) as codomain to exercise the non-scalar branch alongside existing Type::Bool test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T17:24:49.954Z",
+        "updatedAt": "2026-04-10T20:53:47.419Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src"
@@ -32863,9 +32863,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T20:51:25.649Z",
+      "lastModified": "2026-04-10T20:53:47.419Z",
       "taskCount": 1615,
-      "completedCount": 1255,
+      "completedCount": 1256,
       "tags": [
         "master"
       ]
