@@ -2271,28 +2271,15 @@ fn curl_irrotational_field_near_zero() {
     );
 
     let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::vec3(Type::Real);
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), Type::vec3(Type::Real), lambda);
 
     // curl(field) → vector field
     let curl_expr = make_function_call(
         "curl",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
-        },
+        curl_result_type(domain_type.clone()),
     );
 
     let values = ValueMap::new();
@@ -2307,15 +2294,10 @@ fn curl_irrotational_field_near_zero() {
     // sample(curl_field, Point3(1.0, 2.0, 3.0)) — expect ≈ [0, 0, 0]
     let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
 
-    let curl_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(Type::vec3(Type::Real)),
-    };
-
     let sample_expr = make_function_call(
         "sample",
         vec![
-            CompiledExpr::literal(curl_result, curl_field_type),
+            CompiledExpr::literal(curl_result, curl_result_type(domain_type.clone())),
             CompiledExpr::literal(point, domain_type),
         ],
         Type::vec3(Type::Real),
@@ -2352,29 +2334,13 @@ fn laplacian_1d_quadratic_accuracy() {
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, lambda);
 
     // laplacian(field) → scalar field
     let lap_expr = make_function_call(
         "laplacian",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::Real),
-        },
+        laplacian_result_type(Type::Real),
     );
 
     let values = ValueMap::new();
@@ -2387,15 +2353,10 @@ fn laplacian_1d_quadratic_accuracy() {
     );
 
     // sample(lap_field, Value::Real(3.0)) — d²/dx²(x²) = 2 at every x
-    let lap_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(Type::Real),
-    };
-
     let sample_expr = make_function_call(
         "sample",
         vec![
-            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(lap_result, laplacian_result_type(Type::Real)),
             CompiledExpr::literal(Value::Real(3.0), Type::Real),
         ],
         Type::Real,
