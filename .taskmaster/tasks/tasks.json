@@ -31959,6 +31959,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1575,
+        "title": "Add compile_project-level test for stdlib unit collision path",
+        "description": "Add a test that exercises the stdlib collision detection path at the compile_project level. Currently there is no integration test that verifies behavior when user-defined units collide with stdlib units. Source: review of task 1074 (S3).",
+        "details": "Files: crates/reify-eval/src/units.rs, tests involving compile_project.\\n\\nmemory_hints:\\n- search: \"stdlib unit collision\"\\n- search: \"unit registry compile_project test\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -31971,7 +31982,7 @@
       ],
       "created": "2026-04-10T06:51:02.836Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T07:01:54.275Z"
+      "updated": "2026-04-10T07:02:13.355Z"
     }
   }
 }
