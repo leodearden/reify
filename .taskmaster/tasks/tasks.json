@@ -29294,11 +29294,11 @@
         "description": "Follow-up from Task 1278 review (esc-1278-130, S1+S2). Strengthen the meta-test coverage of the fn-existence regex in `tests/infra/test_sync_comments_grep.sh` so it exercises both halves of the pattern (visibility group + qualifier group) simultaneously and locks down the keyword ordering symmetrically.\n\nRequired additions in `tests/infra/test_sync_comments_grep.sh`:\n\nAccept assertions (catch regressions where the visibility group accidentally consumes a qualifier slot):\n- `pub const unsafe fn sanitize_value(`\n- `pub(crate) async unsafe fn sanitize_value(`\n- `pub(crate) const unsafe fn sanitize_value(`\n\nReject assertion (symmetric to the existing `unsafe async fn` reject):\n- `unsafe const fn sanitize_value(` — invalid Rust grammar order (Rust requires `const unsafe`, not `unsafe const`).\n\nDocumentation comment near the reject block explaining the intentional gap: `const async fn` and `const async unsafe fn` are NOT asserted-against because the regex (correctly) permits them even though they are semantically impossible (`const fn` cannot be `async`). The regex validates grammar order, not semantics.\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`\n\nSource: esc-1278-130 S1+S2 (steward-triage from Task 1278 post-merge review)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:53:34.481Z",
+        "updatedAt": "2026-04-10T17:35:45.546Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh"
@@ -32821,9 +32821,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T17:32:28.245Z",
+      "lastModified": "2026-04-10T17:35:45.549Z",
       "taskCount": 1613,
-      "completedCount": 1242,
+      "completedCount": 1243,
       "tags": [
         "master"
       ]
