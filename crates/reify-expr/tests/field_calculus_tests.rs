@@ -47,6 +47,27 @@ fn make_value_lambda(
     }
 }
 
+/// Build an analytical `Value::Field` / `Type::Field` pair from typed components.
+///
+/// Returns `(Value::Field { domain_type, codomain_type, source: Analytical, lambda },
+///           Type::Field  { domain, codomain })`.
+///
+/// Call sites that need to retain `domain`/`codomain` after this call should
+/// `.clone()` before passing, matching the existing pattern throughout this file.
+fn make_analytical_field(domain: Type, codomain: Type, lambda: Value) -> (Value, Type) {
+    let field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+    (field, field_type)
+}
+
 /// Unit test for `make_analytical_field`: asserts the helper returns exactly the same
 /// `(Value, Type)` pair as a hand-built inline construction.
 #[test]
