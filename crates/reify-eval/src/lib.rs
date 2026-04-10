@@ -3548,6 +3548,10 @@ fn compile_geometry_op(
                     // Reject negative scale: OCCT SetScale with negative factor
                     // produces inside-out geometry (point-symmetry), not mirroring.
                     if factor < 0.0 {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "scale dropped: factor={} is negative (must be non-negative)",
+                            factor
+                        )));
                         return None;
                     }
                     Some(reify_types::GeometryOp::Scale {
