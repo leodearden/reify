@@ -1392,10 +1392,27 @@ fn test_self_path_constants_use_manifest_dir() {
         .expect("should be able to read this test file via THIS_FILE");
 
     assert!(
-        source.contains("env!(\"CARGO_MANIFEST_DIR\")"),
+        source.matches("env!(\"CARGO_MANIFEST_DIR\")").count() >= 2,
         "THIS_FILE and BUILD_RS constants must be defined using env!(\"CARGO_MANIFEST_DIR\") \
-         for portable compile-time path resolution; checking for the exact macro invocation \
-         prevents false-positives from comments that merely mention the env var name"
+         for portable compile-time path resolution; at least two occurrences required \
+         (one per constant)"
+    );
+}
+
+#[test]
+fn test_self_path_constants_guard_is_not_vacuous() {
+    // Meta-test: verifies that the count-based assertion in
+    // `test_self_path_constants_use_manifest_dir` is non-vacuous.  The count of
+    // `env!("CARGO_MANIFEST_DIR")` in this file must be >= 2 (one per constant definition),
+    // confirming that the >= 2 threshold in the production test is meaningful.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+    let count = source.matches("env!(\"CARGO_MANIFEST_DIR\")").count();
+    assert!(
+        count >= 2,
+        "expected at least 2 occurrences of env!(\"CARGO_MANIFEST_DIR\") in this file \
+         (one for THIS_FILE const, one for BUILD_RS const), but found {}",
+        count
     );
 }
 
