@@ -269,36 +269,57 @@ pub fn compile_with_prelude(
                     });
                 }
                 Err(dup_entry) => {
-                    // Duplicate unit name — find the original span for the error label.
+                    // Duplicate unit name — find the original entry to determine provenance.
                     let original = unit_registry.lookup(&dup_entry.name).unwrap();
-                    if original.span == SourceSpan::empty(0) {
-                        // Original is a stdlib prelude unit (seeded with empty span).
-                        // Emit a single-label diagnostic — omit the misleading
-                        // SourceSpan::empty(0) label that would point to byte 0
-                        // of the user's file.
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "duplicate unit declaration '{}' — already defined in stdlib prelude",
-                                dup_entry.name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                dup_entry.span,
-                                "duplicate of stdlib unit",
-                            )),
-                        );
-                    } else {
-                        // Module-local duplicate — show both locations.
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "duplicate unit declaration '{}'",
-                                dup_entry.name
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                dup_entry.span,
-                                "duplicate declared here",
-                            ))
-                            .with_label(DiagnosticLabel::new(original.span, "first declared here")),
-                        );
+                    match &original.source_module {
+                        Some(m) if m.starts_with("std/") => {
+                            // Original is a stdlib prelude unit.
+                            // Emit a single-label diagnostic — omit the misleading
+                            // SourceSpan::empty(0) label that would point to byte 0
+                            // of the user's file.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "duplicate unit declaration '{}' — already defined in stdlib prelude",
+                                    dup_entry.name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    dup_entry.span,
+                                    "duplicate of stdlib unit",
+                                )),
+                            );
+                        }
+                        Some(m) => {
+                            // Original was seeded from a user module — name that module.
+                            // Emit a single-label diagnostic (original span is empty(0),
+                            // so omit it to avoid a misleading byte-0 label).
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "duplicate unit declaration '{}' — already defined in module '{}'",
+                                    dup_entry.name, m
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    dup_entry.span,
+                                    format!("duplicate of unit from '{}'", m),
+                                )),
+                            );
+                        }
+                        None => {
+                            // Module-local duplicate — show both source locations.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "duplicate unit declaration '{}'",
+                                    dup_entry.name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    dup_entry.span,
+                                    "duplicate declared here",
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    original.span,
+                                    "first declared here",
+                                )),
+                            );
+                        }
                     }
                 }
             }
