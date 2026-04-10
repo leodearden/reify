@@ -1111,3 +1111,41 @@ mod hang_guard_tests {
         with_hang_guard(1, tokio::time::sleep(Duration::from_secs(60))).await;
     }
 }
+
+/// Unit tests for the `assert_ok_or_nonempty_err` helper.
+///
+/// These tests exercise the helper in isolation with synthetic `Result` values,
+/// without going through the LSP bridge.
+mod assert_ok_or_nonempty_err_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn ok_returns_some() {
+        let result: Result<serde_json::Value, String> = Ok(json!(42));
+        let out = assert_ok_or_nonempty_err(result, "ok_returns_some");
+        assert_eq!(
+            out,
+            Some(json!(42)),
+            "Ok(val) should return Some(val), got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn nonempty_err_returns_none() {
+        let result: Result<serde_json::Value, String> = Err("some error".into());
+        let out = assert_ok_or_nonempty_err(result, "nonempty_err_returns_none");
+        assert_eq!(
+            out,
+            None,
+            "non-empty Err should return None, got: {out:?}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "non-empty")]
+    fn empty_err_panics() {
+        let result: Result<serde_json::Value, String> = Err(String::new());
+        assert_ok_or_nonempty_err(result, "empty_err_panics");
+    }
+}
