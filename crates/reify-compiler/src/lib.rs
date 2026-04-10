@@ -245,6 +245,7 @@ pub fn compile_with_prelude(
                     is_pub: cu.is_pub,
                     span: SourceSpan::empty(0),
                     content_hash: cu.content_hash,
+                    source_module: None,
                 });
             }
         }

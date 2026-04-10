@@ -44,6 +44,7 @@ fn unit_entry_fields_exist() {
         is_pub: true,
         span: dummy_span,
         content_hash: hash,
+        source_module: None,
     };
     assert_eq!(entry.name, "meter");
     assert_eq!(entry.dimension, DimensionVector::LENGTH);
@@ -70,6 +71,7 @@ fn unit_registry_register_and_lookup() {
         is_pub: false,
         span: SourceSpan::new(0, 0),
         content_hash: reify_types::ContentHash::of_str("mm"),
+        source_module: None,
     };
     reg.register(entry).expect("first register should succeed");
     let found = reg.lookup("mm").expect("should find mm");
@@ -88,6 +90,7 @@ fn unit_registry_duplicate_returns_err() {
         is_pub: false,
         span: SourceSpan::new(0, 0),
         content_hash: reify_types::ContentHash::of_str("mm"),
+        source_module: None,
     };
     reg.register(make_entry()).expect("first register ok");
     let result = reg.register(make_entry());
@@ -107,6 +110,7 @@ fn seed_prelude_unit_inserts_and_lookups() {
         is_pub: true,
         span: SourceSpan::new(0, 0),
         content_hash: reify_types::ContentHash::of_str("mm"),
+        source_module: None,
     };
     reg.seed_prelude_unit(entry);
     let found = reg
@@ -127,6 +131,7 @@ fn seed_prelude_unit_overwrites_on_duplicate() {
         is_pub: true,
         span: SourceSpan::new(0, 0),
         content_hash: reify_types::ContentHash::of_str("mm-v1"),
+        source_module: None,
     };
     let entry2 = UnitEntry {
         name: "mm".to_string(),
@@ -136,6 +141,7 @@ fn seed_prelude_unit_overwrites_on_duplicate() {
         is_pub: true,
         span: SourceSpan::new(10, 15),
         content_hash: reify_types::ContentHash::of_str("mm-v2"),
+        source_module: None,
     };
     reg.seed_prelude_unit(entry1);
     reg.seed_prelude_unit(entry2);

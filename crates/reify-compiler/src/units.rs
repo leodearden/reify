@@ -116,6 +116,9 @@ pub struct UnitEntry {
     pub is_pub: bool,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+    /// Display path of the module that introduced this unit via prelude seeding,
+    /// e.g. "std/units" or "dep". `None` for units declared in the current module.
+    pub source_module: Option<String>,
 }
 
 /// Registry mapping unit names to compiled unit entries.
