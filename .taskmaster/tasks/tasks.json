@@ -29795,15 +29795,16 @@
         "description": "The fix at expr.rs:1505-1517 changed sub-member type resolution to use sub_member_types (which covers ALL subs) instead of only collection_sub_member_types. Previously, accessing self.sub.member where sub is a non-collection sub-component would emit an ICE diagnostic. No regression test was added for this previously-broken code path.\n\nAdd a compiler test with a non-collection sub-component that accesses a member (e.g., self.sub.member where sub is not a collection) and verify it compiles without an ICE diagnostic.\n\nmemory_hints: search \"sub_member_types non-collection sub member access\" for context on the fix.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T01:27:14.998Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:27:14.048Z",
+      "lastModified": "2026-04-10T01:27:14.998Z",
       "taskCount": 1442,
       "completedCount": 1105,
       "tags": [
