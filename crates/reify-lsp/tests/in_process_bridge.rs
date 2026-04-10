@@ -153,7 +153,7 @@ fn completion_items(response: &serde_json::Value) -> &[serde_json::Value] {
     );
 }
 
-/// Default hang-guard timeout in seconds, applied to all pre-handshake tests.
+/// Default hang-guard timeout in seconds, applied to all async bridge tests via the `hang_guard!` macro.
 ///
 /// Five seconds is long enough to be unreachable for any fast local I/O and short
 /// enough that a genuine hang surfaces quickly.  All call sites reference this
@@ -179,17 +179,24 @@ macro_rules! hang_guard {
 
 /// Wrap `f` in a timeout and panic with a descriptive message if the timeout fires.
 ///
-/// This helper guards async bridge tests against infinite hangs:
-/// a future that blocks forever (e.g. waiting on a channel that never receives)
-/// will be detected within `seconds` seconds and surface as a panic that
-/// includes the caller's file:line location rather than causing the test suite
-/// to hang silently.
+/// This helper guards all async bridge tests against infinite hangs: a future
+/// that blocks forever (e.g. waiting on a channel that never receives) will be
+/// detected within `seconds` seconds and surface as a panic rather than causing
+/// the test suite to hang silently.
+///
+/// Most tests use this via the [`hang_guard!`] macro, which supplies the default
+/// [`HANG_GUARD_SECS`] timeout and includes `.await`. Call this function directly
+/// only when a custom timeout is needed (e.g. `panics_on_timeout`).
+///
+/// The `#[track_caller]` attribute auto-derives the caller's file:line location,
+/// which appears in the panic message to make hangs immediately attributable to
+/// the specific test that timed out.
 ///
 /// # Panics
 ///
 /// Panics with `"{caller} must not hang (timed out after {seconds}s)"` if
 /// `f` does not complete within `seconds` seconds, where `{caller}` is the
-/// auto-derived file:line of the call site (via `#[track_caller]`).
+/// auto-derived file:line of the call site.
 #[track_caller]
 async fn with_hang_guard<F: std::future::Future<Output = ()>>(seconds: u64, f: F) {
     let caller = std::panic::Location::caller();
