@@ -3,34 +3,12 @@
 //! Exercises the full parse→compile→eval pipeline for `meta.key` expressions,
 //! ensuring integration across the parser, compiler, and evaluator boundaries.
 
-use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
+use reify_test_support::{make_engine, parse_and_compile, parse_compile_expect_err};
+use reify_types::{Satisfaction, Severity, Value, ValueCellId};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Parse `source`, assert no parse errors, compile, assert no compile errors.
-/// Returns the compiled module ready for eval.
-fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-    assert_no_error_diagnostics(&compiled.diagnostics, "compile");
-
-    compiled
-}
-
-/// Create a new Engine backed by a fresh MockConstraintChecker.
-fn make_engine() -> reify_eval::Engine {
-    let checker = MockConstraintChecker::new();
-    reify_eval::Engine::new(Box::new(checker), None)
-}
 
 /// Assert that `diagnostics` contains no Error-severity entries.
 /// `phase` is a short label used in the failure message (e.g. `"eval"`, `"check"`, `"compile"`).
@@ -40,35 +18,6 @@ fn assert_no_error_diagnostics(diagnostics: &[reify_types::Diagnostic], phase: &
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "{} errors: {:?}", phase, errors);
-}
-
-/// Parse `source`, compile, assert ≥1 Error-severity diagnostic is produced.
-/// If `needle` is non-empty, also assert at least one error message contains it.
-/// Returns the CompiledModule for optional further assertions.
-fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(!errors.is_empty(), "expected at least one compile error");
-    if !needle.is_empty() {
-        assert!(
-            errors.iter().any(|d| d.message.contains(needle)),
-            "expected error containing {:?}, got: {:?}",
-            needle,
-            errors
-        );
-    }
-    compiled
 }
 
 // ---------------------------------------------------------------------------
