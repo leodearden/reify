@@ -233,6 +233,15 @@ pub mod error_prefix {
     /// Prefix for deserialization failures on `textDocument/didClose` params.
     pub const DID_CLOSE_PARAMS: &str = "didClose params error";
 
+    /// Prefix for deserialization failures on `textDocument/completion` params.
+    pub const COMPLETION_PARAMS: &str = "completion params error";
+
+    /// Prefix for deserialization failures on `textDocument/hover` params.
+    pub const HOVER_PARAMS: &str = "hover params error";
+
+    /// Prefix for deserialization failures on `textDocument/definition` params.
+    pub const DEFINITION_PARAMS: &str = "definition params error";
+
     /// Prefix used when an unrecognised LSP method name is requested.
     ///
     /// The full error message is `"{UNSUPPORTED_METHOD} {method_name}"`.
