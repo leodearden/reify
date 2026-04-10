@@ -109,13 +109,13 @@ impl SamplePoint {
     }
 }
 
-/// Build the identity vector field F(x,y,z)=[x,y,z], compute its divergence,
-/// sample at `sample_point`, and assert result ≈3.0.
+/// Build the identity vector field F(x,y,z)=[x,y,z], apply divergence, eval, and return
+/// `(div_result, div_field_type)`.
 ///
-/// Used by both `divergence_identity_vector_field` (Point sample) and
-/// `divergence_accepts_vector_sample_point` (Vector sample).
-fn run_divergence_identity_test(sample_point: SamplePoint, label: &str) {
-    let (point, point_literal_type) = sample_point.into_value_and_type();
+/// The caller is responsible for sampling the returned field and asserting the result.
+/// Shared by `run_divergence_identity_test` (happy-path) and
+/// `divergence_two_element_vector_sample_point_returns_undef` (dimension-guard).
+fn build_divergence_identity_field(label: &str) -> (Value, Type) {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -175,6 +175,19 @@ fn run_divergence_identity_test(sample_point: SamplePoint, label: &str) {
         codomain: Box::new(Type::Real),
     };
 
+    (div_result, div_field_type)
+}
+
+/// Build the identity vector field F(x,y,z)=[x,y,z], compute its divergence,
+/// sample at `sample_point`, and assert result ≈3.0.
+///
+/// Used by both `divergence_identity_vector_field` (Point sample) and
+/// `divergence_accepts_vector_sample_point` (Vector sample).
+fn run_divergence_identity_test(sample_point: SamplePoint, label: &str) {
+    let (point, point_literal_type) = sample_point.into_value_and_type();
+    let (div_result, div_field_type) = build_divergence_identity_field(label);
+
+    let values = ValueMap::new();
     let sample_expr = make_function_call(
         "sample",
         vec![
