@@ -26285,7 +26285,13 @@
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-syntax/src/lib.rs",
             "crates/reify-test-support/src/builders/topology.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract has_test_annotation helper to eliminate three-site duplication"
+            ]
+          }
         }
       },
       {
@@ -32435,11 +32441,11 @@
         "description": "In tests/infra/test_test_helpers.sh (lines 618-627), replace the enumerated AND-chained grep list for _has_* helpers with a dynamic invariant check: count `^_has_[a-z_]*()` definitions and assert every such helper is used at least once. Eliminates the maintenance cost of manually updating the self-check when adding new helpers.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T20:48:17.064Z",
+        "updatedAt": "2026-04-10T22:03:41.434Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh"
@@ -32880,7 +32886,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T22:03:10.060Z",
+      "lastModified": "2026-04-10T22:03:41.444Z",
       "taskCount": 1616,
       "completedCount": 1260,
       "tags": [
