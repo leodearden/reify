@@ -78,10 +78,8 @@ pub(crate) fn quinary_f64(
 // SYNC: mirror of reify-expr::sanitize_value — keep in sync
 pub(crate) fn sanitize_value(v: Value) -> Value {
     match &v {
-        Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
-        Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
-            Value::Undef
-        }
+        Value::Real(x) if !x.is_finite() => Value::Undef,
+        Value::Scalar { si_value, .. } if !si_value.is_finite() => Value::Undef,
         Value::Complex { re, im, .. } if !re.is_finite() || !im.is_finite() => Value::Undef,
         Value::Orientation { w, x, y, z }
             if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() =>
@@ -124,6 +122,106 @@ pub(crate) fn trig_input(v: &Value) -> Option<f64> {
 pub(crate) fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
     let mag = re.hypot(im);
     sanitize_value(Value::from_component(mag, dimension))
+}
+
+#[cfg(test)]
+mod tests {
+    use reify_types::DimensionVector;
+
+    use super::*;
+
+    // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
+
+    // ── sanitize_value Real arm characterization tests ───────────────────────
+
+    #[test]
+    fn sanitize_real_nan_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::NAN)).is_undef(),
+            "Real(NaN) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_inf_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::INFINITY)).is_undef(),
+            "Real(+Inf) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_neg_inf_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::NEG_INFINITY)).is_undef(),
+            "Real(-Inf) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_finite_passthrough() {
+        let v = Value::Real(2.72);
+        match sanitize_value(v) {
+            Value::Real(x) => assert!((x - 2.72).abs() < 1e-12),
+            other => panic!("expected Real(2.72), got {:?}", other),
+        }
+    }
+
+    // ── sanitize_value Scalar arm characterization tests ─────────────────────
+
+    #[test]
+    fn sanitize_scalar_nan_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with NaN si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_inf_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::INFINITY,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with +Inf si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_neg_inf_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::NEG_INFINITY,
+            dimension: DimensionVector::MASS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with -Inf si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_finite_passthrough() {
+        let v = Value::Scalar {
+            si_value: 0.001,
+            dimension: DimensionVector::LENGTH,
+        };
+        match sanitize_value(v) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!((si_value - 0.001).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar{{0.001, LENGTH}}, got {:?}", other),
+        }
+    }
 }
 
 /// Extract numeric components and consistent dimension from a Tensor value.

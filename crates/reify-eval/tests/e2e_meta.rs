@@ -409,7 +409,7 @@ fn e2e_meta_access_missing_key() {
         }
     "#;
 
-    parse_compile_expect_err(source, "");
+    parse_compile_expect_err(source, "meta");
 }
 
 /// Regression guard (suggestion 9): accessing `meta.description` on a structure
@@ -427,7 +427,7 @@ fn e2e_meta_access_no_meta_block() {
         }
     "#;
 
-    parse_compile_expect_err(source, "");
+    parse_compile_expect_err(source, "meta");
 }
 
 // ---------------------------------------------------------------------------

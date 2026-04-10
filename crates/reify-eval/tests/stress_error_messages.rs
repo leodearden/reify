@@ -14,54 +14,8 @@
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, ModulePath, QueryError, Satisfaction, Severity, TessError,
-    Type, Value,
-};
+use reify_types::{ExportFormat, ModulePath, Satisfaction, Severity, Type};
 use reify_test_support::*;
-
-// ---------------------------------------------------------------------------
-// FailingMockGeometryKernel — execute() always returns Err
-// (same pattern as geometry_error_handling.rs)
-// ---------------------------------------------------------------------------
-
-struct FailingMockGeometryKernel;
-
-impl GeometryKernel for FailingMockGeometryKernel {
-    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        Err(GeometryError::OperationFailed(
-            "simulated kernel failure".into(),
-        ))
-    }
-
-    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Ok(Value::Real(0.0))
-    }
-
-    fn export(
-        &self,
-        _handle: GeometryHandleId,
-        _format: ExportFormat,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<(), ExportError> {
-        writer
-            .write_all(b"BOGUS_EXPORT")
-            .map_err(|e| ExportError::IoError(e.to_string()))
-    }
-
-    fn tessellate(
-        &self,
-        _handle: GeometryHandleId,
-        _tolerance: f64,
-    ) -> Result<Mesh, TessError> {
-        Ok(Mesh {
-            vertices: vec![],
-            indices: vec![],
-            normals: None,
-        })
-    }
-}
 
 // ---------------------------------------------------------------------------
 // step-25/26: parse_error_malformed_syntax

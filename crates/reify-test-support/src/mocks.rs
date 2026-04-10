@@ -420,6 +420,45 @@ impl GeometryKernel for MockGeometryKernel {
     }
 }
 
+/// A mock geometry kernel whose `execute` always returns `Err`.
+///
+/// Useful for testing how consumers handle geometry operation failures.
+/// Because `execute` always fails, no valid `GeometryHandle` is ever
+/// produced. As a defensive fail-loud guard, `tessellate` and `export`
+/// both return errors immediately — any call to them indicates a
+/// regression where the engine failed to short-circuit on the execute
+/// error. `query` returns `Ok(Value::Real(0.0))` as a benign dummy.
+pub struct FailingMockGeometryKernel;
+
+impl GeometryKernel for FailingMockGeometryKernel {
+    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(
+            "simulated kernel failure".into(),
+        ))
+    }
+
+    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        Ok(Value::Real(0.0))
+    }
+
+    fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        Err(ExportError::FormatError(
+            "should not reach: execute always fails".into(),
+        ))
+    }
+
+    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+        Err(TessError::TessellationFailed(
+            "should not reach: execute always fails".into(),
+        ))
+    }
+}
+
 /// Spy constraint solver that captures the last `ResolutionProblem` passed to it.
 ///
 /// Use this in tests where you need to assert what the engine sent to the solver,
@@ -2096,5 +2135,63 @@ mod tests {
             collected.into_inner().unwrap_or_else(|e| e.into_inner())
         });
         assert_eq!(result.len(), 4, "all 4 scoped threads should complete");
+    }
+
+    // step-1: failing tests for FailingMockGeometryKernel (struct not yet defined)
+    #[test]
+    fn failing_kernel_execute_returns_err() {
+        let mut kernel = FailingMockGeometryKernel;
+        let op = GeometryOp::Box {
+            width: Value::length(0.08),
+            height: Value::length(0.1),
+            depth: Value::length(0.005),
+        };
+        let result = kernel.execute(&op);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, GeometryError::OperationFailed(ref msg) if msg.contains("simulated kernel failure")),
+            "unexpected error: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn failing_kernel_query_returns_ok_real_zero() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let result = kernel.query(&GeometryQuery::Volume(id));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Value::Real(0.0));
+    }
+
+    #[test]
+    fn failing_kernel_export_returns_err_defensively() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let mut buf: Vec<u8> = Vec::new();
+        let result = kernel.export(id, ExportFormat::Step, &mut buf);
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ExportError::FormatError(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
+        assert!(buf.is_empty(), "buffer should not have been written to");
+    }
+
+    #[test]
+    fn failing_kernel_tessellate_returns_err_defensively() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let result = kernel.tessellate(id, 0.01);
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, TessError::TessellationFailed(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
     }
 }

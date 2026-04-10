@@ -970,6 +970,8 @@ mod tests {
         );
     }
 
+    // SYNC: sanitize_value Complex/Orientation tests mirrored in reify-expr::sanitize tests; Real/Scalar arms in crate::helpers tests — keep in sync
+
     // ── sanitize_value Complex arm tests (step-20) ────────────────────────────
 
     #[test]
@@ -1135,6 +1137,34 @@ mod tests {
         assert!(
             sanitize_value(v).is_undef(),
             "Orientation with +Inf w should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_neg_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: f64::NEG_INFINITY,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with -Inf z should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_nan_y_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: f64::NAN,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN y should become Undef"
         );
     }
 

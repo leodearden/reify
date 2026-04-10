@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Validation script for package manager standardization (task 618).
 # Checks static repo state: packageManager fields, lockfile gitignore status.
-# Redundant config-file-content checks (4-9) were removed by task 816 — those
-# are validated by actual execution on each commit and CI cycle.
+# Redundant config-file-content checks (5-9) were removed by task 816; Check 4
+# (pnpm-lock.yaml gitignored) was reinstated as a static-state check.
 
 set -euo pipefail
 
@@ -30,13 +30,27 @@ for pkg in $PKG_FILES; do
 done
 
 # ── Check 2: packageManager version consistent across all package.json files ─
+# Defensive shape (task 1326): the subshell enables `set -euo pipefail` so that
+# grep failures inside the pipeline (e.g. a missing package.json file) propagate
+# instead of being masked by the final `tr -d` exit status. An explicit `[ -f ]`
+# preflight provides belt-and-braces coverage. The dual assertion — total == 3
+# AND unique == 1 — catches the case where one file is missing the
+# packageManager field entirely: grep emits fewer lines, which `sort -u` would
+# otherwise silently collapse to a single unique line.
 echo ""
 echo "Check 2: packageManager version consistent across package.json files"
 assert "all package.json files agree on packageManager version" bash -c "
-    count=\$(for p in $PKG_FILES; do
+    set -euo pipefail
+    for p in $PKG_FILES; do
+        [ -f \"$ROOT/\$p\" ] || exit 1
+    done
+    total=\$(for p in $PKG_FILES; do
+        grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \"$ROOT/\$p\"
+    done | wc -l | tr -d ' ')
+    unique=\$(for p in $PKG_FILES; do
         grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \"$ROOT/\$p\"
     done | sort -u | wc -l | tr -d ' ')
-    [ \"\$count\" = '1' ]
+    [ \"\$total\" = '3' ] && [ \"\$unique\" = '1' ]
 "
 
 # ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
