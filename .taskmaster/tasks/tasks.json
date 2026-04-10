@@ -28326,11 +28326,11 @@
         "description": "Two small hygiene fixes in tests/infra/sync_ref_helpers.sh from Task 1260 review (S1 + S5). Both are non-regressions carried over from the pre-move version, but are appropriate to address now that the file has its own home and is explicitly intended to be sourced from multiple places.",
         "details": "Follow-up to Task 1260. Two review suggestions for tests/infra/sync_ref_helpers.sh.\n\n**S1 — Unreachable display_fn fallback (sync_ref_helpers.sh:32)**\n`local display_fn=\"${ref_fn:-<none>}\"` is dead in its fallback form. The early-fail guard on line 31 returns when ref_fn is empty, so ${ref_fn:-<none>} always evaluates to $ref_fn and the `<none>` branch can never fire. Carried over verbatim from sync_comments_test.sh, not a regression.\nFix: either drop display_fn entirely and use ${ref_fn} in the assert description, or drop the early-fail guard and let display_fn legitimately fall back to `<none>`. Keeping both is contradictory. Recommended: drop display_fn (the early-fail guard is the valuable part).\n\n**S5 — exit 1 in sourceable helper can kill caller (sync_ref_helpers.sh:20)**\n`[ -f ... ] || { echo ERROR ...; exit 1; }` inside a file deliberately intended to be sourced from multiple places will terminate the caller's shell on failure. Not a regression (matches pattern in other consumers) but especially worth hardening here because this helper's whole purpose is sourcing.\nFix: `return 1 2>/dev/null || exit 1` — unwinds cleanly when sourced, still errors hard when (improbably) executed directly. Mirrors the `return 0 2>/dev/null || true` idiom already used in the source guard a few lines above.\n\n**Note on structural meta-test coupling**\ntest_test_helpers.sh:396-400 includes a structural check \"sync_ref_helpers.sh uses display_fn fallback variable\". When S1 removes display_fn, that meta-test must be deleted (not updated to some other indicator).\n\nmemory_hints: search(\"Task 1260 sync_ref_helpers\", project_id=\"reify\"); search(\"sourceable helper return 1 exit 1 idiom\", project_id=\"reify\")",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:35:59.733Z",
+        "updatedAt": "2026-04-10T16:05:28.077Z",
         "metadata": {
           "modules": [
             "tests/infra/sync_ref_helpers.sh",
@@ -28344,11 +28344,11 @@
         "description": "Follow-up to Task 1260. Two portability-hygiene fixes in tests/infra meta-tests (S2 + S6). Both restore the POSIX-portable-regex spirit of the sync_comments grep subsystem that Task 1260's refactor slightly eroded.",
         "details": "Follow-up to Task 1260. Two review suggestions targeting POSIX-portable regex hygiene in the tests/infra subsystem.\n\n**S6 — `\\s+` used in tests/infra/test_test_helpers.sh:308,368**\nBoth lines use `grep -qE '(source|\\s+).*helper_file'` patterns. `\\s` is a GNU/PCRE extension; BSD grep (macOS default, some CI runners) does not support it in ERE. The project already uses this pattern elsewhere in the same file so not newly broken, but the whole point of test_sync_comments_grep.sh / sync_ref_helpers.sh is to enforce POSIX-portable regex hygiene, so shipping `\\s` in the sibling meta-test is inconsistent with the subsystem's own rules.\nFix: replace `\\s+` with `[[:space:]]+` at test_test_helpers.sh:308 and :368. Check the rest of test_test_helpers.sh for other `\\s` uses and convert them as well for consistency.\n\n**S2 — sync_comments_test.sh no longer covered by POSIX-portability assertions (test_sync_comments_grep.sh:146-161)**\nAfter Task 1260 moved assert_sync_ref_exists out, Section 2 of test_sync_comments_grep.sh rewrote its \"no \\b / no grep -P\" scoped assertions to target $SYNC_REF_HELPERS instead of $SYNC_TEST. But sync_comments_test.sh still hosts extract_fn, which contains `/^[^/]*fn '\"$fn_name\"'[(<]/` and an awk pattern — exactly the kind of thing those scoped assertions were designed to guard. A future regression adding `\\b` or `grep -P` in or near extract_fn would now slip past CI.\nFix: duplicate the no-\\b and no-grep-P scoped assertions at lines 157-161 so each runs twice — once against $SYNC_REF_HELPERS and once against $SYNC_TEST. Keep the existing `[[:space:](<]` positive assertion scoped only to $SYNC_REF_HELPERS (since that pattern literally lives there now). The invariant \"POSIX-portable regex only\" belongs on any shell file in this subsystem that contains grep/awk patterns, not just on the one that houses assert_sync_ref_exists.\n\nmemory_hints: search(\"Task 1260 test_sync_comments_grep.sh coverage\", project_id=\"reify\"); search(\"POSIX portable regex [[:space:]] grep shell tests reify\", project_id=\"reify\")",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T11:06:37.971Z",
+        "updatedAt": "2026-04-10T16:05:28.158Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh",
@@ -32660,7 +32660,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:05:27.997Z",
+      "lastModified": "2026-04-10T16:05:28.158Z",
       "taskCount": 1605,
       "completedCount": 1223,
       "tags": [
