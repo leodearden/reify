@@ -4744,10 +4744,17 @@ mod tests {
             args: vec![("factor".into(), literal_f64(-1.0))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        assert!(result.is_none(), "negative scale factor should return None (inside-out geometry)");
         assert!(
-            result.is_none(),
-            "negative scale factor should return None (inside-out geometry)"
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("scale dropped")
+                    && d.message.contains("negative")
+            }),
+            "expected a Warning mentioning 'scale dropped' and 'negative', got: {:?}",
+            diagnostics
         );
     }
 
