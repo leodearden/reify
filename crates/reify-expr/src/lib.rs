@@ -127,19 +127,18 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         lambda,
                         source,
                         domain_type,
-                        codomain_type: grad_codomain_type,
+                        codomain_type,
                     } = &evaluated_args[0]
                     {
                         match (lambda.as_ref(), source) {
                             (Value::Lambda { .. }, _) => {
                                 apply_lambda(lambda, &evaluated_args[1..], ctx)
                             }
-                            // Gradient-produced field: lambda slot contains the
-                            // original field (with its own lambda inside).
-                            // Pass grad_codomain_type (the gradient field's codomain,
-                            // already R/Q-divided by compute_gradient) instead of the
-                            // inner field's codomain — eliminates the redundant division
-                            // inside compute_numerical_gradient_at_point.
+                            // Derived-field case: lambda slot contains the original field.
+                            // Pass codomain_type (the derived field's already-divided codomain,
+                            // stamped by compute_gradient / compute_divergence / etc.) instead
+                            // of the inner field's codomain — eliminates redundant division
+                            // inside the numerical compute functions.
                             (
                                 Value::Field {
                                     lambda: inner_lambda,
@@ -150,7 +149,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
-                                grad_codomain_type,
+                                codomain_type,
                                 ctx,
                             ),
                             (
@@ -163,7 +162,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
-                                grad_codomain_type,
+                                codomain_type,
                                 ctx,
                             ),
                             (
@@ -176,7 +175,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
-                                grad_codomain_type,
+                                codomain_type,
                                 ctx,
                             ),
                             (
@@ -189,7 +188,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
-                                grad_codomain_type,
+                                codomain_type,
                                 ctx,
                             ),
                             _ => {

@@ -107,14 +107,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_status_variants_exist_and_are_distinct() {
-        use super::TestStatus;
-        assert_ne!(TestStatus::Pass, TestStatus::Fail);
-        assert_ne!(TestStatus::Pass, TestStatus::Indeterminate);
-        assert_ne!(TestStatus::Fail, TestStatus::Indeterminate);
-    }
-
     fn entry(sat: reify_types::Satisfaction) -> crate::ConstraintCheckEntry {
         use reify_types::ConstraintNodeId;
         crate::ConstraintCheckEntry {
@@ -243,22 +235,50 @@ mod tests {
     #[test]
     fn build_isolated_module_preserves_shared_infrastructure() {
         use super::build_isolated_module;
-        // A module with a constraint def and a test template — constraint_defs should be preserved.
-        let source = "constraint def Positive { param v : Real\n v > 0 }\n@test structure TestA { param x : Real\n constraint Positive(x) }";
+        // Rich source that populates every shared-infrastructure collection so
+        // equality assertions cannot trivially pass as 0==0.
+        let source = r#"
+fn double(x: Real) -> Real { x * 2 }
+
+enum Quality { Standard, Premium }
+
+trait Measurable {
+    param size : Real
+}
+
+type Alias = Real
+
+field def temp : Point3 -> Scalar { source = analytical { |p| p } }
+
+constraint def Positive {
+    param v : Real
+    v > 0
+}
+
+@test structure TestA {
+    param x : Real
+    constraint Positive(x)
+}
+"#;
         let module = parse_and_compile_inline(source);
         let test_templates = module.test_templates();
         let target = test_templates.iter().find(|t| t.name == "TestA").expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
         assert_eq!(isolated.constraint_defs.len(), module.constraint_defs.len(),
             "constraint_defs must be preserved");
+        assert!(module.functions.len() > 0, "functions must be non-empty in source module");
         assert_eq!(isolated.functions.len(), module.functions.len(),
             "functions must be preserved");
+        assert!(module.fields.len() > 0, "fields must be non-empty in source module");
         assert_eq!(isolated.fields.len(), module.fields.len(),
             "fields must be preserved");
+        assert!(module.type_aliases.len() > 0, "type_aliases must be non-empty in source module");
         assert_eq!(isolated.type_aliases.len(), module.type_aliases.len(),
             "type_aliases must be preserved");
+        assert!(module.enum_defs.len() > 0, "enum_defs must be non-empty in source module");
         assert_eq!(isolated.enum_defs.len(), module.enum_defs.len(),
             "enum_defs must be preserved");
+        assert!(module.trait_defs.len() > 0, "trait_defs must be non-empty in source module");
         assert_eq!(isolated.trait_defs.len(), module.trait_defs.len(),
             "trait_defs must be preserved");
     }

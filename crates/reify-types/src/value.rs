@@ -1942,6 +1942,19 @@ impl ValueMap {
 mod tests {
     use super::*;
 
+    // Boundary float values used by IEEE 754 totalOrder ordering tests.
+    // All 7 values are bit-distinct; insertion order is intentionally scrambled
+    // so that tests exercise the sort rather than relying on insertion sequence.
+    const BOUNDARY_REALS: &[f64] = &[
+        0.0,             // +0.0
+        -0.0,            // -0.0 (different bit pattern from +0.0)
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+        -1.0,
+        1.0,
+    ];
+
     // ── normalize_range_flags unit tests ─────────────────────────────────────
 
     #[test]
@@ -2597,23 +2610,11 @@ mod tests {
         // IEEE 754 totalOrder sequence for all boundary cases.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
         //
-        // NaN sorts last (after +Infinity) under total_cmp().
-        // -0.0 sorts before +0.0 (IEEE 754 totalOrder: negative zero precedes positive zero).
-        //
         // This subsumes value_ord_real_negative_vs_positive and
         // value_ord_real_negative_magnitude which test a subset of these pairings.
         use std::collections::BTreeSet;
-        let values: &[f64] = &[
-            0.0,           // +0.0
-            -0.0,          // -0.0
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-            -1.0,
-            1.0,
-        ];
         let mut set = BTreeSet::new();
-        for &v in values {
+        for &v in BOUNDARY_REALS {
             set.insert(Value::Real(v));
         }
         let sorted: Vec<f64> = set
@@ -2624,37 +2625,7 @@ mod tests {
             })
             .collect();
 
-        // Verify count (all 7 bit-distinct values must be stored)
-        assert_eq!(sorted.len(), 7, "all 7 bit-distinct boundary values must appear");
-
-        // Verify positions by property, not by bit-pattern indexing
-        let neg_inf_idx = sorted
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_negative())
-            .expect("NEG_INFINITY must be present");
-        let neg_one_idx = sorted.iter().position(|&f| f == -1.0_f64).expect("-1.0 must be present");
-        let neg_zero_idx = sorted
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_negative())
-            .expect("-0.0 must be present");
-        let pos_zero_idx = sorted
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_positive())
-            .expect("+0.0 must be present");
-        let pos_one_idx = sorted.iter().position(|&f| f == 1.0_f64).expect("1.0 must be present");
-        let pos_inf_idx = sorted
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_positive())
-            .expect("INFINITY must be present");
-        let nan_idx = sorted.iter().position(|f| f.is_nan()).expect("NaN must be present");
-
-        // Full ordering: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
-        assert!(neg_inf_idx < neg_one_idx, "NEG_INFINITY must come before -1.0");
-        assert!(neg_one_idx < neg_zero_idx, "-1.0 must come before -0.0");
-        assert!(neg_zero_idx < pos_zero_idx, "-0.0 must come before +0.0");
-        assert!(pos_zero_idx < pos_one_idx, "+0.0 must come before 1.0");
-        assert!(pos_one_idx < pos_inf_idx, "1.0 must come before INFINITY");
-        assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
+        assert_ieee754_total_order_real(&sorted);
     }
 
     #[test]
@@ -2729,6 +2700,51 @@ mod tests {
         }
     }
 
+    /// Asserts that `floats` contains exactly `BOUNDARY_REALS.len()` bit-distinct
+    /// f64 values in the IEEE 754 totalOrder sequence:
+    ///   NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
+    ///
+    /// Positions are identified by property (sign, magnitude, is_nan, is_infinite)
+    /// rather than by index so the helper is robust to future reorderings of the
+    /// input array.
+    fn assert_ieee754_total_order_real(floats: &[f64]) {
+        assert_eq!(
+            floats.len(),
+            BOUNDARY_REALS.len(),
+            "expected exactly {} bit-distinct boundary values, got {}",
+            BOUNDARY_REALS.len(),
+            floats.len()
+        );
+
+        let neg_inf_idx = floats
+            .iter()
+            .position(|f| f.is_infinite() && f.is_sign_negative())
+            .expect("NEG_INFINITY must be present");
+        let neg_one_idx = floats.iter().position(|&f| f == -1.0_f64).expect("-1.0 must be present");
+        let neg_zero_idx = floats
+            .iter()
+            .position(|f| *f == 0.0 && f.is_sign_negative())
+            .expect("-0.0 must be present");
+        let pos_zero_idx = floats
+            .iter()
+            .position(|f| *f == 0.0 && f.is_sign_positive())
+            .expect("+0.0 must be present");
+        let pos_one_idx = floats.iter().position(|&f| f == 1.0_f64).expect("1.0 must be present");
+        let pos_inf_idx = floats
+            .iter()
+            .position(|f| f.is_infinite() && f.is_sign_positive())
+            .expect("INFINITY must be present");
+        let nan_idx = floats.iter().position(|f| f.is_nan()).expect("NaN must be present");
+
+        // Full ordering: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
+        assert!(neg_inf_idx < neg_one_idx, "NEG_INFINITY must come before -1.0");
+        assert!(neg_one_idx < neg_zero_idx, "-1.0 must come before -0.0");
+        assert!(neg_zero_idx < pos_zero_idx, "-0.0 must come before +0.0");
+        assert!(pos_zero_idx < pos_one_idx, "+0.0 must come before 1.0");
+        assert!(pos_one_idx < pos_inf_idx, "1.0 must come before INFINITY");
+        assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
+    }
+
     #[test]
     fn test_assert_ord_consistent_equal() {
         // Meta-test: verify assert_ord_consistent works for an equal pair.
@@ -2786,6 +2802,56 @@ mod tests {
         let canonical_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
         let payload_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0001));
         assert_ord_consistent(&canonical_nan, &payload_nan, false);
+    }
+
+    #[test]
+    fn test_assert_ieee754_total_order_real_correct_order() {
+        // Meta-test: assert_ieee754_total_order_real must not panic when given the
+        // correct IEEE 754 totalOrder sequence.
+        assert_ieee754_total_order_real(&[
+            f64::NEG_INFINITY,
+            -1.0_f64,
+            -0.0_f64,
+            0.0_f64,
+            1.0_f64,
+            f64::INFINITY,
+            f64::NAN,
+        ]);
+    }
+
+    #[test]
+    #[should_panic(expected = "-0.0 must come before +0.0")]
+    fn test_assert_ieee754_total_order_real_wrong_order() {
+        // Meta-test: assert_ieee754_total_order_real must panic when -0.0 and +0.0
+        // are swapped (violating the IEEE 754 totalOrder requirement that -0.0
+        // precedes +0.0).
+        assert_ieee754_total_order_real(&[
+            f64::NEG_INFINITY,
+            -1.0_f64,
+            0.0_f64,   // +0.0 in the -0.0 position → wrong order
+            -0.0_f64,  // -0.0 in the +0.0 position → wrong order
+            1.0_f64,
+            f64::INFINITY,
+            f64::NAN,
+        ]);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected exactly")]
+    fn test_assert_ieee754_total_order_real_wrong_count() {
+        // Meta-test: assert_ieee754_total_order_real must panic when passed a slice
+        // that does not contain exactly BOUNDARY_REALS.len() values.  Here we drop
+        // NaN so the slice has only 6 elements; the length guard should fire with a
+        // message containing "expected exactly".
+        assert_ieee754_total_order_real(&[
+            f64::NEG_INFINITY,
+            -1.0_f64,
+            -0.0_f64,
+            0.0_f64,
+            1.0_f64,
+            f64::INFINITY,
+            // NaN intentionally omitted → 6 elements instead of 7
+        ]);
     }
 
     #[test]
@@ -3052,17 +3118,8 @@ mod tests {
         // Value::Set wrapper rather than a bare BTreeSet<Value>.
         // Expected IEEE 754 totalOrder: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
         use std::collections::BTreeSet;
-        let values: &[f64] = &[
-            0.0,           // +0.0
-            -0.0,          // -0.0
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-            -1.0,
-            1.0,
-        ];
         let mut inner = BTreeSet::new();
-        for &v in values {
+        for &v in BOUNDARY_REALS {
             inner.insert(Value::Real(v));
         }
         let set_val = Value::Set(inner);
@@ -3078,35 +3135,7 @@ mod tests {
             panic!("expected Set");
         };
 
-        assert_eq!(sorted.len(), 7, "all 7 bit-distinct boundary values must appear");
-
-        let neg_inf_idx = sorted
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_negative())
-            .expect("NEG_INFINITY must be present");
-        let neg_one_idx = sorted.iter().position(|&f| f == -1.0_f64).expect("-1.0 must be present");
-        let neg_zero_idx = sorted
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_negative())
-            .expect("-0.0 must be present");
-        let pos_zero_idx = sorted
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_positive())
-            .expect("+0.0 must be present");
-        let pos_one_idx = sorted.iter().position(|&f| f == 1.0_f64).expect("1.0 must be present");
-        let pos_inf_idx = sorted
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_positive())
-            .expect("INFINITY must be present");
-        let nan_idx = sorted.iter().position(|f| f.is_nan()).expect("NaN must be present");
-
-        // Full ordering: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
-        assert!(neg_inf_idx < neg_one_idx, "NEG_INFINITY must come before -1.0");
-        assert!(neg_one_idx < neg_zero_idx, "-1.0 must come before -0.0");
-        assert!(neg_zero_idx < pos_zero_idx, "-0.0 must come before +0.0");
-        assert!(pos_zero_idx < pos_one_idx, "+0.0 must come before 1.0");
-        assert!(pos_one_idx < pos_inf_idx, "1.0 must come before INFINITY");
-        assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
+        assert_ieee754_total_order_real(&sorted);
     }
 
     #[test]
@@ -3116,17 +3145,8 @@ mod tests {
         // sentinel Value::Int so we can verify key-iteration order.
         // Expected IEEE 754 totalOrder: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
         use std::collections::BTreeMap;
-        let key_values: &[f64] = &[
-            0.0,           // +0.0
-            -0.0,          // -0.0
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-            -1.0,
-            1.0,
-        ];
         let mut inner = BTreeMap::new();
-        for (i, &v) in key_values.iter().enumerate() {
+        for (i, &v) in BOUNDARY_REALS.iter().enumerate() {
             inner.insert(Value::Real(v), Value::Int(i as i64));
         }
         let map_val = Value::Map(inner);
@@ -3142,86 +3162,32 @@ mod tests {
             panic!("expected Map");
         };
 
-        assert_eq!(sorted_keys.len(), 7, "all 7 bit-distinct boundary keys must appear");
-
-        let neg_inf_idx = sorted_keys
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_negative())
-            .expect("NEG_INFINITY must be present");
-        let neg_one_idx = sorted_keys.iter().position(|&f| f == -1.0_f64).expect("-1.0 must be present");
-        let neg_zero_idx = sorted_keys
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_negative())
-            .expect("-0.0 must be present");
-        let pos_zero_idx = sorted_keys
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_positive())
-            .expect("+0.0 must be present");
-        let pos_one_idx = sorted_keys.iter().position(|&f| f == 1.0_f64).expect("1.0 must be present");
-        let pos_inf_idx = sorted_keys
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_positive())
-            .expect("INFINITY must be present");
-        let nan_idx = sorted_keys.iter().position(|f| f.is_nan()).expect("NaN must be present");
-
-        // Full ordering: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
-        assert!(neg_inf_idx < neg_one_idx, "NEG_INFINITY must come before -1.0");
-        assert!(neg_one_idx < neg_zero_idx, "-1.0 must come before -0.0");
-        assert!(neg_zero_idx < pos_zero_idx, "-0.0 must come before +0.0");
-        assert!(pos_zero_idx < pos_one_idx, "+0.0 must come before 1.0");
-        assert!(pos_one_idx < pos_inf_idx, "1.0 must come before INFINITY");
-        assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
+        assert_ieee754_total_order_real(&sorted_keys);
     }
 
     #[test]
     fn value_set_round_trip_preserves_iteration_order() {
         // Round-trip guard: collect iteration order from a Value::Set, rebuild a
-        // fresh BTreeSet from the collected sequence, wrap in Value::Set, and assert
-        // that the rebuilt value equals the original and shares its content_hash.
+        // fresh BTreeSet from the collected sequence, and verify the golden ordering.
         //
-        // A golden ordering assertion is layered on top so the test fails loudly if
-        // Ord changes semantics even in a self-consistent way.
+        // Parts a-c (structural equality, content_hash identity, iteration-sequence
+        // preservation) are tautological given BTreeSet stdlib guarantees: Ord alone
+        // determines iteration order, not insertion order, so rebuilding from any
+        // sequence produces the same BTreeSet. The real regression value is the golden
+        // ordering assertion below.
         use std::collections::BTreeSet;
-        let boundary_floats: &[f64] = &[
-            0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -1.0, 1.0,
-        ];
         let mut original_inner = BTreeSet::new();
-        for &v in boundary_floats {
+        for &v in BOUNDARY_REALS {
             original_inner.insert(Value::Real(v));
         }
         let original = Value::Set(original_inner);
-        let original_hash = original.content_hash();
 
-        // Collect iteration order
+        // Collect iteration order, rebuild, then assert the golden IEEE 754 totalOrder
         let collected: Vec<Value> = if let Value::Set(ref s) = original {
             s.iter().cloned().collect()
         } else {
             panic!("expected Set");
         };
-
-        // Rebuild from the collected sequence (BTreeSet insertion order doesn't matter)
-        let rebuilt_inner: BTreeSet<Value> = collected.iter().cloned().collect();
-        let rebuilt = Value::Set(rebuilt_inner);
-
-        // (a) structural equality
-        assert_eq!(rebuilt, original, "rebuilt Value::Set must equal the original");
-        // (b) content_hash identity
-        assert_eq!(
-            rebuilt.content_hash(),
-            original_hash,
-            "rebuilt Value::Set content_hash must match the original"
-        );
-        // (c) same iteration sequence in same positions
-        let rebuilt_collected: Vec<Value> = if let Value::Set(ref s) = rebuilt {
-            s.iter().cloned().collect()
-        } else {
-            panic!("expected Set");
-        };
-        assert_eq!(
-            rebuilt_collected, collected,
-            "rebuilt Value::Set must iterate in the same order as the original"
-        );
-        // (d) golden ordering assertion: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
         let floats: Vec<f64> = collected
             .iter()
             .map(|v| match v {
@@ -3229,79 +3195,32 @@ mod tests {
                 _ => panic!("unexpected value"),
             })
             .collect();
-        let neg_inf_idx = floats
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_negative())
-            .expect("NEG_INFINITY");
-        let neg_one_idx = floats.iter().position(|&f| f == -1.0_f64).expect("-1.0");
-        let neg_zero_idx = floats
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_negative())
-            .expect("-0.0");
-        let pos_zero_idx = floats
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_positive())
-            .expect("+0.0");
-        let pos_one_idx = floats.iter().position(|&f| f == 1.0_f64).expect("1.0");
-        let pos_inf_idx = floats
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_positive())
-            .expect("INFINITY");
-        let nan_idx = floats.iter().position(|f| f.is_nan()).expect("NaN");
-        assert!(neg_inf_idx < neg_one_idx);
-        assert!(neg_one_idx < neg_zero_idx);
-        assert!(neg_zero_idx < pos_zero_idx);
-        assert!(pos_zero_idx < pos_one_idx);
-        assert!(pos_one_idx < pos_inf_idx);
-        assert!(pos_inf_idx < nan_idx);
+        assert_ieee754_total_order_real(&floats);
     }
 
     #[test]
     fn value_map_round_trip_preserves_key_iteration_order() {
-        // Round-trip guard for Value::Map: collect (key,value) pairs via iter(),
-        // rebuild a fresh BTreeMap, wrap in Value::Map, and assert PartialEq,
-        // content_hash identity, and key-sequence preservation.
+        // Round-trip guard for Value::Map: collect (key, value) pairs via iter(),
+        // rebuild a fresh BTreeMap, and verify the golden key-ordering.
+        //
+        // Parts a-c (structural equality, content_hash identity, key-sequence
+        // preservation) are tautological given BTreeMap stdlib guarantees: Ord alone
+        // determines key iteration order, not insertion order, so rebuilding from any
+        // sequence produces the same BTreeMap. The real regression value is the golden
+        // ordering assertion below.
         use std::collections::BTreeMap;
-        let boundary_floats: &[f64] = &[
-            0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -1.0, 1.0,
-        ];
         let mut original_inner = BTreeMap::new();
-        for (i, &v) in boundary_floats.iter().enumerate() {
+        for (i, &v) in BOUNDARY_REALS.iter().enumerate() {
             original_inner.insert(Value::Real(v), Value::Int(i as i64));
         }
         let original = Value::Map(original_inner);
-        let original_hash = original.content_hash();
 
-        // Collect iteration order
+        // Collect iteration order, then assert the golden IEEE 754 totalOrder on keys
         let collected: Vec<(Value, Value)> = if let Value::Map(ref m) = original {
             m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
         } else {
             panic!("expected Map");
         };
-
-        // Rebuild from the collected sequence
-        let rebuilt_inner: BTreeMap<Value, Value> = collected.iter().cloned().collect();
-        let rebuilt = Value::Map(rebuilt_inner);
-
-        // (a) structural equality
-        assert_eq!(rebuilt, original, "rebuilt Value::Map must equal the original");
-        // (b) content_hash identity
-        assert_eq!(
-            rebuilt.content_hash(),
-            original_hash,
-            "rebuilt Value::Map content_hash must match the original"
-        );
-        // (c) same key iteration sequence
-        let rebuilt_collected: Vec<(Value, Value)> = if let Value::Map(ref m) = rebuilt {
-            m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-        } else {
-            panic!("expected Map");
-        };
-        assert_eq!(
-            rebuilt_collected, collected,
-            "rebuilt Value::Map must iterate in the same key order as the original"
-        );
-        // (d) golden ordering assertion on keys
         let keys: Vec<f64> = collected
             .iter()
             .map(|(k, _)| match k {
@@ -3309,31 +3228,220 @@ mod tests {
                 _ => panic!("unexpected key"),
             })
             .collect();
-        let neg_inf_idx = keys
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_negative())
-            .expect("NEG_INFINITY");
-        let neg_one_idx = keys.iter().position(|&f| f == -1.0_f64).expect("-1.0");
-        let neg_zero_idx = keys
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_negative())
-            .expect("-0.0");
-        let pos_zero_idx = keys
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_positive())
-            .expect("+0.0");
-        let pos_one_idx = keys.iter().position(|&f| f == 1.0_f64).expect("1.0");
-        let pos_inf_idx = keys
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_positive())
-            .expect("INFINITY");
-        let nan_idx = keys.iter().position(|f| f.is_nan()).expect("NaN");
-        assert!(neg_inf_idx < neg_one_idx);
-        assert!(neg_one_idx < neg_zero_idx);
-        assert!(neg_zero_idx < pos_zero_idx);
-        assert!(pos_zero_idx < pos_one_idx);
-        assert!(pos_one_idx < pos_inf_idx);
-        assert!(pos_inf_idx < nan_idx);
+        assert_ieee754_total_order_real(&keys);
+    }
+
+    // --- Cross-variant float-boundary iteration-order tests (task-1434) ---
+
+    #[test]
+    fn value_set_scalar_boundary_iteration_order() {
+        // Exercises the Scalar arm of the Value Ord impl: with identical dimensions,
+        // ordering falls through to si_value.total_cmp. Inserts 7 boundary f64
+        // values as Value::Scalar entries (all with dimension=LENGTH), then asserts
+        // the IEEE 754 totalOrder sequence matches BTreeSet iteration order.
+        // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
+        use std::collections::BTreeSet;
+        let mut inner = BTreeSet::new();
+        for &v in BOUNDARY_REALS {
+            inner.insert(Value::Scalar {
+                si_value: v,
+                dimension: DimensionVector::LENGTH,
+            });
+        }
+        let set_val = Value::Set(inner);
+
+        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
+            s.iter()
+                .map(|v| match v {
+                    Value::Scalar { si_value, .. } => *si_value,
+                    _ => panic!("unexpected value"),
+                })
+                .collect()
+        } else {
+            panic!("expected Set");
+        };
+
+        assert_ieee754_total_order_real(&sorted);
+    }
+
+    #[test]
+    fn value_set_complex_boundary_im_iteration_order() {
+        // Exercises the im-component fallthrough in the Complex arm of Value::Ord.
+        // All 7 entries share dimension=DIMENSIONLESS and re=0.0, so the ordering
+        // falls through to im.total_cmp. Asserts the IEEE 754 totalOrder sequence
+        // from BTreeSet iteration over the im components.
+        // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
+        use std::collections::BTreeSet;
+        let mut inner = BTreeSet::new();
+        for &v in BOUNDARY_REALS {
+            inner.insert(Value::Complex {
+                re: 0.0,
+                im: v,
+                dimension: DimensionVector::DIMENSIONLESS,
+            });
+        }
+        let set_val = Value::Set(inner);
+
+        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
+            s.iter()
+                .map(|v| match v {
+                    Value::Complex { im, .. } => *im,
+                    _ => panic!("unexpected value"),
+                })
+                .collect()
+        } else {
+            panic!("expected Set");
+        };
+
+        assert_ieee754_total_order_real(&sorted);
+    }
+
+    #[test]
+    fn value_set_orientation_boundary_z_iteration_order() {
+        // Exercises the z-component fallthrough in the Orientation arm of Value::Ord.
+        // The Ord impl chains w → x → y → z via total_cmp. With w=0.0, x=0.0, y=0.0
+        // for all entries, ordering falls through to z.total_cmp. Asserts the IEEE
+        // 754 totalOrder sequence from BTreeSet iteration over the z components.
+        // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
+        use std::collections::BTreeSet;
+        let mut inner = BTreeSet::new();
+        for &v in BOUNDARY_REALS {
+            inner.insert(orient(0.0, 0.0, 0.0, v));
+        }
+        let set_val = Value::Set(inner);
+
+        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
+            s.iter()
+                .map(|v| match v {
+                    Value::Orientation { z, .. } => *z,
+                    _ => panic!("unexpected value"),
+                })
+                .collect()
+        } else {
+            panic!("expected Set");
+        };
+
+        assert_ieee754_total_order_real(&sorted);
+    }
+
+    #[test]
+    fn value_set_complex_boundary_re_iteration_order() {
+        // Exercises the re-component fallthrough in the Complex arm of Value::Ord.
+        // The Ord impl chains dimension → re → im via total_cmp. With
+        // dimension=DIMENSIONLESS and im=0.0 for all entries, ordering falls
+        // through to re.total_cmp. Asserts the IEEE 754 totalOrder sequence from
+        // BTreeSet iteration over the re components.
+        // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
+        use std::collections::BTreeSet;
+        let mut inner = BTreeSet::new();
+        for &v in BOUNDARY_REALS {
+            inner.insert(Value::Complex {
+                re: v,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            });
+        }
+        let set_val = Value::Set(inner);
+
+        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
+            s.iter()
+                .map(|v| match v {
+                    Value::Complex { re, .. } => *re,
+                    _ => panic!("unexpected value"),
+                })
+                .collect()
+        } else {
+            panic!("expected Set");
+        };
+
+        assert_ieee754_total_order_real(&sorted);
+    }
+
+    #[test]
+    fn value_set_orientation_boundary_w_iteration_order() {
+        // Exercises the w-component (first) in the Orientation arm of Value::Ord.
+        // The Ord impl chains w → x → y → z via total_cmp. With x=0.0, y=0.0,
+        // z=0.0 for all entries, ordering is determined entirely by w.total_cmp.
+        // Asserts the IEEE 754 totalOrder sequence from BTreeSet iteration over
+        // the w components.
+        // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
+        use std::collections::BTreeSet;
+        let mut inner = BTreeSet::new();
+        for &v in BOUNDARY_REALS {
+            inner.insert(orient(v, 0.0, 0.0, 0.0));
+        }
+        let set_val = Value::Set(inner);
+
+        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
+            s.iter()
+                .map(|v| match v {
+                    Value::Orientation { w, .. } => *w,
+                    _ => panic!("unexpected value"),
+                })
+                .collect()
+        } else {
+            panic!("expected Set");
+        };
+
+        assert_ieee754_total_order_real(&sorted);
+    }
+
+    #[test]
+    fn value_set_orientation_boundary_x_iteration_order() {
+        // Exercises the x-component fallthrough in the Orientation arm of Value::Ord.
+        // The Ord impl chains w → x → y → z via total_cmp. With w=0.0, y=0.0,
+        // z=0.0 for all entries, ordering falls through to x.total_cmp. Asserts
+        // the IEEE 754 totalOrder sequence from BTreeSet iteration over the x
+        // components.
+        // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
+        use std::collections::BTreeSet;
+        let mut inner = BTreeSet::new();
+        for &v in BOUNDARY_REALS {
+            inner.insert(orient(0.0, v, 0.0, 0.0));
+        }
+        let set_val = Value::Set(inner);
+
+        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
+            s.iter()
+                .map(|v| match v {
+                    Value::Orientation { x, .. } => *x,
+                    _ => panic!("unexpected value"),
+                })
+                .collect()
+        } else {
+            panic!("expected Set");
+        };
+
+        assert_ieee754_total_order_real(&sorted);
+    }
+
+    #[test]
+    fn value_set_orientation_boundary_y_iteration_order() {
+        // Exercises the y-component fallthrough in the Orientation arm of Value::Ord.
+        // The Ord impl chains w → x → y → z via total_cmp. With w=0.0, x=0.0,
+        // z=0.0 for all entries, ordering falls through to y.total_cmp. Asserts
+        // the IEEE 754 totalOrder sequence from BTreeSet iteration over the y
+        // components.
+        // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
+        use std::collections::BTreeSet;
+        let mut inner = BTreeSet::new();
+        for &v in BOUNDARY_REALS {
+            inner.insert(orient(0.0, 0.0, v, 0.0));
+        }
+        let set_val = Value::Set(inner);
+
+        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
+            s.iter()
+                .map(|v| match v {
+                    Value::Orientation { y, .. } => *y,
+                    _ => panic!("unexpected value"),
+                })
+                .collect()
+        } else {
+            panic!("expected Set");
+        };
+
+        assert_ieee754_total_order_real(&sorted);
     }
 
     // --- List tests (step-5) ---
