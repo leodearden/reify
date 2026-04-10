@@ -30,7 +30,7 @@ assert \
 
 # reify-stdlib's copy must reference reify-expr::sanitize_value
 assert \
-    "$STDLIB_FILE has SYNC marker referencing reify-expr::sanitize_value" \
+    "reify-stdlib has SYNC marker referencing reify-expr::sanitize_value" \
     grep -q "SYNC:.*reify-expr::sanitize_value" "$STDLIB_FILE"
 
 # Helper: verify that source_file's SYNC comment references a function that
