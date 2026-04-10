@@ -524,41 +524,20 @@ fn gradient_of_field_with_non_numeric_lambda() {
 #[cfg(not(debug_assertions))]
 #[test]
 fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    let domain_type = Type::Real;
-    let codomain_type = Type::String;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
-    );
+    let grad_expr = build_string_codomain_grad_expr();
     let values = ValueMap::new();
     let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
 
     let point = Value::Real(1.0);
     let grad_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::String),
     };
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, domain_type),
+            CompiledExpr::literal(point, Type::Real),
         ],
         Type::Real,
     );
@@ -580,41 +559,20 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
 #[test]
 #[should_panic(expected = "unexpected codomain_type")]
 fn gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    let domain_type = Type::Real;
-    let codomain_type = Type::String;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
-    );
+    let grad_expr = build_string_codomain_grad_expr();
     let values = ValueMap::new();
     let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
 
     let point = Value::Real(1.0);
     let grad_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::String),
     };
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, domain_type),
+            CompiledExpr::literal(point, Type::Real),
         ],
         Type::Real,
     );
