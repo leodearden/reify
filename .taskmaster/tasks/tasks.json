@@ -22879,11 +22879,11 @@
         "description": "The duplicate-unit branch in compile_with_prelude uses `original.span == SourceSpan::empty(0)` as a sentinel for 'came from stdlib prelude', but after Task 209 user dependency pub units are also seeded via seed_prelude_unit with SourceSpan::empty(0). This causes collisions with user dep pub units to produce a misleading diagnostic wrongly blaming the stdlib.\n\nFix: Distinguish stdlib-seeded units from user-import-seeded units by adding provenance (e.g. source_module: Option<String>) to UnitEntry/CompiledUnit. Emit 'already defined in module X' for user imports, keep 'stdlib prelude' only for actual stdlib.\n\nAlso tighten test `compile_project_detects_cross_module_unit_collision` to assert: (a) diagnostic mentions the dep module name, (b) does NOT contain \"stdlib\", (c) error span points at the user's redeclaration.\n\nmemory_hints: search \"UnitRegistry seed_prelude_unit compile_with_prelude\", get_entity \"CompiledUnit\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:10:07.311Z",
+        "updatedAt": "2026-04-10T06:49:53.398Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -31920,9 +31920,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T06:49:52.251Z",
+      "lastModified": "2026-04-10T06:49:53.399Z",
       "taskCount": 1571,
-      "completedCount": 1179,
+      "completedCount": 1180,
       "tags": [
         "master"
       ]
