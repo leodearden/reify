@@ -3748,77 +3748,23 @@ fn divergence_dimensional_correctness_2d() {
     );
 }
 
-/// Divergence of Point{3,Length} → Vector{3,Length}: the quotient Length/Length
-/// collapses to DIMENSIONLESS, so dim_quotient_type's inner branch returns Type::Real.
-///
-/// This is the only test exercising the `result_dim == DIMENSIONLESS → Type::Real`
-/// inner branch of dim_quotient_type (calculus.rs:69-71) for divergence.
-/// Expected to pass immediately (coverage expansion).
+/// This is the only divergence test exercising the `result_dim == DIMENSIONLESS => Type::Real`
+/// inner arm of `dim_quotient_type`. Codomain component `Length` divided by domain
+/// `Length` collapses to `DIMENSIONLESS`, so the inner arm returns `Type::Real`.
 #[test]
 fn divergence_dimensional_correctness_result_dimensionless_returns_real() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    let domain_type = Type::point3(Type::Scalar {
-        dimension: DimensionVector::LENGTH,
-    });
-    // Codomain component = Length, so cd/dd = Length/Length = DIMENSIONLESS → Real.
-    let codomain_type = Type::vec3(Type::Scalar {
-        dimension: DimensionVector::LENGTH,
-    });
-
-    // Lambda: |x, y, z| vec3(x, y, z) — metadata-only, not sampled.
-    let body = make_function_call(
-        "vec3",
-        vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        ],
-        codomain_type.clone(),
-    );
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
-    let div_expr = make_function_call(
+    run_dim_metadata_test(
         "divergence",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        FieldSourceKind::Analytical,
+        Type::Real,
+        "divergence_dimensional_correctness_result_dimensionless_returns_real",
     );
-
-    let values = ValueMap::new();
-    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(&div_result, Value::Field { .. }),
-        "divergence of Point{{3,Length}}→Vector{{3,Length}} should return a Field, got {:?}",
-        div_result
-    );
-
-    if let Value::Field { codomain_type, .. } = &div_result {
-        assert_eq!(
-            *codomain_type,
-            Type::Real,
-            "divergence of Point{{3,Length}}→Vector{{3,Length}}: Length/Length=DIMENSIONLESS should yield Real, got {:?}",
-            codomain_type
-        );
-    }
 }
 
 /// Divergence of a Composed Point{3,Length} → Vector{3,Velocity} field has codomain
