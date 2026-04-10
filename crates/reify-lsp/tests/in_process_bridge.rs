@@ -1037,7 +1037,7 @@ async fn error_prefix_constants_match_actual_errors() {
 ///   gate them on the handshake state, so `did_open` and `completion` run normally.
 /// - The downstream calls return a well-defined `Err` — a future change may add a
 ///   pre-handshake guard; that is also an acceptable outcome provided the error is
-///   non-empty.
+///   non-empty.  The code below honors both outcomes via `assert_ok_or_nonempty_err`.
 ///
 /// **Regressions this test guards against:**
 /// - A panic or hang on `textDocument/didOpen` / `textDocument/completion` when the
@@ -1074,13 +1074,13 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
                 did_open_params("file:///test.ri", reify_test_support::bracket_source()),
             )
             .await;
-        let val = did_open_result
-            .expect("didOpen should succeed before the initialized notification");
-        assert_eq!(
-            val,
-            serde_json::Value::Null,
-            "didOpen should return exactly Ok(Value::Null) when it succeeds, got: {val}"
-        );
+        if let Some(val) = assert_ok_or_nonempty_err(did_open_result, "didOpen before initialized") {
+            assert_eq!(
+                val,
+                serde_json::Value::Null,
+                "didOpen should return exactly Ok(Value::Null) when it succeeds, got: {val}"
+            );
+        }
 
         // Step 4: send textDocument/completion at the same position used by the happy-path
         // reference test did_open_and_completion_returns_items (line 1, character 0).
@@ -1097,12 +1097,12 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
                 }),
             )
             .await;
-        let val = completion_result
-            .expect("completion should succeed before the initialized notification");
-        if !val.is_null() {
-            // Non-null Ok — must be a well-formed CompletionResponse variant.
-            // completion_items() panics with an actionable message if the shape is wrong.
-            let _items = completion_items(&val);
+        if let Some(val) = assert_ok_or_nonempty_err(completion_result, "completion before initialized") {
+            if !val.is_null() {
+                // Non-null Ok — must be a well-formed CompletionResponse variant.
+                // completion_items() panics with an actionable message if the shape is wrong.
+                let _items = completion_items(&val);
+            }
         }
     });
 }
