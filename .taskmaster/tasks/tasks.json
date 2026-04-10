@@ -30087,16 +30087,21 @@
         "description": "The doc comments on `compute_numerical_divergence_at_point` (line ~851), `compute_numerical_curl_at_point` (line ~991), and `compute_numerical_laplacian_at_point` (line ~1151) in `crates/reify-expr/src/calculus.rs` all state \"the lambda always receives a Point regardless of the caller's input variant.\" This is only true when `single_point_param=true`. When `single_point_param=false`, `eval_perturbed_point` passes individual scalar arguments via `work_args.extend(work_coords.iter().map(...))` at line ~571 — the lambda receives n separate scalars, not a Point.\n\nFix each doc comment to: \"eval_perturbed_point re-wraps perturbed coordinates as Value::Point (in the single-point-param path), so the caller's Point-vs-Vector choice does not leak through to the lambda.\"\n\nAdditionally, the inline comment at line ~1030 (\"n is constant 3 here, so the n > 1 branch in detect_single_point_param is always true\") could be read as \"detect_single_point_param always returns true.\" Rephrase to: \"n is constant 3 here, so the n > 1 condition in detect_single_point_param is always satisfied; the result depends solely on params.len() == 1.\"\n\nmemory_hints: Search \"eval_perturbed_point single_point_param\" and \"detect_single_point_param\" for implementation context.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T02:31:44.299Z"
+        "updatedAt": "2026-04-10T02:34:02.902Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:32:50.873Z",
+      "lastModified": "2026-04-10T02:34:02.902Z",
       "taskCount": 1457,
       "completedCount": 1133,
       "tags": [
