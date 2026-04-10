@@ -4801,6 +4801,12 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(result.is_none(), "NaN scale factor should return None");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for NaN scale factor, got: {:?}",
+            diagnostics
+        );
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
