@@ -160,11 +160,11 @@ fn run_tests_propagates_violation_diagnostics() {
         results[0].constraint_results
     );
     assert!(
-        results[0].diagnostics.iter().any(|d| {
-            d.severity == Severity::Error
-                && (d.message.contains("Positive") || d.message.contains("TestA"))
-        }),
-        "expected at least one Error diagnostic with message containing 'Positive' or 'TestA', got: {:?}",
+        results[0]
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("Positive[0]")),
+        "expected at least one Error diagnostic with message containing 'Positive[0]', got: {:?}",
         results[0].diagnostics
     );
 }
