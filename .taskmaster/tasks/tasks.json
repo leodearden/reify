@@ -10748,7 +10748,7 @@
         "description": "Two related issues in Engine::eval(): repeated allocation and undocumented invariant.",
         "details": "1. self.functions is rebuilt on every eval() call by cloning module.functions and extending with prelude functions. Pre-collect prelude functions once at Engine construction time into a prelude_functions field. In eval(), replace the per-call loop with self.functions.extend(self.prelude_functions.iter().cloned()).\n\n2. User functions shadow prelude functions because module functions are stored before prelude functions are appended (first-match lookup). Add a comment explaining this invariant and a regression test proving user definitions take precedence.\n\nFiles: crates/reify-eval/src/lib.rs\n\nmemory_hints: search \"Engine eval prelude functions\" | entities: Engine, eval",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10762,7 +10762,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T06:24:33.836Z"
+        "updatedAt": "2026-04-10T17:24:43.371Z"
       },
       {
         "id": "507",
@@ -30893,11 +30893,11 @@
         "description": "Three improvements in crates/reify-expr/src/calculus.rs: (1) Lines 93-105: add doc comment cross-referencing Value::from_component and explaining why wrap_scalar_result doesn't normalize dimensionless Scalar→Real. (2) Lines 1025-1034: add debug_assert on codomain_type in compute_numerical_curl_at_point for consistency with divergence/laplacian guards. (3) Lines 1554-1619: add debug_assert panic test using Type::vec3(Type::Real) as codomain to exercise the non-scalar branch alongside existing Type::Bool test.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T03:17:03.198Z",
+        "updatedAt": "2026-04-10T17:24:49.954Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src"
@@ -32821,7 +32821,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T17:24:39.064Z",
+      "lastModified": "2026-04-10T17:24:49.955Z",
       "taskCount": 1613,
       "completedCount": 1240,
       "tags": [
