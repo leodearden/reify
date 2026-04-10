@@ -2412,17 +2412,7 @@ fn divergence_real_domain_preserves_dim_codomain() {
         ValueMap::new(),
     );
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) = make_analytical_field(domain_type, codomain_type.clone(), lambda);
 
     let div_expr = make_function_call(
         "divergence",
@@ -2481,17 +2471,7 @@ fn divergence_dim_domain_preserves_real_codomain() {
         ValueMap::new(),
     );
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) = make_analytical_field(domain_type, codomain_type.clone(), lambda);
 
     let div_expr = make_function_call(
         "divergence",
@@ -2550,17 +2530,7 @@ fn divergence_int_domain_preserves_dim_codomain() {
         ValueMap::new(),
     );
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) = make_analytical_field(domain_type, codomain_type.clone(), lambda);
 
     let div_expr = make_function_call(
         "divergence",
