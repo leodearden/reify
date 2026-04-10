@@ -32092,15 +32092,21 @@
         "description": "In crates/reify-expr/src/calculus.rs, add explicit rejection tests for Divergence, Curl, and Laplacian FieldSourceKind variants returning None, similar to the existing Sampled/Gradient/Imported tests. Guards against regressions if the match arms at lines 132-140 are refactored.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T22:02:32.760Z",
+        "updatedAt": "2026-04-10T22:02:51.456Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: calculus.rs: add rejection tests for Divergence, Curl, Laplacian FieldSourceKind"
+            ]
+          }
         }
       },
       {
@@ -32874,9 +32880,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T22:02:32.787Z",
+      "lastModified": "2026-04-10T22:02:51.456Z",
       "taskCount": 1616,
-      "completedCount": 1259,
+      "completedCount": 1260,
       "tags": [
         "master"
       ]
