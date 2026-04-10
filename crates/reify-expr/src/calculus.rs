@@ -1025,15 +1025,12 @@ pub(crate) fn compute_numerical_curl_at_point(
     let n = 3;
     let domain_dim = extract_explicit_domain_dim(domain_type);
 
-    // Extract result dimension from the already-divided codomain_type (stamped by
-    // compute_curl). Curl produces Vector{3, component}, so unwrap the quantity.
-    let result_dim = match codomain_type {
-        Type::Vector { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => *dimension,
-            _ => DimensionVector::DIMENSIONLESS,
-        },
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
+    // Extract the per-component codomain type from the already-divided codomain_type
+    // (stamped by compute_curl). Curl produces Vector{3, component}, so unwrap the
+    // quantity; for any other type fall back to codomain_type itself.
+    let component_codomain: &Type = match codomain_type {
+        Type::Vector { quantity, .. } => quantity.as_ref(),
+        _ => codomain_type,
     };
 
     // n is constant 3 here, so the n > 1 branch in detect_single_point_param is always
@@ -1135,18 +1132,11 @@ pub(crate) fn compute_numerical_curl_at_point(
         return Value::Undef;
     }
 
-    let wrap = |v: f64| -> Value {
-        if result_dim != DimensionVector::DIMENSIONLESS {
-            Value::Scalar {
-                si_value: v,
-                dimension: result_dim,
-            }
-        } else {
-            Value::Real(v)
-        }
-    };
-
-    Value::Vector(vec![wrap(curl_x), wrap(curl_y), wrap(curl_z)])
+    Value::Vector(vec![
+        wrap_scalar_result(curl_x, component_codomain),
+        wrap_scalar_result(curl_y, component_codomain),
+        wrap_scalar_result(curl_z, component_codomain),
+    ])
 }
 
 /// Compute the numerical Laplacian of a scalar field at a given point via central differences.
