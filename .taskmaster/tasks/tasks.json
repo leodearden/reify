@@ -29255,15 +29255,16 @@
         "description": "Task 1238 added 10 new dimensional-correctness tests (~765 lines) to crates/reify-expr/tests/field_calculus_tests.rs:3477-4240. Each test is ~70 lines of near-identical boilerplate (build ids, build lambda body, build Field, build Type::Field, make_function_call, eval, assert matches Field, then if-let for codomain assertion). The file already has the helper pattern via `run_divergence_identity_test` (line 81) and `run_curl_rotation_test` (line 170) — the new code regressed on that convention.\n\nConsolidated fixes (from Task 1238 review suggestions S1, S2, S3, S4, S5, S6):\n\n1. **Factor a helper** `fn run_dim_metadata_test(op: &str, domain: Type, codomain: Type, source: FieldSourceKind, expected_codomain: Type, label: &str)` that takes the operation name (\"laplacian\" or \"divergence\"), domain/codomain types, source kind, and expected result codomain, and contains the scaffolding. Body lambda content is metadata-only and can be a dummy parameterized by domain arity. Reduces each test to ~10 lines.\n\n2. **Replace assertion pattern** — change each `assert!(matches!(&result, Value::Field { .. })); if let Value::Field { .. } = &result { ... }` to a let-else: `let Value::Field { codomain_type, .. } = &result else { panic!(\"...\"); };` so inner assertions are not gated by an outer match guard.\n\n3. **Fix doc-comment inaccuracies**:\n   - `laplacian_dimensional_correctness_2d_point_domain` (line 3548): comment claims it exercises the `Type::Point { n: 2, .. }` arm, but `compute_laplacian` does NOT pattern-match on `n`. Rephrase to clarify it confirms dimension-agnostic behavior for n=2.\n   - `divergence_dimensional_correctness_1d` (line 3933) / `_2d` (line 4006): same issue — `compute_divergence` has no n-discriminating arm. Rephrase to remove the \"n=1/n=2 arm\" wording.\n\n4. **Review `laplacian_dimensional_correctness_int_domain_int_codomain`** (line 3700): largely redundant with `laplacian_dimensional_correctness_int_codomain` — `dim_quotient_type`'s outer guard `cd != DIMENSIONLESS && dd != DIMENSIONLESS` short-circuits on `cd == DIMENSIONLESS`, so the domain dimension is never evaluated once codomain is Int. Either drop it or correct the doc to explain it covers the Int-domain input-value case, not a distinct branch.\n\n5. **Remove hard-coded source line numbers** from doc comments at lines 3483, 3548, 3776, 3852, 4092, 4166 (e.g. `calculus.rs:386`, `calculus.rs:69-71`, `calculus.rs:375`, `calculus.rs:183`). Reference function names and branch descriptions instead — e.g. \"the `_ if scalar_dimension(domain_type).is_some()` first arm of `compute_laplacian`\".\n\nScope: test file only. No production code changes. Do not drop coverage — after the helper refactor there should still be 10 test cases exercising (a) 1D/2D fields (b) Int domains/codomains (c) dimensionless-result branch (d) Composed source kind.\n\nMemory hints:\n- search \"field_calculus_tests run_divergence_identity_test helper pattern\" — existing helper convention\n- search \"task 1238 dimensional correctness new tests\" — what was added",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T00:16:36.680Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:16:36.112Z",
+      "lastModified": "2026-04-10T00:16:36.680Z",
       "taskCount": 1417,
       "completedCount": 1088,
       "tags": [
