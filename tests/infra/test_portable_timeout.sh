@@ -52,6 +52,13 @@ _build_posix_fallback_env() {
 
 echo "=== portable_timeout unit tests ==="
 
+# -- Meta: KILL_CMD_PID_RE shared-setup constant is declared ------------------
+# Verifies the shared regex variable is set before any test that uses it.
+# KILL_CMD_PID_RE is used by Test 22 (structural assertion against LIB_PORTABLE)
+# and by Test 22b (meta-assertions validating the regex's discrimination semantics).
+assert "KILL_CMD_PID_RE variable is declared (shared by Test 22 structural assertion and Test 22b meta-assertions)" \
+    env KILL_CMD_PID_RE="${KILL_CMD_PID_RE:-}" bash -c '[ -n "$KILL_CMD_PID_RE" ]'
+
 # -- Test 1: portable_timeout is defined after sourcing -----------------------
 echo ""
 echo "--- Test 1: portable_timeout function defined ---"
