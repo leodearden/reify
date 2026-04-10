@@ -32795,20 +32795,28 @@
         "description": "Four small fixes in connect compile/eval tests: (1) Add no-warnings assertion to explicit_mapping_unknown_member_currently_accepted in connect_compile_tests.rs (mirror pattern from compile_connect_mixed_skips_auto_match ~line 1367-1371). (2) Extract compile_m10_example() helper in connect_eval.rs to DRY the two m10 integration tests (~lines 382-448). (3) Add left_port/right_port assertions to auto_match_reverse_operator in connect_compile_tests.rs (~line 962) — other tests assert these fields but the reverse operator test doesn't. (4) Fix step numbering gap 14→16 in connect_eval.rs — renumber step-16 to step-15 or add comment explaining gap.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [
           "247"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T17:20:55.436Z"
+        "updatedAt": "2026-04-10T17:21:48.684Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Connect test hardening: assertions, DRY, and numbering cleanup"
+            ]
+          }
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T17:20:55.441Z",
+      "lastModified": "2026-04-10T17:21:48.704Z",
       "taskCount": 1613,
-      "completedCount": 1237,
+      "completedCount": 1238,
       "tags": [
         "master"
       ]
