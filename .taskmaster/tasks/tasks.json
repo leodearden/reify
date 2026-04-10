@@ -28768,11 +28768,11 @@
         "description": "Three orchestrator/task infrastructure improvements: (1) Add rationale note for task 259 backward transition (in-progress→pending) explaining the scope re-evaluation. (2) Add pre-task hook that rebases onto main and checks if target diff is non-empty before starting work — prevents redundant branches when work already landed on main. (3) Add schema validator to auto-commit hook ensuring updatedAt field is always present on task writes, plus one-time audit to backfill existing nulls via jq.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:21:27.477Z"
+        "updatedAt": "2026-04-10T00:04:11.624Z"
       },
       {
         "id": "1392",
@@ -28998,7 +28998,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:03:23.030Z",
+      "lastModified": "2026-04-10T00:04:11.624Z",
       "taskCount": 1406,
       "completedCount": 1082,
       "tags": [
