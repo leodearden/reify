@@ -26413,11 +26413,11 @@
         "description": "Follow-up from Task 1235 review (esc-1235-1032). Four related cleanups in crates/reify-expr/src/lib.rs around the div/lap sample-handler dispatch:\n\nS1 (naming, lib.rs:126,149,162,187): The destructure `codomain_type: grad_codomain_type` is now forwarded to compute_numerical_divergence_at_point and compute_numerical_laplacian_at_point as well as the gradient arm. The `grad_` prefix is misleading. Rename to `outer_codomain_type` (or drop the rename-on-destructure to use `codomain_type`) and update all three forwarding call sites.\n\nS2 (duplication, lib.rs ~1150-1395, ~1397-1563, ~1728-1908): The result_dim extraction (`match codomain_type { Type::Scalar { dimension } => *dimension, _ => DIMENSIONLESS }`) and the Value::Scalar/Value::Real return-site wrap are now triplicated across gradient, divergence, and laplacian. Divergence and laplacian blocks are identical word-for-word; gradient's variant additionally matches Type::Vector. Extract a helper like `fn wrap_scalar_result(value: f64, codomain_type: &Type) -> Value` returning Value::Scalar for Type::Scalar and Value::Real otherwise. Use from divergence/laplacian return sites; gradient can reuse per-component (Vector arm handled separately).\n\nS3 (doc_drift, lib.rs:1448, 1554, 1784, 1896): The new comments reference gradient-handler line numbers (`lib.rs:1206-1213`, `lib.rs:1368-1375`) which are already off by a couple of lines. Replace with stable descriptors like \"Mirrors the result_dim extraction in compute_numerical_gradient_at_point\" and \"Mirrors the gradient handler's return-site wrapping (result_dim != DIMENSIONLESS branch)\".\n\nS7 (robustness, lib.rs:1445-1452, 1781-1788): Add `debug_assert!(matches!(codomain_type, Type::Real | Type::Scalar { .. }), \"divergence/laplacian codomain must be scalar, got {:?}\", codomain_type);` at the top of compute_numerical_divergence_at_point and compute_numerical_laplacian_at_point. Guards against future stamping drift in compute_divergence/compute_laplacian without changing release behavior.\n\nMemory hints:\n- search \"Task 1235 metadata runtime dimension drift divergence laplacian\" — the parent fix\n- get_entity \"Task 1221\" — the initial partial fix establishing the pattern\n- Look at compute_numerical_gradient_at_point (~lib.rs:1150-1395) for the canonical shape",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:32:30.016Z",
+        "updatedAt": "2026-04-10T02:31:44.040Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -30095,7 +30095,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:31:42.692Z",
+      "lastModified": "2026-04-10T02:31:44.040Z",
       "taskCount": 1457,
       "completedCount": 1133,
       "tags": [
