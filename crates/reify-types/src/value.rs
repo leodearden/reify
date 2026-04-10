@@ -3390,8 +3390,9 @@ mod tests {
     fn value_set_orientation_boundary_x_iteration_order() {
         // Exercises the x-component fallthrough in the Orientation arm of Value::Ord.
         // The Ord impl chains w → x → y → z via total_cmp. With w=0.0, y=0.0,
-        // z=0.0 for all entries, ordering falls through to x.total_cmp. Asserts the
-        // IEEE 754 totalOrder sequence from BTreeSet iteration over the x components.
+        // z=0.0 for all entries, ordering falls through to x.total_cmp. Asserts
+        // the IEEE 754 totalOrder sequence from BTreeSet iteration over the x
+        // components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
         use std::collections::BTreeSet;
         let mut inner = BTreeSet::new();
@@ -3418,8 +3419,9 @@ mod tests {
     fn value_set_orientation_boundary_y_iteration_order() {
         // Exercises the y-component fallthrough in the Orientation arm of Value::Ord.
         // The Ord impl chains w → x → y → z via total_cmp. With w=0.0, x=0.0,
-        // z=0.0 for all entries, ordering falls through to y.total_cmp. Asserts the
-        // IEEE 754 totalOrder sequence from BTreeSet iteration over the y components.
+        // z=0.0 for all entries, ordering falls through to y.total_cmp. Asserts
+        // the IEEE 754 totalOrder sequence from BTreeSet iteration over the y
+        // components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
         use std::collections::BTreeSet;
         let mut inner = BTreeSet::new();
