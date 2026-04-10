@@ -31970,6 +31970,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1576,
+        "title": "Add label count assertions to module_dag and unit_registry tests",
+        "description": "Two tests (module_dag_tests and unit_registry tests) check label existence but don't assert the expected count. Add assert_eq! on label count (expected 1) to both tests to prevent silent regressions. Source: review of task 1074 (S4, S5).",
+        "details": "Files: module_dag_tests.rs, unit_registry tests.\\n\\nmemory_hints:\\n- search: \"module_dag test label\"\\n- search: \"unit_registry test label\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -31982,7 +31993,7 @@
       ],
       "created": "2026-04-10T06:51:02.836Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T07:02:13.355Z"
+      "updated": "2026-04-10T07:02:20.451Z"
     }
   }
 }
