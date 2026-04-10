@@ -148,11 +148,18 @@ fn validate_differentiable_field<'a>(
         source,
         FieldSourceKind::Analytical | FieldSourceKind::Composed
     ) {
+        #[cfg(debug_assertions)]
+        eprintln!("[reify-expr] {op}: unsupported source kind {:?}", source);
         return None;
     }
 
     // Lambda slot must be callable.
     if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[reify-expr] {op}: lambda slot is not callable: {:?}",
+            lambda
+        );
         return None;
     }
 
