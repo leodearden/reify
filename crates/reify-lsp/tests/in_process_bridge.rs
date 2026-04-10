@@ -207,6 +207,34 @@ async fn with_hang_guard<F: std::future::Future<Output = ()>>(seconds: u64, f: F
         });
 }
 
+/// Assert that `result` is either `Ok(val)` or a well-defined non-empty `Err`.
+///
+/// Returns `Some(val)` when `result` is `Ok(val)` — the caller may inspect `val`
+/// further.  Returns `None` when `result` is `Err(e)` and `!e.is_empty()` — the
+/// error is well-formed; nothing more to check.
+///
+/// # Panics
+///
+/// Panics with a message containing `"non-empty"` and `ctx` when `result` is
+/// `Err(e)` and `e.is_empty()` — an empty error string is a bug (it provides no
+/// actionable information to the caller).
+///
+/// This helper is used by `downstream_ops_after_malformed_initialize_without_initialized`
+/// to honour the dual-outcome spec documented in that test's doc comment: downstream
+/// calls may either succeed (outcome a) or return a non-empty Err (outcome b).
+fn assert_ok_or_nonempty_err(
+    result: Result<serde_json::Value, String>,
+    ctx: &str,
+) -> Option<serde_json::Value> {
+    match result {
+        Ok(val) => Some(val),
+        Err(e) if !e.is_empty() => None,
+        Err(e) => panic!(
+            "assert_ok_or_nonempty_err({ctx}): expected Ok or non-empty Err, got empty Err: {e:?}"
+        ),
+    }
+}
+
 /// Regression guard: the set_default guard pattern must capture WARN events when
 /// running on a current_thread tokio runtime.
 ///
