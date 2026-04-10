@@ -27820,11 +27820,11 @@
         "description": "Follow-up from Task 1320 review (esc-1320-8). Two small symmetry gaps in tests/infra/test_sync_comments_grep.sh, both explicitly flagged as \"suggestion\" severity by the comprehensive reviewer.\n\n**S1 — Add accept case for alternate qualifier ordering (near line 110-111):**\nThe new accept case at line 110 covers `unsafe async fn sanitize_value(`, but the alternate common ordering `const unsafe fn sanitize_value(` is not explicitly exercised. The current regex structure places const and unsafe in separate optional groups, so it would match, but the ordering is not validated by a test. Adding this case makes the qualifier-ordering guarantee explicit.\n\nFix: After line 111, add:\n```\nassert \"accepts: const unsafe fn sanitize_value( (const+unsafe combination)\" \\\n    bash -c \"printf '%s\\n' 'const unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'\"\n```\n\n**S2 — Add reject mirror for pub(in path) suffix false-positive (near line 118-122):**\nTask 1320 added reject mirrors for pub(crate)+async and pub(super)+const with the `_raw` suffix, but the newly-added `pub(in crate::foo) fn` accept case (line 104) has no corresponding reject mirror. Consistency with the other reject mirrors suggests adding one.\n\nFix: After line 122, add:\n```\nassert \"rejects: pub(in crate::foo) fn sanitize_value_raw( (pub(in path) suffix false-positive)\" \\\n    bash -c \"! printf '%s\\n' 'pub(in crate::foo) fn sanitize_value_raw(v: Value) -> Value {' | grep -qE '$PATTERN'\"\n```\n\nBoth are polish-level changes that mirror the Task 1174→1279→1320 lineage of incrementally tightening the accept/reject coverage of the fn-existence grep pattern.\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`\n\nSource: esc-1320-8 (steward-triage from Task 1320 post-merge review by reviewer_comprehensive)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T02:09:17.798Z",
+        "updatedAt": "2026-04-10T02:15:11.971Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh",
@@ -29926,9 +29926,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:14:42.744Z",
+      "lastModified": "2026-04-10T02:15:11.971Z",
       "taskCount": 1447,
-      "completedCount": 1121,
+      "completedCount": 1122,
       "tags": [
         "master"
       ]
