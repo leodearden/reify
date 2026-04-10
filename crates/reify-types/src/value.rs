@@ -1941,6 +1941,7 @@ impl ValueMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
 
     // Boundary float values used by IEEE 754 totalOrder ordering tests.
     // All 7 values are bit-distinct; insertion order is intentionally scrambled
@@ -2589,7 +2590,6 @@ mod tests {
     fn value_btreeset_negative_real_iteration_order() {
         // End-to-end validation: inserting negative reals into a BTreeSet and
         // iterating must yield mathematical order [-2.0, -1.0, -0.5, 0.5, 1.0, 2.0].
-        use std::collections::BTreeSet;
         let mut set = BTreeSet::new();
         for v in &[-2.0_f64, 1.0, -0.5, 0.5, -1.0, 2.0] {
             set.insert(Value::Real(*v));
@@ -2612,7 +2612,6 @@ mod tests {
         //
         // This subsumes value_ord_real_negative_vs_positive and
         // value_ord_real_negative_magnitude which test a subset of these pairings.
-        use std::collections::BTreeSet;
         let mut set = BTreeSet::new();
         for &v in BOUNDARY_REALS {
             set.insert(Value::Real(v));
@@ -2751,7 +2750,6 @@ mod tests {
     /// the discriminating `f64` field via `extract`, and delegates to
     /// `assert_ieee754_total_order_real` to assert the IEEE 754 totalOrder sequence.
     fn assert_boundary_set_iteration_order(build: fn(f64) -> Value, extract: fn(&Value) -> f64) {
-        use std::collections::BTreeSet;
         let mut inner = BTreeSet::new();
         for &v in BOUNDARY_REALS {
             inner.insert(build(v));
@@ -3050,7 +3048,6 @@ mod tests {
 
     #[test]
     fn value_map_basic() {
-        use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
         m.insert(Value::String("a".into()), Value::Int(1));
         m.insert(Value::String("b".into()), Value::Int(2));
@@ -3065,7 +3062,6 @@ mod tests {
 
     #[test]
     fn value_map_equality() {
-        use std::collections::BTreeMap;
         let mut m1 = BTreeMap::new();
         m1.insert(Value::String("a".into()), Value::Int(1));
         let mut m2 = BTreeMap::new();
@@ -3078,7 +3074,6 @@ mod tests {
 
     #[test]
     fn value_map_ordering() {
-        use std::collections::BTreeMap;
         // Map sorts after Set
         let s = Value::Set(std::collections::BTreeSet::new());
         let m = Value::Map(BTreeMap::new());
@@ -3087,7 +3082,6 @@ mod tests {
 
     #[test]
     fn value_map_content_hash() {
-        use std::collections::BTreeMap;
         let mut m1 = BTreeMap::new();
         m1.insert(Value::String("a".into()), Value::Int(1));
         let mut m2 = BTreeMap::new();
@@ -3105,7 +3099,6 @@ mod tests {
 
     #[test]
     fn value_set_basic() {
-        use std::collections::BTreeSet;
         let mut s = BTreeSet::new();
         s.insert(Value::Int(3));
         s.insert(Value::Int(1));
@@ -3124,7 +3117,6 @@ mod tests {
 
     #[test]
     fn value_set_equality() {
-        use std::collections::BTreeSet;
         let mut s1 = BTreeSet::new();
         s1.insert(Value::Int(1));
         s1.insert(Value::Int(2));
@@ -3136,7 +3128,6 @@ mod tests {
 
     #[test]
     fn value_set_ordering() {
-        use std::collections::BTreeSet;
         let mut s1 = BTreeSet::new();
         s1.insert(Value::Int(1));
         let mut s2 = BTreeSet::new();
@@ -3149,7 +3140,6 @@ mod tests {
 
     #[test]
     fn value_set_content_hash() {
-        use std::collections::BTreeSet;
         let mut s1 = BTreeSet::new();
         s1.insert(Value::Int(1));
         s1.insert(Value::Int(2));
@@ -3166,7 +3156,6 @@ mod tests {
         // Mirrors value_btreeset_boundary_real_iteration_order but exercises the
         // Value::Set wrapper rather than a bare BTreeSet<Value>.
         // Expected IEEE 754 totalOrder: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeSet;
         let mut inner = BTreeSet::new();
         for &v in BOUNDARY_REALS {
             inner.insert(Value::Real(v));
@@ -3193,7 +3182,6 @@ mod tests {
         // Value::Map: boundary floats are used as keys, each mapped to a distinct
         // sentinel Value::Int so we can verify key-iteration order.
         // Expected IEEE 754 totalOrder: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeMap;
         let mut inner = BTreeMap::new();
         for (i, &v) in BOUNDARY_REALS.iter().enumerate() {
             inner.insert(Value::Real(v), Value::Int(i as i64));
@@ -3224,7 +3212,6 @@ mod tests {
         // determines iteration order, not insertion order, so rebuilding from any
         // sequence produces the same BTreeSet. The real regression value is the golden
         // ordering assertion below.
-        use std::collections::BTreeSet;
         let mut original_inner = BTreeSet::new();
         for &v in BOUNDARY_REALS {
             original_inner.insert(Value::Real(v));
@@ -3257,7 +3244,6 @@ mod tests {
         // determines key iteration order, not insertion order, so rebuilding from any
         // sequence produces the same BTreeMap. The real regression value is the golden
         // ordering assertion below.
-        use std::collections::BTreeMap;
         let mut original_inner = BTreeMap::new();
         for (i, &v) in BOUNDARY_REALS.iter().enumerate() {
             original_inner.insert(Value::Real(v), Value::Int(i as i64));
@@ -3608,7 +3594,6 @@ mod tests {
 
     #[test]
     fn value_display_set() {
-        use std::collections::BTreeSet;
         let mut s = BTreeSet::new();
         s.insert(Value::Int(1));
         s.insert(Value::Int(2));
@@ -3618,7 +3603,6 @@ mod tests {
 
     #[test]
     fn value_display_map() {
-        use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
         m.insert(Value::String("a".into()), Value::Int(1));
         assert_eq!(format!("{}", Value::Map(m)), "{\"a\": 1}");
@@ -3687,7 +3671,6 @@ mod tests {
     #[test]
     fn value_and_satisfaction_content_hash_tags_no_cross_domain_collisions() {
         // Build representative Value for each variant
-        use std::collections::{BTreeMap, BTreeSet};
         let values: Vec<(&str, Value)> = vec![
             ("Bool(false)", Value::Bool(false)),
             ("Bool(true)", Value::Bool(true)),
