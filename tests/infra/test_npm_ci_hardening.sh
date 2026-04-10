@@ -15,6 +15,25 @@ _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
 
+# setup_fixture_dir VARNAME
+# Creates a temp dir with the standard fixture layout used by Tests 23a/23c/23d:
+#   scripts/, tests/infra/, gui/sidecar/, tree-sitter-reify/
+# Copies check-pm-standardization.sh and test_helpers.sh into the fixture.
+# Initialises a git repo so 'git check-ignore' works inside Check 3.
+# Appends the dir to _TMPDIRS so cleanup() removes it at script exit.
+# Writes the path back to the caller via printf -v (bash 3.1+; no subshell).
+setup_fixture_dir() {
+    local _varname="$1"
+    local dir
+    dir="$(mktemp -d)"
+    _TMPDIRS+=("$dir")
+    mkdir -p "$dir/scripts" "$dir/tests/infra" "$dir/gui/sidecar" "$dir/tree-sitter-reify"
+    cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$dir/scripts/"
+    cp "$SCRIPT_DIR/test_helpers.sh" "$dir/tests/infra/"
+    git -C "$dir" init -q
+    printf -v "$_varname" '%s' "$dir"
+}
+
 echo "=== npm ci hardening tests ==="
 
 # -- Test 1: check-pm-standardization.sh location ----------------------------
@@ -82,15 +101,19 @@ echo ""
 echo "--- Test 6: script has cross-file packageManager consistency check ---"
 
 assert "Check 2 block uses 'sort -u' for cross-file consistency comparison" \
-    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'sort -u'"
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'sort -u'"
 
 assert "Check 2 block references 'packageManager' in consistency logic" \
-    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'packageManager'"
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'packageManager'"
 
 # -- Test 7: git check-ignore is NOT called inside a for loop ----------------
 echo ""
 echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
 
+# NOTE: the awk range below only matches the one-line `for ...; do` form;
+# a multi-line `for ...\ndo` spelling would slip past this check. If a
+# future refactor splits the header across lines, broaden the start
+# pattern (e.g. `/^for /` + a separate `/^do/` anchor) to keep coverage.
 assert "bare git check-ignore (without -v) is not inside for/done loops" \
     bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for [^;]*; *do/,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
 
@@ -318,24 +341,10 @@ assert "Check 2 block references PKG_COUNT in the total assertion" \
 echo ""
 echo "--- Test 23: behavioral integration tests ---"
 
-FIXTURE_DIR="$(mktemp -d)"
-_TMPDIRS+=("$FIXTURE_DIR")
-
-# Create directory layout mirroring the repo structure expected by the script
-mkdir -p "$FIXTURE_DIR/scripts"
-mkdir -p "$FIXTURE_DIR/tests/infra"
-mkdir -p "$FIXTURE_DIR/gui/sidecar"
-mkdir -p "$FIXTURE_DIR/tree-sitter-reify"
-
-# Copy the real script and test helpers into the fixture
-cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_DIR/scripts/"
-cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_DIR/tests/infra/"
+setup_fixture_dir FIXTURE_DIR
 
 # .gitignore: pnpm-lock.yaml gitignored (Check 4); package-lock.json files NOT listed (Check 3)
 echo "gui/pnpm-lock.yaml" > "$FIXTURE_DIR/.gitignore"
-
-# Initialize a git repo so 'git check-ignore' works inside Check 3
-git -C "$FIXTURE_DIR" init -q
 
 # Write consistent packageManager versions for Test 23a
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
@@ -343,8 +352,15 @@ for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.j
 done
 
 # Test 23a: all files agree on the same version -> script exits 0
+# Capture combined stdout+stderr so we can pin both the exit status and the
+# absence of DIAGNOSTIC: emissions with two separate named assertions.
+out23a=$(cd "$FIXTURE_DIR" && bash scripts/check-pm-standardization.sh 2>&1); status23a=$?
+
 assert "23a: consistent packageManager versions -> exit 0" \
-    bash -c "cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh"
+    bash -c "[ '$status23a' = '0' ]"
+
+assert "23a: no DIAGNOSTIC: emitted when no npm lockfiles are gitignored" \
+    bash -c '! printf "%s\n" "$1" | grep -q DIAGNOSTIC:' _ "$out23a"
 
 # Test 23b: introduce a version mismatch -> script exits non-zero
 printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/package.json"
@@ -355,21 +371,10 @@ assert "23b: mismatched packageManager versions -> exit non-zero" \
 # Test 23c: all files use the SAME non-npm@ packageManager (yarn@1.22.0)
 # Check 1 fails (no npm@ prefix); Check 2 still passes (total=3, unique=1 — same value everywhere)
 # Checks 3 and 4 pass because lockfile/.gitignore state is correct
-FIXTURE_23C="$(mktemp -d)"
-_TMPDIRS+=("$FIXTURE_23C")
-
-mkdir -p "$FIXTURE_23C/scripts"
-mkdir -p "$FIXTURE_23C/tests/infra"
-mkdir -p "$FIXTURE_23C/gui/sidecar"
-mkdir -p "$FIXTURE_23C/tree-sitter-reify"
-
-cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_23C/scripts/"
-cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_23C/tests/infra/"
+setup_fixture_dir FIXTURE_23C
 
 # .gitignore: pnpm-lock.yaml gitignored (Check 4 pass); npm lockfiles NOT listed (Check 3 pass)
 echo "gui/pnpm-lock.yaml" > "$FIXTURE_23C/.gitignore"
-
-git -C "$FIXTURE_23C" init -q
 
 # All three files use the SAME non-npm@ value — Check 2 still passes (total=3, unique=1)
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
@@ -383,21 +388,10 @@ assert "23c: non-npm@ packageManager (yarn@1.22.0 in all files) -> exit non-zero
 # Checks 1 and 2 pass (npm@10.9.0 in all files, total=3, unique=1)
 # Check 3 fails (.gitignore lists gui/package-lock.json so git check-ignore returns 0)
 # Check 4 passes (gui/pnpm-lock.yaml still in .gitignore)
-FIXTURE_23D="$(mktemp -d)"
-_TMPDIRS+=("$FIXTURE_23D")
-
-mkdir -p "$FIXTURE_23D/scripts"
-mkdir -p "$FIXTURE_23D/tests/infra"
-mkdir -p "$FIXTURE_23D/gui/sidecar"
-mkdir -p "$FIXTURE_23D/tree-sitter-reify"
-
-cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_23D/scripts/"
-cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_23D/tests/infra/"
+setup_fixture_dir FIXTURE_23D
 
 # .gitignore: BOTH pnpm-lock.yaml (Check 4 pass) AND gui/package-lock.json (Check 3 fail)
 printf 'gui/pnpm-lock.yaml\ngui/package-lock.json\n' > "$FIXTURE_23D/.gitignore"
-
-git -C "$FIXTURE_23D" init -q
 
 # All three files use consistent npm@10.9.0 — Checks 1 and 2 pass
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
@@ -432,7 +426,39 @@ git -C "$FIXTURE24" config user.email "test@test.com"
 git -C "$FIXTURE24" config user.name "Test"
 printf 'gui/package-lock.json\n' > "$FIXTURE24/.gitignore"
 
+# The || true makes the capture tolerant of the script's non-zero exit: Check 3's
+# assert fails when a lockfile is gitignored, and because check-pm-standardization.sh
+# has set -e, it short-circuits before test_summary. The explicit echo | grep avoids
+# depending on the outer bash -c to not enable pipefail, or on assert()'s internal
+# >/dev/null 2>&1 redirection swallowing the output before grep can see it.
+out24=$(bash "$FIXTURE24/scripts/check-pm-standardization.sh" 2>&1 || true)
 assert "Check 3 emits DIAGNOSTIC: when gui/package-lock.json is gitignored" \
-    bash -c "bash '$FIXTURE24/scripts/check-pm-standardization.sh' 2>&1 | grep -q 'DIAGNOSTIC:'"
+    bash -c 'printf "%s\n" "$1" | grep -q DIAGNOSTIC:' _ "$out24"
+
+# -- Test 26: setup_fixture_dir helper function --------------------------------
+echo ""
+echo "--- Test 26: setup_fixture_dir helper function ---"
+
+assert "setup_fixture_dir function is defined" declare -f setup_fixture_dir
+
+tmpdirs_before=${#_TMPDIRS[@]}
+setup_fixture_dir FIXTURE_T26
+
+assert "setup_fixture_dir: scripts/ subdir exists" \
+    test -d "$FIXTURE_T26/scripts"
+assert "setup_fixture_dir: tests/infra/ subdir exists" \
+    test -d "$FIXTURE_T26/tests/infra"
+assert "setup_fixture_dir: gui/sidecar/ subdir exists" \
+    test -d "$FIXTURE_T26/gui/sidecar"
+assert "setup_fixture_dir: tree-sitter-reify/ subdir exists" \
+    test -d "$FIXTURE_T26/tree-sitter-reify"
+assert "setup_fixture_dir: check-pm-standardization.sh copied" \
+    test -f "$FIXTURE_T26/scripts/check-pm-standardization.sh"
+assert "setup_fixture_dir: test_helpers.sh copied" \
+    test -f "$FIXTURE_T26/tests/infra/test_helpers.sh"
+assert "setup_fixture_dir: fixture is a git work tree" \
+    bash -c "cd '$FIXTURE_T26' && git rev-parse --is-inside-work-tree"
+assert "setup_fixture_dir: appended to _TMPDIRS cleanup array" \
+    bash -c "[ '${#_TMPDIRS[@]}' -gt '$tmpdirs_before' ]"
 
 test_summary

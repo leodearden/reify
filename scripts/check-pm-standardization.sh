@@ -2,7 +2,7 @@
 # Validation script for package manager standardization (task 618).
 # Checks static repo state: packageManager fields, lockfile gitignore status.
 # Redundant config-file-content checks (5-9) were removed by task 816; Check 4
-# (pnpm-lock.yaml gitignored) was reinstated as a static-state check.
+# (pnpm-lock.yaml gitignored) was retained as a static-state check.
 
 set -euo pipefail
 

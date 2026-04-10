@@ -3548,6 +3548,10 @@ fn compile_geometry_op(
                     // Reject negative scale: OCCT SetScale with negative factor
                     // produces inside-out geometry (point-symmetry), not mirroring.
                     if factor < 0.0 {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "scale dropped: factor={} is negative (must be non-negative)",
+                            factor
+                        )));
                         return None;
                     }
                     Some(reify_types::GeometryOp::Scale {
@@ -4744,10 +4748,17 @@ mod tests {
             args: vec![("factor".into(), literal_f64(-1.0))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        assert!(result.is_none(), "negative scale factor should return None (inside-out geometry)");
         assert!(
-            result.is_none(),
-            "negative scale factor should return None (inside-out geometry)"
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("scale dropped")
+                    && d.message.contains("negative")
+            }),
+            "expected a Warning mentioning 'scale dropped' and 'negative', got: {:?}",
+            diagnostics
         );
     }
 

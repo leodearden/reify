@@ -62,8 +62,7 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
                     // here, making the two approaches functionally equivalent for conjugate.
                     // The pre-guard is still preferred for stylistic parity with the phase
                     // method and for forward-compatibility: if the Complex arm of
-                    // sanitize_value is ever removed again (see task 860 history, restored
-                    // by task 903 / commit 173921547), conjugate stays safe.
+                    // sanitize_value is ever removed, conjugate stays safe.
                     if !re.is_finite() || !im.is_finite() {
                         return Some(Value::Undef);
                     }
@@ -604,6 +603,7 @@ mod tests {
     }
 
     // ── method: conjugate (NaN/Inf sanitization) ─────────────────────────────
+    // Coverage: NaN/±Inf × {re, im}, DIMENSIONLESS; signed-zero and both-non-finite deliberately omitted.
 
     #[test]
     fn conjugate_nan_re_returns_undef() {
@@ -745,8 +745,8 @@ mod tests {
         // Guards against the pre-guard accidentally rejecting finite values.
         // Uses a pure-imaginary (re=0.0) DIMENSIONLESS input — orthogonal to
         // tests/complex_eval_tests.rs::method_conjugate which uses (3.0, 4.0, LENGTH).
-        // Exercises: re=0.0 (IEEE-754 sign-of-zero preservation), pure-imaginary
-        // degenerate case, and DIMENSIONLESS (complements the LENGTH case in the sibling test).
+        // Exercises the pure-imaginary degenerate case (re=0.0) and DIMENSIONLESS
+        // dimension, complementing the LENGTH case in the sibling integration test.
         let complex_val = Value::Complex {
             re: 0.0,
             im: 5.0,
