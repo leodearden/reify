@@ -29435,7 +29435,7 @@
         "description": "Task 1269 added a self-check at tests/infra/test_test_helpers.sh:598-606 intended to pin the `fixture_clean` check to the unified single-line form. Reviewer_comprehensive flagged three related issues:\n\nS1 (test_quality_dead_check): The self-check is a no-op. It greps for the OLD description text 'if-guard pattern returns true for clean file', but that string was removed by the same diff — the live description (line 504) is '_has_if_n_guard reports no-guard for clean file (no false positive)'. The only line in the file containing the old substring is line 601 itself, so `grep -c` returns 1 and the `-le 1` predicate is always true. The assertion provides no actual protection: a future change reverting the if/else form using the NEW description string would not be caught.\n\nS2 (logic_off_by_one): Even if the grep pattern were updated, `-le 1` is too lax. It passes when the description is missing entirely (count == 0), silently masking deletion of the test itself. Should be `-eq 1` (or equivalent exact-count semantics).\n\nS3 (refactor_incompleteness): The PR message states the motivation is that the if/else form 'placed the same description on both branches, which is ambiguous in CI output', but the unified form was applied to exactly one site (line 503). ~10+ other call sites in the same file still emit identical descriptions on both branches — e.g. lines 32-36, 42-46, 63-67, 73-77, 91-95, 121-125, 131-143, 167-171, plus checks inside the consumer loop (lines 204-247). Intent and implementation are inconsistent.\n\nRecommended fix (folds all three): Replace the narrow pin at lines 598-606 with a generic file-wide invariant — scan the file for any `check \"<desc>\"` description that appears on more than one distinct line, and fail the self-check if any description is duplicated. This both protects every check (not just `fixture_clean`) and naturally drives completion of the refactor: the invariant will fail until the remaining ~10+ if/else duplicate-description sites are migrated to the unified `ok=true/false; check ... \"$ok\"` form. Migration is low-risk and mechanical.\n\nSuggested implementation sketch for the invariant:\n```\n# Extract all `check \"DESC\" ...` DESC values, find duplicates.\ndup_count=$(grep -oE 'check \"[^\"]+\"' \"${BASH_SOURCE[0]}\" \\\n    | sort | uniq -d | wc -l)\nif [ \"$dup_count\" -eq 0 ]; then ok=true; else ok=false; fi\ncheck \"no duplicate check descriptions in this file\" \"$ok\"\n```\n(Note: this is a single invariant that supersedes both the current dead `fixture_clean` pin and the need for per-site pins.)\n\nVerification: `bash tests/infra/test_test_helpers.sh` must still pass after migration; the new invariant should report 0 duplicates.\n\nmemory_hints: search(\"test_test_helpers.sh self-check fixture_clean duplicate description\", project_id=\"reify\")\n\nFlagged by reviewer_comprehensive on Task 1269. Originating escalation: esc-1269-142.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -29447,7 +29447,7 @@
             "tests/infra"
           ]
         },
-        "updatedAt": "2026-04-10T01:07:23.007Z"
+        "updatedAt": "2026-04-10T01:33:35.083Z"
       },
       {
         "id": "1422",
@@ -29870,9 +29870,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:31:56.225Z",
+      "lastModified": "2026-04-10T01:33:35.127Z",
       "taskCount": 1445,
-      "completedCount": 1108,
+      "completedCount": 1109,
       "tags": [
         "master"
       ]
