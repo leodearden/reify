@@ -2157,12 +2157,17 @@ mod tests {
     }
 
     #[test]
-    fn failing_kernel_query_returns_ok_real_zero() {
+    fn failing_kernel_query_returns_err_defensively() {
         let kernel = FailingMockGeometryKernel;
         let id = GeometryHandleId(1);
         let result = kernel.query(&GeometryQuery::Volume(id));
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Value::Real(0.0));
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, QueryError::QueryFailed(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
     }
 
     #[test]
