@@ -59,6 +59,16 @@ const THIS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/build_logic_
 /// Used by source-level regression tests that read the build script's contents.
 const BUILD_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs");
 
+/// Reads this test file's own source code and returns it as a `String`.
+///
+/// Wraps `std::fs::read_to_string(THIS_FILE)` so callers don't repeat the
+/// expect message. All self-inspection tests should use this helper rather
+/// than calling `read_to_string(THIS_FILE)` directly.
+fn read_self_source() -> String {
+    std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE")
+}
+
 /// Creates base/src/, writes placeholder files for all EXPECTED_OUTPUTS,
 /// and returns the src_dir path. Deduplicates setup across stamp/output tests.
 fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
@@ -782,14 +792,15 @@ fn find_cfg_unix_test_fns(source: &str) -> Vec<String> {
 /// `#[test]` is seen, the flag `saw_test` is set. Intermediate
 /// attribute/comment lines keep the flag alive. When a line starting with
 /// `fn test_` is reached with the flag set, `extract_test_fn_body` is used to
-/// check whether the function body contains `(THIS_FILE)` as a call argument OR
+/// check whether the function body contains `(THIS_FILE)` as a call argument,
 /// the bare relative-path literal `"tests/build_logic_tests.rs"` (with literal
-/// double-quote characters). Only functions that pass this body check are collected.
+/// double-quote characters), or a call to `read_self_source()`. Only functions
+/// that pass this body check are collected.
 ///
-/// The dual criterion turns `test_self_read_paths_use_manifest_dir`'s loop into
-/// a genuine cross-property check: a test discovered via the bare-path criterion
-/// will fail the loop's `fn_body.contains("(THIS_FILE)")` assertion, catching
-/// regressions where the bare relative path is used instead of THIS_FILE.
+/// The triple criterion turns `test_self_read_paths_use_manifest_dir`'s loop
+/// into a genuine cross-property check: a test discovered via the bare-path
+/// criterion will fail the loop's assertion, catching regressions where the
+/// bare relative path is used instead of THIS_FILE or read_self_source().
 fn find_self_reading_test_fns(source: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut saw_test = false;
@@ -1382,9 +1393,9 @@ fn test_self_read_paths_use_manifest_dir() {
             .unwrap_or_else(|| panic!("source should contain {}", fn_sig));
 
         assert!(
-            fn_body.contains("(THIS_FILE)"),
-            "{} must read the test file via THIS_FILE rather than a bare relative path. \
-             Function body:\n{}",
+            fn_body.contains("(THIS_FILE)") || fn_body.contains("read_self_source()"),
+            "{} must read the test file via THIS_FILE or read_self_source() rather than \
+             a bare relative path. Function body:\n{}",
             fn_sig,
             fn_body
         );
