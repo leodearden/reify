@@ -1602,13 +1602,31 @@ use reify_test_support::warn_capturing_subscriber;
 
 /// Runs `action` under a `warn_capturing_subscriber`, asserts that it does not
 /// panic, that exactly `expected_warns` WARN events were emitted, and that at
-/// least one event contains every `(key, value)` pair in `expected_fields`.
+/// least one event contains every `(key, value)` pair in `expected_fields` AND
+/// an `"error"` key on that same event.
 /// Returns the value produced by `action` for downstream assertions.
+///
+/// # Coverage scope
+///
+/// This helper covers **9 of the 11** poison-recovery `tracing::warn!` sites in
+/// [`ConcurrentEvalAdapter`]:
+///
+/// * 5 helper-method sites (`values`, `snapshot_values`, `results` — read/write/exclusive)
+///   emitting `lock` + `access` + `error` fields.
+/// * 6 `into_result` / `build_result_shared` sites emitting `lock` + `path` + `error` fields.
+///
+/// The remaining **2 sites** — `write_values` (`access=write`) and
+/// `write_snapshot_values` (`access=write`) — are only reachable through
+/// `async evaluate()`.  Because `evaluate()` cannot be wrapped in the sync
+/// `catch_unwind` pattern this helper uses, those sites are covered separately
+/// by the `poison_evaluate` module tests
+/// (`evaluate_emits_access_write_for_poisoned_values` and
+/// `evaluate_emits_access_write_for_poisoned_snapshot_values`).
 ///
 /// # Panics
 ///
 /// Panics if `action` panics (i.e., `catch_unwind` returns `Err`), or if the
-/// WARN count or field checks fail.
+/// WARN count, field co-location, or error-key checks fail.
 #[cfg(feature = "test-utils")]
 fn assert_poison_recovers<T: Send + 'static>(
     action: impl FnOnce() -> T + std::panic::UnwindSafe,
