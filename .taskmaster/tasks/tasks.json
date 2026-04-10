@@ -27942,11 +27942,11 @@
         "description": "Two test-quality follow-ups to tests/infra/test_portable_timeout.sh tests added in Task 1214 (Tests 22, 23, 24).\n\n**S4 (test_coverage): Tests 22/23/24 are purely structural.**\nAll four new assertions grep lib_portable.sh for specific strings and line-count invariants — they verify the source code *looks* a certain way but do not verify any runtime behavior. Test 24 in particular could pass even if `_pt_kill_grace` were assigned a non-integer or hoisted outside the POSIX-fallback branch (declared on code paths that never use it). Add at least one behavioral assertion — either:\n  (a) override `_pt_kill_grace` to a distinct value (e.g. 4), trigger the escalation scenario (command ignores SIGTERM), and measure the gap between timer-fire and SIGKILL; OR\n  (b) use `declare -f portable_timeout` to confirm `_pt_kill_grace` is declared inside the POSIX fallback branch and nowhere else in the function body.\n\n**S5 (test_robustness): Test 22's second assertion is too narrow.**\ntests/infra/test_portable_timeout.sh:582-583 currently greps for the exact string `kill -- -$cmd_pid 2>/dev/null || true`. A regression that reintroduces SIGTERM in a slightly different form (without `|| true`, different redirection, or the quoted form `kill -- \"-$cmd_pid\"`) would bypass this guard. The comment even advertises the fragility (\"The '|| true' suffix is unique to this line\") as intentional — but this makes the assertion a bug-specific test rather than an invariant test.\n\nReplace the fixed-string check with a regex that rules out *any* `kill` of `$cmd_pid`'s process group without `-9`/`-KILL`, for example:\n  `! grep -qE '(^|[^-9])kill[[:space:]]+--[[:space:]]+\"?-\\$cmd_pid' \"$LIB_PORTABLE\"`\nso any future variant of plain SIGTERM to that PGID is caught.\n\nBoth suggestions come from reviewer_comprehensive's post-merge review of Task 1214. If the sibling task updates line 152 to use quoted PGID form, Test 23's count invariant may also need updating — coordinate test changes.\n\nMemory hints: search \"test_portable_timeout structural assertions\" for context; tests 22-24 were added in Task 1214 commits d9de6afb0, 62196f293, and the S2 commit.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:10:47.063Z",
+        "updatedAt": "2026-04-10T00:01:56.805Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -28988,9 +28988,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:01:36.421Z",
+      "lastModified": "2026-04-10T00:01:56.805Z",
       "taskCount": 1406,
-      "completedCount": 1079,
+      "completedCount": 1080,
       "tags": [
         "master"
       ]
