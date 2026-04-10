@@ -30686,14 +30686,14 @@
         "description": "Implement tests for x and y boundary iteration-order in Orientation Ord implementation.",
         "details": "Add two new tests in `crates/reify-types/src/value.rs` to cover the x and y components in the Orientation Ord implementation. These tests should follow the pattern of existing w and z tests. For the x component, use `orient(0.0, v, 0.0, 0.0)` and for the y component, use `orient(0.0, 0.0, v, 0.0)`. Utilize `BOUNDARY_REALS` and `assert_ieee754_total_order_real` to ensure comprehensive coverage. This will complete the boundary iteration-order tests for all four components (w, x, y, z) in the chain `w → x → y → z`.",
         "testStrategy": "Verify the implementation by running the new tests and ensuring they pass without errors. Confirm that the tests correctly identify the boundary conditions for x and y components using `BOUNDARY_REALS` and `assert_ieee754_total_order_real`. Compare results with existing w and z tests to ensure consistency.",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [
           "1452",
           "853"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T11:45:26.550Z",
+        "updatedAt": "2026-04-10T11:55:42.436Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src"
@@ -32597,7 +32597,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T11:55:41.946Z",
+      "lastModified": "2026-04-10T11:55:42.436Z",
       "taskCount": 1605,
       "completedCount": 1222,
       "tags": [
