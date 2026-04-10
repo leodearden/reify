@@ -315,8 +315,15 @@ for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.j
 done
 
 # Test 22a: all files agree on the same version -> script exits 0
+# Capture combined stdout+stderr so we can pin both the exit status and the
+# absence of DIAGNOSTIC: emissions with two separate named assertions.
+out22a=$(cd "$FIXTURE_DIR" && bash scripts/check-pm-standardization.sh 2>&1); status22a=$?
+
 assert "22a: consistent packageManager versions -> exit 0" \
-    bash -c "cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh"
+    bash -c "[ '$status22a' = '0' ]"
+
+assert "22a: no DIAGNOSTIC: emitted when no npm lockfiles are gitignored" \
+    bash -c "! echo \"$out22a\" | grep -q 'DIAGNOSTIC:'"
 
 # Test 22b: introduce a version mismatch -> script exits non-zero
 printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/package.json"
