@@ -313,6 +313,53 @@ fn compile_project_entry_sees_imported_pub_unit() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+// ─── step-14: compile_project entry does NOT see imported private unit ─────────
+
+#[test]
+fn compile_project_entry_does_not_see_imported_private_unit() {
+    let dir = test_dir("compile_project_private_unit");
+
+    // Private unit (no `pub`) — should NOT be seeded into the entry module's prelude.
+    fs::write(
+        dir.join("units_lib.ri"),
+        "unit privmil : Length = 0.0000254",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("entry.ri"),
+        "import units_lib\nstructure S { param w : Length = 5privmil }",
+    )
+    .unwrap();
+
+    let resolver =
+        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result =
+        reify_compiler::module_dag::compile_project(&dir.join("entry.ri"), &resolver);
+    // Parse succeeds; semantic errors are attached to the module, not returned as Err.
+    assert!(
+        result.is_ok(),
+        "compile_project should succeed (no parse errors): {:?}",
+        result
+    );
+
+    let modules = result.unwrap();
+    let entry_module = modules.last().expect("no modules returned");
+    let errors = errors_only(entry_module);
+    assert!(
+        !errors.is_empty(),
+        "expected error for private unit 'privmil' used across module boundary via compile_project"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("unknown") || d.message.contains("privmil")),
+        "error should mention unknown unit or 'privmil'; got: {:?}",
+        errors
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 // ─── step-15: local unit duplicating an imported pub unit produces error ──────
 
 #[test]
