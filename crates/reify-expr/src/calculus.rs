@@ -95,10 +95,24 @@ fn dimensionless_fallback(ty: &Type) -> Type {
 /// - `Type::Scalar { dimension }` → `Value::Scalar { si_value: value, dimension }`
 /// - Any other type (typically `Type::Real`) → `Value::Real(value)`
 ///
-/// The helper wraps blindly — callers are responsible for pre-normalising dimensionless
-/// Scalar codomains to `Type::Real` if they want `Value::Real` output in the dimensionless
-/// case.  Divergence and laplacian codomains are stamped by `compute_divergence` /
-/// `compute_laplacian` and are already normalised.
+/// The helper wraps blindly — it does **not** collapse a dimensionless `Type::Scalar`
+/// to `Type::Real`.  This is intentional: all three callers (`compute_divergence`,
+/// `compute_curl`, `compute_laplacian`) pre-normalise the codomain upstream via
+/// [`dimensionless_fallback`] before stamping the `Field`, so by the time
+/// `wrap_scalar_result` sees the codomain any dimensionless `Scalar` has already been
+/// collapsed to `Type::Real`.  Re-normalising here would be redundant work and, worse,
+/// would hide genuinely mis-stamped codomains from the `debug_assert` guards in
+/// `compute_numerical_divergence_at_point`, `compute_numerical_curl_at_point`, and
+/// `compute_numerical_laplacian_at_point`.
+///
+/// At the curl callsite, `component_codomain` is the unwrapped inner quantity of the
+/// already-stamped `Type::vec3(result_component)` (extracted in
+/// `compute_numerical_curl_at_point`), so it is already a scalar-compatible type.
+///
+/// See also: `Value::from_component` in `reify-types` — the *normalising* counterpart
+/// that collapses `DIMENSIONLESS` → `Value::Real` at the call site.  That helper is used
+/// for complex-component extraction and magnitude; `wrap_scalar_result` is the
+/// non-normalising variant used by the differential operators.
 fn wrap_scalar_result(value: f64, codomain_type: &Type) -> Value {
     match codomain_type {
         Type::Scalar { dimension } => Value::Scalar {
