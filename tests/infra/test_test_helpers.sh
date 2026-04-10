@@ -247,6 +247,31 @@ _has_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists[[:space:]]*\(\
 _has_if_n_guard() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -qE '(if|&&|\|\|)[[:space:]]*(\[\[?|test)[[:space:]]+(-n|![[:space:]]+-z)'; }
 _has_expr_body_empty_guard_short_circuit() { grep -qE '\[ -z "\$expr_body".*test_summary' "$1" 2>/dev/null; }
 
+# Meta-helper: extract every `^_has_[a-z_]+()` definition from $1 and print
+# the names of any that have no call site (i.e., the name appears on only
+# the definition line).  Uses word-boundary matching
+# `(^|[^[:alnum:]_])NAME([^[:alnum:]_]|$)` so that prefix-overlapping names
+# (e.g., `_has_foo` vs `_has_foo_bar`) are not counted as callers of each
+# other.  Counting is done with `grep -c` (matching lines); each definition
+# contributes exactly 1 line, so `< 2` means "no call site".
+#
+# Named `_unused_has_helpers` — NOT `_has_*` — because it is a computation
+# over helper definitions, not a structural content-checker.  Reserving the
+# `_has_*` prefix for content checkers keeps the dynamic self-check's
+# enumeration well-defined (it operates on content checkers, not on itself).
+_unused_has_helpers() {
+    local file="$1"
+    local names name count
+    names=$(grep -oE '^_has_[a-z_]+\(\)' "$file" 2>/dev/null | sed 's/()$//')
+    [ -z "$names" ] && return 0
+    for name in $names; do
+        count=$(grep -cE "(^|[^[:alnum:]_])${name}([^[:alnum:]_]|\$)" "$file" 2>/dev/null || echo 0)
+        if [ "$count" -lt 2 ]; then
+            printf '%s\n' "$name"
+        fi
+    done
+}
+
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
 
@@ -695,16 +720,80 @@ printf 'something || [ -n "$var" ] && do_work\n' > "$fixture_compound_or"
 if _has_if_n_guard "$fixture_compound_or" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects compound || guard: || [ -n" "$ok"
 
-# Self-check: file-local helpers use symmetric positive _has_ naming.
-if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
-    && grep -qE '^_has_if_n_guard\(\)' "${BASH_SOURCE[0]}" \
-    && grep -qE '^_has_expr_body_empty_guard_short_circuit\(\)' "${BASH_SOURCE[0]}" \
-    && ! grep -qE '^_check_(defines|has)' "${BASH_SOURCE[0]}"; then
+# ------------------------------------------------------------------------------
+# Robustness: _unused_has_helpers dynamic self-check meta-helper
+# ------------------------------------------------------------------------------
+# These fixtures exercise the extraction+counting logic in isolation so a
+# regression in _unused_has_helpers is caught by a dedicated failure rather
+# than by a silent pass in the file-level self-check below.
+
+echo ""
+echo "--- Robustness: _unused_has_helpers meta-helper ---"
+
+# Fixture: helper defined and called on another line → reported as used
+# (_unused_has_helpers prints nothing).
+fixture_used=$(mk_fixture)
+printf '_has_foo() { :; }\n_has_foo "$1"\n' > "$fixture_used"
+if [ -z "$(_unused_has_helpers "$fixture_used" 2>/dev/null)" ]; then ok=true; else ok=false; fi
+check "_unused_has_helpers reports empty when every helper has a call site" "$ok"
+
+# Fixture: helper defined but never called → name is printed.
+fixture_unused=$(mk_fixture)
+printf '_has_foo() { :; }\necho unrelated\n' > "$fixture_unused"
+if [ "$(_unused_has_helpers "$fixture_unused" 2>/dev/null)" = "_has_foo" ]; then ok=true; else ok=false; fi
+check "_unused_has_helpers reports a defined-but-uncalled helper name" "$ok"
+
+# Fixture: prefix-overlapping names.  `_has_foo` is defined and ONLY
+# `_has_foo_bar` is referenced on a second line; word-boundary matching
+# must NOT count that as a call to `_has_foo`, so `_has_foo` is reported
+# as unused.  Guards against a naive `grep -F`-style implementation.
+fixture_prefix=$(mk_fixture)
+printf '_has_foo() { :; }\n_has_foo_bar "$1"\n' > "$fixture_prefix"
+if [ "$(_unused_has_helpers "$fixture_prefix" 2>/dev/null)" = "_has_foo" ]; then ok=true; else ok=false; fi
+check "_unused_has_helpers uses word boundaries (prefix collision immune)" "$ok"
+
+# Fixture: no `_has_*` helpers defined at all → empty output.  Exercises
+# the early-return path where extraction finds nothing.
+fixture_none=$(mk_fixture)
+printf 'echo just some script\n' > "$fixture_none"
+if [ -z "$(_unused_has_helpers "$fixture_none" 2>/dev/null)" ]; then ok=true; else ok=false; fi
+check "_unused_has_helpers returns empty when no _has_* helpers are defined" "$ok"
+
+# Self-check: every file-local _has_* helper is used at least once.
+# Dynamic replacement for the former enumerated AND-chained grep list —
+# when a new _has_* helper is added, this invariant auto-discovers it
+# (no manual self-check update required).
+unused_helpers=$(_unused_has_helpers "${BASH_SOURCE[0]}" 2>/dev/null)
+if [ -z "$unused_helpers" ]; then
     ok=true
 else
     ok=false
 fi
-check "file-local helpers use symmetric positive _has_ naming" "$ok"
+check "every file-local _has_* helper has a call site (unused: ${unused_helpers:-none})" "$ok"
+
+# Self-check: file defines at least 3 _has_* helpers.  Independent guard
+# against a silent-pass regression in _unused_has_helpers — if extraction
+# were ever broken to produce no names, the "no unused" check above would
+# vacuously pass.  This asserts the floor so that a broken extraction
+# shows up as an explicit failure rather than a silent green.
+_has_helper_count=$(grep -cE '^_has_[a-z_]+\(\)' "${BASH_SOURCE[0]}" 2>/dev/null || echo 0)
+if [ "$_has_helper_count" -ge 3 ]; then
+    ok=true
+else
+    ok=false
+fi
+check "file defines >= 3 _has_* helpers (floor guard for dynamic self-check, got $_has_helper_count)" "$ok"
+
+# Self-check: no legacy _check_defines / _check_has helper naming.
+# Preserved from the prior enumerated self-check as an independent
+# anti-pattern guard — the dynamic _unused_has_helpers check above does
+# not cover this, so keep it as a separate assertion.
+if ! grep -qE '^_check_(defines|has)' "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "file has no legacy _check_defines / _check_has helper naming" "$ok"
 
 # Self-check: no check() calls use 'should FAIL' in descriptions (grep-ambiguous).
 if ! grep -qE 'check "[^"]*should FAIL' "${BASH_SOURCE[0]}"; then
