@@ -28671,11 +28671,11 @@
         "description": "Three improvements in crates/reify-lsp/tests/in_process_bridge.rs: (1) Replace hand-typed test_name string parameter in with_hang_guard with automatic derivation via #[track_caller] or a macro — currently 12+ call sites must manually match function names. (2) Fix HANG_GUARD_SECS doc comment claiming \"applied to all pre-handshake tests\" — either extend with_hang_guard to remaining unwrapped tests (e.g. did_open_returns_ok_null) or clarify the doc scope. (3) In panics_on_timeout test (line 1075), change with_hang_guard(0, ...) to with_hang_guard(1, ...) — zero-second timeout relies on tokio scheduling implementation detail.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:11:49.403Z",
+        "updatedAt": "2026-04-10T01:07:23.979Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/tests"
@@ -29624,7 +29624,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:07:23.226Z",
+      "lastModified": "2026-04-10T01:07:23.979Z",
       "taskCount": 1432,
       "completedCount": 1097,
       "tags": [
