@@ -10,7 +10,7 @@ use reify_types::{
     Satisfaction, Severity, Value, ValueCellId,
 };
 
-use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
+use reify_types::{DiagnosticInfo, SourceLocationInfo};
 
 use crate::types::{
     ConstraintData, FileData, GuiState, MeshData, ValueData, format_determinacy, format_value,
