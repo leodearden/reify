@@ -31634,11 +31634,16 @@
         "description": "The four orientation boundary iteration-order tests (w, x, y, z) in crates/reify-types/src/value.rs are nearly identical (~25 lines each), differing only in which orient() argument receives the boundary value and which field is extracted from the match arm. Extract a helper function like `fn assert_orientation_component_order(build: fn(f64) -> Value, extract: fn(&Value) -> f64)` that encapsulates the BTreeSet insertion, extraction, and assertion logic, reducing each test body to ~3 lines.\n\nThe Complex boundary tests (re, im) in the same file follow an analogous pattern and could optionally be covered by a similar or unified helper.\n\nmemory_hints: search \"BOUNDARY_REALS assert_ieee754_total_order_real helper\", search \"orientation boundary iteration order tests value.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:30:40.413Z"
+        "updatedAt": "2026-04-10T07:04:23.543Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src"
+          ]
+        }
       },
       {
         "id": "1551",
@@ -32037,10 +32042,11 @@
         "description": "Three _test_* functions in test_sync_comments_grep.sh share identical setup boilerplate. Extract a shared helper function to reduce duplication. Source: review of task 1345 (S1).",
         "details": "Files: test_sync_comments_grep.sh\\n\\nmemory_hints:\\n- search: \"sync_comments_grep test setup\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T07:04:21.873Z"
       },
       {
         "id": "1580",
@@ -32048,10 +32054,11 @@
         "description": "Polish the assert_extraction helper in crates/reify-stdlib/src/helpers.rs: improve multi-line formatting of assertion messages and ensure the &Value signature is documented consistently. Low priority cleanup.\n\nmemory_hints: search \"assert_extraction\" in helpers.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T07:04:22.451Z"
       },
       {
         "id": "1581",
@@ -32102,7 +32109,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:04:21.233Z",
+      "lastModified": "2026-04-10T07:04:23.543Z",
       "taskCount": 1584,
       "completedCount": 1182,
       "tags": [
