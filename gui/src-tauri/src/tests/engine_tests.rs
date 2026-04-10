@@ -1310,7 +1310,7 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
 
 #[test]
 fn byte_offset_to_line_col_basic_conversion() {
-    use crate::engine::byte_offset_to_line_col;
+    use reify_types::byte_offset_to_line_col;
 
     let source = "abc\ndef";
     // offset 0 → start of first line → (1, 1)
@@ -1325,7 +1325,7 @@ fn byte_offset_to_line_col_basic_conversion() {
 
 #[test]
 fn byte_offset_to_line_col_empty_source() {
-    use crate::engine::byte_offset_to_line_col;
+    use reify_types::byte_offset_to_line_col;
 
     // Empty source: offset 0 → initial position (1, 1)
     assert_eq!(byte_offset_to_line_col("", 0), (1, 1));
@@ -1335,7 +1335,7 @@ fn byte_offset_to_line_col_empty_source() {
 #[test]
 #[should_panic(expected = "offset <= source.len()")]
 fn byte_offset_to_line_col_offset_beyond_len() {
-    use crate::engine::byte_offset_to_line_col;
+    use reify_types::byte_offset_to_line_col;
 
     // In debug/test builds, passing an offset beyond source.len() must panic
     // with a clear message, so stale-span bugs are caught loudly.
@@ -1346,7 +1346,7 @@ fn byte_offset_to_line_col_offset_beyond_len() {
 #[cfg(not(debug_assertions))]
 #[test]
 fn byte_offset_to_line_col_offset_beyond_len_release() {
-    use crate::engine::byte_offset_to_line_col;
+    use reify_types::byte_offset_to_line_col;
 
     // In release builds, debug_assert is a no-op, so passing an offset beyond
     // source.len() silently clamps: the loop exhausts all characters and returns
@@ -1357,7 +1357,7 @@ fn byte_offset_to_line_col_offset_beyond_len_release() {
 
 #[test]
 fn get_diagnostics_empty_span_has_identical_start_end() {
-    use crate::engine::byte_offset_to_line_col;
+    use reify_types::byte_offset_to_line_col;
     use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
 
     // Verify that a zero-length span (start == end) produces identical
@@ -1417,7 +1417,7 @@ fn get_diagnostics_empty_span_has_identical_start_end() {
 
 #[test]
 fn byte_offset_to_line_col_multibyte_chars() {
-    use crate::engine::byte_offset_to_line_col;
+    use reify_types::byte_offset_to_line_col;
 
     // Source: "αβ\nγ"
     // α = U+03B1, 2 bytes (UTF-8: 0xCE 0xB1), byte offset 0
@@ -1445,7 +1445,7 @@ fn byte_offset_to_line_col_multibyte_chars() {
 
 #[test]
 fn byte_offset_to_line_col_at_source_len() {
-    use crate::engine::byte_offset_to_line_col;
+    use reify_types::byte_offset_to_line_col;
 
     // Source "abc\ndef" has byte length 7.
     // offset == source.len() is the EOF position, one past the last char 'f'.
@@ -1474,7 +1474,7 @@ fn byte_offset_to_line_col_at_source_len() {
 ///   offset 5 → line 2, col 3  (EOF position, one past last char)
 #[test]
 fn byte_offset_to_line_col_returns_one_based_columns() {
-    use crate::engine::byte_offset_to_line_col;
+    use reify_types::byte_offset_to_line_col;
 
     let source = "ab\ncd";
     assert_eq!(source.len(), 5, "sanity-check byte length");
@@ -1519,7 +1519,8 @@ fn offset_to_line_col_fast_offset_zero() {
 /// for every byte offset in a multi-line string.
 #[test]
 fn offset_to_line_col_fast_matches_original_every_offset() {
-    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    use reify_types::byte_offset_to_line_col;
     let source = "abc\ndef\nghi";
     let line_offsets = build_line_offsets(source);
     for offset in 0..source.len() {
@@ -1581,7 +1582,8 @@ fn offset_to_line_col_fast_single_line() {
 /// diagnostic spans are always within source bounds.
 #[test]
 fn offset_to_line_col_fast_at_eof_offset() {
-    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    use reify_types::byte_offset_to_line_col;
     let source = "abc\ndef";
     let line_offsets = build_line_offsets(source);
     // source.len() is the EOF position — both implementations must agree here.
@@ -1605,7 +1607,7 @@ fn offset_to_line_col_fast_at_eof_offset() {
 /// then verify get_diagnostics returns the same line/col as the O(M) reference.
 #[test]
 fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
-    use crate::engine::byte_offset_to_line_col;
+    use reify_types::byte_offset_to_line_col;
     use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
 
     let checker = SimpleConstraintChecker;
@@ -1724,7 +1726,8 @@ fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
 ///   codepoint column = 3 (h=1, é=2, l=3) — NOT 4 (which byte distance gives).
 #[test]
 fn offset_to_line_col_fast_matches_original_multibyte_utf8() {
-    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    use reify_types::byte_offset_to_line_col;
     let source = "héllo\nwörld";
     let line_offsets = build_line_offsets(source);
     // Iterate only char-boundary offsets.
@@ -1778,7 +1781,8 @@ fn offset_to_line_col_fast_two_byte_char_column_is_codepoint_not_byte() {
 /// Old byte arithmetic would give col = (9 - 2) = 7, which is wrong.
 #[test]
 fn offset_to_line_col_fast_matches_original_cjk_utf8() {
-    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    use reify_types::byte_offset_to_line_col;
     let source = "ab\n\u{4F60}\u{597D}world";
     let line_offsets = build_line_offsets(source);
     for (byte_idx, _ch) in source.char_indices() {
