@@ -597,6 +597,14 @@ printf 'if [[ -z "$var" ]]; then echo fail; fi\n' > "$fixture_z_double"
 if ! _has_if_n_guard "$fixture_z_double" 2>/dev/null; then ok=true; else ok=false; fi
 check "if-guard pattern tolerates -z in double-bracket form: if [[ -z" "$ok"
 
+# Positive-direction -z pin: test-keyword form `if test -z "$var"`.
+# If the regex were tightened to `test[[:space:]]+-[nz]`, it would ban this
+# legitimate guard.  This pin ensures test-keyword -z stays tolerated.
+fixture_z_test=$(mk_fixture)
+printf 'if test -z "$var"; then echo fail; fi\n' > "$fixture_z_test"
+if ! _has_if_n_guard "$fixture_z_test" 2>/dev/null; then ok=true; else ok=false; fi
+check "if-guard pattern tolerates -z in test-keyword form: if test -z" "$ok"
+
 # Double-bracket form: `if [[ -n "$var" ]]`
 # Requires regex to match `[[` as well as `[`.
 fixture_double_bracket=$(mk_fixture)
