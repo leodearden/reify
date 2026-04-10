@@ -29315,11 +29315,11 @@
         "description": "Review suggestion from task 1321 review (reviewer_comprehensive, category: minor_duplication, explicitly flagged non-blocking cleanup).\n\nLocation: tree-sitter-reify/tests/build_logic_tests.rs — after the task 1321 split, both `test_self_read_paths_use_manifest_dir` (line 1341) and `test_self_path_constants_use_manifest_dir` (line 1391) independently call `std::fs::read_to_string(THIS_FILE).expect(\"should be able to read this test file via THIS_FILE\")` with the same expect message. Grep confirms the file has ~6 self-reading call sites total: lines 934, 975, 1043, 1341, 1391, 1409.\n\nFix: introduce a tiny helper near the THIS_FILE const:\n\n```rust\nfn read_self_source() -> String {\n    std::fs::read_to_string(THIS_FILE)\n        .expect(\"should be able to read this test file via THIS_FILE\")\n}\n```\n\nReplace the six call sites. Keeps the expect message in one place and reduces noise.\n\nVerify: `cargo test -p tree-sitter-reify --tests` all pass.\n\nPriority: low — reviewer explicitly flagged this as acceptable duplication, non-blocking cleanup.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:22:05.329Z",
+        "updatedAt": "2026-04-10T01:19:49.981Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/tests/build_logic_tests.rs"
@@ -29730,7 +29730,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:19:48.361Z",
+      "lastModified": "2026-04-10T01:19:49.983Z",
       "taskCount": 1438,
       "completedCount": 1102,
       "tags": [
