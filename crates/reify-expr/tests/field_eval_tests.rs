@@ -42,6 +42,44 @@ fn make_value_lambda(
     }
 }
 
+/// Build the unevaluated `gradient(field)` expression shared by the three
+/// String-codomain gradient tests:
+/// - `gradient_of_field_with_non_numeric_lambda`
+/// - `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`
+/// - `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`
+///
+/// Returns the `gradient(field)` [`CompiledExpr`] ready to be passed to
+/// `eval_expr`. The caller is responsible for evaluation and any downstream
+/// assertions.
+fn build_string_codomain_grad_expr() -> CompiledExpr {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| "not_a_number"  (non-numeric return value)
+    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::String;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type,
+    )
+}
+
 // ── Durable: sample behavior tests ──────────────────────────────────────────
 
 /// Sampling a field with Undef lambda returns Undef.
