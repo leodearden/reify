@@ -32625,7 +32625,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-expr/src/calculus.rs",
+            "crates/reify-expr/tests/field_calculus_tests.rs",
+            "crates/reify-test-support/src/builders/expr.rs"
+          ],
+          "modules": [
+            "crates/reify-expr",
+            "crates/reify-test-support"
+          ]
+        }
       },
       {
         "id": 1605,
@@ -32636,7 +32647,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "tests/infra/test_portable_timeout.sh"
+          ],
+          "modules": [
+            "tests/infra"
+          ]
+        }
       }
     ],
     "metadata": {
