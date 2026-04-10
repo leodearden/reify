@@ -230,8 +230,19 @@ assert "accepts: pub(crate) async unsafe fn sanitize_value( (pub(crate)+async+un
 assert "accepts: pub(crate) const unsafe fn sanitize_value( (pub(crate)+const+unsafe triple combination)" \
     bash -c 'printf "%s\n" "pub(crate) const unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
+# -- Grammar-order reject cases ------------------------------------------------
+# The two assertions below guard against qualifiers in the wrong ORDER.
+# Intentional gap: `const async fn` and `const async unsafe fn` are NOT asserted
+# as rejects. The regex validates grammar ORDER (const→async→unsafe→fn), not Rust
+# semantics. Both strings match the pattern in the correct positional order even
+# though Rust forbids `const async fn` semantically (const fn cannot be async).
+# Asserting them as rejects would be incorrect scope creep — this regex is not a
+# Rust semantic validator.
 assert "rejects: unsafe async fn sanitize_value( (invalid Rust grammar order — Rust requires async unsafe, not unsafe async)" \
     bash -c '! printf "%s\n" "unsafe async fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
+assert "rejects: unsafe const fn sanitize_value( (invalid Rust grammar order — Rust requires const unsafe, not unsafe const)" \
+    bash -c '! printf "%s\n" "unsafe const fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 # -- Reject cases: pattern must NOT match these strings ------------------------
 
