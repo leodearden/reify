@@ -30417,11 +30417,11 @@
         "description": "Two fixes in tests/infra/test_portable_timeout.sh: (1) Line 649: remove dead `(^|[^-9])` prefix from kill regex — the `kill[[:space:]]+--` pattern already discriminates correctly. (2) Line 707: add count verification after the case-sanity-check to ensure exactly 1 occurrence of `local _pt_kill_grace=2` before parameter substitution.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T11:45:26.424Z",
+        "updatedAt": "2026-04-10T11:55:52.328Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -31123,11 +31123,11 @@
         "description": "Two fixes in tests/infra/test_portable_timeout.sh: (1) Line 649: remove dead `(^|[^-9])` prefix from kill regex. (2) Line 707: add count verification ensuring exactly 1 occurrence of `local _pt_kill_grace=2` before parameter substitution.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:11:09.516Z",
+        "updatedAt": "2026-04-10T11:55:52.375Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -31140,11 +31140,11 @@
         "description": "Two fixes: (1) Line 649: remove dead (^|[^-9]) prefix from kill regex. (2) Line 707: add count verification for local _pt_kill_grace=2 before substitution.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:11:00.305Z",
+        "updatedAt": "2026-04-10T11:55:52.417Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -31157,11 +31157,11 @@
         "description": "Two fixes: (1) Line 649: remove dead (^|[^-9]) prefix from kill regex. (2) Line 707: add count verification for local _pt_kill_grace=2 before substitution.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:13:21.142Z",
+        "updatedAt": "2026-04-10T11:55:52.458Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -31610,11 +31610,11 @@
         "description": "Two fixes: (1) Line 649: remove dead (^|[^-9]) prefix from kill regex. (2) Line 707: add count verification for local _pt_kill_grace=2 before substitution.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:30:38.380Z",
+        "updatedAt": "2026-04-10T11:55:52.500Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -32597,7 +32597,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T11:55:51.644Z",
+      "lastModified": "2026-04-10T11:55:52.500Z",
       "taskCount": 1605,
       "completedCount": 1222,
       "tags": [
