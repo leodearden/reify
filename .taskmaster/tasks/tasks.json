@@ -29330,13 +29330,13 @@
         "description": "The helpers `parse_and_compile`, `compile_with_prelude_helper`, and `errors_only` are byte-identical copies across `crates/reify-compiler/tests/unit_declaration_tests.rs` (lines 17-41) and `crates/reify-compiler/tests/user_defined_unit_tests.rs` (lines 15-41). A third file, `unit_registry_tests.rs`, has similar boilerplate. Move these helpers into a shared `crates/reify-compiler/tests/common/mod.rs` (the standard Cargo integration-test shared-code pattern), and update all three consumers to `mod common; use common::{parse_and_compile, compile_with_prelude_helper, errors_only};`. This prevents future drift where a fix applied to one copy is missed in the other. Scope: tests only, no production code changes; all existing tests must pass unchanged.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "210"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T01:06:21.378Z",
+        "updatedAt": "2026-04-10T01:06:57.981Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -29500,7 +29500,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:06:26.745Z",
+      "lastModified": "2026-04-10T01:06:57.981Z",
       "taskCount": 1432,
       "completedCount": 1097,
       "tags": [
