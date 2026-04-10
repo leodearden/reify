@@ -73,6 +73,42 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
     }
 }
 
+/// A typed sample point passed to field-sampling helpers.
+///
+/// Encodes both the value (as a fixed-size array of `f64`) and the static type,
+/// eliminating the risk of `(Value, Type)` desynchronisation at call sites.
+///
+/// `into_value_and_type(self)` derives both `Value` and `Type` from the same
+/// array, so callers cannot accidentally pass a mismatched type.
+enum SamplePoint {
+    /// A 3-component `Value::Point` with `Type::point3(Real)`.
+    Point3([f64; 3]),
+    /// A 3-component `Value::Vector` with `Type::vec3(Real)`.
+    Vector3([f64; 3]),
+    /// A 2-component `Value::Vector` with `Type::vec2(Real)`.
+    Vector2([f64; 2]),
+}
+
+impl SamplePoint {
+    /// Consume `self` and produce the corresponding `(Value, Type)` pair.
+    fn into_value_and_type(self) -> (Value, Type) {
+        match self {
+            SamplePoint::Point3([a, b, c]) => (
+                Value::Point(vec![Value::Real(a), Value::Real(b), Value::Real(c)]),
+                Type::point3(Type::Real),
+            ),
+            SamplePoint::Vector3([a, b, c]) => (
+                Value::Vector(vec![Value::Real(a), Value::Real(b), Value::Real(c)]),
+                Type::vec3(Type::Real),
+            ),
+            SamplePoint::Vector2([a, b]) => (
+                Value::Vector(vec![Value::Real(a), Value::Real(b)]),
+                Type::vec2(Type::Real),
+            ),
+        }
+    }
+}
+
 /// Build the identity vector field F(x,y,z)=[x,y,z], compute its divergence,
 /// sample at `point` (literal type `point_literal_type`), and assert result ≈3.0.
 ///
