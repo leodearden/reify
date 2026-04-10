@@ -464,7 +464,7 @@ assert "setup_fixture_dir: test_helpers.sh copied" \
 assert "setup_fixture_dir: fixture is a git work tree" \
     bash -c "cd '$FIXTURE_T26' && git rev-parse --is-inside-work-tree"
 assert "setup_fixture_dir: appended to _TMPDIRS cleanup array" \
-    bash -c "[ '${#_TMPDIRS[@]}' -gt '$tmpdirs_before' ]"
+    test "${#_TMPDIRS[@]}" -gt "$tmpdirs_before"
 
 # -- Test 27: setup_fixture_dir rejects empty/missing varname argument ----------
 echo ""
