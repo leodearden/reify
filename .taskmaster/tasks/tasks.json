@@ -29428,6 +29428,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1428,
+        "title": "Add end-to-end test asserting degenerate-geometry warnings reach BuildResult.diagnostics",
+        "description": "The new degenerate-geometry warnings (extrude dropped, revolve dropped) are verified by unit tests that call `compile_geometry_op` directly. However, nothing verifies the warnings actually propagate through `Engine::build` / `Engine::check` / `Engine::tessellate_realizations` to `BuildResult.diagnostics`.\n\nThe existing end-to-end tests in `crates/reify-eval/tests/stress_sweep_degenerate.rs` (`zero_extrude_distance`, `revolve_zero_angle`) assert only that the mock kernel receives no op — they do not assert the new warnings are surfaced. A regression that drops the warning on its way out would not be caught.\n\n**Fix:** Extend `zero_extrude_distance` and `revolve_zero_angle` in `stress_sweep_degenerate.rs` to assert that `result.diagnostics` contains a Warning whose message contains `extrude dropped` / `revolve dropped`.\n\nmemory_hints: search \"stress_sweep_degenerate zero_extrude revolve_zero\" for test file context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -29440,7 +29451,7 @@
       ],
       "created": "2026-04-10T01:03:18.006Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T01:03:23.705Z"
+      "updated": "2026-04-10T01:03:30.750Z"
     }
   }
 }
