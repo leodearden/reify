@@ -31226,11 +31226,11 @@
         "description": "Two tests in `crates/reify-eval/src/lib.rs` use `diagnostics.iter().any(...)` without first asserting the expected diagnostic count:\n\n1. `compile_geometry_op_scale_negative_factor_returns_none` (~line 4754)\n2. `compile_geometry_op_scale_nan_factor_returns_none` (~line 4798)\n\nBoth should add `assert_eq!(diagnostics.len(), 1, \"expected exactly one diagnostic\");` before the `any()` check, matching the pattern used by other tests in the same file (e.g., line 5034-5040). This makes tests more precise by catching unexpected extra diagnostics.\n\nmemory_hints: search \"diagnostics.len() assertion convention\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:22:51.777Z",
+        "updatedAt": "2026-04-10T11:55:38.965Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -31277,11 +31277,11 @@
         "description": "Two tests in `crates/reify-eval/src/lib.rs` use `diagnostics.iter().any(...)` without first asserting the expected diagnostic count:\n\n1. `compile_geometry_op_scale_negative_factor_returns_none` (~line 4754)\n2. `compile_geometry_op_scale_nan_factor_returns_none` (~line 4798)\n\nBoth should add `assert_eq!(diagnostics.len(), 1, \"expected exactly one diagnostic\");` before the `any()` check, matching the pattern used by other tests in the same file (e.g., line 5034-5040). This makes tests more precise by catching unexpected extra diagnostics.\n\nmemory_hints: search \"diagnostics.len() assertion convention\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:22:17.140Z",
+        "updatedAt": "2026-04-10T11:55:39.017Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -31311,11 +31311,11 @@
         "description": "Two tests in `crates/reify-eval/src/lib.rs` use `diagnostics.iter().any(...)` without first asserting the expected diagnostic count:\n\n1. `compile_geometry_op_scale_negative_factor_returns_none` (~line 4754)\n2. `compile_geometry_op_scale_nan_factor_returns_none` (~line 4798)\n\nBoth should add `assert_eq!(diagnostics.len(), 1, \"expected exactly one diagnostic\");` before the `any()` check, matching the pattern used by other tests in the same file (e.g., line 5034-5040). This makes tests more precise by catching unexpected extra diagnostics.\n\nmemory_hints: search \"diagnostics.len() assertion convention\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:22:25.560Z",
+        "updatedAt": "2026-04-10T11:55:39.065Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -31362,7 +31362,7 @@
         "description": "Insert assert_eq!(diagnostics.len(), 1) before diagnostics.iter().any() in two scale-factor tests.",
         "details": "In the file `crates/reify-eval/src/lib.rs`, locate the tests `compile_geometry_op_scale_negative_factor_returns_none` and `compile_geometry_op_scale_nan_factor_returns_none`. For each test, add the line `assert_eq!(diagnostics.len(), 1, \"expected exactly one diagnostic\");` immediately before the `diagnostics.iter().any(...)` call. This ensures that the tests are consistent with the pattern used in other tests within the same file, enhancing precision by catching unexpected diagnostics.",
         "testStrategy": "Run the test suite to ensure that the new assertions do not cause any tests to fail. Specifically, verify that the tests `compile_geometry_op_scale_negative_factor_returns_none` and `compile_geometry_op_scale_nan_factor_returns_none` pass successfully with the added assertions. Check that the assertion correctly fails if the number of diagnostics is not exactly one.",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [
           "1523",
           "1524",
@@ -31370,7 +31370,8 @@
           "1529"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T11:55:39.114Z"
       },
       {
         "id": "1533",
@@ -32595,7 +32596,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T11:55:30.443Z",
+      "lastModified": "2026-04-10T11:55:39.114Z",
       "taskCount": 1605,
       "completedCount": 1222,
       "tags": [
