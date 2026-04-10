@@ -30417,11 +30417,11 @@
         "description": "Two fixes in tests/infra/test_portable_timeout.sh: (1) Line 649: remove dead `(^|[^-9])` prefix from kill regex — the `kill[[:space:]]+--` pattern already discriminates correctly. (2) Line 707: add count verification after the case-sanity-check to ensure exactly 1 occurrence of `local _pt_kill_grace=2` before parameter substitution.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T03:21:29.892Z",
+        "updatedAt": "2026-04-10T11:37:13.149Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -32551,9 +32551,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T11:37:12.646Z",
+      "lastModified": "2026-04-10T11:37:13.149Z",
       "taskCount": 1601,
-      "completedCount": 1225,
+      "completedCount": 1226,
       "tags": [
         "master"
       ]
