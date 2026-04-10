@@ -29585,7 +29585,7 @@
         "description": "In crates/reify-eval/src/lib.rs, when `compile_geometry_op` returns `None` after emitting a specific Warning diagnostic (e.g. \"extrude dropped: distance=... is degenerate\"), all three caller sites (lines ~2920, ~3000, ~3121) unconditionally push a redundant generic `Diagnostic::error(\"failed to compile geometry operation\")`. Users see two messages for the same root cause: the helpful warning plus a redundant generic error.\n\nTask 1187 addressed this pattern for Primitive/Modify branches, but the new degenerate-geometry warnings added by Task 1199 in the Sweep branches reintroduce the issue.\n\n**Approach options:**\n1. Return `Result<GeometryOp, SkipReason>` where `SkipReason::Explained` suppresses the caller's generic error and `SkipReason::Unexplained` still produces it.\n2. Have callers check `diagnostics.len()` before/after the call and skip the generic error if a diagnostic was already emitted by the function.\n\nOption 1 is cleaner but a larger refactor; Option 2 is pragmatic.\n\nmemory_hints: search \"compile_geometry_op diagnostic duplicate\" entity \"compile_geometry_op\", get_task 1187 for prior art",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -29598,7 +29598,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T06:11:12.022Z"
+        "updatedAt": "2026-04-10T17:15:15.149Z"
       },
       {
         "id": "1427",
@@ -32781,7 +32781,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T17:15:13.565Z",
+      "lastModified": "2026-04-10T17:15:15.149Z",
       "taskCount": 1612,
       "completedCount": 1237,
       "tags": [
