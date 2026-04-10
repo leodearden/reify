@@ -18692,11 +18692,11 @@
         "description": "Eliminate duplicated minimal-params literals across both test files: (a) In crates/reify-lsp/tests/in_process_bridge.rs, add a module-level fn minimal_init_params() -> serde_json::Value { json!({\"capabilities\": {}}) } and replace all occurrences. (b) In gui/src-tauri/src/tests/lsp_bridge_tests.rs, add a const INIT_PARAMS: &str and replace all call sites. If a shared reify_test_support crate exists with LSP fixtures, add it there to keep both crates in sync. Covers review suggestions 3 and 4.\n\nmemory_hints: search(\"InitializeParams test fixture duplication LSP test helpers\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:45.335Z",
+        "updatedAt": "2026-04-10T07:07:32.071Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/tests",
@@ -30205,11 +30205,11 @@
         "description": "Two follow-up improvements to the `assert_extraction` test helper in `crates/reify-stdlib/src/helpers.rs` (introduced by Task 1453):\n\n1. **Line formatting (readability):** The 6 success-path test calls (lines ~337-363) are 200-280 characters wide single lines. Break each call across multiple lines or extract a `let v = Value::…` binding before calling `assert_extraction(v, …)` — keeps lines under ~100-120 chars while preserving the deduplication win.\n\n2. **Signature consistency (test_quality):** `assert_extraction` takes `input: Value` by move (line 164), then immediately borrows it to call `tensor_components_f64(&input)`. Change the signature to `fn assert_extraction(input: &Value, …)` and update callers to pass `&Value::…` or bind-and-reference. This matches the function-under-test's `&Value` parameter and allows callers to reuse the input for Debug prints on failure.\n\nMemory hints: search \"tensor_components_f64 helpers\", get_entity \"helpers.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:50:52.466Z",
+        "updatedAt": "2026-04-10T07:07:31.829Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib/src"
@@ -31715,7 +31715,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:30:43.834Z"
+        "updatedAt": "2026-04-10T06:30:43.834Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src"
+          ]
+        }
       },
       {
         "id": "1555",
@@ -32003,7 +32008,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:18.935Z"
+        "updatedAt": "2026-04-10T07:04:18.935Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src"
+          ]
+        }
       },
       {
         "id": "1574",
@@ -32078,7 +32088,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:21.233Z"
+        "updatedAt": "2026-04-10T07:04:21.233Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/tests"
+          ]
+        }
       },
       {
         "id": "1579",
@@ -32187,9 +32202,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:06:48.465Z",
+      "lastModified": "2026-04-10T07:07:32.071Z",
       "taskCount": 1584,
-      "completedCount": 1184,
+      "completedCount": 1185,
       "tags": [
         "master"
       ]
