@@ -31644,11 +31644,11 @@
         "description": "The four orientation boundary iteration-order tests (w, x, y, z) in crates/reify-types/src/value.rs are nearly identical (~25 lines each), differing only in which orient() argument receives the boundary value and which field is extracted from the match arm. Extract a helper function like `fn assert_orientation_component_order(build: fn(f64) -> Value, extract: fn(&Value) -> f64)` that encapsulates the BTreeSet insertion, extraction, and assertion logic, reducing each test body to ~3 lines.\n\nThe Complex boundary tests (re, im) in the same file follow an analogous pattern and could optionally be covered by a similar or unified helper.\n\nmemory_hints: search \"BOUNDARY_REALS assert_ieee754_total_order_real helper\", search \"orientation boundary iteration order tests value.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:30:39.566Z",
+        "updatedAt": "2026-04-10T16:05:28.666Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src"
@@ -32064,11 +32064,11 @@
         "description": "In crates/reify-expr/src/calculus.rs, add explicit rejection tests for Divergence, Curl, and Laplacian FieldSourceKind variants returning None, similar to the existing Sampled/Gradient/Imported tests. Guards against regressions if the match arms at lines 132-140 are refactored.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:18.935Z",
+        "updatedAt": "2026-04-10T16:05:28.740Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src"
@@ -32660,7 +32660,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:05:28.591Z",
+      "lastModified": "2026-04-10T16:05:28.740Z",
       "taskCount": 1605,
       "completedCount": 1223,
       "tags": [
