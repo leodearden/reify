@@ -4763,7 +4763,7 @@
         "dependencies": [
           "250"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests",
@@ -4777,7 +4777,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-10T17:29:10.693Z"
+        "updatedAt": "2026-04-10T21:08:47.021Z"
       },
       {
         "id": "252",
@@ -32863,9 +32863,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T20:57:33.257Z",
+      "lastModified": "2026-04-10T21:08:47.024Z",
       "taskCount": 1615,
-      "completedCount": 1257,
+      "completedCount": 1258,
       "tags": [
         "master"
       ]
