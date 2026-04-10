@@ -31508,11 +31508,11 @@
         "description": "Two small cleanups in tests/infra/test_npm_ci_hardening.sh from task 1440 review:\n\n1. **Line 351 — positional-parameter consistency:** Test 23a's exit-status assertion uses direct interpolation (`\"[ '$status23a' = '0' ]\"`) while the DIAGNOSTIC assertion on line 354 uses the safer positional-parameter pattern. Use `bash -c '[ \"$1\" = \"0\" ]' _ \"$status23a\"` for consistency and copy-paste resilience.\n\n2. **Line 444 — comment/code mismatch:** Comment says \"The explicit echo | grep\" but the code on line 449 uses `printf \"%s\\n\" \"$1\" | grep`. Update comment to say \"The explicit printf | grep\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:25:56.498Z",
+        "updatedAt": "2026-04-10T11:55:40.576Z",
         "metadata": {
           "modules": [
             "tests/infra/test_npm_ci_hardening.sh"
@@ -31525,11 +31525,11 @@
         "description": "Two small cleanups in tests/infra/test_npm_ci_hardening.sh from task 1440 review:\n\n1. **Line 351 — positional-parameter consistency:** Test 23a's exit-status assertion uses direct interpolation (`\"[ '$status23a' = '0' ]\"`) while the DIAGNOSTIC assertion on line 354 uses the safer positional-parameter pattern. Use `bash -c '[ \"$1\" = \"0\" ]' _ \"$status23a\"` for consistency and copy-paste resilience.\n\n2. **Line 444 — comment/code mismatch:** Comment says \"The explicit echo | grep\" but the code on line 449 uses `printf \"%s\\n\" \"$1\" | grep`. Update comment to say \"The explicit printf | grep\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:26:44.585Z",
+        "updatedAt": "2026-04-10T11:55:40.619Z",
         "metadata": {
           "modules": [
             "tests/infra/test_npm_ci_hardening.sh"
@@ -31542,11 +31542,11 @@
         "description": "Two small cleanups in tests/infra/test_npm_ci_hardening.sh from task 1440 review:\n\n1. **Line 351 — positional-parameter consistency:** Test 23a's exit-status assertion uses direct interpolation (`\"[ '$status23a' = '0' ]\"`) while the DIAGNOSTIC assertion on line 354 uses the safer positional-parameter pattern. Use `bash -c '[ \"$1\" = \"0\" ]' _ \"$status23a\"` for consistency and copy-paste resilience.\n\n2. **Line 444 — comment/code mismatch:** Comment says \"The explicit echo | grep\" but the code on line 449 uses `printf \"%s\\n\" \"$1\" | grep`. Update comment to say \"The explicit printf | grep\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:26:15.332Z",
+        "updatedAt": "2026-04-10T11:55:40.660Z",
         "metadata": {
           "modules": [
             "tests/infra/test_npm_ci_hardening.sh"
@@ -31559,11 +31559,11 @@
         "description": "Two small cleanups in tests/infra/test_npm_ci_hardening.sh from task 1440 review:\n\n1. **Line 351 — positional-parameter consistency:** Test 23a's exit-status assertion uses direct interpolation (`\"[ '$status23a' = '0' ]\"`) while the DIAGNOSTIC assertion on line 354 uses the safer positional-parameter pattern. Use `bash -c '[ \"$1\" = \"0\" ]' _ \"$status23a\"` for consistency and copy-paste resilience.\n\n2. **Line 444 — comment/code mismatch:** Comment says \"The explicit echo | grep\" but the code on line 449 uses `printf \"%s\\n\" \"$1\" | grep`. Update comment to say \"The explicit printf | grep\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:26:04.342Z",
+        "updatedAt": "2026-04-10T11:55:40.702Z",
         "metadata": {
           "modules": [
             "tests/infra/test_npm_ci_hardening.sh"
@@ -31576,11 +31576,11 @@
         "description": "Two small cleanups in tests/infra/test_npm_ci_hardening.sh from task 1440 review:\n\n1. **Line 351 — positional-parameter consistency:** Test 23a's exit-status assertion uses direct interpolation (`\"[ '$status23a' = '0' ]\"`) while the DIAGNOSTIC assertion on line 354 uses the safer positional-parameter pattern. Use `bash -c '[ \"$1\" = \"0\" ]' _ \"$status23a\"` for consistency and copy-paste resilience.\n\n2. **Line 444 — comment/code mismatch:** Comment says \"The explicit echo | grep\" but the code on line 449 uses `printf \"%s\\n\" \"$1\" | grep`. Update comment to say \"The explicit printf | grep\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:26:58.358Z",
+        "updatedAt": "2026-04-10T11:55:40.744Z",
         "metadata": {
           "modules": [
             "tests/infra/test_npm_ci_hardening.sh"
@@ -31593,11 +31593,11 @@
         "description": "Two small cleanups in tests/infra/test_npm_ci_hardening.sh from task 1440 review:\n\n1. **Line 351 — positional-parameter consistency:** Test 23a's exit-status assertion uses direct interpolation (`\"[ '$status23a' = '0' ]\"`) while the DIAGNOSTIC assertion on line 354 uses the safer positional-parameter pattern. Use `bash -c '[ \"$1\" = \"0\" ]' _ \"$status23a\"` for consistency and copy-paste resilience.\n\n2. **Line 444 — comment/code mismatch:** Comment says \"The explicit echo | grep\" but the code on line 449 uses `printf \"%s\\n\" \"$1\" | grep`. Update comment to say \"The explicit printf | grep\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:27:30.616Z",
+        "updatedAt": "2026-04-10T11:55:40.785Z",
         "metadata": {
           "modules": [
             "tests/infra/test_npm_ci_hardening.sh"
@@ -32596,7 +32596,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T11:55:40.095Z",
+      "lastModified": "2026-04-10T11:55:40.785Z",
       "taskCount": 1605,
       "completedCount": 1222,
       "tags": [
