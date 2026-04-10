@@ -57,13 +57,18 @@ assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 extract_fn() {
     local fn_name="$1" file="$2"
     # Match fn with optional structured modifier prefixes (pub, pub(crate),
-    # const, async, unsafe); strip only pub/pub(...) from the signature line so
-    # bodies compare equal across crates that differ only in visibility.
-    # Other modifiers (const, async, unsafe) are semantic — mismatches there are
-    # real body divergences the diff must flag.
+    # const, async, unsafe); strip ALL canonical Rust modifier prefixes from
+    # the signature line so body diffs are robust against orthogonal qualifier
+    # differences between the two copies.  Strip order mirrors the awk
+    # start-pattern's canonical Rust grammar order:
+    #   pub(...) → pub → const → async → unsafe
+    # Each sed stage strips one prefix at the start of the line (column 0).
     awk '/^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?fn[[:space:]]+'"$fn_name"'[[:space:](<]/,/^}/' "$file" |
         sed 's/^pub([^)]*) *//' |
-        sed 's/^pub //'
+        sed 's/^pub //' |
+        sed 's/^const //' |
+        sed 's/^async //' |
+        sed 's/^unsafe //'
 }
 
 # Both copies of sanitize_value must have identical function bodies.
