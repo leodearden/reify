@@ -338,6 +338,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tensor_components_f64_vector_of_mass_scalars_returns_values_and_mass() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 2.5,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
+        let (vals, dim) =
+            tensor_components_f64(&v).expect("expected Some for Vector of MASS Scalars");
+        assert_eq!(vals.len(), 2, "should extract 2 components");
+        assert!(
+            (vals[0] - 1.5).abs() < f64::EPSILON,
+            "first component should be 1.5"
+        );
+        assert!(
+            (vals[1] - 2.5).abs() < f64::EPSILON,
+            "second component should be 2.5"
+        );
+        assert_eq!(
+            dim,
+            DimensionVector::MASS,
+            "Scalar{{MASS}} elements have MASS dimension"
+        );
+    }
+
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
 
     // ── sanitize_value Real arm characterization tests ───────────────────────
