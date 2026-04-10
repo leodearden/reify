@@ -445,11 +445,11 @@ impl GeometryKernel for FailingMockGeometryKernel {
         &self,
         _handle: GeometryHandleId,
         _format: ExportFormat,
-        writer: &mut dyn std::io::Write,
+        _writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        writer
-            .write_all(b"BOGUS_EXPORT")
-            .map_err(|e| ExportError::IoError(e.to_string()))
+        Err(ExportError::FormatError(
+            "should not reach: execute always fails".into(),
+        ))
     }
 
     fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
