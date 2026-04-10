@@ -31663,11 +31663,11 @@
         "description": "The four orientation boundary iteration-order tests (w, x, y, z) in crates/reify-types/src/value.rs are nearly identical (~25 lines each), differing only in which orient() argument receives the boundary value and which field is extracted from the match arm. Extract a helper function like `fn assert_orientation_component_order(build: fn(f64) -> Value, extract: fn(&Value) -> f64)` that encapsulates the BTreeSet insertion, extraction, and assertion logic, reducing each test body to ~3 lines.\n\nThe Complex boundary tests (re, im) in the same file follow an analogous pattern and could optionally be covered by a similar or unified helper.\n\nmemory_hints: search \"BOUNDARY_REALS assert_ieee754_total_order_real helper\", search \"orientation boundary iteration order tests value.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:30:41.166Z"
+        "updatedAt": "2026-04-10T07:11:57.018Z"
       },
       {
         "id": "1552",
@@ -32244,7 +32244,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:11:55.845Z",
+      "lastModified": "2026-04-10T07:11:57.018Z",
       "taskCount": 1584,
       "completedCount": 1198,
       "tags": [
