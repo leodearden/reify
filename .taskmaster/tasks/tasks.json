@@ -31981,6 +31981,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1577,
+        "title": "Audit register() return type change from UnitEntry to Box&lt;UnitEntry&gt;",
+        "description": "register() return type was changed from UnitEntry to Box&lt;UnitEntry&gt;, which is technically semver-breaking. Audit all call sites to confirm no downstream breakage and document the change, or revert if unintentional. Source: review of task 1074 (S6).",
+        "details": "Files: crates/reify-eval/src/units.rs (register method).\\n\\nmemory_hints:\\n- search: \"register UnitEntry Box\"\\n- search: \"unit registry register return type\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -31993,7 +32004,7 @@
       ],
       "created": "2026-04-10T06:51:02.836Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T07:02:20.451Z"
+      "updated": "2026-04-10T07:02:27.272Z"
     }
   }
 }
