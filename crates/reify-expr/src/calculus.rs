@@ -1192,12 +1192,9 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     center_args.clear();
     let mut work_args = center_args;
 
+    // work_args is reused from center_args above; init_work_buffers provides work_point.
     let mut work_coords = coords;
-    let mut work_point: Vec<Value> = if single_point_param {
-        work_coords.iter().map(|&v| make_arg(v)).collect()
-    } else {
-        Vec::new()
-    };
+    let (_, mut work_point) = init_work_buffers(&work_coords, single_point_param, domain_dim);
 
     let mut laplacian = 0.0_f64;
 
