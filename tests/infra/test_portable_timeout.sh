@@ -749,6 +749,24 @@ _pt_double=$'portable_timeout ()\n{\n    local _pt_kill_grace=2\n    local _pt_k
 assert "grep -cF count == 2 for two occurrences of 'local _pt_kill_grace=2'" \
     bash -c '[ "$(grep -cF "local _pt_kill_grace=2" <<< "$1")" -eq 2 ]' _ "$_pt_double"
 
+# -- Test 24d (structural): all count-grep uses in this file include -cF ------
+echo ""
+echo "--- Test 24d (structural): count-grep uses include -cF flag ---"
+
+# Task 1605 origin: the review for task 1473 asked for consistency between
+# count-grep invocations; the merge resolution (commit 869964c9f) already
+# fixed all occurrences.  This guard locks that convention in.
+#
+# The pattern is assembled at runtime so no substring of this source file
+# can be an accidental self-match.  The guard rejects any line where the
+# count flag is not immediately followed by F for fixed-string safety.
+#
+# NOTE: assertion polarity is temporarily INVERTED (no '!') to demonstrate
+# that the guard CAN fire.  Step-2 will flip it to '! grep -nE'.
+printf -v _24d_regex '%s' 'grep' ' -c' '([^F]|$)'
+assert "count-grep uses include -cF flag (no bare count-grep)" \
+    bash -c 'grep -nE "$2" "$1"' _ "${BASH_SOURCE[0]}" "$_24d_regex"
+
 # -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
 echo ""
 echo "--- Test 25a: structural: SAFETY_NET_GREP_LINE marker is present ---"
