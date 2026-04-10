@@ -30193,11 +30193,11 @@
         "description": "Two follow-up improvements to the `assert_extraction` test helper in `crates/reify-stdlib/src/helpers.rs` (introduced by Task 1453):\n\n1. **Line formatting (readability):** The 6 success-path test calls (lines ~337-363) are 200-280 characters wide single lines. Break each call across multiple lines or extract a `let v = Value::…` binding before calling `assert_extraction(v, …)` — keeps lines under ~100-120 chars while preserving the deduplication win.\n\n2. **Signature consistency (test_quality):** `assert_extraction` takes `input: Value` by move (line 164), then immediately borrows it to call `tensor_components_f64(&input)`. Change the signature to `fn assert_extraction(input: &Value, …)` and update callers to pass `&Value::…` or bind-and-reference. This matches the function-under-test's `&Value` parameter and allows callers to reuse the input for Debug prints on failure.\n\nMemory hints: search \"tensor_components_f64 helpers\", get_entity \"helpers.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T03:18:00.881Z",
+        "updatedAt": "2026-04-10T06:50:52.466Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib/src"
@@ -31940,7 +31940,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T06:50:52.138Z",
+      "lastModified": "2026-04-10T06:50:52.466Z",
       "taskCount": 1572,
       "completedCount": 1182,
       "tags": [
