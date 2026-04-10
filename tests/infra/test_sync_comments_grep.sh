@@ -290,7 +290,7 @@ assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC ma
     grep -q '"reify-stdlib has SYNC marker referencing reify-expr::sanitize_value"' "$SYNC_TEST"
 
 assert "extract_fn comment describes allowed prefixes for broad awk pattern" \
-    bash -c "grep '^#' '$SYNC_TEST' | grep -qF 'Allowed prefixes'"
+    bash -c 'grep "^#" "$SYNC_TEST" | grep -qF "Allowed prefixes"'
 
 echo ""
 echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
