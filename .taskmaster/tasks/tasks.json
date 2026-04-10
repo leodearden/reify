@@ -32333,10 +32333,11 @@
         "description": "In tests/infra/test_test_helpers.sh (lines 618-627), replace the enumerated AND-chained grep list for _has_* helpers with a dynamic invariant check: count `^_has_[a-z_]*()` definitions and assert every such helper is used at least once. Eliminates the maintenance cost of manually updating the self-check when adding new helpers.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T08:14:00.084Z"
       },
       {
         "id": "1593",
@@ -32385,7 +32386,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T08:13:59.429Z",
+      "lastModified": "2026-04-10T08:14:00.085Z",
       "taskCount": 1596,
       "completedCount": 1206,
       "tags": [
