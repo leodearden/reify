@@ -30004,15 +30004,16 @@
         "description": "The tensor_components_f64 success-path tests in helpers.rs (lines ~311-426) include 5 structurally identical tests that vary only in container type (Vector/Point/Tensor), element type (Real/Scalar/Int), dimension, and expected values. Extract a shared helper:\n\n```rust\nfn assert_extraction(input: Value, expected_vals: &[f64], expected_dim: DimensionVector, label: &str)\n```\n\nThen convert each test to a one-liner calling the helper. This reduces ~115 lines to ~30 while preserving all container × dimension regression coverage.\n\nTests affected:\n- tensor_components_f64_vector_of_reals_returns_values_and_dimensionless\n- tensor_components_f64_point_of_length_scalars_returns_values_and_length\n- tensor_components_f64_single_element_tensor_of_int_returns_value_and_dimensionless\n- tensor_components_f64_vector_of_mass_scalars_returns_values_and_mass\n- tensor_components_f64_tensor_of_reals_returns_values_and_dimensionless\n- tensor_components_f64_vector_of_length_scalars_returns_values_and_length\n\nMemory hints: search \"tensor_components_f64 helpers\", get_entity \"helpers.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T02:22:12.015Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:22:10.946Z",
+      "lastModified": "2026-04-10T02:22:12.015Z",
       "taskCount": 1453,
       "completedCount": 1127,
       "tags": [
