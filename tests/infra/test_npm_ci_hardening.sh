@@ -22,7 +22,12 @@ trap cleanup EXIT
 # Initialises a git repo so 'git check-ignore' works inside Check 3.
 # Appends the dir to _TMPDIRS so cleanup() removes it at script exit.
 # Writes the path back to the caller via printf -v (bash 3.1+; no subshell).
+# Requires a non-empty VARNAME argument; returns 1 with a message to stderr otherwise.
 setup_fixture_dir() {
+    if [ -z "${1:-}" ]; then
+        echo "setup_fixture_dir: requires a non-empty varname argument" >&2
+        return 1
+    fi
     local _varname="$1"
     local dir
     dir="$(mktemp -d)"
