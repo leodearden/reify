@@ -216,6 +216,19 @@ POSIX_FALLBACK_SETUP=$(_build_posix_fallback_env "touch" trap normal)
 # Callers must clean up rescue_dir explicitly (no EXIT trap to auto-clean).
 POSIX_FALLBACK_SETUP_NO_TRAP=$(_build_posix_fallback_env "touch ps bash" notrap normal)
 
+# -- Helper self-test: POSIX_FALLBACK_SETUP (with-trap) -----------------------
+# Symmetric counterpart to the POSIX_FALLBACK_SETUP_NO_TRAP self-test below.
+# Verifies that eval'ing POSIX_FALLBACK_SETUP (a) sets an EXIT trap and
+# (b) defines portable_timeout.  Placed before Test 12 so a broken with-trap
+# helper surfaces early rather than only through indirect downstream failures.
+assert "POSIX_FALLBACK_SETUP helper sets EXIT trap and defines portable_timeout" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        trap_output=$(trap -p EXIT)
+        [ -n "$trap_output" ] &&
+        declare -f portable_timeout >/dev/null
+    '
+
 # -- Helper self-test: POSIX_FALLBACK_SETUP_NO_TRAP ----------------------------------
 # Verifies the helper correctly strips timeout/gtimeout from PATH and creates
 # rescue_dir. Placed before Test 12 so a broken helper surfaces early.
@@ -396,7 +409,7 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
         kill "$pt_pid" 2>/dev/null || true
         wait "$pt_pid" 2>/dev/null || true
 
-        # Assumes no parallel test runs on the same host: kills any sleep 31337 system-wide.
+        # SAFETY_NET_GREP_LINE — Assumes no parallel test runs on the same host: kills any sleep 31337 system-wide.
         # Safety-net: kill any lingering sentinel sleep 31337 processes.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
             | "$_abs_grep" -E "[[:space:]]sleep 31337$" \
@@ -404,7 +417,7 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
 
         # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
         rm -rf "$rescue_dir"
-        exit $found
+        exit "$found"
     '
 
 assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit command" \
@@ -628,8 +641,12 @@ echo "--- Test 22: post-wait orphan cleanup uses SIGKILL not SIGTERM ---"
 assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)" \
     grep -qF 'kill -9 -- -$cmd_pid 2>/dev/null || true' "$LIB_PORTABLE"
 
-assert "no remaining line sends SIGTERM (plain kill) to the command process group" \
-    bash -c '! grep -qF "kill -- -\$cmd_pid 2>/dev/null || true" "$1"' _ "$LIB_PORTABLE"
+# Regex covers the canonical 'kill -- -$cmd_pid' form (quoted or unquoted,
+# with optional trailing || true or redirection) but NOT 'kill -s TERM',
+# 'kill -TERM', or '--signal=TERM' variants — those are not used in the file.
+# Comment lines are excluded first to avoid false matches on inline documentation.
+assert "no line uses the canonical kill -- -\$cmd_pid form (quoted or unquoted)" \
+    bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "(^|[^-9])kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
 
 # -- Test 23: structural: both timer subshells quote the PGID argument (S1) ---
 echo ""
@@ -655,6 +672,71 @@ assert "portable_timeout declares local _pt_kill_grace=2" \
 
 assert "both timer subshells reference \$_pt_kill_grace: exactly 2 occurrences" \
     bash -c 'count=$(grep -cF "sleep \"\$_pt_kill_grace\"" "$1"); [ "$count" -eq 2 ]' _ "$LIB_PORTABLE"
+
+# -- Test 24b (behavioral): _pt_kill_grace override flows to timer -----------
+echo ""
+echo "--- Test 24b (behavioral): _pt_kill_grace override flows to timer ---"
+
+# Verifies that overriding _pt_kill_grace inside portable_timeout changes the
+# actual wall-clock grace period observed by the timer.  A SIGTERM-ignoring
+# command forces the SIGKILL escalation path; elapsed time must reflect the
+# override value (5s) rather than the default (2s).
+#
+# Timing arithmetic: 1s timer + 5s grace ~= 6s wall-clock.  With date +%s
+# (1-second integer resolution), the measured gap can be as low as 5.
+# Asserting gap >= 5 excludes the 3s default-grace regression bucket by a
+# robust 2-second margin, making this CI-safe under moderate load.
+#
+# The substitution is anchored on 'local' to avoid silently rewriting a
+# stray '_pt_kill_grace=2' in a comment or string literal.
+#
+# Sentinel duration 999 is distinct from 31337/31339 to avoid ps conflicts.
+assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" bash -c '
+        _abs_bash=$(command -v bash)
+        _abs_date=$(command -v date)
+
+        eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
+        trap '"'"'rm -rf "$rescue_dir"'"'"' EXIT
+
+        func_text=$(declare -f portable_timeout)
+        case "$func_text" in
+            *"local _pt_kill_grace=2"*) ;;
+            *) echo "SANITY FAIL: local _pt_kill_grace=2 not found in portable_timeout" >&2; exit 1 ;;
+        esac
+        eval "${func_text/local _pt_kill_grace=2/local _pt_kill_grace=5}"
+
+        t_start=$("$_abs_date" +%s)
+        portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 999'"'"' || true
+        t_end=$("$_abs_date" +%s)
+        gap=$((t_end - t_start))
+        [ "$gap" -ge 5 ]
+    '
+
+# -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
+echo ""
+echo "--- Test 25a: structural: SAFETY_NET_GREP_LINE marker is present ---"
+
+# The safety-net cleanup comment (Test 16a, near the critical grep pipeline)
+# must carry a stable SAFETY_NET_GREP_LINE marker so meta-tests can locate
+# the grep by marker rather than brittle comment prose.
+# Use a regex anchored to a comment line (^spaces#space) so the grep command
+# itself — which does not start with '#' — is not a self-referential match.
+assert "SAFETY_NET_GREP_LINE comment marker exists in file" \
+    grep -qE '^[[:space:]]+#[[:space:]]SAFETY_NET_GREP_LINE' "${BASH_SOURCE[0]}"
+
+# -- Test 25: structural: Test 16a exit variable is quoted -------------------
+echo ""
+echo "--- Test 25: structural: Test 16a exit variable is quoted ---"
+
+# Test 16a closes its subshell with 'exit $found'.  The companion orphan-check
+# subshell (Test 18b) correctly uses 'exit "$_check_rc"'.  Consistency between
+# two structurally identical exit patterns requires both to quote the variable.
+# Check the ABSENCE of the unquoted form with 8-space indentation.  The grep
+# pattern uses \$found (with backslash) so the assertion line itself is not a
+# self-referential match.
+assert "Test 16a subshell uses quoted exit \"\$found\" (no unquoted form)" \
+    bash -c '! grep -qF "        exit \$found" "$1"' _ "${BASH_SOURCE[0]}"
 
 # -- Summary ------------------------------------------------------------------
 test_summary

@@ -14,6 +14,13 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/../tests/infra/test_helpers.sh"
 
 PKG_FILES='gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json'
+# Derive the file count from PKG_FILES so Check 2's total assertion tracks
+# the list automatically (task 1366). Intentional word-splitting on $PKG_FILES
+# is consistent with how the rest of this script uses the variable.
+# shellcheck disable=SC2086
+set -- $PKG_FILES
+PKG_COUNT=$#
+LOCK_FILES='gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json'
 
 echo "=== check-pm-standardization ==="
 
@@ -32,7 +39,7 @@ done
 # Defensive shape (task 1326): the subshell enables `set -euo pipefail` so that
 # grep failures inside the pipeline (e.g. a missing package.json file) propagate
 # instead of being masked by the final `tr -d` exit status. An explicit `[ -f ]`
-# preflight provides belt-and-braces coverage. The dual assertion — total == 3
+# preflight provides belt-and-braces coverage. The dual assertion — total == PKG_COUNT
 # AND unique == 1 — catches the case where one file is missing the
 # packageManager field entirely: grep emits fewer lines, which `sort -u` would
 # otherwise silently collapse to a single unique line.
@@ -49,13 +56,12 @@ assert "all package.json files agree on packageManager version" bash -c "
     unique=\$(for p in $PKG_FILES; do
         grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \"$ROOT/\$p\"
     done | sort -u | wc -l | tr -d ' ')
-    [ \"\$total\" = '3' ] && [ \"\$unique\" = '1' ]
+    [ \"\$total\" = '$PKG_COUNT' ] && [ \"\$unique\" = '1' ]
 "
 
 # ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
 echo ""
 echo "Check 3: npm lockfiles not gitignored"
-LOCK_FILES='gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json'
 assert "no npm lockfiles are gitignored" \
     bash -c "! (cd '$ROOT' && git check-ignore $LOCK_FILES)"
 if (cd "$ROOT" && git check-ignore $LOCK_FILES >/dev/null 2>&1); then

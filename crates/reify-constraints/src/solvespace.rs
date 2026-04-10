@@ -1109,7 +1109,7 @@ fn dimension_of(ty: &Type) -> DimensionVector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_test_support::vcid;
+    use reify_test_support::{single_auto_param, vcid};
 
     // ── Shared test helpers ────────────────────────────────────────────────
 
@@ -1200,17 +1200,6 @@ mod tests {
         line(fixed_point(x0, y0, z0), fixed_point(x1, y1, z1))
     }
 
-    /// Build a one-element auto_params vec for the given cell_id with Type::length() and no bounds.
-    /// Shared by the three add_auto_coord tests that need a standard single-param setup.
-    fn auto_params_for(cell_id: &ValueCellId) -> Vec<AutoParam> {
-        vec![AutoParam {
-            id: cell_id.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        }]
-    }
-
     /// Non-auto param with a value present in current_values should succeed
     /// and use the provided value. Regression guard for the non-auto happy path.
     #[test]
@@ -1251,7 +1240,7 @@ mod tests {
         let mut builder = SystemBuilder::new();
         let cell_id = vcid("Test", "x");
         // cell_id IS in auto_params
-        let auto_params = auto_params_for(&cell_id);
+        let auto_params = vec![single_auto_param(cell_id.clone())];
         // But NOT in current_values — should use 0.01 default
         let current_values = ValueMap::new();
 
@@ -1447,7 +1436,7 @@ mod tests {
     fn add_auto_coord_cache_hit_idempotency() {
         let mut builder = SystemBuilder::new();
         let cell_id = vcid("Test", "x");
-        let auto_params = auto_params_for(&cell_id);
+        let auto_params = vec![single_auto_param(cell_id.clone())];
         let current_values = ValueMap::new();
         let initial_len = builder.params.len();
 
@@ -1481,7 +1470,7 @@ mod tests {
     fn add_auto_coord_auto_param_warm_start() {
         let mut builder = SystemBuilder::new();
         let cell_id = vcid("Test", "x");
-        let auto_params = auto_params_for(&cell_id);
+        let auto_params = vec![single_auto_param(cell_id.clone())];
         let mut current_values = ValueMap::new();
         current_values.insert(
             cell_id.clone(),

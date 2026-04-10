@@ -623,6 +623,18 @@ pub fn compile_with_prelude(
     // Emits errors for recursive subs without guards or with non-terminating guard heuristics.
     check_recursive_termination(&templates, &cyclic_sccs, &mut diagnostics);
 
+    // Remix is_recursive into each recursive template's content_hash.
+    // detect_recursive_structures() sets is_recursive after each template's initial
+    // content_hash was computed, so without this step two templates with identical raw
+    // content but different recursion status would hash identically — causing incorrect
+    // incremental compilation cache hits. Non-recursive templates are untouched so
+    // existing cache entries remain valid for them.
+    for template in &mut templates {
+        if template.is_recursive {
+            template.content_hash = template.content_hash.combine(ContentHash::of(&[1u8]));
+        }
+    }
+
     // Check for duplicate function signatures: same name + same param types
     {
         let mut seen: HashMap<(String, Vec<Type>), usize> = HashMap::new();

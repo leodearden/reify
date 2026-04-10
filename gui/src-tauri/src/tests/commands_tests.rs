@@ -200,12 +200,11 @@ fn module_structure_all_public_types() {
     // Verify all public types are accessible from the crate
     use crate::types::{ConstraintData, FileData, GuiState, MeshData, ValueData};
     use reify_mcp::SourceLocationInfo;
-    // Verify types implement Clone + Debug (compile-time check)
-    fn assert_clone_debug<T: Clone + std::fmt::Debug>() {}
-    assert_clone_debug::<GuiState>();
-    assert_clone_debug::<MeshData>();
-    assert_clone_debug::<ValueData>();
-    assert_clone_debug::<ConstraintData>();
-    assert_clone_debug::<SourceLocationInfo>();
-    assert_clone_debug::<FileData>();
+    // Verify full IPC contract (Serialize + DeserializeOwned + Clone + Debug + PartialEq)
+    super::assert_ipc_contract::<GuiState>();
+    super::assert_ipc_contract::<MeshData>();
+    super::assert_ipc_contract::<ValueData>();
+    super::assert_ipc_contract::<ConstraintData>();
+    super::assert_ipc_contract::<SourceLocationInfo>();
+    super::assert_ipc_contract::<FileData>();
 }
