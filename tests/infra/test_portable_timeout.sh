@@ -216,6 +216,19 @@ POSIX_FALLBACK_SETUP=$(_build_posix_fallback_env "touch" trap normal)
 # Callers must clean up rescue_dir explicitly (no EXIT trap to auto-clean).
 POSIX_FALLBACK_SETUP_NO_TRAP=$(_build_posix_fallback_env "touch ps bash" notrap normal)
 
+# -- Helper self-test: POSIX_FALLBACK_SETUP (with-trap) -----------------------
+# Symmetric counterpart to the POSIX_FALLBACK_SETUP_NO_TRAP self-test below.
+# Verifies that eval'ing POSIX_FALLBACK_SETUP (a) sets an EXIT trap and
+# (b) defines portable_timeout.  Placed before Test 12 so a broken with-trap
+# helper surfaces early rather than only through indirect downstream failures.
+assert "POSIX_FALLBACK_SETUP helper sets EXIT trap and defines portable_timeout" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        trap_output=$(trap -p EXIT)
+        [ -n "$trap_output" ] &&
+        declare -f portable_timeout >/dev/null
+    '
+
 # -- Helper self-test: POSIX_FALLBACK_SETUP_NO_TRAP ----------------------------------
 # Verifies the helper correctly strips timeout/gtimeout from PATH and creates
 # rescue_dir. Placed before Test 12 so a broken helper surfaces early.
@@ -396,7 +409,7 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
         kill "$pt_pid" 2>/dev/null || true
         wait "$pt_pid" 2>/dev/null || true
 
-        # Assumes no parallel test runs on the same host: kills any sleep 31337 system-wide.
+        # SAFETY_NET_GREP_LINE — Assumes no parallel test runs on the same host: kills any sleep 31337 system-wide.
         # Safety-net: kill any lingering sentinel sleep 31337 processes.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
             | "$_abs_grep" -E "[[:space:]]sleep 31337$" \
@@ -404,7 +417,7 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
 
         # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
         rm -rf "$rescue_dir"
-        exit $found
+        exit "$found"
     '
 
 assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit command" \
@@ -655,6 +668,31 @@ assert "portable_timeout declares local _pt_kill_grace=2" \
 
 assert "both timer subshells reference \$_pt_kill_grace: exactly 2 occurrences" \
     bash -c 'count=$(grep -cF "sleep \"\$_pt_kill_grace\"" "$1"); [ "$count" -eq 2 ]' _ "$LIB_PORTABLE"
+
+# -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
+echo ""
+echo "--- Test 25a: structural: SAFETY_NET_GREP_LINE marker is present ---"
+
+# The safety-net cleanup comment (Test 16a, near the critical grep pipeline)
+# must carry a stable SAFETY_NET_GREP_LINE marker so meta-tests can locate
+# the grep by marker rather than brittle comment prose.
+# Use a regex anchored to a comment line (^spaces#space) so the grep command
+# itself — which does not start with '#' — is not a self-referential match.
+assert "SAFETY_NET_GREP_LINE comment marker exists in file" \
+    grep -qE '^[[:space:]]+#[[:space:]]SAFETY_NET_GREP_LINE' "${BASH_SOURCE[0]}"
+
+# -- Test 25: structural: Test 16a exit variable is quoted -------------------
+echo ""
+echo "--- Test 25: structural: Test 16a exit variable is quoted ---"
+
+# Test 16a closes its subshell with 'exit $found'.  The companion orphan-check
+# subshell (Test 18b) correctly uses 'exit "$_check_rc"'.  Consistency between
+# two structurally identical exit patterns requires both to quote the variable.
+# Check the ABSENCE of the unquoted form with 8-space indentation.  The grep
+# pattern uses \$found (with backslash) so the assertion line itself is not a
+# self-referential match.
+assert "Test 16a subshell uses quoted exit \"\$found\" (no unquoted form)" \
+    bash -c '! grep -qF "        exit \$found" "$1"' _ "${BASH_SOURCE[0]}"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
