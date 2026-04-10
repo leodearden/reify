@@ -144,6 +144,9 @@ assert "no \\b in grep invocations (non-comment lines, scoped)" \
 assert "no grep -P in grep invocations (non-comment lines, scoped)" \
     bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_TEST'"
 
+assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC marker'" \
+    grep -q '"reify-stdlib has SYNC marker referencing reify-expr::sanitize_value"' "$SYNC_TEST"
+
 echo ""
 echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
 
