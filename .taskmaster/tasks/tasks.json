@@ -29141,11 +29141,11 @@
         "description": "Follow-up from review triage of Task 1206 (esc-1206-131). The new `#[cfg(test)] mod tests` in `crates/reify-stdlib/src/helpers.rs` (lines 127-223) added characterization tests for the Real and Scalar arms of `sanitize_value` but left coverage gaps that weaken the `// SYNC: mirror` invariant with `crates/reify-expr/src/sanitize.rs`.\n\nDo all of the following in `crates/reify-stdlib/src/helpers.rs`:\n\n1. **Add Complex-arm tests** mirroring `crates/reify-expr/src/sanitize.rs` tests: NaN in `re`, NaN in `im`, +Inf in `re`, -Inf in `im`, plus a finite passthrough. Each non-finite case should assert `sanitize_value(...).is_undef()`.\n\n2. **Add Orientation-arm tests** mirroring sanitize.rs: NaN/+Inf/-Inf in each of `w`, `x`, `y`, `z` (at least one case per field), plus a valid unit-quaternion passthrough.\n\n3. **Add a SYNC comment** directly above `mod tests` (e.g. `// SYNC: mirror of reify-expr::sanitize.rs tests — keep in sync`) so future maintainers know the two test sets should evolve together. The existing SYNC comment on line 78 applies to the function, not the tests.\n\n4. **Move the test module to the bottom of the file**, after `tensor_components_f64` (currently at line 234). The current placement between `complex_abs` and `tensor_components_f64` visually splits the helper functions.\n\nReference: `crates/reify-expr/src/sanitize.rs:42-341` is the mirrored test set to port from. Note that the Complex/Orientation arms of `sanitize_value` are currently unreachable from live call sites but exist for structural parity (see the docstring on sanitize.rs:3-17) — the tests are defense-in-depth for when callers evolve.\n\nMemory hints: search \"sanitize_value SYNC mirror helpers\", get_entity \"sanitize_value\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:12:18.112Z",
+        "updatedAt": "2026-04-10T01:07:24.947Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib/src"
@@ -29624,7 +29624,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T01:07:24.387Z",
+      "lastModified": "2026-04-10T01:07:24.947Z",
       "taskCount": 1432,
       "completedCount": 1097,
       "tags": [
