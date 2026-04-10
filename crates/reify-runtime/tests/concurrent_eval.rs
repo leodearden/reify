@@ -1735,6 +1735,48 @@ mod poison_recovery {
             &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)],
         );
     }
+
+    /// Co-location contract: the canonical message `MSG_LOCK_POISONED` and the
+    /// structured `error` field must appear on the **same** warn event.
+    ///
+    /// This standalone test captures events directly (without going through
+    /// `assert_poison_recovers`) so the co-location invariant is explicit and not
+    /// hidden behind helper abstraction.  It uses `values()` after `poison_values()`
+    /// as the simplest single-warn exercise path.
+    #[test]
+    fn error_field_colocated_with_canonical_message() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        adapter.poison_values();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let _values = tracing::subscriber::with_default(subscriber, || adapter.values());
+
+        let msgs = capture.messages();
+        let fbe = capture.fields_by_event();
+
+        // Safety invariant: WarnCapturingSubscriber pushes to both vecs in the same
+        // event() call, so they are always equal-length.
+        assert_eq!(
+            msgs.len(),
+            fbe.len(),
+            "messages and fields_by_event must have equal length (internal invariant of WarnCapture)"
+        );
+
+        // At least one warn event must have BOTH the canonical message AND the
+        // structured error field — they must be co-located on the same event.
+        let has_colocation = msgs.iter().zip(fbe.iter()).any(|(msg, fields)| {
+            msg == poison_fields::MSG_LOCK_POISONED && fields.contains_key("error")
+        });
+        assert!(
+            has_colocation,
+            "expected at least one warn event with BOTH message == {:?} AND field 'error'; \
+             messages: {:?}, fields: {:?}",
+            poison_fields::MSG_LOCK_POISONED,
+            msgs,
+            fbe,
+        );
+    }
 }
 
 /// Critical test: 3+ parent mixed fan-in where downstream reads ONLY
