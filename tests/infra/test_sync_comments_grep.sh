@@ -209,4 +209,90 @@ assert "extract_fn: fn foobar( NOT extracted when fn_name=foo (prefix collision)
         [ -z \"\$out\" ]
     "
 
+# reject: embedded-fn false-positive guard — "let y = fn foo(x);" must NOT be extracted
+# RED test: the current loose awk pattern ^[^/]*fn foo[(<] matches the embedded fn line
+# because 'let y = fn foo(x);' is not anchored to a fn declaration.
+assert "extract_fn: 'let y = fn foo(x);' NOT extracted for fn_name=foo (embedded-fn false-positive)" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'let y = fn foo(x);\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -z \"\$out\" ]
+    "
+
+# accept: const fn foo( — must be extracted when fn_name=foo
+assert "extract_fn: const fn foo( extracted correctly for fn_name=foo" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'const fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'const fn foo('
+    "
+
+# accept: unsafe fn foo( — must be extracted when fn_name=foo
+assert "extract_fn: unsafe fn foo( extracted correctly for fn_name=foo" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'unsafe fn foo('
+    "
+
+# accept: async fn foo( — must be extracted when fn_name=foo
+assert "extract_fn: async fn foo( extracted correctly for fn_name=foo" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'async fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'async fn foo('
+    "
+
+# accept: pub fn foo( — must be extracted when fn_name=foo; sed strips the pub prefix
+assert "extract_fn: pub fn foo( extracted correctly for fn_name=foo" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'pub fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'fn foo('
+    "
+
+# accept: pub(crate) const fn foo( — must be extracted when fn_name=foo; sed strips pub(crate) prefix
+assert "extract_fn: pub(crate) const fn foo( extracted correctly for fn_name=foo" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'pub(crate) const fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'const fn foo('
+    "
+
 test_summary
