@@ -26238,16 +26238,17 @@
         "description": "The expression `annotations.iter().any(|a| a.name == \"test\")` is inlined verbatim in three places: `crates/reify-compiler/src/lib.rs:6384`, `crates/reify-syntax/src/lib.rs:465`, and `crates/reify-test-support/src/builders/topology.rs:356`. Extract a single helper (e.g. `fn has_test_annotation(anns: &[impl HasName]) -> bool` or one helper per annotation type) and replace all three call sites. Document that `\"test\"` is the canonical lowercase spelling.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T02:24:07.397Z",
+        "updatedAt": "2026-04-10T02:28:20.139Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-syntax",
-            "crates/reify-test-support"
+            "crates/reify-compiler/src",
+            "crates/reify-syntax/src",
+            "crates/reify-test-support/src",
+            "crates/reify-types/src"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
@@ -30061,7 +30062,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:28:09.211Z",
+      "lastModified": "2026-04-10T02:28:20.139Z",
       "taskCount": 1455,
       "completedCount": 1130,
       "tags": [
