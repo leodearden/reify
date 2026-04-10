@@ -32046,11 +32046,11 @@
         "description": "register() return type was changed from UnitEntry to Box&lt;UnitEntry&gt;, which is technically semver-breaking. Audit all call sites to confirm no downstream breakage and document the change, or revert if unintentional. Source: review of task 1074 (S6).",
         "details": "Files: crates/reify-eval/src/units.rs (register method).\\n\\nmemory_hints:\\n- search: \"register UnitEntry Box\"\\n- search: \"unit registry register return type\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:17.583Z"
+        "updatedAt": "2026-04-10T07:05:13.050Z"
       },
       {
         "id": "1578",
@@ -32138,16 +32138,16 @@
         "description": "There is no integration test that loads a .ri file and verifies the constraint-violated path. Add a test that loads a .ri file with intentionally violated constraints and asserts SolveResult::Violated. Source: review of task 220 (S7).",
         "details": "Files: tests/m9_integration.rs, test fixtures.\\n\\nmemory_hints:\\n- search: \"m9_integration .ri file test\"\\n- search: \"SolveResult Violated ri file\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:18.633Z"
+        "updatedAt": "2026-04-10T07:05:13.244Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:05:12.403Z",
+      "lastModified": "2026-04-10T07:05:13.247Z",
       "taskCount": 1584,
       "completedCount": 1182,
       "tags": [
