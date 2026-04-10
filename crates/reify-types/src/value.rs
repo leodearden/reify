@@ -2742,6 +2742,8 @@ mod tests {
 
         // (e) Full assert_ord_consistent check for neg_qnan vs neg_inf pair (neg_qnan < neg_inf).
         assert_ord_consistent(&neg_qnan, &neg_inf, false);
+        // (f) Full assert_ord_consistent check for the cross-sign NaN pair (neg_qnan < pos_qnan).
+        assert_ord_consistent(&neg_qnan, &pos_qnan, false);
     }
 
     #[test]
