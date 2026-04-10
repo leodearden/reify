@@ -31989,11 +31989,11 @@
         "description": "Add _has_expr_body_empty_guard_short_circuit to the self-check at lines 611-619 of tests/infra/test_test_helpers.sh, as identified by steward triage of esc-1372-292.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:19.579Z"
+        "updatedAt": "2026-04-10T07:05:07.141Z"
       },
       {
         "id": "1575",
@@ -32096,11 +32096,11 @@
         "description": "Three issues in m9_integration.rs: (1) parse_and_compile/eval_source/check_source are copied across multiple test files -- extract to a shared test helper module. (2) assert_ne!(Satisfied) should be assert_eq!(Violated) in at least 3 instances (including recursive_structure test) for precise failure reporting. (3) bracket_dir0.len() >= 1 should be >= 2 -- the current assertion is too weak and would pass with insufficient bracket data. Source: review of task 220 (S2, S3, S4, S6).",
         "details": "Files: tests/m9_integration.rs, and other test files containing parse_and_compile/eval_source/check_source copies.\\n\\nSpecific fixes:\\n- Replace assert_ne!(result, SolveResult::Satisfied) with assert_eq!(result, SolveResult::Violated) (3 sites)\\n- Replace assert!(bracket_dir0.len() >= 1) with assert!(bracket_dir0.len() >= 2)\\n- Extract parse_and_compile, eval_source, check_source into a shared test utility\\n\\nmemory_hints:\\n- search: \"m9_integration parse_and_compile\"\\n- search: \"eval_source check_source test helper\"\\n- search: \"SolveResult Satisfied Violated assertion\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:04:18.127Z"
+        "updatedAt": "2026-04-10T07:05:07.038Z"
       },
       {
         "id": "1584",
@@ -32117,7 +32117,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T07:05:06.693Z",
+      "lastModified": "2026-04-10T07:05:07.141Z",
       "taskCount": 1584,
       "completedCount": 1182,
       "tags": [
