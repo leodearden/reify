@@ -30065,15 +30065,16 @@
         "description": "Four improvements in crates/reify-compiler/tests/m9_error_cases.rs: (1) Extract assert_has_error_with_span(errors, needle) helper to reduce 22 repetitions of the 5-step compile→filter→assert pattern (~15 lines each). (2) Fix errors[0] vs any() mismatch — span assertions check errors[0] but message check uses .any(), so span could be asserted on wrong error. Find the matching error first, then assert its labels. (3) Add cross-reference comments to the 11 tests that overlap with trait_conformance_tests.rs, constraint_inst_tests.rs, entity_overload_tests.rs. (4) Line 272: narrow \"conflicting trait\" to \"conflicting trait defaults\" for assertion precision.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T02:30:10.388Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:30:09.995Z",
+      "lastModified": "2026-04-10T02:30:10.388Z",
       "taskCount": 1456,
       "completedCount": 1131,
       "tags": [
