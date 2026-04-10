@@ -1346,28 +1346,15 @@ fn divergence_constant_field_near_zero() {
     );
 
     let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::vec3(Type::Real);
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), Type::vec3(Type::Real), lambda);
 
     // divergence(field) → scalar field ≈ 0
     let div_expr = make_function_call(
         "divergence",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::Real),
-        },
+        divergence_result_type(domain_type.clone()),
     );
 
     let values = ValueMap::new();
@@ -1382,15 +1369,10 @@ fn divergence_constant_field_near_zero() {
     // sample at any point, expect near 0
     let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
 
-    let div_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(Type::Real),
-    };
-
     let sample_expr = make_function_call(
         "sample",
         vec![
-            CompiledExpr::literal(div_result, div_field_type),
+            CompiledExpr::literal(div_result, divergence_result_type(domain_type.clone())),
             CompiledExpr::literal(point, domain_type),
         ],
         Type::Real,
@@ -1451,28 +1433,15 @@ fn gradient_linear_field_constant() {
     );
 
     let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), Type::Real, lambda);
 
     // gradient(field) should give constant [1, 2, 3]
     let grad_expr = make_function_call(
         "gradient",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
-        },
+        gradient_result_type(domain_type.clone(), 3),
     );
 
     let values = ValueMap::new();
@@ -1484,11 +1453,6 @@ fn gradient_linear_field_constant() {
         grad_result
     );
 
-    let grad_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(Type::vec3(Type::Real)),
-    };
-
     // Verify at two different points
     let test_points = [
         Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
@@ -1499,7 +1463,10 @@ fn gradient_linear_field_constant() {
         let sample_expr = make_function_call(
             "sample",
             vec![
-                CompiledExpr::literal(grad_result.clone(), grad_field_type.clone()),
+                CompiledExpr::literal(
+                    grad_result.clone(),
+                    gradient_result_type(domain_type.clone(), 3),
+                ),
                 CompiledExpr::literal(point.clone(), domain_type.clone()),
             ],
             Type::vec3(Type::Real),
@@ -1555,28 +1522,15 @@ fn laplacian_linear_field_near_zero() {
     );
 
     let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), Type::Real, lambda);
 
     // laplacian(field) → scalar field ≈ 0
     let lap_expr = make_function_call(
         "laplacian",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::Real),
-        },
+        laplacian_result_type(domain_type.clone()),
     );
 
     let values = ValueMap::new();
@@ -1591,15 +1545,10 @@ fn laplacian_linear_field_near_zero() {
     // sample at (1, 2, 3)
     let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
 
-    let lap_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(Type::Real),
-    };
-
     let sample_expr = make_function_call(
         "sample",
         vec![
-            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(lap_result, laplacian_result_type(domain_type.clone())),
             CompiledExpr::literal(point, domain_type),
         ],
         Type::Real,
