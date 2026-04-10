@@ -24,7 +24,7 @@ fn parse_params<T: serde::de::DeserializeOwned>(
     params: serde_json::Value,
     label: &str,
 ) -> Result<T, String> {
-    serde_json::from_value(params).map_err(|e| format!("{label} params error: {e}"))
+    serde_json::from_value(params).map_err(|e| format!("{label}: {e}"))
 }
 
 /// An in-process LSP server that can be called directly without I/O streams.
@@ -120,7 +120,7 @@ impl InProcessLsp {
 
         match method {
             "initialize" => {
-                let p = parse_params::<InitializeParams>(params, "initialize")?;
+                let p = parse_params::<InitializeParams>(params, error_prefix::INITIALIZE_PARAMS)?;
                 let result = server
                     .initialize(p)
                     .await
@@ -137,27 +137,27 @@ impl InProcessLsp {
                 } else {
                     params
                 };
-                let p = parse_params::<InitializedParams>(params, "initialized")?;
+                let p = parse_params::<InitializedParams>(params, error_prefix::INITIALIZED_PARAMS)?;
                 server.initialized(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didOpen" => {
-                let p = parse_params::<DidOpenTextDocumentParams>(params, "didOpen")?;
+                let p = parse_params::<DidOpenTextDocumentParams>(params, error_prefix::DID_OPEN_PARAMS)?;
                 server.did_open(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didChange" => {
-                let p = parse_params::<DidChangeTextDocumentParams>(params, "didChange")?;
+                let p = parse_params::<DidChangeTextDocumentParams>(params, error_prefix::DID_CHANGE_PARAMS)?;
                 server.did_change(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didClose" => {
-                let p = parse_params::<DidCloseTextDocumentParams>(params, "didClose")?;
+                let p = parse_params::<DidCloseTextDocumentParams>(params, error_prefix::DID_CLOSE_PARAMS)?;
                 server.did_close(p).await;
                 Ok(Value::Null)
             }
             "textDocument/completion" => {
-                let p = parse_params::<CompletionParams>(params, "completion")?;
+                let p = parse_params::<CompletionParams>(params, "completion params error")?;
                 let result = server
                     .completion(p)
                     .await
@@ -165,7 +165,7 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/hover" => {
-                let p = parse_params::<HoverParams>(params, "hover")?;
+                let p = parse_params::<HoverParams>(params, "hover params error")?;
                 let result = server
                     .hover(p)
                     .await
@@ -173,7 +173,7 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/definition" => {
-                let p = parse_params::<GotoDefinitionParams>(params, "definition")?;
+                let p = parse_params::<GotoDefinitionParams>(params, "definition params error")?;
                 let result = server
                     .goto_definition(p)
                     .await
