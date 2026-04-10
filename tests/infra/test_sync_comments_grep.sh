@@ -14,6 +14,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SYNC_TEST="$REPO_ROOT/tests/sync_comments_test.sh"
+SYNC_REF_HELPERS="$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
+THIS_SCRIPT="${BASH_SOURCE[0]}"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
@@ -32,112 +34,129 @@ echo "--- Section 1: fixture accept/reject assertions (regex correctness) ---"
 # If extraction fails (empty result) we exit early with a diagnostic so the
 # cause is visible rather than producing cryptic fixture failures.
 PATTERN=$(
-    grep 'grep -qE' "$SYNC_TEST" | \
+    grep 'grep -qE' "$SYNC_REF_HELPERS" | \
     grep -F '[[:space:](<]' | \
     head -1 | \
     sed "s/^[[:space:]]*grep -qE '//; s/'[[:space:]]*\"[^\"]*\"[[:space:]]*$//; s/'\"[^\"]*\"'/sanitize_value/"
 )
 if [ -z "$PATTERN" ]; then
-    echo "ERROR: could not extract fn-existence regex from $SYNC_TEST" >&2
+    echo "ERROR: could not extract fn-existence regex from $SYNC_REF_HELPERS" >&2
     echo "       Expected a 'grep -qE' line containing '[[:space:](<]'" >&2
     exit 1
 fi
+export PATTERN
 assert "pattern extraction from sync_comments_test.sh succeeded" \
     test -n "$PATTERN"
 
 assert "extracted pattern contains expected fn name" \
-    bash -c "[[ \"$PATTERN\" == *sanitize_value* ]]"
+    bash -c '[[ "$PATTERN" == *sanitize_value* ]]'
+
+# Split assignment so the detection regex does not appear as a contiguous
+# literal in this file, which would trip its own self-check below.
+_CHECK='bash'; _CHECK+=' -c ".*\$\{?PATTERN'
+_no_unhardened_pattern_interp() { ! grep -nE "$_CHECK" "$THIS_SCRIPT"; }
+
+assert "this script exports PATTERN for bash -c subshells" \
+    grep -qE '^[[:space:]]*export[[:space:]]+PATTERN' "$THIS_SCRIPT"
+assert 'no Section 1 bash -c $PATTERN interpolation in this script' \
+    _no_unhardened_pattern_interp
 
 # -- Accept cases: pattern must match these valid Rust fn declarations ----------
 
 assert "accepts: fn sanitize_value(" \
-    bash -c "printf '%s\n' 'fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: pub fn sanitize_value(" \
-    bash -c "printf '%s\n' 'pub fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "pub fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: indented fn sanitize_value( (inside mod block)" \
-    bash -c "printf '%s\n' '    fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "    fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: async fn sanitize_value(" \
-    bash -c "printf '%s\n' 'async fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "async fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: pub async fn sanitize_value(" \
-    bash -c "printf '%s\n' 'pub async fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "pub async fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: tab-indented fn sanitize_value( (inside mod block)" \
-    bash -c "printf '\tfn sanitize_value(v: Value) -> Value {\n' | grep -qE '$PATTERN'"
+    bash -c 'printf "\tfn sanitize_value(v: Value) -> Value {\n" | grep -qE "$PATTERN"'
 
 assert "accepts: multi-space between fn and name (fn   sanitize_value()" \
-    bash -c "printf '%s\n' 'fn   sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "fn   sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: trailing space before paren (fn sanitize_value ()" \
-    bash -c "printf '%s\n' 'fn sanitize_value (v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "fn sanitize_value (v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: pub(crate) fn sanitize_value(" \
-    bash -c "printf '%s\n' 'pub(crate) fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "pub(crate) fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: pub(super) fn sanitize_value(" \
-    bash -c "printf '%s\n' 'pub(super) fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "pub(super) fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: unsafe fn sanitize_value(" \
-    bash -c "printf '%s\n' 'unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: const fn sanitize_value(" \
-    bash -c "printf '%s\n' 'const fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "const fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: fn sanitize_value<T>(" \
-    bash -c "printf '%s\n' 'fn sanitize_value<T>(v: T) -> T {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "fn sanitize_value<T>(v: T) -> T {" | grep -qE "$PATTERN"'
 
 assert "accepts: pub(crate) const fn sanitize_value( (pub+const combination)" \
-    bash -c "printf '%s\n' 'pub(crate) const fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "pub(crate) const fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: pub(crate) unsafe fn sanitize_value( (pub+unsafe combination)" \
-    bash -c "printf '%s\n' 'pub(crate) unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "pub(crate) unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: pub(crate) async fn sanitize_value( (pub+async combination)" \
-    bash -c "printf '%s\n' 'pub(crate) async fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "pub(crate) async fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: pub(super) const fn sanitize_value( (pub(super)+const combination)" \
-    bash -c "printf '%s\n' 'pub(super) const fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "pub(super) const fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: pub(in crate::foo) fn sanitize_value( (pub(in path)+fn combination)" \
-    bash -c "printf '%s\n' 'pub(in crate::foo) fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "pub(in crate::foo) fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "accepts: pub(super) unsafe fn sanitize_value( (pub(super)+unsafe combination)" \
-    bash -c "printf '%s\n' 'pub(super) unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c 'printf "%s\n" "pub(super) unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
-assert "accepts: unsafe async fn sanitize_value( (unsafe+async combination)" \
-    bash -c "printf '%s\n' 'unsafe async fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+assert "accepts: const unsafe fn sanitize_value( (const+unsafe combination — Rust grammar order)" \
+    bash -c 'printf "%s\n" "const unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
+assert "accepts: async unsafe fn sanitize_value( (async+unsafe combination — Rust grammar order)" \
+    bash -c 'printf "%s\n" "async unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
+assert "rejects: unsafe async fn sanitize_value( (invalid Rust grammar order — Rust requires async unsafe, not unsafe async)" \
+    bash -c '! printf "%s\n" "unsafe async fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 # -- Reject cases: pattern must NOT match these strings ------------------------
 
 assert "rejects: fn sanitize_value_raw( (suffix false-positive)" \
-    bash -c "! printf '%s\n' 'fn sanitize_value_raw(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c '! printf "%s\n" "fn sanitize_value_raw(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "rejects: pub(crate) async fn sanitize_value_raw( (pub+async suffix false-positive)" \
-    bash -c "! printf '%s\n' 'pub(crate) async fn sanitize_value_raw(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c '! printf "%s\n" "pub(crate) async fn sanitize_value_raw(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "rejects: pub(super) const fn sanitize_value_raw( (pub(super)+const suffix false-positive)" \
-    bash -c "! printf '%s\n' 'pub(super) const fn sanitize_value_raw(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c '! printf "%s\n" "pub(super) const fn sanitize_value_raw(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "rejects: // fn sanitize_value (comment line)" \
-    bash -c "! printf '%s\n' '// fn sanitize_value(v: Value)' | grep -qE '$PATTERN'"
+    bash -c '! printf "%s\n" "// fn sanitize_value(v: Value)" | grep -qE "$PATTERN"'
 
 assert "rejects: // SYNC: reify-stdlib::sanitize_value (cross-ref line)" \
-    bash -c "! printf '%s\n' '// SYNC: reify-stdlib::sanitize_value' | grep -qE '$PATTERN'"
+    bash -c '! printf "%s\n" "// SYNC: reify-stdlib::sanitize_value" | grep -qE "$PATTERN"'
 
 assert "rejects: let sanitize_value = ... (non-fn binding)" \
-    bash -c "! printf '%s\n' 'let sanitize_value = value;' | grep -qE '$PATTERN'"
+    bash -c '! printf "%s\n" "let sanitize_value = value;" | grep -qE "$PATTERN"'
 
 assert "rejects: fnsanitize_value( (no space between fn keyword and name)" \
-    bash -c "! printf '%s\n' 'fnsanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c '! printf "%s\n" "fnsanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "rejects: my_fn sanitize_value( (false-prefix before fn keyword)" \
-    bash -c "! printf '%s\n' 'my_fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+    bash -c '! printf "%s\n" "my_fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 assert "rejects: fn sanitize_value_raw<T>( (suffixed name that is also generic)" \
-    bash -c "! printf '%s\n' 'fn sanitize_value_raw<T>(v: T) -> T {' | grep -qE '$PATTERN'"
+    bash -c '! printf "%s\n" "fn sanitize_value_raw<T>(v: T) -> T {" | grep -qE "$PATTERN"'
 
 echo ""
 echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
@@ -145,19 +164,19 @@ echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
 assert "sync_comments_test.sh exists" \
     test -f "$SYNC_TEST"
 
-assert "sync_comments_test.sh uses POSIX-portable [[:space:](<] post-name class" \
-    grep -qF '[[:space:](<]' "$SYNC_TEST"
+assert "sync_ref_helpers.sh uses POSIX-portable [[:space:](<] post-name class" \
+    grep -qF '[[:space:](<]' "$SYNC_REF_HELPERS"
 
 # Scoped assertions check only non-comment grep invocation lines
 # (^[^#]*grep matches lines where 'grep' appears before any '#').
 # File-wide fixed-string searches were replaced because a documentation comment
 # like '# POSIX: do not use \b here' would trigger them as false positives,
 # breaking CI without any real regression.
-assert "no \\b in grep invocations (non-comment lines, scoped)" \
-    bash -c "! grep -E '^[^#]*grep[[:space:]].*\\\\b' '$SYNC_TEST'"
+assert "no \\b in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
+    bash -c "! grep -E '^[^#]*grep[[:space:]].*\\\\b' '$SYNC_REF_HELPERS'"
 
-assert "no grep -P in grep invocations (non-comment lines, scoped)" \
-    bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_TEST'"
+assert "no grep -P in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
+    bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_REF_HELPERS'"
 
 echo ""
 echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"

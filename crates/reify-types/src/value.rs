@@ -2058,11 +2058,11 @@ mod tests {
     fn nan_partialeq_bit_identity_scalar() {
         let s1 = Value::Scalar {
             si_value: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         let s2 = Value::Scalar {
             si_value: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         assert_eq!(
             s1, s2,
@@ -2081,12 +2081,12 @@ mod tests {
         let c1 = Value::Complex {
             re: f64::NAN,
             im: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         let c2 = Value::Complex {
             re: f64::NAN,
             im: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         assert_eq!(
             c1, c2,
@@ -2102,12 +2102,12 @@ mod tests {
         let c3 = Value::Complex {
             re: f64::NAN,
             im: 1.0,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         let c4 = Value::Complex {
             re: f64::NAN,
             im: 1.0,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         assert_eq!(
             c3, c4,
@@ -2123,12 +2123,12 @@ mod tests {
         let c5 = Value::Complex {
             re: 1.0,
             im: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         let c6 = Value::Complex {
             re: 1.0,
             im: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         assert_eq!(
             c5, c6,
@@ -2138,6 +2138,74 @@ mod tests {
             c5,
             c5.clone(),
             "a Complex value with finite re and NaN im must compare equal to its own clone"
+        );
+    }
+
+    #[test]
+    fn nan_partialeq_bit_identity_orientation() {
+        // (a) all four components are NaN
+        let o1 = orient(f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+        let o2 = orient(f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+        assert_eq!(
+            o1, o2,
+            "two separately constructed Orientation values with all-NaN components must compare equal"
+        );
+        assert_eq!(
+            o1,
+            o1.clone(),
+            "an Orientation value with all-NaN components must compare equal to its own clone"
+        );
+
+        // (b) only w is NaN
+        let o3 = orient(f64::NAN, 0.0, 0.0, 0.0);
+        let o4 = orient(f64::NAN, 0.0, 0.0, 0.0);
+        assert_eq!(
+            o3, o4,
+            "two separately constructed Orientation values with NaN w must compare equal"
+        );
+        assert_eq!(
+            o3,
+            o3.clone(),
+            "an Orientation value with NaN w must compare equal to its own clone"
+        );
+
+        // (c) only x is NaN
+        let o5 = orient(0.0, f64::NAN, 0.0, 0.0);
+        let o6 = orient(0.0, f64::NAN, 0.0, 0.0);
+        assert_eq!(
+            o5, o6,
+            "two separately constructed Orientation values with NaN x must compare equal"
+        );
+        assert_eq!(
+            o5,
+            o5.clone(),
+            "an Orientation value with NaN x must compare equal to its own clone"
+        );
+
+        // (d) only y is NaN
+        let o7 = orient(0.0, 0.0, f64::NAN, 0.0);
+        let o8 = orient(0.0, 0.0, f64::NAN, 0.0);
+        assert_eq!(
+            o7, o8,
+            "two separately constructed Orientation values with NaN y must compare equal"
+        );
+        assert_eq!(
+            o7,
+            o7.clone(),
+            "an Orientation value with NaN y must compare equal to its own clone"
+        );
+
+        // (e) only z is NaN
+        let o9 = orient(0.0, 0.0, 0.0, f64::NAN);
+        let o10 = orient(0.0, 0.0, 0.0, f64::NAN);
+        assert_eq!(
+            o9, o10,
+            "two separately constructed Orientation values with NaN z must compare equal"
+        );
+        assert_eq!(
+            o9,
+            o9.clone(),
+            "an Orientation value with NaN z must compare equal to its own clone"
         );
     }
 
@@ -2361,14 +2429,14 @@ mod tests {
     }
 
     #[test]
-    fn value_ord_within_int() {
+    fn value_ord_int_ordering() {
         assert!(Value::Int(1) < Value::Int(2));
         assert!(Value::Int(-10) < Value::Int(0));
         assert_eq!(Value::Int(5).cmp(&Value::Int(5)), std::cmp::Ordering::Equal);
     }
 
     #[test]
-    fn value_ord_within_string() {
+    fn value_ord_string_ordering() {
         assert!(Value::String("a".into()) < Value::String("b".into()));
         assert!(Value::String("abc".into()) < Value::String("abd".into()));
     }
@@ -2398,17 +2466,8 @@ mod tests {
         // PartialEq still distinguishes them (different bit patterns — content hash invariant).
         let pos = Value::Real(0.0);
         let neg = Value::Real(-0.0);
-        // PartialEq uses `a.to_bits() == b.to_bits()` (see `impl PartialEq for Value`,
-        // line 968), so -0.0 and +0.0 are treated as distinct values.
-        assert_ne!(pos, neg);
-        // Ord must be deterministic and antisymmetric.
-        let pos_cmp_neg = pos.cmp(&neg);
-        let neg_cmp_pos = neg.cmp(&pos);
-        assert_eq!(pos_cmp_neg, neg_cmp_pos.reverse());
-        // Ord+PartialEq consistency: since pos != neg, their ordering must not be Equal.
-        assert_ne!(pos_cmp_neg, std::cmp::Ordering::Equal);
-        // Assert the actual direction: IEEE 754 totalOrder puts -0.0 before +0.0.
-        assert!(neg < pos, "-0.0 must be Less than +0.0 under total_cmp()");
+        // neg passes first: under IEEE 754 totalOrder, -0.0 < +0.0.
+        assert_ord_consistent(&neg, &pos, false);
     }
 
     #[test]
@@ -2647,6 +2706,79 @@ mod tests {
         let canonical_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
         let payload_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0001));
         assert_ord_consistent(&canonical_nan, &payload_nan, false);
+    }
+
+    #[test]
+    fn value_ord_real_negative_nan() {
+        // Under f64::total_cmp() (IEEE 754 totalOrder), negative NaN bit patterns
+        // sort before -Infinity: neg_qNaN < neg_sNaN < -Inf < ... < +Inf < pos_sNaN < pos_qNaN.
+        //
+        // Negative quiet NaN: sign bit set, exponent all-1s, quiet bit set (0xfff8_0000_0000_0000).
+        let neg_qnan = Value::Real(f64::from_bits(0xfff8_0000_0000_0000));
+        let neg_inf = Value::Real(f64::NEG_INFINITY);
+        let pos_qnan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
+
+        // (a) Negative quiet NaN sorts strictly Less than -Infinity.
+        assert_eq!(neg_qnan.cmp(&neg_inf), std::cmp::Ordering::Less);
+
+        // (b) Negative quiet NaN sorts strictly Less than positive quiet NaN.
+        assert_eq!(neg_qnan.cmp(&pos_qnan), std::cmp::Ordering::Less);
+
+        // (c) PartialEq distinguishes negative NaN from positive NaN (different bit patterns).
+        assert_ne!(neg_qnan, pos_qnan);
+
+        // (d) Antisymmetry holds for neg_qnan vs pos_qnan.
+        assert_eq!(neg_qnan.cmp(&pos_qnan), pos_qnan.cmp(&neg_qnan).reverse());
+
+        // (e) Full assert_ord_consistent check for neg_qnan vs neg_inf pair (neg_qnan < neg_inf).
+        assert_ord_consistent(&neg_qnan, &neg_inf, false);
+        // (f) Full assert_ord_consistent check for the cross-sign NaN pair (neg_qnan < pos_qnan).
+        assert_ord_consistent(&neg_qnan, &pos_qnan, false);
+    }
+
+    #[test]
+    fn value_ord_real_signaling_nan() {
+        // Under f64::total_cmp() (IEEE 754 totalOrder), signaling NaN (quiet bit CLEAR)
+        // sits between infinity and quiet NaN on each side:
+        //   neg_qnan < neg_snan < -Inf < ... < +Inf < pos_snan < pos_qnan
+        //
+        // Positive sNaN: sign=0, exp=all-1s, quiet=0, non-zero mantissa.
+        // Negative sNaN: sign=1, exp=all-1s, quiet=0, non-zero mantissa.
+        let pos_snan = Value::Real(f64::from_bits(0x7ff0_0000_0000_0001));
+        let neg_snan = Value::Real(f64::from_bits(0xfff0_0000_0000_0001));
+        let pos_inf = Value::Real(f64::INFINITY);
+        let neg_inf = Value::Real(f64::NEG_INFINITY);
+        let pos_qnan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
+        let neg_qnan = Value::Real(f64::from_bits(0xfff8_0000_0000_0000));
+
+        // (a) Positive sNaN sorts Greater than +Infinity.
+        assert_eq!(pos_snan.cmp(&pos_inf), std::cmp::Ordering::Greater);
+
+        // (b) Positive sNaN sorts Less than positive quiet NaN (canonical).
+        assert_eq!(pos_snan.cmp(&pos_qnan), std::cmp::Ordering::Less);
+
+        // (c) Negative sNaN sorts Less than -Infinity but Greater than negative quiet NaN.
+        assert_eq!(neg_snan.cmp(&neg_inf), std::cmp::Ordering::Less);
+        assert_eq!(neg_snan.cmp(&neg_qnan), std::cmp::Ordering::Greater);
+
+        // (d) PartialEq distinguishes sNaN from qNaN (different bit patterns).
+        assert_ne!(pos_snan, pos_qnan);
+        assert_ne!(neg_snan, neg_qnan);
+
+        // (e) Antisymmetry holds for each pair.
+        assert_eq!(pos_snan.cmp(&pos_inf), pos_inf.cmp(&pos_snan).reverse());
+        assert_eq!(pos_snan.cmp(&pos_qnan), pos_qnan.cmp(&pos_snan).reverse());
+        assert_eq!(neg_snan.cmp(&neg_inf), neg_inf.cmp(&neg_snan).reverse());
+        assert_eq!(neg_snan.cmp(&neg_qnan), neg_qnan.cmp(&neg_snan).reverse());
+
+        // assert_ord_consistent for the pos_inf < pos_snan pair.
+        assert_ord_consistent(&pos_inf, &pos_snan, false);
+        // assert_ord_consistent for the neg_qnan < neg_snan pair.
+        assert_ord_consistent(&neg_qnan, &neg_snan, false);
+        // assert_ord_consistent for the neg_snan < neg_inf boundary (neg_snan is smaller).
+        assert_ord_consistent(&neg_snan, &neg_inf, false);
+        // assert_ord_consistent for the pos_snan < pos_qnan boundary (pos_snan is smaller).
+        assert_ord_consistent(&pos_snan, &pos_qnan, false);
     }
 
     #[test]
@@ -5231,6 +5363,18 @@ mod tests {
     }
 
     #[test]
+    fn value_plane_partial_eq_different_origin() {
+        let p1 = make_plane(make_point3_origin(), make_normal_z());
+        let alt_origin = Value::Point(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let p2 = make_plane(alt_origin, make_normal_z());
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
     fn value_plane_display() {
         let origin = Value::Point(vec![
             Value::length(0.0),
@@ -5317,6 +5461,18 @@ mod tests {
         let a1 = make_axis(make_point3_origin(), make_direction_z());
         let dir_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         let a2 = make_axis(make_point3_origin(), dir_x);
+        assert_ne!(a1, a2);
+    }
+
+    #[test]
+    fn value_axis_partial_eq_different_origin() {
+        let a1 = make_axis(make_point3_origin(), make_direction_z());
+        let alt_origin = Value::Point(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let a2 = make_axis(alt_origin, make_direction_z());
         assert_ne!(a1, a2);
     }
 
@@ -5421,6 +5577,18 @@ mod tests {
             Value::length(9.0),
         ]);
         let b2 = make_bbox(make_point3_min(), max2);
+        assert_ne!(b1, b2);
+    }
+
+    #[test]
+    fn value_bbox_partial_eq_different_min() {
+        let b1 = make_bbox(make_point3_min(), make_point3_max());
+        let min2 = Value::Point(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let b2 = make_bbox(min2, make_point3_max());
         assert_ne!(b1, b2);
     }
 
@@ -5557,168 +5725,30 @@ mod tests {
         );
     }
 
-    // ── Consolidated wrapper-delegation & NaN-canonicalization tests ──────────
-    // Covers the PartialEq impl (~lines 987-1162) and content_hash()
-    // NaN canonicalization (~lines 266-494).
-
-    /// Regression sentinel: verifies that equality for every wrapper variant
-    /// delegates to the inner `Value` comparison.  One test per variant; struct-
-    /// shaped wrappers get two inequality checks (one per field) to ensure both
-    /// conjunction arms of the PartialEq match are exercised.
     #[test]
-    fn wrapper_variants_delegate_equality_to_inner_value() {
-        // ── Vec<Value> wrappers ──────────────────────────────────────────────
-        // Point
+    fn value_point_partial_eq() {
+        // (a) two identically-constructed Points are equal
         let p1 = Value::Point(vec![Value::length(1.0), Value::length(2.0)]);
         let p2 = Value::Point(vec![Value::length(1.0), Value::length(2.0)]);
-        let p3 = Value::Point(vec![Value::length(9.0), Value::length(2.0)]);
-        assert_eq!(p1, p2, "Point: equal inner vecs must be equal");
-        assert_ne!(p1, p3, "Point: differing first element must be unequal");
+        assert_eq!(p1, p2);
 
-        // Vector
+        // (b) Points with a differing element are unequal
+        let p3 = Value::Point(vec![Value::length(9.0), Value::length(2.0)]);
+        assert_ne!(p1, p3);
+    }
+
+    #[test]
+    fn value_vector_partial_eq() {
+        // (a) two identically-constructed Vectors are equal
         let v1 = Value::Vector(vec![Value::length(1.0), Value::length(2.0)]);
         let v2 = Value::Vector(vec![Value::length(1.0), Value::length(2.0)]);
+        assert_eq!(v1, v2);
+
+        // (b) Vectors with a differing element are unequal
         let v3 = Value::Vector(vec![Value::length(1.0), Value::length(9.0)]);
-        assert_eq!(v1, v2, "Vector: equal inner vecs must be equal");
-        assert_ne!(v1, v3, "Vector: differing second element must be unequal");
-
-        // Tensor
-        let t1 = Value::Tensor(vec![Value::length(1.0), Value::length(2.0)]);
-        let t2 = Value::Tensor(vec![Value::length(1.0), Value::length(2.0)]);
-        let t3 = Value::Tensor(vec![Value::length(1.0), Value::length(9.0)]);
-        assert_eq!(t1, t2, "Tensor: equal inner vecs must be equal");
-        assert_ne!(t1, t3, "Tensor: differing second element must be unequal");
-
-        // ── Vec<Vec<Value>> wrapper ──────────────────────────────────────────
-        // Matrix
-        let row_a1 = vec![Value::Int(1), Value::Int(2)];
-        let row_a2 = vec![Value::Int(3), Value::Int(4)];
-        let m1 = Value::Matrix(vec![row_a1.clone(), row_a2.clone()]);
-        let m2 = Value::Matrix(vec![row_a1.clone(), row_a2.clone()]);
-        let row_diff = vec![Value::Int(3), Value::Int(9)];
-        let m3 = Value::Matrix(vec![row_a1, row_diff]);
-        assert_eq!(m1, m2, "Matrix: equal nested vecs must be equal");
-        assert_ne!(m1, m3, "Matrix: differing row element must be unequal");
-
-        // ── Struct-shaped wrappers (two inequality checks each) ──────────────
-        // Frame: origin and basis
-        let f_eq = make_frame(make_point3_length(), make_orientation_identity());
-        let f_eq2 = make_frame(make_point3_length(), make_orientation_identity());
-        assert_eq!(
-            f_eq, f_eq2,
-            "Frame: structurally equal frames must be equal"
-        );
-        let alt_origin = Value::Point(vec![
-            Value::length(9.0),
-            Value::length(2.0),
-            Value::length(3.0),
-        ]);
-        let f_diff_origin = make_frame(alt_origin, make_orientation_identity());
-        assert_ne!(
-            f_eq, f_diff_origin,
-            "Frame: different origin must be unequal"
-        );
-        let alt_basis = orient(0.0, 1.0, 0.0, 0.0);
-        let f_diff_basis = make_frame(make_point3_length(), alt_basis);
-        assert_ne!(f_eq, f_diff_basis, "Frame: different basis must be unequal");
-
-        // Transform: rotation and translation
-        let tr_eq = make_transform(make_orientation_identity(), make_vector3_length());
-        let tr_eq2 = make_transform(make_orientation_identity(), make_vector3_length());
-        assert_eq!(
-            tr_eq, tr_eq2,
-            "Transform: structurally equal transforms must be equal"
-        );
-        let alt_rot = orient(0.0, 0.0, 1.0, 0.0);
-        let tr_diff_rot = make_transform(alt_rot, make_vector3_length());
-        assert_ne!(
-            tr_eq, tr_diff_rot,
-            "Transform: different rotation must be unequal"
-        );
-        let alt_trans = Value::Vector(vec![
-            Value::length(9.0),
-            Value::length(2.0),
-            Value::length(3.0),
-        ]);
-        let tr_diff_trans = make_transform(make_orientation_identity(), alt_trans);
-        assert_ne!(
-            tr_eq, tr_diff_trans,
-            "Transform: different translation must be unequal"
-        );
-
-        // Plane: origin and normal
-        let pl_eq = make_plane(make_point3_origin(), make_normal_z());
-        let pl_eq2 = make_plane(make_point3_origin(), make_normal_z());
-        assert_eq!(
-            pl_eq, pl_eq2,
-            "Plane: structurally equal planes must be equal"
-        );
-        let alt_pl_origin = Value::Point(vec![
-            Value::length(9.0),
-            Value::length(2.0),
-            Value::length(3.0),
-        ]);
-        let pl_diff_origin = make_plane(alt_pl_origin, make_normal_z());
-        assert_ne!(
-            pl_eq, pl_diff_origin,
-            "Plane: different origin must be unequal"
-        );
-        let alt_normal = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
-        let pl_diff_normal = make_plane(make_point3_origin(), alt_normal);
-        assert_ne!(
-            pl_eq, pl_diff_normal,
-            "Plane: different normal must be unequal"
-        );
-
-        // Axis: origin and direction
-        let ax_eq = make_axis(make_point3_origin(), make_direction_z());
-        let ax_eq2 = make_axis(make_point3_origin(), make_direction_z());
-        assert_eq!(ax_eq, ax_eq2, "Axis: structurally equal axes must be equal");
-        let alt_ax_origin = Value::Point(vec![
-            Value::length(9.0),
-            Value::length(2.0),
-            Value::length(3.0),
-        ]);
-        let ax_diff_origin = make_axis(alt_ax_origin, make_direction_z());
-        assert_ne!(
-            ax_eq, ax_diff_origin,
-            "Axis: different origin must be unequal"
-        );
-        let alt_dir = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
-        let ax_diff_dir = make_axis(make_point3_origin(), alt_dir);
-        assert_ne!(
-            ax_eq, ax_diff_dir,
-            "Axis: different direction must be unequal"
-        );
-
-        // BoundingBox: min and max
-        let bb_eq = make_bbox(make_point3_min(), make_point3_max());
-        let bb_eq2 = make_bbox(make_point3_min(), make_point3_max());
-        assert_eq!(
-            bb_eq, bb_eq2,
-            "BoundingBox: structurally equal bboxes must be equal"
-        );
-        let alt_min = Value::Point(vec![
-            Value::length(9.0),
-            Value::length(2.0),
-            Value::length(3.0),
-        ]);
-        let bb_diff_min = make_bbox(alt_min, make_point3_max());
-        assert_ne!(
-            bb_eq, bb_diff_min,
-            "BoundingBox: different min must be unequal"
-        );
-        let alt_max = Value::Point(vec![
-            Value::length(4.0),
-            Value::length(6.0),
-            Value::length(1.0),
-        ]);
-        let bb_diff_max = make_bbox(make_point3_min(), alt_max);
-        assert_ne!(
-            bb_eq, bb_diff_max,
-            "BoundingBox: different max must be unequal"
-        );
+        assert_ne!(v1, v3);
     }
+
 
     /// Regression sentinel: verifies that `content_hash()` normalizes every
     /// non-canonical NaN bit pattern to the canonical `f64::NAN` bit pattern.
