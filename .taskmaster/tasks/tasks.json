@@ -26583,11 +26583,11 @@
         "description": "Follow-up from Task 1230 review (esc-1230-1040). Four related suggestions on crates/reify-expr/tests/field_calculus_tests.rs:\n\nS1 (code_duplication, lines 596-675): `curl_two_element_vector_sample_point_returns_undef` reintroduces ~55 lines of field/lambda/curl-expr construction that Task 1230's refactor had just eliminated. Extract a shared builder — e.g. `build_curl_rotation_field() -> (Value curl_result, Type curl_field_type)` — or let `run_curl_rotation_test` take an `ExpectedCurl { Vec3([f64;3]), Undef }` enum, and have both the happy-path helper and the new regression test call it.\n\nS2 (test_coverage_symmetry, line 595): Only `curl` has a 2-element dimension-guard regression test. `compute_numerical_divergence_at_point` and `compute_numerical_laplacian_at_point` have the same `items.len() == 3` guard and were fixed in the same Task 1220 pass. Add `divergence_two_element_vector_sample_point_returns_undef` and `laplacian_two_element_vector_sample_point_returns_undef` using the corresponding run_*_test helper (ideally via the shared sampler helper from S1).\n\nS3 (test_clarity, lines 651-663): The curl regression test declares the sample point literal's static type as `Type::vec2(Type::Real)` while the curl field's domain is `Type::point3(Type::Real)`. Runtime dispatch only inspects the `Value`, so it still exercises the dimension guard, but the static-type mismatch is subtle. Add a short inline comment above the `CompiledExpr::literal(point, point_literal_type)` call noting that `vec2` is intentional because the declared type here is not used by the curl sample handler — the guard matches on `Value` shape at runtime.\n\nS4 (api_design, line 84): The three helpers take `(point: Value, point_literal_type: Type, label: &str)`, but `point_literal_type` is mechanically `Type::point3(Type::Real)` for `Value::Point` and `Type::vec3(Type::Real)` for `Value::Vector` at every call site. That coupling is implicit and easy to desynchronize. Either derive `point_literal_type` from the `Value` variant inside each helper, or replace the `(Value, Type)` pair with a small `SamplePoint::{Point([f64;3]), Vector([f64;3])}` enum so callers can't desync.\n\nVerify: `cargo test -p reify-expr --test field_calculus_tests` passes after the refactor.\n\nmemory_hints: parent task 1220 + review esc-1230-1040; helper signatures live around lines 84, 354, 536, 730; dimension guards are in `compute_numerical_*_at_point` in crates/reify-expr/src/lib.rs around lines 1325-1720.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T01:20:31.994Z",
+        "updatedAt": "2026-04-10T02:04:20.362Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -29904,9 +29904,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:03:47.582Z",
+      "lastModified": "2026-04-10T02:04:20.362Z",
       "taskCount": 1447,
-      "completedCount": 1115,
+      "completedCount": 1116,
       "tags": [
         "master"
       ]
