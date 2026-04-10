@@ -36,6 +36,8 @@ mod tests {
 
     use super::*;
 
+    // SYNC: sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync
+
     // ── sanitize_value direct unit tests ─────────────────────────────────────
 
     #[test]
