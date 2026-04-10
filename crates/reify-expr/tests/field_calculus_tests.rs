@@ -200,11 +200,12 @@ fn run_divergence_identity_test(sample_point: SamplePoint, label: &str) {
 }
 
 /// Build the rotation field F(x,y,z)=[-y,x,0], compute its curl, sample at
-/// `point` (literal type `point_literal_type`), and assert result ≈[0,0,2].
+/// `sample_point`, and assert result ≈[0,0,2].
 ///
 /// Used by both `curl_rotation_field` (Point sample) and
 /// `curl_accepts_vector_sample_point` (Vector sample).
-fn run_curl_rotation_test(point: Value, point_literal_type: Type, label: &str) {
+fn run_curl_rotation_test(sample_point: SamplePoint, label: &str) {
+    let (point, point_literal_type) = sample_point.into_value_and_type();
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -699,8 +700,7 @@ fn divergence_accepts_vector_sample_point() {
 #[test]
 fn curl_rotation_field() {
     run_curl_rotation_test(
-        Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::point3(Type::Real),
+        SamplePoint::Point3([1.0, 2.0, 3.0]),
         "curl of [-y,x,0] at (1,2,3)",
     );
 }
@@ -712,8 +712,7 @@ fn curl_rotation_field() {
 #[test]
 fn curl_accepts_vector_sample_point() {
     run_curl_rotation_test(
-        Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::vec3(Type::Real),
+        SamplePoint::Vector3([1.0, 2.0, 3.0]),
         "curl of [-y,x,0] at Vector(1,2,3)",
     );
 }
