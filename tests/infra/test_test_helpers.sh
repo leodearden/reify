@@ -581,9 +581,14 @@ check "_has_expr_body_empty_guard_short_circuit accepts guard with test_summary"
 # `-n` (and `! -z`) guards.  Without this pin a future change like `\[ -[nz]`
 # would ban legitimate production guards silently while the negative-pin tests
 # above all passed.
-# Protected production sites:
-#   - tests/infra/sync_ref_helpers.sh:31   `[ -z "$ref_fn" ]`
-#   - tests/sync_comments_test.sh:63-64    `[ -z "$expr_body" ]`
+# Protected production sites — two independent mechanisms:
+#   Protected by -z alternation (trigger keyword present, bare -z tolerated):
+#     - tests/infra/sync_ref_helpers.sh:31  `if [ -z "$ref_fn" ]; then ...; fi`
+#       Has `if` trigger, so regex fires; only the (-n|! -z) alternation saves it.
+#   Protected by trigger-keyword constraint (no trigger before `[`):
+#     - tests/sync_comments_test.sh:75-76   `[ -z "$expr_body" ] && { ...; }`
+#       Starts with `[`, no preceding if/&&/||, so regex never matches regardless
+#       of -z vs -n.  (Line 63 in that file is an unrelated body comment.)
 fixture_z=$(mk_fixture)
 printf 'if [ -z "$ref_fn" ]; then echo fail; fi\n' > "$fixture_z"
 if ! _has_if_n_guard "$fixture_z" 2>/dev/null; then ok=true; else ok=false; fi
