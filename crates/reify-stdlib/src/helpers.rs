@@ -161,6 +161,30 @@ mod tests {
 
     use super::*;
 
+    fn assert_extraction(input: Value, expected_vals: &[f64], expected_dim: DimensionVector, label: &str) {
+        let (vals, dim) = tensor_components_f64(&input)
+            .unwrap_or_else(|| panic!("{}: expected Some but got None", label));
+        assert_eq!(
+            vals.len(),
+            expected_vals.len(),
+            "{}: expected {} components but got {}",
+            label,
+            expected_vals.len(),
+            vals.len()
+        );
+        for (i, (&actual, &expected)) in vals.iter().zip(expected_vals.iter()).enumerate() {
+            assert!(
+                (actual - expected).abs() < f64::EPSILON,
+                "{}: vals[{}] expected {} but got {}",
+                label,
+                i,
+                expected,
+                actual
+            );
+        }
+        assert_eq!(dim, expected_dim, "{}: dimension mismatch", label);
+    }
+
     // ── tensor_components_f64 rejection: non-container types ─────────────────
 
     #[test]
