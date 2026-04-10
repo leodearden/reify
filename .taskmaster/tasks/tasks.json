@@ -32569,6 +32569,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1604,
+        "title": "calculus.rs: remove stale \"Currently FAILS\" comments + extract test setup helpers",
+        "description": "Two follow-ups from task 1362 review in crates/reify-eval/src/calculus.rs:\n\n1. **Remove stale \"Currently FAILS\" doc comments**: The divergence and laplacian tests have \"Currently FAILS\" doc comments that are no longer accurate — the tests now pass. Remove or update these misleading comments.\n\n2. **Extract test setup helpers** (make_scalar_lambda etc.): ~80 lines of test setup code are repeated across multiple calculus tests. Extract shared helpers like make_scalar_lambda to DRY up the test module.\n\nmemory_hints: search \"Currently FAILS divergence laplacian calculus\", search \"make_scalar_lambda test setup calculus\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -32581,7 +32592,7 @@
       ],
       "created": "2026-04-10T11:37:22.984Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-10T11:37:30.457Z"
+      "updated": "2026-04-10T11:37:35.209Z"
     }
   }
 }
