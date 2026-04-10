@@ -136,9 +136,9 @@ impl UnitRegistry {
     }
 
     /// Register a unit entry. Returns `Err(entry)` if the name is already registered.
-    pub fn register(&mut self, entry: UnitEntry) -> Result<(), UnitEntry> {
+    pub fn register(&mut self, entry: UnitEntry) -> Result<(), Box<UnitEntry>> {
         if self.entries.contains_key(&entry.name) {
-            Err(entry)
+            Err(Box::new(entry))
         } else {
             self.entries.insert(entry.name.clone(), entry);
             Ok(())
