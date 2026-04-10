@@ -423,10 +423,11 @@ impl GeometryKernel for MockGeometryKernel {
 /// A mock geometry kernel whose `execute` always returns `Err`.
 ///
 /// Useful for testing how consumers handle geometry operation failures.
-/// All other methods return benign dummy values — `query` returns
-/// `Ok(Value::Real(0.0))`, `export` writes `b"BOGUS_EXPORT"`, and
-/// `tessellate` returns `Ok` with an empty mesh — so that tests can
-/// exercise error-path logic without needing to handle secondary failures.
+/// Because `execute` always fails, no valid `GeometryHandle` is ever
+/// produced. As a defensive fail-loud guard, `tessellate` and `export`
+/// both return errors immediately — any call to them indicates a
+/// regression where the engine failed to short-circuit on the execute
+/// error. `query` returns `Ok(Value::Real(0.0))` as a benign dummy.
 pub struct FailingMockGeometryKernel;
 
 impl GeometryKernel for FailingMockGeometryKernel {
@@ -452,11 +453,9 @@ impl GeometryKernel for FailingMockGeometryKernel {
     }
 
     fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-        Ok(Mesh {
-            vertices: vec![],
-            indices: vec![],
-            normals: None,
-        })
+        Err(TessError::TessellationFailed(
+            "should not reach: execute always fails".into(),
+        ))
     }
 }
 
