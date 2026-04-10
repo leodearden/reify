@@ -60,8 +60,8 @@ assert "lint_command does NOT contain 'cargo test --release'" \
 echo ""
 echo "--- Test 6: at least one #[cfg(not(debug_assertions))] test exists ---"
 
-assert "gui/src-tauri/src/tests/engine_tests.rs contains #[cfg(not(debug_assertions))]" \
-    grep -q '#\[cfg(not(debug_assertions))\]' "$REPO_ROOT/gui/src-tauri/src/tests/engine_tests.rs"
+assert "at least one .rs file in workspace contains #[cfg(not(debug_assertions))]" \
+    grep -rq '#\[cfg(not(debug_assertions))\]' "$REPO_ROOT" --include='*.rs'
 
 # -- Test 7: structural self-check — Test 6 must use workspace-wide grep ---------
 echo ""
