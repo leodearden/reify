@@ -363,7 +363,7 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
             | "$_abs_grep" -E "[[:space:]]sleep 31337$" \
             | while read -r _spid _rest; do kill "$_spid" 2>/dev/null || true; done
 
-        exit $found
+        exit "$found"
     '
 
 assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit command" \
