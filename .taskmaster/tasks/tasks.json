@@ -32684,11 +32684,16 @@
         "description": "Add a dedicated z:NaN test for Orientation sanitization in crates/reify-stdlib/src/helpers.rs. Currently the z guard is only covered indirectly by an all-components-nonfinite test. Place sanitize_orientation_z_nan_returns_undef immediately before sanitize_orientation_all_components_nonfinite_returns_undef in the Orientation test block around line 652. Mirrors the fix applied in complex.rs and sanitize.rs by task 1425.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:32:58.384Z"
+        "updatedAt": "2026-04-10T16:36:21.429Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-stdlib/src"
+          ]
+        }
       },
       {
         "id": "1607",
@@ -32717,7 +32722,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:35:58.341Z",
+      "lastModified": "2026-04-10T16:36:21.429Z",
       "taskCount": 1608,
       "completedCount": 1229,
       "tags": [
