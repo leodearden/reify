@@ -2785,6 +2785,10 @@ mod tests {
         assert_ord_consistent(&pos_inf, &pos_snan, false);
         // assert_ord_consistent for the neg_qnan < neg_snan pair.
         assert_ord_consistent(&neg_qnan, &neg_snan, false);
+        // assert_ord_consistent for the neg_snan < neg_inf boundary (neg_snan is smaller).
+        assert_ord_consistent(&neg_snan, &neg_inf, false);
+        // assert_ord_consistent for the pos_snan < pos_qnan boundary (pos_snan is smaller).
+        assert_ord_consistent(&pos_snan, &pos_qnan, false);
     }
 
     #[test]
