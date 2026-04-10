@@ -9,6 +9,8 @@ use reify_eval::graph::EvaluationGraph;
 use reify_eval::{ConcurrentEditSetup, Engine};
 use reify_runtime::concurrent::{AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler};
 use reify_runtime::concurrent_eval::{ConcurrentEvalAdapter, edit_param_concurrent};
+#[cfg(feature = "test-utils")]
+use reify_runtime::concurrent_eval::poison_fields;
 use reify_test_support::TopologyTemplateBuilder;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_types::{
@@ -1600,18 +1602,32 @@ use reify_test_support::warn_capturing_subscriber;
 
 /// Runs `action` under a `warn_capturing_subscriber`, asserts that it does not
 /// panic, that exactly `expected_warns` WARN events were emitted, and that at
-/// least one of those messages contains `message_substring`.  Returns the
-/// value produced by `action` for downstream assertions.
+/// least one event contains every `(key, value)` pair in `expected_fields`.
+/// Returns the value produced by `action` for downstream assertions.
+///
+/// # Contract checks (applied to every callsite)
+///
+/// In addition to the count and field checks, this helper enforces two
+/// invariants that must hold for every warn site across all 3 families
+/// (helper recovery, into_result inline, shared_fallback inline):
+///
+/// 1. **Canonical message** — at least one captured event has the exact message
+///    text `"lock poisoned, recovering"`.  Verified via
+///    `capture.assert_any_message_equals(...)`.
+///
+/// 2. **`error` field presence** — at least one captured event has an `error`
+///    field key, guarding against silent removal of the `error = %e` structured
+///    field from any warn site.
 ///
 /// # Panics
 ///
 /// Panics if `action` panics (i.e., `catch_unwind` returns `Err`), or if the
-/// WARN count or message checks fail.
+/// WARN count, field, message, or error-field checks fail.
 #[cfg(feature = "test-utils")]
 fn assert_poison_recovers<T: Send + 'static>(
     action: impl FnOnce() -> T + std::panic::UnwindSafe,
     expected_warns: usize,
-    message_substring: &str,
+    expected_fields: &[(&str, &str)],
 ) -> T {
     use std::panic::catch_unwind;
     let (subscriber, capture) = warn_capturing_subscriber();
@@ -1622,7 +1638,22 @@ fn assert_poison_recovers<T: Send + 'static>(
         result.is_ok(),
         "action panicked when poison recovery was expected — catch_unwind returned Err"
     );
-    capture.assert_count_and_any_message_contains(expected_warns, message_substring);
+    capture.assert_count(expected_warns);
+    capture.assert_any_event_has_fields(expected_fields);
+    // Contract: canonical message text must be exactly "lock poisoned, recovering"
+    // on every poison-recovery warn site.  This collapses 11 per-site string
+    // literals into one authoritative check.
+    capture.assert_any_message_equals(poison_fields::MSG_LOCK_POISONED);
+    // Contract: the `error = %e` structured field must be present on at least
+    // one captured event.  Guards against silent removal of the field from any
+    // warn site.
+    let fbe = capture.fields_by_event();
+    assert!(
+        fbe.iter().any(|m| m.contains_key("error")),
+        "no captured WARN event had an `error` field key; \
+         the `error = %e` structured field must be present on every \
+         poison-recovery warn site. fields_by_event: {fbe:?}"
+    );
     result.unwrap()
 }
 
@@ -1642,11 +1673,11 @@ mod poison_recovery {
         adapter.poison_values();
 
         // values() acquires 1 lock: values RwLock. Only that lock is poisoned,
-        // so exactly 1 WARN fires, and the message must name the lock.
+        // so exactly 1 WARN fires with structured fields naming the lock.
         let values = assert_poison_recovers(
             || adapter.values(),
             1,
-            "values RwLock poisoned",
+            &[("lock", poison_fields::LOCK_VALUES), ("access", poison_fields::ACCESS_READ)],
         );
         // Verify exact values from simple_setup: T.a=Real(10.0), T.b=Real(10.0)
         assert_eq!(
@@ -1672,11 +1703,11 @@ mod poison_recovery {
         adapter.poison_results();
 
         // take_results() acquires 1 lock: results Mutex. Only that lock is poisoned,
-        // so exactly 1 WARN fires, and the message must name the lock.
+        // so exactly 1 WARN fires with structured fields naming the lock.
         let results = assert_poison_recovers(
             || adapter.take_results(),
             1,
-            "results Mutex poisoned",
+            &[("lock", poison_fields::LOCK_RESULTS), ("access", poison_fields::ACCESS_EXCLUSIVE)],
         );
         assert_eq!(results.len(), 0, "results should be empty after poison recovery");
     }
@@ -1693,11 +1724,11 @@ mod poison_recovery {
         adapter.poison_snapshot_values();
 
         // snapshot_values() acquires 1 lock: snapshot_values RwLock. Only that lock is
-        // poisoned, so exactly 1 WARN fires, and the message must name the lock.
+        // poisoned, so exactly 1 WARN fires with structured fields naming the lock.
         let sv = assert_poison_recovers(
             || adapter.snapshot_values(),
             1,
-            "snapshot_values RwLock poisoned",
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)],
         );
         // Verify exact (Value, DeterminacyState) tuples from simple_setup
         assert_eq!(
@@ -1729,7 +1760,7 @@ mod poison_recovery {
         assert_poison_recovers(
             || adapter.build_result_shared(&eval_set, HashSet::new()),
             1,
-            "snapshot_values RwLock poisoned",
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)],
         );
     }
 }
@@ -1983,31 +2014,12 @@ async fn five_parent_fan_in_one_changed() {
 mod poison_recovery_extended {
     use super::*;
 
-    /// Parameterized helper for the three `tracing_warn_emitted_on_poison_into_result*`
-    /// tests.  Calls `poison_fn` on a freshly-built adapter, then asserts that
-    /// `into_result()` recovers without panic and emits exactly one WARN whose
-    /// message contains `message_substring`.
-    fn assert_into_result_poison_warn(
-        poison_fn: fn(&ConcurrentEvalAdapter),
-        message_substring: &str,
-    ) {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-        poison_fn(&adapter);
-        assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            message_substring,
-        );
-    }
-
     /// Poisons a lock via `$poison_method` (sole-owner path — no Arc guard held),
     /// then delegates to [`assert_poison_recovers`] calling `$action_method` on
     /// `into_result` / `build_result_shared`.  Returns the [`ConcurrentEditResult`]
     /// for optional downstream data assertions.
     macro_rules! poison_and_recover {
-        ($poison_method:ident, $action_method:ident, $msg:expr) => {{
+        ($poison_method:ident, $action_method:ident, $fields:expr) => {{
             let setup = simple_setup();
             let adapter = ConcurrentEvalAdapter::from_setup(&setup);
             let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
@@ -2015,7 +2027,7 @@ mod poison_recovery_extended {
             assert_poison_recovers(
                 || adapter.$action_method(&eval_set, HashSet::new()),
                 1,
-                $msg,
+                $fields,
             )
         }};
     }
@@ -2027,7 +2039,7 @@ mod poison_recovery_extended {
         let edit_result = poison_and_recover!(
             poison_values,
             build_result_shared,
-            "values RwLock poisoned"
+            &[("lock", poison_fields::LOCK_VALUES), ("access", poison_fields::ACCESS_READ)]
         );
         // Verify both T.a and T.b are present with exact values from simple_setup
         assert_eq!(
@@ -2054,7 +2066,7 @@ mod poison_recovery_extended {
         let edit_result = poison_and_recover!(
             poison_snapshot_values,
             build_result_shared,
-            "snapshot_values RwLock poisoned"
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)]
         );
         // Verify exact (Value, DeterminacyState) tuples from simple_setup
         assert_eq!(
@@ -2074,7 +2086,7 @@ mod poison_recovery_extended {
     #[test]
     fn build_result_shared_recovers_from_poisoned_results_lock() {
         let edit_result =
-            poison_and_recover!(poison_results, build_result_shared, "results Mutex poisoned");
+            poison_and_recover!(poison_results, build_result_shared, &[("lock", poison_fields::LOCK_RESULTS), ("access", poison_fields::ACCESS_EXCLUSIVE)]);
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after poison recovery"
@@ -2086,7 +2098,7 @@ mod poison_recovery_extended {
     #[test]
     fn into_result_recovers_from_poisoned_values_lock() {
         let edit_result =
-            poison_and_recover!(poison_values, into_result, "values RwLock poisoned");
+            poison_and_recover!(poison_values, into_result, &[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_INTO_INNER)]);
         assert_eq!(
             edit_result.values.get(&ValueCellId::new("T", "a")),
             Some(&Value::Real(10.0)),
@@ -2106,7 +2118,7 @@ mod poison_recovery_extended {
         let edit_result = poison_and_recover!(
             poison_snapshot_values,
             into_result,
-            "snapshot_values RwLock poisoned"
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("path", poison_fields::PATH_INTO_INNER)]
         );
         assert_eq!(
             edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
@@ -2120,35 +2132,11 @@ mod poison_recovery_extended {
     #[test]
     fn into_result_recovers_from_poisoned_results_lock() {
         let edit_result =
-            poison_and_recover!(poison_results, into_result, "results Mutex poisoned");
+            poison_and_recover!(poison_results, into_result, &[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_INTO_INNER)]);
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after poison recovery"
         );
-    }
-
-    /// Verify that tracing::warn! is emitted when into_result() recovers from a
-    /// poisoned values lock via the into_inner() path (Arc::try_unwrap succeeds).
-    /// Message must contain "values RwLock poisoned".
-    #[test]
-    fn tracing_warn_emitted_on_poison_into_result() {
-        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_values, "values RwLock poisoned");
-    }
-
-    /// Verify that tracing::warn! is emitted when into_result() recovers from a
-    /// poisoned snapshot_values lock via the into_inner() path.
-    /// Message must contain "snapshot_values RwLock poisoned".
-    #[test]
-    fn tracing_warn_emitted_on_poison_into_result_snapshot_values() {
-        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_snapshot_values, "snapshot_values RwLock poisoned");
-    }
-
-    /// Verify that tracing::warn! is emitted when into_result() recovers from a
-    /// poisoned results lock via the into_inner() path.
-    /// Message must contain "results Mutex poisoned".
-    #[test]
-    fn tracing_warn_emitted_on_poison_into_result_results() {
-        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_results, "results Mutex poisoned");
     }
 }
 
@@ -2172,7 +2160,7 @@ mod poison_shared_fallback {
     /// with `into_result`.  Returns the [`ConcurrentEditResult`] for optional
     /// downstream data assertions.
     macro_rules! shared_fallback_recover {
-        ($arc_method:ident, $poison_method:ident, $msg:expr) => {{
+        ($arc_method:ident, $poison_method:ident, $fields:expr) => {{
             let setup = simple_setup();
             let adapter = ConcurrentEvalAdapter::from_setup(&setup);
             let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
@@ -2181,7 +2169,7 @@ mod poison_shared_fallback {
             assert_poison_recovers(
                 || adapter.into_result(&eval_set, HashSet::new()),
                 1,
-                $msg,
+                $fields,
             )
         }};
     }
@@ -2195,13 +2183,13 @@ mod poison_shared_fallback {
     ///
     /// A second Arc clone is held alive so Arc::try_unwrap returns Err,
     /// exercising the shared-fallback branch in concurrent_eval.rs.
-    /// Message must contain "values RwLock poisoned (shared fallback)".
+    /// Event must have lock=values, path=shared_fallback.
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_values() {
         shared_fallback_recover!(
             values_arc,
             poison_values,
-            "values RwLock poisoned (shared fallback)"
+            &[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
     }
 
@@ -2213,7 +2201,7 @@ mod poison_shared_fallback {
         let edit_result = shared_fallback_recover!(
             values_arc,
             poison_values,
-            "values RwLock poisoned (shared fallback)"
+            &[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
         assert_eq!(
             edit_result.values.get(&ValueCellId::new("T", "a")),
@@ -2230,13 +2218,13 @@ mod poison_shared_fallback {
     /// poisoned snapshot_values lock via the shared-fallback (Err(arc) → read()) path.
     ///
     /// A second Arc clone is held alive so Arc::try_unwrap returns Err.
-    /// Message must contain "snapshot_values RwLock poisoned (shared fallback)".
+    /// Event must have lock=snapshot_values, path=shared_fallback.
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_snapshot_values() {
         shared_fallback_recover!(
             snapshot_values_arc,
             poison_snapshot_values,
-            "snapshot_values RwLock poisoned (shared fallback)"
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
     }
 
@@ -2248,7 +2236,7 @@ mod poison_shared_fallback {
         let edit_result = shared_fallback_recover!(
             snapshot_values_arc,
             poison_snapshot_values,
-            "snapshot_values RwLock poisoned (shared fallback)"
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
         assert_eq!(
             edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
@@ -2270,13 +2258,13 @@ mod poison_shared_fallback {
     /// poisoned results lock via the shared-fallback (Err(arc) → lock()) path.
     ///
     /// A second Arc clone is held alive so Arc::try_unwrap returns Err.
-    /// Message must contain "results Mutex poisoned (shared fallback)".
+    /// Event must have lock=results, path=shared_fallback.
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_results() {
         shared_fallback_recover!(
             results_arc,
             poison_results,
-            "results Mutex poisoned (shared fallback)"
+            &[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
     }
 
@@ -2288,7 +2276,7 @@ mod poison_shared_fallback {
         let edit_result = shared_fallback_recover!(
             results_arc,
             poison_results,
-            "results Mutex poisoned (shared fallback)"
+            &[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
         assert!(
             edit_result.node_results.is_empty(),
@@ -2342,24 +2330,13 @@ mod poison_shared_fallback {
         // (2) Exactly 3 WARN events — one per poisoned lock.
         capture.assert_count(3);
 
-        // (3) All 3 distinct shared-fallback messages present.
-        let msgs = capture.messages();
-        assert!(
-            msgs.iter().any(|m| m.contains("values RwLock poisoned (shared fallback)")),
-            "no WARN message contained 'values RwLock poisoned (shared fallback)'; \
-             captured messages: {msgs:?}"
-        );
-        assert!(
-            msgs.iter()
-                .any(|m| m.contains("snapshot_values RwLock poisoned (shared fallback)")),
-            "no WARN message contained 'snapshot_values RwLock poisoned (shared fallback)'; \
-             captured messages: {msgs:?}"
-        );
-        assert!(
-            msgs.iter().any(|m| m.contains("results Mutex poisoned (shared fallback)")),
-            "no WARN message contained 'results Mutex poisoned (shared fallback)'; \
-             captured messages: {msgs:?}"
-        );
+        // (3) All 3 distinct shared-fallback lock events present (by structured fields).
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]);
+        capture.assert_any_event_has_fields(&[
+            ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+            ("path", poison_fields::PATH_SHARED_FALLBACK),
+        ]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_SHARED_FALLBACK)]);
 
         // (4) T.a = Real(10.0) from simple_setup.
         assert_eq!(
@@ -2523,8 +2500,8 @@ mod poison_evaluate {
 
     /// Verify that tracing::warn! is emitted when evaluate() recovers from poisoned locks.
     /// evaluate() touches read_values, write_values, write_snapshot_values, and lock_results,
-    /// so poisoning values should produce multiple WARN events.  At least one message must
-    /// contain "values RwLock poisoned" to confirm the correct lock triggered the warning.
+    /// so poisoning values should produce multiple WARN events.  At least one event must
+    /// have lock=values to confirm the correct lock triggered the warning.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tracing_warn_emitted_on_poison_evaluate() {
         let setup = simple_setup();
@@ -2547,13 +2524,8 @@ mod poison_evaluate {
             count >= 2,
             "expected at least 2 WARN events (read_values + write_values recovery), got {count}"
         );
-        // Verify the warning messages name the correct lock
-        let msgs = capture.messages();
-        assert!(
-            msgs.iter().any(|m| m.contains("values RwLock poisoned")),
-            "at least one WARN message should contain 'values RwLock poisoned'; \
-             captured messages: {msgs:?}"
-        );
+        // Verify at least one event names the correct lock via structured fields
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES)]);
     }
 }
 
@@ -3347,3 +3319,27 @@ mod execute_with_config_tests {
         );
     }
 } // mod execute_with_config_tests
+
+#[cfg(feature = "test-utils")]
+mod poison_fields_constants {
+    use super::*;
+
+    /// Sanity test: assert every compile-time constant in `poison_fields` holds the
+    /// exact &str value expected by the structured-field schema from Task 600.
+    ///
+    /// This test fails to compile until `poison_fields` is added (Step 2), which is
+    /// intentional TDD discipline: the test encodes the schema contract in the type
+    /// system before the implementation exists.
+    #[test]
+    fn poison_fields_constants_exist_and_match_schema() {
+        assert_eq!(poison_fields::LOCK_VALUES, "values");
+        assert_eq!(poison_fields::LOCK_SNAPSHOT_VALUES, "snapshot_values");
+        assert_eq!(poison_fields::LOCK_RESULTS, "results");
+        assert_eq!(poison_fields::ACCESS_READ, "read");
+        assert_eq!(poison_fields::ACCESS_WRITE, "write");
+        assert_eq!(poison_fields::ACCESS_EXCLUSIVE, "exclusive");
+        assert_eq!(poison_fields::PATH_INTO_INNER, "into_inner");
+        assert_eq!(poison_fields::PATH_SHARED_FALLBACK, "shared_fallback");
+        assert_eq!(poison_fields::MSG_LOCK_POISONED, "lock poisoned, recovering");
+    }
+} // mod poison_fields_constants

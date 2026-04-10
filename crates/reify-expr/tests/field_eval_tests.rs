@@ -454,13 +454,15 @@ fn gradient_temperature_over_length_returns_field() {
 }
 
 /// Gradient of a field whose lambda returns a non-numeric value: construction
-/// succeeds but sampling returns Undef.
+/// succeeds.
 ///
 /// Build a field whose lambda returns Value::String("not_a_number"). gradient()
-/// construction succeeds because the field has valid domain/source/lambda. But
-/// sampling the gradient field returns Undef because numerical differentiation
-/// (f(x+h) - f(x-h)) / 2h requires numeric f values, and String cannot
-/// participate in as_f64 extraction.
+/// construction succeeds because the field has valid domain/source/lambda. At
+/// sampling time the debug guard in `compute_numerical_gradient_at_point` fires
+/// on the unexpected `Type::String` codomain (see
+/// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug` for the
+/// debug-mode behaviour; the release-mode behaviour is tested in
+/// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`).
 #[test]
 fn gradient_of_field_with_non_numeric_lambda() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
@@ -499,15 +501,46 @@ fn gradient_of_field_with_non_numeric_lambda() {
         "gradient construction should succeed (valid domain/source/lambda), got {:?}",
         grad_result
     );
+}
 
-    // Sampling the gradient field returns Undef because lambda returns String,
-    // which fails as_f64 extraction in the perturbation loop.
+/// Sampling a gradient field whose lambda returns a non-numeric value returns Undef
+/// in release mode (where the debug guard is absent).
+///
+/// The debug-mode counterpart is
+/// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`.
+#[cfg(not(debug_assertions))]
+#[test]
+fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::String;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
     let point = Value::Real(1.0);
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type.clone()),
         codomain: Box::new(codomain_type),
     };
-
     let sample_expr = make_function_call(
         "sample",
         vec![
@@ -516,11 +549,62 @@ fn gradient_of_field_with_non_numeric_lambda() {
         ],
         Type::Real,
     );
-
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
     assert_eq!(
         sample_result,
         Value::Undef,
-        "sampling gradient of non-numeric lambda must return Undef"
+        "sampling gradient of non-numeric lambda must return Undef in release mode"
     );
+}
+
+/// In debug mode, sampling a gradient field with a non-numeric (String) codomain
+/// panics with the unexpected-codomain guard added to
+/// `compute_numerical_gradient_at_point`.
+///
+/// `Type::String` is not a valid gradient codomain — the debug_assert in the
+/// result_dim match fires before any numeric work begins.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "unexpected codomain_type")]
+fn gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::String;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    let point = Value::Real(1.0);
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Real,
+    );
+    // In debug mode the result_dim debug_assert fires before any numeric work.
+    let _sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 }

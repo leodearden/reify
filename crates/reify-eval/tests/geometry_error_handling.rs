@@ -12,47 +12,6 @@ use reify_types::{
 };
 
 // ---------------------------------------------------------------------------
-// FailingMockGeometryKernel — execute() always returns Err
-// ---------------------------------------------------------------------------
-
-/// A mock geometry kernel whose `execute` always fails.
-/// Other methods return Ok with dummy data (intentionally — to demonstrate
-/// the current bug where export succeeds with a never-created handle).
-struct FailingMockGeometryKernel;
-
-impl GeometryKernel for FailingMockGeometryKernel {
-    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        Err(GeometryError::OperationFailed(
-            "simulated kernel failure".into(),
-        ))
-    }
-
-    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Ok(Value::Real(0.0))
-    }
-
-    fn export(
-        &self,
-        _handle: GeometryHandleId,
-        _format: ExportFormat,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<(), ExportError> {
-        // Intentionally succeeds — exposes the bug where export runs on a bogus handle
-        writer
-            .write_all(b"BOGUS_EXPORT")
-            .map_err(|e| ExportError::IoError(e.to_string()))
-    }
-
-    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-        Ok(Mesh {
-            vertices: vec![],
-            indices: vec![],
-            normals: None,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Helper: build a CompiledModule with one box primitive realization
 // ---------------------------------------------------------------------------
 
@@ -1100,6 +1059,150 @@ fn build_primitive_missing_arg_no_kernel_error() {
     assert!(
         !has_kernel_error,
         "should NOT have a 'geometry error' diagnostic (kernel was never called), \
+         but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("geometry error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regression guard: missing modify arg → no Modify kernel call, no 'geometry error'
+// ---------------------------------------------------------------------------
+
+/// When a Fillet modify op is missing its required 'radius' arg, build() should:
+/// 1. Call kernel exactly once — for the preceding Box that provides the target
+///    handle — but never call kernel for the Fillet itself.
+/// 2. Return geometry_output=None (compile failure short-circuits the realization).
+/// 3. Emit a Warning: "missing required geometry argument" mentioning both
+///    'radius' and 'Fillet'.
+/// 4. Emit an Error: "failed to compile geometry operation".
+/// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
+///    called for the Fillet op).
+///
+/// Unlike the primitive test (`build_primitive_missing_arg_no_kernel_error`),
+/// this test uses a two-op realization [Box, Fillet(missing radius)] because
+/// `compile_geometry_op` resolves `Modify { target, .. }` via
+/// `step_handles.get(idx).copied()?` *before* reaching arg-validation — so a
+/// lone Fillet with an empty step_handles would short-circuit at target lookup
+/// without ever emitting the warning. The Box is the minimum setup needed to
+/// populate step_handles[0] so the Fillet's target resolves and the
+/// arg-validation path is exercised.
+///
+/// The unit-level counterpart is
+/// `compile_geometry_op_modify_missing_arg_returns_none` in lib.rs:4955-5007.
+#[test]
+fn build_modify_missing_arg_no_kernel_error() {
+    use reify_compiler::ModifyKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Box primitive with all three required args — provides step_handles[0]
+    // as the Fillet's target
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+
+    // Op 1: Fillet modify op with 'radius' deliberately omitted
+    let fillet_op = CompiledGeometryOp::Modify {
+        kind: ModifyKind::Fillet,
+        target: GeomRef::Step(0),
+        args: vec![], // radius deliberately omitted
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
+        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
+        .realization(e, 0, vec![box_op, fillet_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_missing_radius"))
+            .template(template)
+            .build();
+
+    // Standard MockGeometryKernel — if execute() were called for the Fillet it
+    // would succeed, but it should never be reached for that op.
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (1) Kernel was called exactly once — for the Box — but never for the Fillet
+    {
+        let ops = ops_ref.lock().unwrap();
+        assert_eq!(
+            ops.len(),
+            1,
+            "kernel.execute() should be called only for the Box (not the Fillet), \
+             got {} kernel ops",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[0].op, reify_types::GeometryOp::Box { .. }),
+            "expected the only recorded kernel op to be Box, got: {:?}",
+            ops[0].op
+        );
+    }
+
+    // (2) No geometry output — Fillet failed to compile
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when Fillet's required 'radius' arg is missing"
+    );
+
+    // (3) Warning about the missing 'radius' arg for Fillet
+    let has_missing_arg_warning = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning
+            && d.message.contains("missing required geometry argument")
+            && d.message.contains("radius")
+            && d.message.contains("Fillet")
+    });
+    assert!(
+        has_missing_arg_warning,
+        "expected a Warning diagnostic about missing 'radius' arg for Fillet, got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (4) Error about failed compile
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (5) No 'geometry error' diagnostic — kernel was never called for the Fillet
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for Fillet), \
          but got: {:?}",
         result
             .diagnostics

@@ -60,10 +60,7 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
             );
             for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
                 let val = comp.as_f64().unwrap_or_else(|| {
-                    panic!(
-                        "{label}: component {i} should be numeric, got {:?}",
-                        comp
-                    )
+                    panic!("{label}: component {i} should be numeric, got {:?}", comp)
                 });
                 assert!(
                     (val - exp).abs() < tol,
@@ -350,6 +347,106 @@ fn run_laplacian_quadratic_test(point: Value, point_literal_type: Type, label: &
         (val - 6.0).abs() < 1e-2,
         "{label}: expected ≈6.0, got {}",
         val
+    );
+}
+
+/// Run a metadata-only dimensional-correctness test for a calculus operator.
+///
+/// Builds a dummy `Value::Field` with the given `domain_type`, `codomain_type`, and
+/// `source`, creates a no-op lambda (body = `value_ref` to the first parameter),
+/// applies the named operator via `make_function_call`, and asserts:
+///   1. The result is `Value::Field { source: <expected from op>, .. }`.
+///   2. The result's `codomain_type` equals `expected_codomain`.
+///
+/// The lambda body is never sampled because `compute_laplacian` / `compute_divergence`
+/// derive the result codomain purely from type metadata.
+///
+/// `op` must be `"laplacian"` or `"divergence"`; other values cause a panic with `label`.
+/// `domain_type` must have arity 1–3; `Type::Point { n, .. }` yields `n` params,
+/// all other types yield 1 param (named `"x"`).
+fn run_dim_metadata_test(
+    op: &str,
+    domain_type: Type,
+    codomain_type: Type,
+    source: FieldSourceKind,
+    expected_codomain: Type,
+    label: &str,
+) {
+    // Derive arity from domain type.
+    let n: usize = match &domain_type {
+        Type::Point { n, .. } => *n,
+        _ => 1,
+    };
+    assert!(
+        (1..=3).contains(&n),
+        "{label}: arity {n} out of range 1..=3"
+    );
+
+    // Build n ValueCellIds from ["x", "y", "z"].
+    let names = ["x", "y", "z"];
+    let ids: Vec<ValueCellId> = names[..n]
+        .iter()
+        .map(|&name| ValueCellId::new("$lambda0.S", name))
+        .collect();
+
+    // Dummy body: value_ref to the first parameter (never evaluated).
+    let body = CompiledExpr::value_ref(ids[0].clone(), Type::Real);
+
+    // Build lambda.
+    let params: Vec<(&str, ValueCellId)> = names[..n].iter().copied().zip(ids).collect();
+    let lambda = make_value_lambda(params, body, ValueMap::new());
+
+    // Wrap in Value::Field.
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source,
+        lambda: Box::new(lambda),
+    };
+
+    // Wrap in Type::Field.
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Build the function call.
+    let expr = make_function_call(
+        op,
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type,
+    );
+
+    // Evaluate with empty bindings.
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    // Derive expected source kind from op.
+    let expected_source = match op {
+        "laplacian" => FieldSourceKind::Laplacian,
+        "divergence" => FieldSourceKind::Divergence,
+        other => panic!("{label}: unknown op {other:?}"),
+    };
+
+    // Destructure via let-else (review S2).
+    let Value::Field {
+        codomain_type: actual_codomain,
+        source: actual_source,
+        ..
+    } = &result
+    else {
+        panic!("{label}: {op} should return a Field, got {result:?}");
+    };
+
+    assert_eq!(
+        *actual_source, expected_source,
+        "{label}: expected source {:?}, got {:?}",
+        expected_source, actual_source
+    );
+    assert_eq!(
+        *actual_codomain, expected_codomain,
+        "{label}: expected codomain {:?}, got {:?}",
+        expected_codomain, actual_codomain
     );
 }
 
@@ -961,11 +1058,9 @@ fn gradient_dimensional_correctness() {
         match codomain_type {
             Type::Scalar { dimension } => {
                 assert_eq!(
-                    *dimension,
-                    expected_dim,
+                    *dimension, expected_dim,
                     "gradient codomain dimension should be Temperature/Length ({:?}), got {:?}",
-                    expected_dim,
-                    dimension
+                    expected_dim, dimension
                 );
             }
             other => panic!(
@@ -1058,7 +1153,10 @@ fn divergence_constant_field_near_zero() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     let val = sample_result.as_f64().unwrap_or_else(|| {
-        panic!("divergence sample should be numeric, got {:?}", sample_result)
+        panic!(
+            "divergence sample should be numeric, got {:?}",
+            sample_result
+        )
     });
     assert!(
         val.abs() < 1e-6,
@@ -1264,7 +1362,10 @@ fn laplacian_linear_field_near_zero() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     let val = sample_result.as_f64().unwrap_or_else(|| {
-        panic!("laplacian sample should be numeric, got {:?}", sample_result)
+        panic!(
+            "laplacian sample should be numeric, got {:?}",
+            sample_result
+        )
     });
     assert!(
         val.abs() < 1e-4,
@@ -1351,11 +1452,9 @@ fn divergence_dimensional_correctness() {
         match codomain_type {
             Type::Scalar { dimension } => {
                 assert_eq!(
-                    *dimension,
-                    expected_dim,
+                    *dimension, expected_dim,
                     "divergence codomain should be Velocity/Length=1/Time ({:?}), got {:?}",
-                    expected_dim,
-                    dimension
+                    expected_dim, dimension
                 );
             }
             other => panic!(
@@ -1436,16 +1535,13 @@ fn laplacian_dimensional_correctness() {
 
     // Verify codomain dimension: should be Temperature / Length²
     if let Value::Field { codomain_type, .. } = &lap_result {
-        let expected_dim =
-            DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2));
+        let expected_dim = DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2));
         match codomain_type {
             Type::Scalar { dimension } => {
                 assert_eq!(
-                    *dimension,
-                    expected_dim,
+                    *dimension, expected_dim,
                     "laplacian codomain should be Temperature/Length² ({:?}), got {:?}",
-                    expected_dim,
-                    dimension
+                    expected_dim, dimension
                 );
             }
             other => panic!(
@@ -1736,11 +1832,9 @@ fn divergence_sample_dimensional_correctness_returns_scalar() {
             dimension,
         } => {
             assert_eq!(
-                dimension,
-                one_over_time,
+                dimension, one_over_time,
                 "divergence sample dimension should be 1/Time ({:?}), got {:?}",
-                one_over_time,
-                dimension,
+                one_over_time, dimension,
             );
             assert!(
                 (si_value - 3.0).abs() < 1e-4,
@@ -2064,11 +2158,9 @@ fn laplacian_sample_dimensional_correctness_returns_scalar() {
             dimension,
         } => {
             assert_eq!(
-                dimension,
-                temp_per_len_sq,
+                dimension, temp_per_len_sq,
                 "laplacian sample dimension should be Temperature/Length² ({:?}), got {:?}",
-                temp_per_len_sq,
-                dimension,
+                temp_per_len_sq, dimension,
             );
             assert!(
                 (si_value - 6.0).abs() < 1e-3,
@@ -2128,17 +2220,10 @@ fn curl_2d_vector_field_returns_undef() {
     );
     let body = make_function_call(
         "vec2",
-        vec![
-            neg_y,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        ],
+        vec![neg_y, CompiledExpr::value_ref(x_id.clone(), Type::Real)],
         Type::vec2(Type::Real),
     );
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id)],
-        body,
-        ValueMap::new(),
-    );
+    let lambda = make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new());
 
     let domain_type = Type::point2(Type::Real);
     let codomain_type = Type::vec2(Type::Real);
@@ -2308,8 +2393,8 @@ fn divergence_field_with_mismatched_dims_returns_undef() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);   // n=3
-    let codomain_type = Type::vec2(Type::Real);   // n=2 — mismatch!
+    let domain_type = Type::point3(Type::Real); // n=3
+    let codomain_type = Type::vec2(Type::Real); // n=2 — mismatch!
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -2505,7 +2590,10 @@ fn laplacian_1d_quadratic_accuracy() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     let val = sample_result.as_f64().unwrap_or_else(|| {
-        panic!("laplacian sample should be numeric, got {:?}", sample_result)
+        panic!(
+            "laplacian sample should be numeric, got {:?}",
+            sample_result
+        )
     });
     assert!(
         (val - 2.0).abs() < 1e-2,
@@ -2578,8 +2666,7 @@ fn divergence_real_domain_preserves_dim_codomain() {
 
     if let Value::Field { codomain_type, .. } = &div_result {
         assert_eq!(
-            *codomain_type,
-            component_type,
+            *codomain_type, component_type,
             "divergence of Point{{3,Real}}→Vector{{3,Length}} should preserve codomain Scalar<Length>, got {:?}",
             codomain_type
         );
@@ -2717,8 +2804,7 @@ fn divergence_int_domain_preserves_dim_codomain() {
 
     if let Value::Field { codomain_type, .. } = &div_result {
         assert_eq!(
-            *codomain_type,
-            component_type,
+            *codomain_type, component_type,
             "divergence of Point{{3,Int}}→Vector{{3,Length}} should preserve codomain Scalar<Length>, got {:?}",
             codomain_type
         );
@@ -2786,7 +2872,9 @@ fn laplacian_real_domain_preserves_dim_codomain() {
     if let Value::Field { codomain_type, .. } = &lap_result {
         assert_eq!(
             *codomain_type,
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            },
             "laplacian of Point{{3,Real}}→Scalar<Length> should preserve Scalar<Length>, got {:?}",
             codomain_type
         );
@@ -2972,7 +3060,9 @@ fn laplacian_int_domain_preserves_dim_codomain() {
     if let Value::Field { codomain_type, .. } = &lap_result {
         assert_eq!(
             *codomain_type,
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            },
             "laplacian of Point{{3,Int}}→Scalar<Length> should preserve Scalar<Length>, got {:?}",
             codomain_type
         );
@@ -3035,11 +3125,12 @@ fn gradient_real_domain_preserves_dim_codomain() {
     if let Value::Field { codomain_type, .. } = &grad_result {
         let expected = Type::Vector {
             n: 3,
-            quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
         };
         assert_eq!(
-            *codomain_type,
-            expected,
+            *codomain_type, expected,
             "gradient of Point{{3,Real}}→Scalar<Length> should have codomain Vector{{3,Scalar<Length>}}, got {:?}",
             codomain_type
         );
@@ -3100,13 +3191,599 @@ fn gradient_int_domain_preserves_dim_codomain() {
     if let Value::Field { codomain_type, .. } = &grad_result {
         let expected = Type::Vector {
             n: 3,
-            quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
         };
         assert_eq!(
-            *codomain_type,
-            expected,
+            *codomain_type, expected,
             "gradient of Point{{3,Int}}→Scalar<Length> should have codomain Vector{{3,Scalar<Length>}}, got {:?}",
             codomain_type
         );
     }
+}
+
+// ── Curl dimension propagation tests ────────────────────────────────────────
+
+/// Curl of a Point{3,Length} → Vector{3,Velocity} field has codomain
+/// Vector{3, Scalar{dim = Velocity/Length = 1/Time}}.
+///
+/// Verifies that compute_curl correctly derives the result codomain
+/// dimension by dividing the input codomain component dimension by domain_dim.
+#[test]
+fn curl_dimensional_correctness() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // VELOCITY = LENGTH / TIME
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+
+    let domain_quantity = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_quantity = Type::Scalar {
+        dimension: velocity_dim,
+    };
+
+    let domain_type = Type::point3(domain_quantity.clone());
+    let codomain_type = Type::vec3(codomain_quantity.clone());
+
+    // Lambda: |x, y, z| vec3(x, y, z) — simple identity for metadata test.
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // curl(field) → vector field with codomain Vector{3, Scalar{Velocity/Length = 1/Time}}
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&curl_result, Value::Field { .. }),
+        "curl of Point{{3,Length}}→Vector{{3,Velocity}} should return a Field, got {:?}",
+        curl_result
+    );
+
+    // Verify codomain dimension: should be Vector{3, Scalar{Velocity/Length = 1/Time}}
+    if let Value::Field { codomain_type, .. } = &curl_result {
+        let expected_dim = velocity_dim.div(&DimensionVector::LENGTH);
+        let expected = Type::vec3(Type::Scalar {
+            dimension: expected_dim,
+        });
+        assert_eq!(
+            *codomain_type, expected,
+            "curl codomain should be Vector{{3, Scalar{{1/Time}}}}, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Curl of a dimensionless Point{3,Real} → Vector{3,Real} field still
+/// returns Vector{3,Real} codomain (regression guard).
+#[test]
+fn curl_dimensionless_still_vec3_real() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    if let Value::Field { codomain_type, .. } = &curl_result {
+        let expected = Type::vec3(Type::Real);
+        assert_eq!(
+            *codomain_type, expected,
+            "curl of dimensionless field should have Vector{{3,Real}} codomain, got {:?}",
+            codomain_type
+        );
+    } else {
+        panic!(
+            "curl of dimensionless field should return a Field, got {:?}",
+            curl_result
+        );
+    }
+}
+
+/// Sample(curl(dimensioned_field), point) returns Vector of Scalar components
+/// with the correct derived dimension.
+#[test]
+fn curl_sample_dimensional_correctness_returns_scalar() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // VELOCITY = LENGTH / TIME
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+    let domain_quantity = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_quantity = Type::Scalar {
+        dimension: velocity_dim,
+    };
+
+    let domain_type = Type::point3(domain_quantity.clone());
+    let codomain_type = Type::vec3(codomain_quantity.clone());
+
+    // Lambda: |x, y, z| vec3(z, x, y)  — rotation-like, produces non-zero curl.
+    // curl of (z, x, y) = (∂y/∂y - ∂x/∂z, ∂z/∂z - ∂y/∂x, ∂x/∂x - ∂z/∂y) = (1, 1, 1)
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&curl_result, Value::Field { .. }),
+        "curl should return a Field, got {:?}",
+        curl_result
+    );
+
+    // Sample at (1m, 2m, 3m)
+    let point = Value::Point(vec![
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 3.0,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+
+    let one_over_time = velocity_dim.div(&DimensionVector::LENGTH);
+    let curl_codomain = Type::vec3(Type::Scalar {
+        dimension: one_over_time,
+    });
+    let curl_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(curl_codomain),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(curl_result, curl_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::vec3(Type::Scalar {
+            dimension: one_over_time,
+        }),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // curl of (z, x, y) = (1, 1, 1) — all components should be ≈1.0
+    match &sample_result {
+        Value::Vector(comps) if comps.len() == 3 => {
+            for (i, comp) in comps.iter().enumerate() {
+                match comp {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert_eq!(
+                            *dimension, one_over_time,
+                            "curl sample component {i} dimension should be 1/Time ({:?}), got {:?}",
+                            one_over_time, dimension,
+                        );
+                        assert!(
+                            (si_value - 1.0).abs() < 1e-4,
+                            "curl component {i} should be ≈1.0, got {}",
+                            si_value
+                        );
+                    }
+                    Value::Real(_) => panic!(
+                        "curl sample component {i}: expected Value::Scalar but got Value::Real"
+                    ),
+                    other => panic!(
+                        "curl sample component {i}: expected Value::Scalar, got {:?}",
+                        other
+                    ),
+                }
+            }
+        }
+        other => panic!(
+            "curl sample should return Vector(3), got {:?}",
+            other
+        ),
+    }
+}
+
+/// Sample(curl(dimensionless_field), point) returns Vector of Real components (regression guard).
+#[test]
+fn curl_sample_dimensionless_returns_real() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    // Lambda: |x, y, z| vec3(z, x, y)
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    let point = Value::Point(vec![
+        Value::Real(1.0),
+        Value::Real(2.0),
+        Value::Real(3.0),
+    ]);
+
+    let curl_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(curl_result, curl_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        codomain_type,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &sample_result {
+        Value::Vector(comps) if comps.len() == 3 => {
+            for (i, comp) in comps.iter().enumerate() {
+                assert!(
+                    matches!(comp, Value::Real(_)),
+                    "curl sample of dimensionless field component {i} should be Value::Real, got {:?}",
+                    comp
+                );
+            }
+        }
+        other => panic!(
+            "curl sample should return Vector(3), got {:?}",
+            other
+        ),
+    }
+}
+
+// ── Step 12: Expanded dimensional-correctness coverage (Task 1238) ────────────
+
+/// Laplacian of a bare-scalar (1D) domain: `Type::Scalar{LENGTH}` → `Scalar<Temperature>`
+/// has codomain dimension `Temperature / Length²`.
+///
+/// Exercises the `_ if scalar_dimension(domain_type).is_some()` first arm of
+/// `compute_laplacian`'s domain match — the path where domain is a bare scalar
+/// rather than a `Point{n}`.
+#[test]
+fn laplacian_dimensional_correctness_1d_scalar_domain() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE,
+        },
+        FieldSourceKind::Analytical,
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2)),
+        },
+        "laplacian_dimensional_correctness_1d_scalar_domain",
+    );
+}
+
+/// Confirms dimension-agnostic behavior when domain is a 2D `Point{2}` —
+/// `compute_laplacian`'s Point arm handles any `n>=1` via the same
+/// `dim_quotient_type` derivation.
+#[test]
+fn laplacian_dimensional_correctness_2d_point_domain() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::point2(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE,
+        },
+        FieldSourceKind::Analytical,
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2)),
+        },
+        "laplacian_dimensional_correctness_2d_point_domain",
+    );
+}
+
+/// Laplacian of `Point{3,Length}` → `Int` field preserves `Int` codomain.
+///
+/// `Int` is treated as dimensionless (`scalar_dimension(Int)=Some(DIMENSIONLESS)`),
+/// so `dim_quotient_type`'s guard fails and the fallback path returns the codomain
+/// unchanged (`Type::Int`). Exercises the Int-codomain fall-through branch.
+#[test]
+fn laplacian_dimensional_correctness_int_codomain() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::Int,
+        FieldSourceKind::Analytical,
+        Type::Int,
+        "laplacian_dimensional_correctness_int_codomain",
+    );
+}
+
+/// Int-domain input-value coverage: verifies the `Int -> Int` case also returns `Type::Int`.
+///
+/// Not a distinct `dim_quotient_type` branch — the outer `cd != DIMENSIONLESS` guard
+/// short-circuits on `cd == DIMENSIONLESS`, so the domain dimension is never consulted
+/// once the codomain is `Int`. Retained as a smoke test that `Int`-quantity `Point`
+/// domains are accepted by `compute_laplacian`.
+#[test]
+fn laplacian_dimensional_correctness_int_domain_int_codomain() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::point3(Type::Int),
+        Type::Int,
+        FieldSourceKind::Analytical,
+        Type::Int,
+        "laplacian_dimensional_correctness_int_domain_int_codomain",
+    );
+}
+
+/// This is the only laplacian test exercising the `result_dim == DIMENSIONLESS => Type::Real`
+/// inner arm of `dim_quotient_type`. Codomain `Length²` divided by `Length²`
+/// (domain-dim squared) collapses to `DIMENSIONLESS`, so the inner arm returns `Type::Real`.
+#[test]
+fn laplacian_dimensional_correctness_result_dimensionless_returns_real() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH.pow(2),
+        },
+        FieldSourceKind::Analytical,
+        Type::Real,
+        "laplacian_dimensional_correctness_result_dimensionless_returns_real",
+    );
+}
+
+/// Exercises the `FieldSourceKind::Analytical | FieldSourceKind::Composed` source
+/// whitelist in `compute_laplacian`. No other laplacian test uses a `Composed` source.
+/// Mirrors `gradient_composed_field_returns_field` in `gradient_tests.rs`.
+#[test]
+fn laplacian_dimensional_correctness_composed_source() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE,
+        },
+        FieldSourceKind::Composed,
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2)),
+        },
+        "laplacian_dimensional_correctness_composed_source",
+    );
+}
+
+/// Confirms dimension-agnostic behavior for a 1D vector field (`Point{1}` → `Vector{1}`) —
+/// `compute_divergence`'s `Point{n, quantity}` arm accepts any `n>=1`.
+///
+/// The `point1` and `vec1` helpers do not exist in `ty.rs`, so types are
+/// constructed via struct literals.
+#[test]
+fn divergence_dimensional_correctness_1d() {
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+    run_dim_metadata_test(
+        "divergence",
+        Type::Point {
+            n: 1,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+        },
+        Type::Vector {
+            n: 1,
+            quantity: Box::new(Type::Scalar {
+                dimension: velocity_dim,
+            }),
+        },
+        FieldSourceKind::Analytical,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME).div(&DimensionVector::LENGTH),
+        },
+        "divergence_dimensional_correctness_1d",
+    );
+}
+
+/// Confirms dimension-agnostic behavior for a 2D vector field (`Point{2}` → `Vector{2}`) —
+/// `compute_divergence`'s `Point{n, quantity}` arm accepts any `n>=1`.
+#[test]
+fn divergence_dimensional_correctness_2d() {
+    run_dim_metadata_test(
+        "divergence",
+        Type::point2(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::vec2(Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME),
+        }),
+        FieldSourceKind::Analytical,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME).div(&DimensionVector::LENGTH),
+        },
+        "divergence_dimensional_correctness_2d",
+    );
+}
+
+/// This is the only divergence test exercising the `result_dim == DIMENSIONLESS => Type::Real`
+/// inner arm of `dim_quotient_type`. Codomain component `Length` divided by domain
+/// `Length` collapses to `DIMENSIONLESS`, so the inner arm returns `Type::Real`.
+#[test]
+fn divergence_dimensional_correctness_result_dimensionless_returns_real() {
+    run_dim_metadata_test(
+        "divergence",
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        FieldSourceKind::Analytical,
+        Type::Real,
+        "divergence_dimensional_correctness_result_dimensionless_returns_real",
+    );
+}
+
+/// Exercises the `FieldSourceKind::Analytical | FieldSourceKind::Composed` source
+/// whitelist in `compute_divergence`. No other divergence test uses a `Composed` source.
+/// Mirrors `gradient_composed_field_returns_field` in `gradient_tests.rs`.
+#[test]
+fn divergence_dimensional_correctness_composed_source() {
+    run_dim_metadata_test(
+        "divergence",
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME),
+        }),
+        FieldSourceKind::Composed,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME).div(&DimensionVector::LENGTH),
+        },
+        "divergence_dimensional_correctness_composed_source",
+    );
 }

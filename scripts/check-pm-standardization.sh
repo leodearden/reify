@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Validation script for package manager standardization (task 618).
 # Checks static repo state: packageManager fields, lockfile gitignore status.
-# Redundant config-file-content checks (4-9) were removed by task 816 — those
-# are validated by actual execution on each commit and CI cycle.
+# Redundant config-file-content checks (5-9) were removed by task 816; Check 4
+# (pnpm-lock.yaml gitignored) was reinstated as a static-state check.
 
 set -euo pipefail
 
@@ -13,29 +13,61 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 [ -f "$SCRIPT_DIR/../tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$SCRIPT_DIR/../tests/infra/test_helpers.sh"
 
+PKG_FILES='gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json'
+LOCK_FILES='gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json'
+
 echo "=== check-pm-standardization ==="
 
-# ── Check 1: packageManager field in all package.json files ──────────
+# ── Preflight: required tools ────────────────────────────────────────
+assert "git is available" command -v git
+assert "running inside a git repository" git -C "$ROOT" rev-parse --is-inside-work-tree
+
+# ── Check 1: packageManager field set to npm in all package.json files ───────
 echo ""
-echo "Check 1: packageManager field in package.json files"
-for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
-    assert "$pkg has packageManager field" grep -q '"packageManager"' "$ROOT/$pkg"
+echo "Check 1: packageManager field set to npm in package.json files"
+for pkg in $PKG_FILES; do
+    assert "$pkg has packageManager set to npm" grep -qE '"packageManager"\s*:\s*"npm@' "$ROOT/$pkg"
 done
 
-# ── Check 2: npm lockfiles NOT in .gitignore ────────────────────────
+# ── Check 2: packageManager version consistent across all package.json files ─
+# Defensive shape (task 1326): the subshell enables `set -euo pipefail` so that
+# grep failures inside the pipeline (e.g. a missing package.json file) propagate
+# instead of being masked by the final `tr -d` exit status. An explicit `[ -f ]`
+# preflight provides belt-and-braces coverage. The dual assertion — total == 3
+# AND unique == 1 — catches the case where one file is missing the
+# packageManager field entirely: grep emits fewer lines, which `sort -u` would
+# otherwise silently collapse to a single unique line.
 echo ""
-echo "Check 2: npm lockfiles not gitignored"
-if ! command -v git >/dev/null 2>&1 || ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo 'WARNING: git not available or not in a git repo, skipping gitignore checks' >&2
-else
-    for lockfile in gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json; do
-        assert "$lockfile is not gitignored" bash -c "! (cd '$ROOT' && git check-ignore -q '$lockfile' 2>/dev/null)"
+echo "Check 2: packageManager version consistent across package.json files"
+assert "all package.json files agree on packageManager version" bash -c "
+    set -euo pipefail
+    for p in $PKG_FILES; do
+        [ -f \"$ROOT/\$p\" ] || exit 1
+    done
+    total=\$(for p in $PKG_FILES; do
+        grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \"$ROOT/\$p\"
+    done | wc -l | tr -d ' ')
+    unique=\$(for p in $PKG_FILES; do
+        grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \"$ROOT/\$p\"
+    done | sort -u | wc -l | tr -d ' ')
+    [ \"\$total\" = '3' ] && [ \"\$unique\" = '1' ]
+"
+
+# ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
+echo ""
+echo "Check 3: npm lockfiles not gitignored"
+assert "no npm lockfiles are gitignored" \
+    bash -c "! (cd '$ROOT' && git check-ignore $LOCK_FILES)"
+if (cd "$ROOT" && git check-ignore $LOCK_FILES >/dev/null 2>&1); then
+    echo "  DIAGNOSTIC: re-running 'git check-ignore -v' per file to identify offender(s):"
+    for f in $LOCK_FILES; do
+        (cd "$ROOT" && git check-ignore -v "$f") || true
     done
 fi
 
-# ── Check 3: pnpm-lock.yaml IS in .gitignore ────────────────────────
+# ── Check 4: pnpm-lock.yaml IS in .gitignore ────────────────────────
 echo ""
-echo "Check 3: pnpm-lock.yaml gitignored"
+echo "Check 4: pnpm-lock.yaml gitignored"
 assert "gui/pnpm-lock.yaml in .gitignore" grep -q 'gui/pnpm-lock\.yaml' "$ROOT/.gitignore"
 
 test_summary

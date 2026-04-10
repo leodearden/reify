@@ -520,8 +520,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
     // immediately below, and (2) the fallback objective validation when the
     // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
     // Do not inline into the feasibility check.
-    let trial_values =
-        build_trial_values(&problem.current_values, &problem.auto_params, initial);
+    let trial_values = build_trial_values(&problem.current_values, &problem.auto_params, initial);
     let initially_feasible =
         max_constraint_residual(&problem.constraints, &trial_values, &problem.functions)
             <= FEASIBILITY_THRESHOLD;
@@ -636,8 +635,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
 
     // Check feasibility by re-evaluating constraint violations
     // (best_cost may include the objective term, so we check violations separately)
-    let final_values =
-        build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
+    let final_values = build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
     let final_max_residual =
         max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
     if final_max_residual > FEASIBILITY_THRESHOLD {
@@ -819,8 +817,7 @@ fn verify_uniqueness(
 ) -> bool {
     // Build perturbed initial point: reflect each param to the opposite
     // end of its bounds range from the solution.
-    let (perturbed, missing) =
-        build_perturbation_anchors(&problem.auto_params, solved_values);
+    let (perturbed, missing) = build_perturbation_anchors(&problem.auto_params, solved_values);
     if !missing.is_empty() {
         tracing::warn!(
             "verify_uniqueness: {} solved value(s) missing or non-numeric {:?}; \
@@ -995,8 +992,7 @@ mod tests {
 
         // Pin the rendered count placeholder ({} via missing.len()) so a future cleanup
         // cannot silently drop it from the format-string body without test failure.
-        let expected_count_fragment =
-            format!("{} solved value(s)", expected_warn_substrings.len());
+        let expected_count_fragment = format!("{} solved value(s)", expected_warn_substrings.len());
         assert!(
             all_msgs.contains(&expected_count_fragment),
             "expected WARN messages to contain rendered count {expected_count_fragment:?} \
@@ -1197,7 +1193,10 @@ mod tests {
             &solved_values,
             &["Part.x", "Part.y"],
         );
-        assert!(!unique, "expected verify_uniqueness to return false when both params are missing");
+        assert!(
+            !unique,
+            "expected verify_uniqueness to return false when both params are missing"
+        );
     }
 
     /// Proves that `verify_uniqueness` takes the early-return path when a param
@@ -1363,7 +1362,11 @@ mod tests {
 
         let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
 
-        assert!(missing.is_empty(), "expected no missing params; got {:?}", missing);
+        assert!(
+            missing.is_empty(),
+            "expected no missing params; got {:?}",
+            missing
+        );
         // Empty `missing` means verify_uniqueness will not emit a WARN for this input.
         // The explicit tracing-silence integration test was removed during the Task 1250
         // refactor; coverage of the no-warn path is now implicit via this assertion.
@@ -1412,7 +1415,11 @@ mod tests {
 
         let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
 
-        assert_eq!(missing, vec!["Part.x"], "Value::Undef should appear in missing list");
+        assert_eq!(
+            missing,
+            vec!["Part.x"],
+            "Value::Undef should appear in missing list"
+        );
         assert_eq!(perturbed.len(), 1);
         // fallback mid = 0.5 (not < 0.5) → lo + 0.1*(hi-lo) = 0.1
         assert!(
@@ -1450,9 +1457,20 @@ mod tests {
 
         let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
 
-        assert_eq!(missing.len(), 2, "both params should be missing; got {:?}", missing);
-        assert!(missing.contains(&"Part.x".to_string()), "Part.x should be missing");
-        assert!(missing.contains(&"Part.y".to_string()), "Part.y should be missing");
+        assert_eq!(
+            missing.len(),
+            2,
+            "both params should be missing; got {:?}",
+            missing
+        );
+        assert!(
+            missing.contains(&"Part.x".to_string()),
+            "Part.x should be missing"
+        );
+        assert!(
+            missing.contains(&"Part.y".to_string()),
+            "Part.y should be missing"
+        );
         assert_eq!(perturbed.len(), 2);
         // Both fall back to mid = 0.5 → lo + 0.1*(hi-lo) = 0.1 each
         assert!(
@@ -1480,7 +1498,11 @@ mod tests {
 
         let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
 
-        assert!(missing.is_empty(), "expected no missing params; got {:?}", missing);
+        assert!(
+            missing.is_empty(),
+            "expected no missing params; got {:?}",
+            missing
+        );
         assert_eq!(perturbed.len(), 1);
         assert!(
             (perturbed[0] - 0.1).abs() < 1e-10,

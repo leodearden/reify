@@ -43,34 +43,43 @@ pub(crate) fn check_trait_conformance(
                                 Type::Real
                             })
                     })
-                    .unwrap_or(Type::Real);
+                    .unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "trait member '{}' has no type annotation; cannot infer type",
+                                p.name
+                            ))
+                            .with_label(DiagnosticLabel::new(p.span, "missing type annotation")),
+                        );
+                        Type::Real
+                    });
                 Some((p.name.clone(), ty))
             }
             reify_syntax::MemberDecl::Let(l) => {
-                let ty = l
-                    .type_expr
-                    .as_ref()
-                    .map(|te| {
-                        resolve_type_with_aliases(&te.name, &empty_params, alias_registry)
-                            .or_else(|| {
-                                if enum_defs.iter().any(|e| e.name == te.name) {
-                                    Some(Type::Enum(te.name.clone()))
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or_else(|| {
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "unresolved type in conformance check: {}",
-                                        te.name
-                                    ))
-                                    .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
-                                );
-                                Type::Real
-                            })
+                // let bindings get their type from expression inference, not annotations.
+                // Only include in structure_members when there is an explicit type annotation;
+                // omitting is safe because if a trait requires this member, the conformance
+                // check will report "missing required member" rather than a spurious
+                // "no type annotation" error.
+                let te = l.type_expr.as_ref()?;
+                let ty = resolve_type_with_aliases(&te.name, &empty_params, alias_registry)
+                    .or_else(|| {
+                        if enum_defs.iter().any(|e| e.name == te.name) {
+                            Some(Type::Enum(te.name.clone()))
+                        } else {
+                            None
+                        }
                     })
-                    .unwrap_or(Type::Real);
+                    .unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unresolved type in conformance check: {}",
+                                te.name
+                            ))
+                            .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                        );
+                        Type::Real
+                    });
                 Some((l.name.clone(), ty))
             }
             _ => None,
