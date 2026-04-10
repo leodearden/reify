@@ -15,6 +15,10 @@
 #
 set -euo pipefail
 
+# Ensure Cargo-installed tools (e.g. tree-sitter-cli) are on PATH.
+# Mirrors the '. ~/.cargo/env' prefix used in orchestrator.yaml verify commands.
+[ -f "${HOME:-~}/.cargo/env" ] && . "${HOME:-~}/.cargo/env" || true
+
 # --- Paths ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
