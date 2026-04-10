@@ -31824,10 +31824,11 @@
         "description": "Two fixes: (1) Line 649: remove dead (^|[^-9]) prefix from kill regex. (2) Line 707: add count verification for local _pt_kill_grace=2 before substitution.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T06:49:56.055Z"
       },
       {
         "id": "1564",
@@ -31921,7 +31922,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T06:49:55.604Z",
+      "lastModified": "2026-04-10T06:49:56.055Z",
       "taskCount": 1571,
       "completedCount": 1180,
       "tags": [
