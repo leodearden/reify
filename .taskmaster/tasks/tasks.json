@@ -31890,10 +31890,11 @@
         "description": "Three fixes: (1) Add regression test for non-collection sub qualified access (sub inner = Inner() with inner.(TraitName::member)) — assert no errors and correct resolved type. (2) expr.rs:1507-1516: simplify to single sub_member_types lookup (superset of collection_sub_member_types). (3) Fix misleading \"non-collection\" comment.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T06:49:55.207Z"
       },
       {
         "id": "1570",
@@ -31920,7 +31921,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T06:49:54.765Z",
+      "lastModified": "2026-04-10T06:49:55.207Z",
       "taskCount": 1571,
       "completedCount": 1180,
       "tags": [
