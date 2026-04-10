@@ -56,12 +56,20 @@ assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 # at column 0.  Content above the fn keyword is naturally excluded by the awk
 # range anchor, so doc comments and SYNC markers (which may legitimately differ
 # between the two copies) do not affect the body comparison.
+#
+# The awk start-pattern mirrors the assert_sync_ref_exists regex (line 48) so
+# both helpers accept exactly the same set of fn declarations.  Allowed prefixes:
+#   pub, pub(...), unsafe, const, async — in any valid subset/order before 'fn'.
+# The pattern rejects embedded-fn expressions like 'let y = fn foo(x);' because
+# the leading identifier ('let') is not one of the permitted modifier keywords.
 extract_fn() {
     local fn_name="$1" file="$2"
-    # Match fn with optional visibility prefix (pub, pub(crate), etc.); strip the
-    # prefix from the signature line so bodies compare equal across crates that
-    # differ only in visibility (e.g. pub(crate) vs private after a module split).
-    awk '/^[^/]*fn '"$fn_name"'[(<]/,/^}/' "$file" |
+    # Match fn with optional structured modifier prefixes (pub, pub(crate),
+    # unsafe, const, async); strip only pub/pub(...) from the signature line so
+    # bodies compare equal across crates that differ only in visibility.
+    # Other modifiers (const, unsafe, async) are semantic — mismatches there are
+    # real body divergences the diff must flag.
+    awk '/^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+'"$fn_name"'[[:space:](<]/,/^}/' "$file" |
         sed 's/^pub([^)]*) *//' |
         sed 's/^pub //'
 }
