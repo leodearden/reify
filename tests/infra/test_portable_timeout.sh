@@ -646,7 +646,7 @@ assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)
 # 'kill -TERM', or '--signal=TERM' variants — those are not used in the file.
 # Comment lines are excluded first to avoid false matches on inline documentation.
 assert "no line uses the canonical kill -- -\$cmd_pid form (quoted or unquoted)" \
-    bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "(^|[^-9])kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
+    bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
 
 # -- Test 22b (meta): simplified kill regex discrimination semantics -----------
 echo ""
