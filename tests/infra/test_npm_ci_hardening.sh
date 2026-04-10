@@ -371,21 +371,10 @@ assert "23b: mismatched packageManager versions -> exit non-zero" \
 # Test 23c: all files use the SAME non-npm@ packageManager (yarn@1.22.0)
 # Check 1 fails (no npm@ prefix); Check 2 still passes (total=3, unique=1 — same value everywhere)
 # Checks 3 and 4 pass because lockfile/.gitignore state is correct
-FIXTURE_23C="$(mktemp -d)"
-_TMPDIRS+=("$FIXTURE_23C")
-
-mkdir -p "$FIXTURE_23C/scripts"
-mkdir -p "$FIXTURE_23C/tests/infra"
-mkdir -p "$FIXTURE_23C/gui/sidecar"
-mkdir -p "$FIXTURE_23C/tree-sitter-reify"
-
-cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_23C/scripts/"
-cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_23C/tests/infra/"
+setup_fixture_dir FIXTURE_23C
 
 # .gitignore: pnpm-lock.yaml gitignored (Check 4 pass); npm lockfiles NOT listed (Check 3 pass)
 echo "gui/pnpm-lock.yaml" > "$FIXTURE_23C/.gitignore"
-
-git -C "$FIXTURE_23C" init -q
 
 # All three files use the SAME non-npm@ value — Check 2 still passes (total=3, unique=1)
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
