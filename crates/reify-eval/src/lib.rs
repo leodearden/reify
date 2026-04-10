@@ -5717,13 +5717,7 @@ mod tests {
         let val = Value::Bool(true);
         let mut values = ValueMap::new();
         values.insert(cell.clone(), val.clone());
-        let groups = vec![GuardedGroupInfo {
-            guard_cell: cell.clone(),
-            members: vec![],
-            constraints: vec![],
-            else_members: vec![],
-            else_constraints: vec![],
-        }];
+        let groups = vec![make_guard_group("E", "g")];
         let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
         let expected = ContentHash::combine_all(std::iter::once(
             ContentHash::of_str(&format!("guard:{}={:?}", cell, val)),
