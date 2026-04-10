@@ -252,156 +252,166 @@ async fn initialize_returns_server_capabilities() {
 
 #[tokio::test]
 async fn did_open_and_completion_returns_items() {
-    let lsp = initialized_lsp().await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
 
-    open_bracket_doc(&lsp).await;
+        open_bracket_doc(&lsp).await;
 
-    // Request completions
-    let result = lsp
-        .handle_request(
-            "textDocument/completion",
-            json!({
-                "textDocument": { "uri": "file:///test.ri" },
-                "position": { "line": 1, "character": 0 }
-            }),
-        )
-        .await
-        .expect("completion should succeed");
+        // Request completions
+        let result = lsp
+            .handle_request(
+                "textDocument/completion",
+                json!({
+                    "textDocument": { "uri": "file:///test.ri" },
+                    "position": { "line": 1, "character": 0 }
+                }),
+            )
+            .await
+            .expect("completion should succeed");
 
-    // Should return completion items in either CompletionResponse variant.
-    let items = completion_items(&result);
-    assert!(
-        !items.is_empty(),
-        "completion should return non-empty items for bracket source"
-    );
+        // Should return completion items in either CompletionResponse variant.
+        let items = completion_items(&result);
+        assert!(
+            !items.is_empty(),
+            "completion should return non-empty items for bracket source"
+        );
+    });
 }
 
 #[tokio::test]
 async fn hover_returns_info_for_known_symbol() {
-    let lsp = initialized_lsp().await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
 
-    open_bracket_doc(&lsp).await;
+        open_bracket_doc(&lsp).await;
 
-    let result = lsp
-        .handle_request(
-            "textDocument/hover",
-            json!({
-                "textDocument": { "uri": "file:///test.ri" },
-                "position": { "line": 1, "character": 10 }
-            }),
-        )
-        .await
-        .expect("hover should succeed");
+        let result = lsp
+            .handle_request(
+                "textDocument/hover",
+                json!({
+                    "textDocument": { "uri": "file:///test.ri" },
+                    "position": { "line": 1, "character": 10 }
+                }),
+            )
+            .await
+            .expect("hover should succeed");
 
-    // Hover should return non-null info for 'width' parameter
-    assert!(
-        !result.is_null(),
-        "hover should return info for known symbol, got null"
-    );
-    assert!(
-        result["contents"].is_object()
-            || result["contents"].is_string()
-            || result["contents"].is_array(),
-        "hover result should have contents"
-    );
+        // Hover should return non-null info for 'width' parameter
+        assert!(
+            !result.is_null(),
+            "hover should return info for known symbol, got null"
+        );
+        assert!(
+            result["contents"].is_object()
+                || result["contents"].is_string()
+                || result["contents"].is_array(),
+            "hover result should have contents"
+        );
+    });
 }
 
 #[tokio::test]
 async fn hover_on_documented_structure_shows_doc_via_bridge() {
-    let lsp = initialized_lsp().await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
 
-    let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
-    lsp.handle_request(
-        "textDocument/didOpen",
-        did_open_params("file:///test.ri", source),
-    )
-    .await
-    .unwrap();
-
-    let result = lsp
-        .handle_request(
-            "textDocument/hover",
-            json!({
-                "textDocument": { "uri": "file:///test.ri" },
-                "position": { "line": 1, "character": 12 }
-            }),
+        let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        lsp.handle_request(
+            "textDocument/didOpen",
+            did_open_params("file:///test.ri", source),
         )
         .await
-        .expect("hover should succeed");
+        .unwrap();
 
-    // Hover should return non-null info containing doc comment
-    assert!(
-        !result.is_null(),
-        "hover should return info for documented structure, got null"
-    );
-    let contents = &result["contents"];
-    let hover_text = contents["value"]
-        .as_str()
-        .unwrap_or_else(|| contents.as_str().unwrap_or(""));
-    assert!(
-        hover_text.contains("A bracket."),
-        "hover should contain doc comment 'A bracket.', got: {hover_text}"
-    );
+        let result = lsp
+            .handle_request(
+                "textDocument/hover",
+                json!({
+                    "textDocument": { "uri": "file:///test.ri" },
+                    "position": { "line": 1, "character": 12 }
+                }),
+            )
+            .await
+            .expect("hover should succeed");
+
+        // Hover should return non-null info containing doc comment
+        assert!(
+            !result.is_null(),
+            "hover should return info for documented structure, got null"
+        );
+        let contents = &result["contents"];
+        let hover_text = contents["value"]
+            .as_str()
+            .unwrap_or_else(|| contents.as_str().unwrap_or(""));
+        assert!(
+            hover_text.contains("A bracket."),
+            "hover should contain doc comment 'A bracket.', got: {hover_text}"
+        );
+    });
 }
 
 #[tokio::test]
 async fn goto_definition_returns_location() {
-    let lsp = initialized_lsp().await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
 
-    open_bracket_doc(&lsp).await;
+        open_bracket_doc(&lsp).await;
 
-    // Position on 'thickness' in a constraint line (line 9, col 15)
-    let result = lsp
-        .handle_request(
-            "textDocument/definition",
-            json!({
-                "textDocument": { "uri": "file:///test.ri" },
-                "position": { "line": 9, "character": 15 }
-            }),
-        )
-        .await
-        .expect("goto-definition should succeed");
+        // Position on 'thickness' in a constraint line (line 9, col 15)
+        let result = lsp
+            .handle_request(
+                "textDocument/definition",
+                json!({
+                    "textDocument": { "uri": "file:///test.ri" },
+                    "position": { "line": 9, "character": 15 }
+                }),
+            )
+            .await
+            .expect("goto-definition should succeed");
 
-    // Should return a location (or null if not found — but for thickness it should find it)
-    assert!(
-        !result.is_null(),
-        "goto-definition should return a location for 'thickness'"
-    );
-    assert!(
-        result["uri"].is_string() || result["targetUri"].is_string(),
-        "goto-definition result should have a URI"
-    );
+        // Should return a location (or null if not found — but for thickness it should find it)
+        assert!(
+            !result.is_null(),
+            "goto-definition should return a location for 'thickness'"
+        );
+        assert!(
+            result["uri"].is_string() || result["targetUri"].is_string(),
+            "goto-definition result should have a URI"
+        );
+    });
 }
 
 #[tokio::test]
 async fn diagnostics_captured_after_did_open_with_syntax_error() {
-    let lsp = initialized_lsp().await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
 
-    // Open a document with a syntax error
-    let broken_source = "structure {";
-    let uri = "file:///broken.ri";
-    lsp.handle_request(
-        "textDocument/didOpen",
-        did_open_params(uri, broken_source),
-    )
-    .await
-    .unwrap();
+        // Open a document with a syntax error
+        let broken_source = "structure {";
+        let uri = "file:///broken.ri";
+        lsp.handle_request(
+            "textDocument/didOpen",
+            did_open_params(uri, broken_source),
+        )
+        .await
+        .unwrap();
 
-    // Get diagnostics from the bridge (async to properly await the RwLock)
-    let diags = lsp.get_diagnostics(uri).await;
-    assert!(
-        !diags.is_empty(),
-        "should have diagnostics for broken source"
-    );
+        // Get diagnostics from the bridge (async to properly await the RwLock)
+        let diags = lsp.get_diagnostics(uri).await;
+        assert!(
+            !diags.is_empty(),
+            "should have diagnostics for broken source"
+        );
 
-    // Check at least one is an error
-    let has_error = diags.iter().any(|d| {
-        d.get("severity")
-            .and_then(|s| s.as_u64())
-            .map(|s| s == 1) // DiagnosticSeverity::ERROR = 1
-            .unwrap_or(false)
+        // Check at least one is an error
+        let has_error = diags.iter().any(|d| {
+            d.get("severity")
+                .and_then(|s| s.as_u64())
+                .map(|s| s == 1) // DiagnosticSeverity::ERROR = 1
+                .unwrap_or(false)
+        });
+        assert!(has_error, "should have at least one error diagnostic");
     });
-    assert!(has_error, "should have at least one error diagnostic");
 }
 
 /// Malformed (non-object) params should return an Err containing
@@ -732,27 +742,29 @@ async fn did_close_with_malformed_params_returns_error() {
 /// realistic open → close lifecycle rather than coupling to lenient missing-URI behavior.
 #[tokio::test]
 async fn did_close_returns_ok_null() {
-    let lsp = initialized_lsp().await;
+    hang_guard!(async {
+        let lsp = initialized_lsp().await;
 
-    open_bracket_doc(&lsp).await;
+        open_bracket_doc(&lsp).await;
 
-    let result = lsp
-        .handle_request(
-            "textDocument/didClose",
-            json!({
-                "textDocument": {
-                    "uri": "file:///test.ri"
-                }
-            }),
-        )
-        .await
-        .expect("didClose should return Ok");
+        let result = lsp
+            .handle_request(
+                "textDocument/didClose",
+                json!({
+                    "textDocument": {
+                        "uri": "file:///test.ri"
+                    }
+                }),
+            )
+            .await
+            .expect("didClose should return Ok");
 
-    assert_eq!(
-        result,
-        serde_json::Value::Null,
-        "didClose should return exactly Ok(Value::Null)"
-    );
+        assert_eq!(
+            result,
+            serde_json::Value::Null,
+            "didClose should return exactly Ok(Value::Null)"
+        );
+    });
 }
 
 /// The `shutdown` request should return exactly `Ok(Value::Null)`.
