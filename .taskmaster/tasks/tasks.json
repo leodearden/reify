@@ -30039,15 +30039,16 @@
         "description": "The existing test `sub_member_type_resolves_without_ice` only covers collection subs (List<Inner>). The sub_member_types lookup change at expr.rs:1508 was specifically to fix non-collection sub instance qualified access, but there is no test proving a non-collection sub's `self.sub.(Trait::member)` resolves its type correctly without an ICE.\n\nAdd a test case with a non-collection sub that uses instance qualified access (e.g., `self.motor.(PowerTrait::output)` where `motor` is a plain sub, not a collection) to prove the fix works and prevent regression.\n\nMemory hints: search \"sub_member_type_resolves_without_ice test collection sub\" for the existing test pattern.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T02:24:36.715Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:24:34.550Z",
+      "lastModified": "2026-04-10T02:24:36.715Z",
       "taskCount": 1455,
       "completedCount": 1128,
       "tags": [
