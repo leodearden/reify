@@ -29719,11 +29719,11 @@
         "description": "The sanitize_value characterization tests in helpers.rs and sanitize.rs are manually mirrored (SYNC comment). Manual sync is fragile — both copies can drift silently. Consider one of: (a) a shared test macro (e.g., `sanitize_value_tests!()`) in a shared test-utilities module that both crates invoke, (b) extending the existing sync_comments_test.sh CI check to also diff/validate the test blocks, or (c) some other mechanism to detect test-block drift.\n\nRelated: Task 1065 (harden meta-test against drift) covers the function bodies; this task is specifically about the *test* blocks drifting.\n\nMemory hints: search \"sync_comments_test.sh sanitize_value\", search \"Task 1065 meta-test drift\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T01:31:49.386Z",
+        "updatedAt": "2026-04-10T02:05:44.023Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib/src",
@@ -29904,7 +29904,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T02:05:08.645Z",
+      "lastModified": "2026-04-10T02:05:44.023Z",
       "taskCount": 1447,
       "completedCount": 1117,
       "tags": [
