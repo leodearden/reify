@@ -282,6 +282,17 @@ printf '{\n  "packageManager": "npm@10.1.0"\n}\n' > "$FIX_DIR/case_d/p3.json"
 assert "Check 2 logic rejects differing packageManager versions" \
     bash -c "! '$CHECK2_HELPER' '$FIX_DIR/case_d/p1.json' '$FIX_DIR/case_d/p2.json' '$FIX_DIR/case_d/p3.json'"
 
+# Case E: four files all agreeing → PASS (proves dynamic count works for N≠3)
+# This fails until CHECK2_HELPER uses expected=$# instead of hardcoded '3'.
+mkdir -p "$FIX_DIR/case_e"
+for i in 1 2 3 4; do
+    printf '{\n  "packageManager": "npm@10.0.0"\n}\n' > "$FIX_DIR/case_e/p${i}.json"
+done
+assert "Check 2 logic accepts four files all agreeing on packageManager (N≠3)" \
+    "$CHECK2_HELPER" \
+    "$FIX_DIR/case_e/p1.json" "$FIX_DIR/case_e/p2.json" \
+    "$FIX_DIR/case_e/p3.json" "$FIX_DIR/case_e/p4.json"
+
 # -- Test 22: script derives PKG_COUNT dynamically from PKG_FILES (task 1366) -
 echo ""
 echo "--- Test 22: script derives PKG_COUNT dynamically from PKG_FILES ---"
