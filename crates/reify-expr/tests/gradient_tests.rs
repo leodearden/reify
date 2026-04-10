@@ -131,13 +131,15 @@ fn test_assert_gradient_vector_accepts_matching_vector() {
 
 /// Characterization test: `assert_gradient_vector` panics on a non-Vector value.
 ///
-/// Calls the helper with Value::Undef; the helper's `_ =>` arm must panic.
+/// Calls the helper with Value::Real(1.0); the helper's `_ =>` arm must panic.
 /// This mirrors the `_ => panic!(...)` branch present in the inline code we
 /// are about to replace, ensuring the helper covers that error path.
+/// (Uses Real rather than Undef so that the Undef branch added later does not
+/// intercept this test and break catch-all arm coverage.)
 #[test]
 #[should_panic(expected = "expected Value::Vector")]
 fn test_assert_gradient_vector_panics_on_non_vector() {
-    assert_gradient_vector(&Value::Undef, &[1.0, 2.0, 3.0], 1e-4, "non-vector");
+    assert_gradient_vector(&Value::Real(1.0), &[1.0, 2.0, 3.0], 1e-4, "non-vector");
 }
 
 /// Characterization test: `assert_gradient_vector` accepts a within-tolerance Value::Vector.
