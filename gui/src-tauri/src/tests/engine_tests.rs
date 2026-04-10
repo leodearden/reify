@@ -961,6 +961,33 @@ fn get_source_location_returns_none_without_module() {
     );
 }
 
+/// get_source_location returns None when module_name has been cleared (broken invariant).
+///
+/// Focused regression complement to the bundled `resolve_source_fallback_when_module_name_missing`
+/// test (line 1168), which asserts both get_diagnostics and get_source_location in one test.
+/// This dedicated test provides independent failure attribution for get_source_location alone:
+/// if get_source_location regresses while get_diagnostics remains intact, this test reports
+/// against the right method. Parallels the focused `resolve_source_returns_none_when_module_name_broken`
+/// test (line 1823) which checks the resolve_source helper directly.
+#[test]
+fn get_source_location_returns_none_when_module_name_broken() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Deliberately break the module_name invariant while leaving compiled and source_map intact.
+    session.break_module_name_for_test();
+
+    let loc = session.get_source_location("Bracket.width");
+    assert!(
+        loc.is_none(),
+        "get_source_location should return None when module_name is broken"
+    );
+}
+
 /// get_diagnostics and get_source_location return the same file key.
 ///
 /// After load_from_source with a warning-producing source, both methods must resolve
