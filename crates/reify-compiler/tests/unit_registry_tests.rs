@@ -1629,6 +1629,81 @@ fn prelude_unit_collision_diagnostic_mentions_stdlib() {
     }
 }
 
+// ── step-1 (task-1074): cross-module user unit collision blames source module ───
+
+/// When a module-local unit shadows a unit from a user module (not stdlib),
+/// the diagnostic should:
+/// (a) NOT contain 'stdlib',
+/// (b) mention the source module name ('dep'),
+/// (c) have no label with SourceSpan::empty(0).
+#[test]
+fn cross_module_user_unit_collision_blames_source_module() {
+    // Build a 'dep' module with a pub unit 'myunit'
+    let dep_parsed = reify_syntax::parse(
+        "pub unit myunit : Length = 0.001",
+        ModulePath::single("dep"),
+    );
+    assert!(
+        dep_parsed.errors.is_empty(),
+        "parse errors in dep: {:?}",
+        dep_parsed.errors
+    );
+    let dep_module = compile(&dep_parsed);
+    assert!(
+        errors_only(&dep_module).is_empty(),
+        "dep compilation errors: {:?}",
+        errors_only(&dep_module)
+    );
+
+    // User module redeclares 'myunit' — dep module is used as prelude
+    let user_parsed = reify_syntax::parse(
+        "unit myunit : Length = 0.002",
+        ModulePath::single("user_module"),
+    );
+    assert!(
+        user_parsed.errors.is_empty(),
+        "parse errors in user: {:?}",
+        user_parsed.errors
+    );
+    let user_module = compile_with_prelude(&user_parsed, &[dep_module]);
+    let errors = errors_only(&user_module);
+
+    // (1) At least one error mentions 'duplicate' and 'myunit'
+    let dup_diag = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate") && d.message.contains("myunit"));
+    assert!(
+        dup_diag.is_some(),
+        "expected a 'duplicate' error mentioning 'myunit', got: {:?}",
+        errors
+    );
+    let dup_diag = dup_diag.unwrap();
+
+    // (a) The error message should NOT contain 'stdlib'
+    assert!(
+        !dup_diag.message.contains("stdlib"),
+        "diagnostic should NOT mention 'stdlib' for user module collision, got: {:?}",
+        dup_diag.message
+    );
+
+    // (b) The error message should mention the source module name 'dep'
+    assert!(
+        dup_diag.message.contains("dep"),
+        "diagnostic should mention 'dep' module name, got: {:?}",
+        dup_diag.message
+    );
+
+    // (c) No label should have SourceSpan::empty(0)
+    let empty_span = SourceSpan::empty(0);
+    for label in &dup_diag.labels {
+        assert_ne!(
+            label.span, empty_span,
+            "diagnostic label '{}' has SourceSpan::empty(0) — misleading offset",
+            label.message
+        );
+    }
+}
+
 // ── step-7 (task-416): affine unit referencing another affine unit is rejected ─
 
 #[test]
