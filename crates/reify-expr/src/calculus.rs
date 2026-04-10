@@ -1800,4 +1800,30 @@ mod tests {
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_none());
     }
+
+    // --- dimensionless_fallback unit tests ---
+
+    #[test]
+    fn dimensionless_fallback_dimensionless_scalar_returns_real() {
+        let ty = Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(dimensionless_fallback(&ty), Type::Real);
+    }
+
+    #[test]
+    fn dimensionless_fallback_length_scalar_returns_clone() {
+        let ty = Type::length();
+        assert_eq!(dimensionless_fallback(&ty), ty.clone());
+    }
+
+    #[test]
+    fn dimensionless_fallback_real_returns_real() {
+        assert_eq!(dimensionless_fallback(&Type::Real), Type::Real);
+    }
+
+    #[test]
+    fn dimensionless_fallback_int_returns_int() {
+        assert_eq!(dimensionless_fallback(&Type::Int), Type::Int);
+    }
 }
