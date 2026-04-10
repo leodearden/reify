@@ -749,6 +749,7 @@ fn mcp_server_get_parameters_distinguishes_auto_free_kind() {
         .expect("content[0].text should be a string");
     let params: Vec<serde_json::Value> =
         serde_json::from_str(text).expect("content should be JSON array of parameters");
+    assert_eq!(params.len(), 3, "expected exactly 3 parameters");
 
     // Locate the three params by name
     let width_param = params

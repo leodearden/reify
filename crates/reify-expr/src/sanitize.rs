@@ -18,10 +18,8 @@ use reify_types::Value;
 // SYNC: mirror of reify-stdlib::sanitize_value — keep in sync
 pub(crate) fn sanitize_value(v: Value) -> Value {
     match &v {
-        Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
-        Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
-            Value::Undef
-        }
+        Value::Real(x) if !x.is_finite() => Value::Undef,
+        Value::Scalar { si_value, .. } if !si_value.is_finite() => Value::Undef,
         Value::Complex { re, im, .. } if !re.is_finite() || !im.is_finite() => Value::Undef,
         Value::Orientation { w, x, y, z }
             if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() =>
@@ -37,6 +35,8 @@ mod tests {
     use reify_types::DimensionVector;
 
     use super::*;
+
+    // SYNC: sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync
 
     // ── sanitize_value direct unit tests ─────────────────────────────────────
 

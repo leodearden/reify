@@ -33,9 +33,10 @@ use crate::types::{
 /// returns `None`, and `get_diagnostics` / `get_source_location` degrade
 /// gracefully rather than panicking.
 ///
-/// **Current safe mutation sites:** `load_from_source` (lines ~56–101) and
-/// `update_source` (lines ~189–198) — both defer all field writes until after
-/// parse and compile succeed, so they maintain the invariant atomically.
+/// **Current safe mutation sites:** `load_from_source` and `update_source` both
+/// delegate all field writes to `commit_state`, which is the single atomic commit
+/// point.  Neither method touches `compiled`/`module_name`/`source_map` until
+/// after parse, compile, and check have all succeeded.
 pub struct EngineSession {
     engine: Engine,
     compiled: Option<CompiledModule>,
@@ -108,12 +109,7 @@ impl EngineSession {
         let check_result = self.engine.check(&compiled);
 
         // Atomically commit all state after check() succeeds.
-        self.source_map.clear();
-        self.source_map
-            .insert(module_key(module_name), source.to_string());
-        self.module_name = Some(module_name.to_string());
-        self.compiled = Some(compiled);
-        self.last_check = Some(check_result);
+        self.commit_state(compiled, check_result, module_name, source);
 
         self.build_gui_state()
     }
@@ -210,14 +206,35 @@ impl EngineSession {
         let check_result = self.engine.check(&compiled);
 
         // Atomically commit all state after check() succeeds.
-        let normalized_key = module_key(module_name);
+        self.commit_state(compiled, check_result, module_name, content);
+
+        self.build_gui_state()
+    }
+
+    /// Atomically commit all session state after a successful parse+compile+check cycle.
+    ///
+    /// This helper enforces the invariant that `compiled`, `module_name`, and
+    /// `source_map` always change together: either all five fields are updated or
+    /// none are.  Callers **must** only invoke this after both compilation and
+    /// `check()` have succeeded — invoking it on a partially-valid state would
+    /// violate the invariant.
+    ///
+    /// The five-field assignment was previously duplicated in `load_from_source`
+    /// and `update_source`; centralising it here prevents the two sites from
+    /// drifting apart.
+    fn commit_state(
+        &mut self,
+        compiled: CompiledModule,
+        check_result: CheckResult,
+        module_name: &str,
+        source: &str,
+    ) {
         self.source_map.clear();
-        self.source_map.insert(normalized_key, content.to_string());
+        self.source_map
+            .insert(module_key(module_name), source.to_string());
         self.module_name = Some(module_name.to_string());
         self.compiled = Some(compiled);
         self.last_check = Some(check_result);
-
-        self.build_gui_state()
     }
 
     /// Export geometry to a file.
@@ -317,14 +334,22 @@ impl EngineSession {
         }
 
         // Resolve file_path and source text via the shared helper.
-        // Returns None if no module is loaded or if the invariant is broken
-        // (e.g., in tests via break_module_name_for_test); in that case we
-        // return an empty vec rather than panicking.
+        // Returns None only when the invariant is broken (module_name or
+        // source_map out of sync with compiled) — e.g., via break_*_for_test.
+        // In debug builds we catch this loudly so stale-state bugs surface
+        // immediately during development; release builds still return an empty
+        // vec for graceful degradation (debug_assert is a no-op there).
         // NOTE: Assumes all diagnostic spans refer to the single loaded source
         // file — file_path from multi-file diagnostics would need threading here.
         let (file_path, source) = match self.resolve_source() {
             Some(pair) => pair,
-            None => return Vec::new(),
+            None => {
+                debug_assert!(
+                    false,
+                    "resolve_source returned None with non-empty diagnostics — invariant broken"
+                );
+                return Vec::new();
+            }
         };
 
         // Build the newline table once (O(M)) so each span lookup is O(log M).

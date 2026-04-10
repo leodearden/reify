@@ -11,6 +11,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+_TMPDIRS=()
+cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
+
 echo "=== npm ci hardening tests ==="
 
 # -- Test 1: check-pm-standardization.sh location ----------------------------
@@ -77,18 +81,18 @@ assert "Check 1 grep pattern includes 'npm@' prefix match" \
 echo ""
 echo "--- Test 6: script has cross-file packageManager consistency check ---"
 
-assert "script contains 'sort -u' for cross-file consistency comparison" \
-    grep -q 'sort -u' "$SCRIPT"
+assert "Check 2 block uses 'sort -u' for cross-file consistency comparison" \
+    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'sort -u'"
 
-assert "script references 'packageManager' in consistency logic" \
-    grep -q 'packageManager' "$SCRIPT"
+assert "Check 2 block references 'packageManager' in consistency logic" \
+    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'packageManager'"
 
 # -- Test 7: git check-ignore is NOT called inside a for loop ----------------
 echo ""
 echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
 
 assert "bare git check-ignore (without -v) is not inside for/done loops" \
-    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for /,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
+    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for [^;]*; *do/,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
 
 # -- Test 8: wc -l output is stripped for cross-platform portability ----------
 echo ""
@@ -97,8 +101,8 @@ echo "--- Test 8: wc -l output has whitespace stripped (cross-platform) ---"
 assert "script does not use bare 'wc -l)' without whitespace stripping" \
     bash -c "! grep -qE 'wc -l\)' '$SCRIPT'"
 
-assert "script uses 'tr -d' to strip wc whitespace" \
-    grep -q 'tr -d' "$SCRIPT"
+assert "script pipes 'wc -l' into 'tr -d' to strip whitespace" \
+    grep -qE 'wc -l[[:space:]]*\|[[:space:]]*tr -d' "$SCRIPT"
 
 # -- Test 9: orchestrator command placement and existence guards ---------------
 echo ""
@@ -195,21 +199,21 @@ echo "--- Test 18: Check 2 subshell enables set -euo pipefail ---"
 assert "Check 2 subshell enables set -euo pipefail" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'set -euo pipefail'"
 
-# -- Test 19: Check 2 has dual total==3 AND unique==1 assertion (task 1326) --
+# -- Test 19: Check 2 has dual total==PKG_COUNT AND unique==1 assertion (task 1366) --
 echo ""
 echo "--- Test 19: Check 2 has pre-dedup and post-dedup count assertions ---"
 
-# Without the pre-dedup total==3 assertion, a package.json missing the
-# packageManager field would be silently accepted: grep emits 2 matching lines,
-# but `sort -u` still collapses them to 1 unique line.
+# Without the pre-dedup total==PKG_COUNT assertion, a package.json missing the
+# packageManager field would be silently accepted: grep emits fewer matching
+# lines, but `sort -u` still collapses them to 1 unique line.
 assert "Check 2 block computes a pre-dedup 'total' variable" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'total='"
 
 assert "Check 2 block computes a post-dedup 'unique' variable" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'unique='"
 
-assert "Check 2 asserts total equals 3 (catches missing packageManager field)" \
-    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q \"total.* = '3'\""
+assert "Check 2 total assertion references \$PKG_COUNT not a literal number (task 1366)" \
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -qF '\$PKG_COUNT'"
 
 assert "Check 2 asserts unique equals 1 (catches version disagreement)" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q \"unique.* = '1'\""
@@ -231,22 +235,23 @@ echo "--- Test 21: Check 2 logic rejects both bug scenarios ---"
 # These tests reproduce the Check 2 subshell logic exactly and run it against
 # mktemp fixture directories, independent of the real repo paths. This proves
 # the pattern catches both regression modes described in task 1326:
-#   bug 1: file missing the packageManager field → total==2, unique==1 → fail
+#   bug 1: file missing the packageManager field → total < PKG_COUNT, unique==1 → fail
 #   bug 2: file missing entirely → preflight / set -euo pipefail → fail
 FIX_DIR="$(mktemp -d)"
-trap 'rm -rf "${FIX_DIR:?}"' EXIT
+_TMPDIRS+=("$FIX_DIR")
 
 CHECK2_HELPER="$FIX_DIR/check2_logic.sh"
 cat > "$CHECK2_HELPER" <<'CHECK2EOF'
 #!/usr/bin/env bash
 # Mirror of scripts/check-pm-standardization.sh Check 2 subshell body.
 set -euo pipefail
+expected=$#
 for f in "$@"; do
     [ -f "$f" ] || exit 1
 done
 total=$(grep -ohE '"packageManager"\s*:\s*"[^"]+"' "$@" | wc -l | tr -d ' ')
 unique=$(grep -ohE '"packageManager"\s*:\s*"[^"]+"' "$@" | sort -u | wc -l | tr -d ' ')
-[ "$total" = '3' ] && [ "$unique" = '1' ]
+[ "$total" = "$expected" ] && [ "$unique" = '1' ]
 CHECK2EOF
 chmod +x "$CHECK2_HELPER"
 
@@ -282,12 +287,39 @@ printf '{\n  "packageManager": "npm@10.1.0"\n}\n' > "$FIX_DIR/case_d/p3.json"
 assert "Check 2 logic rejects differing packageManager versions" \
     bash -c "! '$CHECK2_HELPER' '$FIX_DIR/case_d/p1.json' '$FIX_DIR/case_d/p2.json' '$FIX_DIR/case_d/p3.json'"
 
-# -- Test 22: behavioral integration tests (task 1328) ------------------------
+# Case E: four files all agreeing → PASS (proves dynamic count works for N≠3)
+# This fails until CHECK2_HELPER uses expected=$# instead of hardcoded '3'.
+mkdir -p "$FIX_DIR/case_e"
+for i in 1 2 3 4; do
+    printf '{\n  "packageManager": "npm@10.0.0"\n}\n' > "$FIX_DIR/case_e/p${i}.json"
+done
+assert "Check 2 logic accepts four files all agreeing on packageManager (N≠3)" \
+    "$CHECK2_HELPER" \
+    "$FIX_DIR/case_e/p1.json" "$FIX_DIR/case_e/p2.json" \
+    "$FIX_DIR/case_e/p3.json" "$FIX_DIR/case_e/p4.json"
+
+# -- Test 22: script derives PKG_COUNT dynamically from PKG_FILES (task 1366) -
 echo ""
-echo "--- Test 22: behavioral integration tests ---"
+echo "--- Test 22: script derives PKG_COUNT dynamically from PKG_FILES ---"
+
+# The magic number '3' in Check 2's total assertion must be replaced by a
+# PKG_COUNT variable that is computed from PKG_FILES so that adding a new
+# package.json path to PKG_FILES automatically adjusts the assertion.
+assert "script uses 'set -- \$PKG_FILES' to load positional parameters" \
+    bash -c "grep -qE 'set -- \\\$PKG_FILES' '$SCRIPT'"
+
+assert "script derives PKG_COUNT from positional parameter count (PKG_COUNT=\$#)" \
+    bash -c "grep -qE 'PKG_COUNT=\\\$#' '$SCRIPT'"
+
+assert "Check 2 block references PKG_COUNT in the total assertion" \
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'PKG_COUNT'"
+
+# -- Test 23: behavioral integration tests (task 1328) ------------------------
+echo ""
+echo "--- Test 23: behavioral integration tests ---"
 
 FIXTURE_DIR="$(mktemp -d)"
-trap 'rm -rf "$FIXTURE_DIR" "${FIX_DIR:?}"' EXIT
+_TMPDIRS+=("$FIXTURE_DIR")
 
 # Create directory layout mirroring the repo structure expected by the script
 mkdir -p "$FIXTURE_DIR/scripts"
@@ -305,74 +337,102 @@ echo "gui/pnpm-lock.yaml" > "$FIXTURE_DIR/.gitignore"
 # Initialize a git repo so 'git check-ignore' works inside Check 3
 git -C "$FIXTURE_DIR" init -q
 
-# Write consistent packageManager versions for Test 22a
+# Write consistent packageManager versions for Test 23a
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
     printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_DIR/$pkg"
 done
 
-# Test 22a: all files agree on the same version -> script exits 0
-assert "22a: consistent packageManager versions -> exit 0" \
+# Test 23a: all files agree on the same version -> script exits 0
+assert "23a: consistent packageManager versions -> exit 0" \
     bash -c "cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh"
 
-# Test 22b: introduce a version mismatch -> script exits non-zero
+# Test 23b: introduce a version mismatch -> script exits non-zero
 printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/package.json"
 
-assert "22b: mismatched packageManager versions -> exit non-zero" \
+assert "23b: mismatched packageManager versions -> exit non-zero" \
     bash -c "! (cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh)"
 
-# Test 22c: all files use the SAME non-npm@ packageManager (yarn@1.22.0)
+# Test 23c: all files use the SAME non-npm@ packageManager (yarn@1.22.0)
 # Check 1 fails (no npm@ prefix); Check 2 still passes (total=3, unique=1 — same value everywhere)
 # Checks 3 and 4 pass because lockfile/.gitignore state is correct
-FIXTURE_22C="$(mktemp -d)"
-trap 'rm -rf "$FIXTURE_DIR" "$FIXTURE_22C" "${FIX_DIR:?}"' EXIT
+FIXTURE_23C="$(mktemp -d)"
+_TMPDIRS+=("$FIXTURE_23C")
 
-mkdir -p "$FIXTURE_22C/scripts"
-mkdir -p "$FIXTURE_22C/tests/infra"
-mkdir -p "$FIXTURE_22C/gui/sidecar"
-mkdir -p "$FIXTURE_22C/tree-sitter-reify"
+mkdir -p "$FIXTURE_23C/scripts"
+mkdir -p "$FIXTURE_23C/tests/infra"
+mkdir -p "$FIXTURE_23C/gui/sidecar"
+mkdir -p "$FIXTURE_23C/tree-sitter-reify"
 
-cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_22C/scripts/"
-cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_22C/tests/infra/"
+cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_23C/scripts/"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_23C/tests/infra/"
 
 # .gitignore: pnpm-lock.yaml gitignored (Check 4 pass); npm lockfiles NOT listed (Check 3 pass)
-echo "gui/pnpm-lock.yaml" > "$FIXTURE_22C/.gitignore"
+echo "gui/pnpm-lock.yaml" > "$FIXTURE_23C/.gitignore"
 
-git -C "$FIXTURE_22C" init -q
+git -C "$FIXTURE_23C" init -q
 
 # All three files use the SAME non-npm@ value — Check 2 still passes (total=3, unique=1)
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
-    printf '{"packageManager":"yarn@1.22.0"}\n' > "$FIXTURE_22C/$pkg"
+    printf '{"packageManager":"yarn@1.22.0"}\n' > "$FIXTURE_23C/$pkg"
 done
 
-assert "22c: non-npm@ packageManager (yarn@1.22.0 in all files) -> exit non-zero (Check 1 fails)" \
-    bash -c "! (cd '$FIXTURE_22C' && bash scripts/check-pm-standardization.sh)"
+assert "23c: non-npm@ packageManager (yarn@1.22.0 in all files) -> exit non-zero (Check 1 fails)" \
+    bash -c "! (cd '$FIXTURE_23C' && bash scripts/check-pm-standardization.sh)"
 
-# Test 22d: consistent npm@ versions but gui/package-lock.json gitignored
+# Test 23d: consistent npm@ versions but gui/package-lock.json gitignored
 # Checks 1 and 2 pass (npm@10.9.0 in all files, total=3, unique=1)
 # Check 3 fails (.gitignore lists gui/package-lock.json so git check-ignore returns 0)
 # Check 4 passes (gui/pnpm-lock.yaml still in .gitignore)
-FIXTURE_22D="$(mktemp -d)"
-trap 'rm -rf "$FIXTURE_DIR" "$FIXTURE_22C" "$FIXTURE_22D" "${FIX_DIR:?}"' EXIT
+FIXTURE_23D="$(mktemp -d)"
+_TMPDIRS+=("$FIXTURE_23D")
 
-mkdir -p "$FIXTURE_22D/scripts"
-mkdir -p "$FIXTURE_22D/tests/infra"
-mkdir -p "$FIXTURE_22D/gui/sidecar"
-mkdir -p "$FIXTURE_22D/tree-sitter-reify"
+mkdir -p "$FIXTURE_23D/scripts"
+mkdir -p "$FIXTURE_23D/tests/infra"
+mkdir -p "$FIXTURE_23D/gui/sidecar"
+mkdir -p "$FIXTURE_23D/tree-sitter-reify"
 
-cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_22D/scripts/"
-cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_22D/tests/infra/"
+cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_23D/scripts/"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_23D/tests/infra/"
 
 # .gitignore: BOTH pnpm-lock.yaml (Check 4 pass) AND gui/package-lock.json (Check 3 fail)
-printf 'gui/pnpm-lock.yaml\ngui/package-lock.json\n' > "$FIXTURE_22D/.gitignore"
+printf 'gui/pnpm-lock.yaml\ngui/package-lock.json\n' > "$FIXTURE_23D/.gitignore"
 
-git -C "$FIXTURE_22D" init -q
+git -C "$FIXTURE_23D" init -q
 
 # All three files use consistent npm@10.9.0 — Checks 1 and 2 pass
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
-    printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_22D/$pkg"
+    printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_23D/$pkg"
 done
 
-assert "22d: gui/package-lock.json gitignored -> exit non-zero (Check 3 fails)" \
-    bash -c "! (cd '$FIXTURE_22D' && bash scripts/check-pm-standardization.sh)"
+assert "23d: gui/package-lock.json gitignored -> exit non-zero (Check 3 fails)" \
+    bash -c "! (cd '$FIXTURE_23D' && bash scripts/check-pm-standardization.sh)"
+
+# -- Test 24: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ----------
+echo ""
+echo "--- Test 24: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ---"
+
+assert "LOCK_FILES is defined before the first 'Check 1:' echo" \
+    bash -c "
+        lock_line=\$(grep -n '^LOCK_FILES=' '$SCRIPT' | head -1 | cut -d: -f1)
+        check1_line=\$(grep -n 'echo \"Check 1:' '$SCRIPT' | head -1 | cut -d: -f1)
+        [ -n \"\$lock_line\" ] && [ -n \"\$check1_line\" ] && [ \"\$lock_line\" -lt \"\$check1_line\" ]
+    "
+
+# -- Test 25: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ----------
+echo ""
+echo "--- Test 25: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ---"
+
+FIXTURE24="$(mktemp -d)"
+_TMPDIRS+=("$FIXTURE24")
+mkdir -p "$FIXTURE24/scripts" "$FIXTURE24/tests/infra"
+cp "$SCRIPT" "$FIXTURE24/scripts/check-pm-standardization.sh"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE24/tests/infra/test_helpers.sh"
+git -C "$FIXTURE24" init -q
+git -C "$FIXTURE24" config user.email "test@test.com"
+git -C "$FIXTURE24" config user.name "Test"
+printf 'gui/package-lock.json\n' > "$FIXTURE24/.gitignore"
+
+assert "Check 3 emits DIAGNOSTIC: when gui/package-lock.json is gitignored" \
+    bash -c "bash '$FIXTURE24/scripts/check-pm-standardization.sh' 2>&1 | grep -q 'DIAGNOSTIC:'"
 
 test_summary
