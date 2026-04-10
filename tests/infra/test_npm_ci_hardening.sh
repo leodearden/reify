@@ -11,6 +11,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+_TMPDIRS=()
+cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
+
 echo "=== npm ci hardening tests ==="
 
 # -- Test 1: check-pm-standardization.sh location ----------------------------
@@ -234,7 +238,7 @@ echo "--- Test 21: Check 2 logic rejects both bug scenarios ---"
 #   bug 1: file missing the packageManager field → total==2, unique==1 → fail
 #   bug 2: file missing entirely → preflight / set -euo pipefail → fail
 FIX_DIR="$(mktemp -d)"
-trap 'rm -rf "${FIX_DIR:?}"' EXIT
+_TMPDIRS+=("$FIX_DIR")
 
 CHECK2_HELPER="$FIX_DIR/check2_logic.sh"
 cat > "$CHECK2_HELPER" <<'CHECK2EOF'
@@ -287,7 +291,7 @@ echo ""
 echo "--- Test 22: behavioral integration tests ---"
 
 FIXTURE_DIR="$(mktemp -d)"
-trap 'rm -rf "$FIXTURE_DIR" "${FIX_DIR:?}"' EXIT
+_TMPDIRS+=("$FIXTURE_DIR")
 
 # Create directory layout mirroring the repo structure expected by the script
 mkdir -p "$FIXTURE_DIR/scripts"
@@ -319,5 +323,33 @@ printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/pack
 
 assert "22b: mismatched packageManager versions -> exit non-zero" \
     bash -c "! (cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh)"
+
+# -- Test 23: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ----------
+echo ""
+echo "--- Test 23: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ---"
+
+assert "LOCK_FILES is defined before the first 'Check 1:' echo" \
+    bash -c "
+        lock_line=\$(grep -n '^LOCK_FILES=' '$SCRIPT' | head -1 | cut -d: -f1)
+        check1_line=\$(grep -n 'echo \"Check 1:' '$SCRIPT' | head -1 | cut -d: -f1)
+        [ -n \"\$lock_line\" ] && [ -n \"\$check1_line\" ] && [ \"\$lock_line\" -lt \"\$check1_line\" ]
+    "
+
+# -- Test 24: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ----------
+echo ""
+echo "--- Test 24: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ---"
+
+FIXTURE24="$(mktemp -d)"
+_TMPDIRS+=("$FIXTURE24")
+mkdir -p "$FIXTURE24/scripts" "$FIXTURE24/tests/infra"
+cp "$SCRIPT" "$FIXTURE24/scripts/check-pm-standardization.sh"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE24/tests/infra/test_helpers.sh"
+git -C "$FIXTURE24" init -q
+git -C "$FIXTURE24" config user.email "test@test.com"
+git -C "$FIXTURE24" config user.name "Test"
+printf 'gui/package-lock.json\n' > "$FIXTURE24/.gitignore"
+
+assert "Check 3 emits DIAGNOSTIC: when gui/package-lock.json is gitignored" \
+    bash -c "bash '$FIXTURE24/scripts/check-pm-standardization.sh' 2>&1 | grep -q 'DIAGNOSTIC:'"
 
 test_summary
