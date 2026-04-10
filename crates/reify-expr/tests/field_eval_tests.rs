@@ -521,6 +521,13 @@ fn gradient_of_field_with_non_numeric_lambda() {
 ///
 /// The debug-mode counterpart is
 /// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`.
+///
+/// NOTE: This test is gated on `#[cfg(not(debug_assertions))]` and is therefore
+/// **excluded from `cargo test`** (which compiles with debug_assertions enabled).
+/// It only runs under `cargo test --release`. The orchestrator (`orchestrator.yaml`)
+/// always runs both a debug pass and a release pass, so CI coverage for this test
+/// is preserved. The sibling debug-mode test is
+/// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`.
 #[cfg(not(debug_assertions))]
 #[test]
 fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
@@ -555,6 +562,13 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
 ///
 /// `Type::String` is not a valid gradient codomain — the debug_assert in the
 /// result_dim match fires before any numeric work begins.
+///
+/// NOTE: This test is gated on `#[cfg(debug_assertions)]` and is therefore
+/// **excluded from `cargo test --release`**. It only runs under `cargo test`
+/// (debug mode). The orchestrator (`orchestrator.yaml`) always runs both a debug
+/// pass and a release pass, so CI coverage for this test is preserved. The sibling
+/// release-mode test is
+/// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`.
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "unexpected codomain_type")]
