@@ -73,6 +73,6 @@ assert "Test 6 grep targets REPO_ROOT as sole path (no subdirectory)" \
     bash -c "grep -qE '^\s+grep -rq.*REPO_ROOT\"[[:space:]]' \"$THIS_FILE\""
 
 assert "Test 6 uses workspace-wide recursive grep with --include flag" \
-    bash -c "grep -qE '^    grep -rq.*REPO_ROOT.*--include=' \"$THIS_FILE\""
+    bash -c "grep -qE '^\s+grep -rq.*REPO_ROOT.*--include=' \"$THIS_FILE\""
 
 test_summary
