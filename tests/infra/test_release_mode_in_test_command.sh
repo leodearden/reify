@@ -69,8 +69,8 @@ echo "--- Test 7: Test 6 is path-agnostic (structural self-check) ---"
 
 THIS_FILE="${BASH_SOURCE[0]}"
 
-assert "Test 6 assert does not reference a specific file path" \
-    bash -c "! grep -qE '^assert.*engine_tests' \"$THIS_FILE\""
+assert "Test 6 grep targets REPO_ROOT as sole path (no subdirectory)" \
+    bash -c "grep -qE '^\s+grep -rq.*REPO_ROOT\"[[:space:]]' \"$THIS_FILE\""
 
 assert "Test 6 uses workspace-wide recursive grep with --include flag" \
     bash -c "grep -qE '^    grep -rq.*REPO_ROOT.*--include=' \"$THIS_FILE\""
