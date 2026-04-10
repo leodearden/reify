@@ -32703,11 +32703,11 @@
         "description": "The expand_task and parse_prd tools generate new tasks without checking for existing tasks with identical or near-identical titles. This has caused confirmed duplicate task generation across multiple reconciliation cycles (e.g., tasks 1535, 1537, and 1574 were all identical). Fix the deduplication logic so that before generating a new task, the system checks for existing tasks (including completed/cancelled ones) with the same title or semantically equivalent content.",
         "details": "Root cause: expand_task/parse_prd do not perform deduplication checks against existing tasks before creating new ones. This is documented across ≥2 reconciliation cycles (mem0 IDs: 8e68940b-b8f7-428b-8034-5409b459c10c, 246423bd).\n\nSteps:\n1. Locate the expand_task and parse_prd tool implementations in the fused-memory MCP server.\n2. Add a pre-creation check that queries existing tasks (all statuses) for title/description similarity.\n3. If a duplicate is found, skip creation and optionally log the dedup event.\n4. Consider semantic similarity (not just exact match) to catch near-duplicate phrasings.\n5. Write a regression test that verifies re-running expand_task on an already-expanded task does not create duplicates.\n\nmemory_hints:\n- queries: [\"expand_task parse_prd duplicate task generation\", \"task deduplication reconciliation cycles\", \"systemic duplicate task generation pattern\"]",
         "testStrategy": "",
-        "status": "cancelled",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:43:21.885Z"
+        "updatedAt": "2026-04-10T17:23:44.093Z"
       },
       {
         "id": "1608",
@@ -32821,9 +32821,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T17:22:35.426Z",
+      "lastModified": "2026-04-10T17:23:44.116Z",
       "taskCount": 1613,
-      "completedCount": 1239,
+      "completedCount": 1240,
       "tags": [
         "master"
       ]
