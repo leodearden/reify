@@ -32673,7 +32673,7 @@
         "description": "Follow-up from task 1473 review: In tests/infra/test_portable_timeout.sh, change grep -c to grep -cF for the fixed-string pattern match to be consistent with line 660 which already uses -cF. Using -cF is correct when matching literal strings (not regex patterns).\n\nmemory_hints: search \"grep -c test_portable_timeout.sh\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -32685,7 +32685,7 @@
             "tests/infra"
           ]
         },
-        "updatedAt": "2026-04-10T20:12:20.377Z"
+        "updatedAt": "2026-04-10T20:15:03.463Z"
       },
       {
         "id": "1606",
@@ -32828,9 +32828,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T20:13:54.788Z",
+      "lastModified": "2026-04-10T20:15:03.463Z",
       "taskCount": 1613,
-      "completedCount": 1245,
+      "completedCount": 1246,
       "tags": [
         "master"
       ]
