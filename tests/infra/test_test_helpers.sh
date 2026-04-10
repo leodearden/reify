@@ -29,21 +29,15 @@ echo "=== test_helpers.sh unit tests ==="
 echo ""
 echo "--- Test a: test_helpers.sh exists ---"
 
-if [ -f "$HELPER_FILE" ]; then
-    check "test_helpers.sh file exists" "true"
-else
-    check "test_helpers.sh file exists" "false"
-fi
+if [ -f "$HELPER_FILE" ]; then ok=true; else ok=false; fi
+check "test_helpers.sh file exists" "$ok"
 
 # -- Test (b): test_helpers.sh is sourceable -----------------------------------
 echo ""
 echo "--- Test b: test_helpers.sh is sourceable ---"
 
-if bash -c "source '$HELPER_FILE'" >/dev/null 2>&1; then
-    check "test_helpers.sh can be sourced without error" "true"
-else
-    check "test_helpers.sh can be sourced without error" "false"
-fi
+if bash -c "source '$HELPER_FILE'" >/dev/null 2>&1; then ok=true; else ok=false; fi
+check "test_helpers.sh can be sourced without error" "$ok"
 
 # -- Test (c): PASS and FAIL initialized to 0 after sourcing ------------------
 echo ""
@@ -60,21 +54,15 @@ fi
 echo ""
 echo "--- Test d: assert function defined ---"
 
-if bash -c "source '$HELPER_FILE' && declare -f assert >/dev/null" 2>/dev/null; then
-    check "assert function is defined after sourcing" "true"
-else
-    check "assert function is defined after sourcing" "false"
-fi
+if bash -c "source '$HELPER_FILE' && declare -f assert >/dev/null" 2>/dev/null; then ok=true; else ok=false; fi
+check "assert function is defined after sourcing" "$ok"
 
 # -- Test (e): test_summary function is defined --------------------------------
 echo ""
 echo "--- Test e: test_summary function defined ---"
 
-if bash -c "source '$HELPER_FILE' && declare -f test_summary >/dev/null" 2>/dev/null; then
-    check "test_summary function is defined after sourcing" "true"
-else
-    check "test_summary function is defined after sourcing" "false"
-fi
+if bash -c "source '$HELPER_FILE' && declare -f test_summary >/dev/null" 2>/dev/null; then ok=true; else ok=false; fi
+check "test_summary function is defined after sourcing" "$ok"
 
 # -- Test (f): source guard prevents double-sourcing side effects --------------
 echo ""
@@ -599,7 +587,8 @@ check "robustness check descriptions avoid ambiguous should-FAIL phrasing" "$ok"
 # Duplicate descriptions (same string on the true and false branches of an
 # if/else) are ambiguous in CI output.  The unified ok=true/false form
 # (check "desc" "$ok") ensures each description appears exactly once.
-dup_count=$(grep -oE 'check "[^"]+"' "${BASH_SOURCE[0]}" \
+dup_count=$(grep -E '^[[:space:]]*check "' "${BASH_SOURCE[0]}" \
+    | grep -oE 'check "[^"]+"' \
     | sort | uniq -d | wc -l)
 if [ "$dup_count" -eq 0 ]; then ok=true; else ok=false; fi
 check "no duplicate check descriptions in this file" "$ok"
