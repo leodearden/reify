@@ -161,6 +161,48 @@ mod tests {
 
     use super::*;
 
+    // ── tensor_components_f64 rejection: non-container types ─────────────────
+
+    #[test]
+    fn tensor_components_f64_real_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Real(1.0)).is_none(),
+            "Real value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_int_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Int(42)).is_none(),
+            "Int value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_undef_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Undef).is_none(),
+            "Undef value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_bool_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Bool(true)).is_none(),
+            "Bool value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_string_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::String("hello".to_string())).is_none(),
+            "String value should return None"
+        );
+    }
+
     // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
 
     // ── sanitize_value Real arm characterization tests ───────────────────────
