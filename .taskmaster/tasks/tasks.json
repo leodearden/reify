@@ -29009,16 +29009,22 @@
         "description": "Three improvements: (1) test_npm_ci_hardening.sh:81-84: replace `grep -A10 'Check 2:'` with awk range `/Check 2:/,/Check 3:/` for self-adjusting block scoping. (2) test_npm_ci_hardening.sh:91: add comment noting the awk range only matches one-line `for ...; do` form, not multi-line `for\\ndo`. (3) scripts/check-pm-standardization.sh:4-5: fix misleading \"reinstated\" phrasing — Check 4 was never removed, only checks 5-9 were removed by task 816.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:01:26.349Z"
+        "updatedAt": "2026-04-10T00:07:25.409Z",
+        "metadata": {
+          "modules": [
+            "scripts/check-pm-standardization.sh",
+            "tests/infra/test_npm_ci_hardening.sh"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:07:15.681Z",
+      "lastModified": "2026-04-10T00:07:25.409Z",
       "taskCount": 1406,
       "completedCount": 1084,
       "tags": [
