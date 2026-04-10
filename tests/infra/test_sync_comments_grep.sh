@@ -78,6 +78,16 @@ assert 'no Section 1 bash -c $PATTERN interpolation in this script' \
 assert 'PATTERN is actually exported (behavioral)' \
     bash -c '[ -n "${PATTERN+x}" ] && env | grep -q "^PATTERN="'
 
+# -- S3: regression guard that the textual export-PATTERN grep is absent -------
+# Split to prevent self-match: the full string is never on one line here.
+_S3_CHECK='"this script exports PATTERN'
+_S3_CHECK+=' for bash -c subshells"'
+_no_textual_export_check() {
+    ! grep -qF "$_S3_CHECK" "$THIS_SCRIPT"
+}
+assert 'no textual export-PATTERN assertion (S3: behavioral check only)' \
+    _no_textual_export_check
+
 # -- S1: meta-assertion that _CHECK= has an explanatory comment above it -------
 _test_comment_above_check() {
     grep -B1 '^_CHECK=' "$THIS_SCRIPT" | head -1 | grep -q '^#'
