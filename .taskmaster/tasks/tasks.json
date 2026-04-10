@@ -32606,7 +32606,7 @@
         "description": "Two follow-ups from task 1486 review:\n\n1. **setup_fixture_dir argument validation guard**: Add an early guard in setup_fixture_dir to fail loudly if called with empty/missing arguments, preventing silent failures.\n\n2. **Remove unnecessary bash -c wrapper in _TMPDIRS assertion**: Simplify the _TMPDIRS cleanup assertion by removing the bash -c wrapper — direct command is cleaner and equivalent.\n\nmemory_hints: search \"setup_fixture_dir _TMPDIRS test_npm_ci_hardening\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -32618,7 +32618,7 @@
             "tests/infra"
           ]
         },
-        "updatedAt": "2026-04-10T16:32:57.428Z"
+        "updatedAt": "2026-04-10T17:22:17.291Z"
       },
       {
         "id": "1603",
@@ -32814,9 +32814,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T17:21:48.704Z",
+      "lastModified": "2026-04-10T17:22:17.292Z",
       "taskCount": 1613,
-      "completedCount": 1238,
+      "completedCount": 1239,
       "tags": [
         "master"
       ]
