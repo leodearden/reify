@@ -3144,52 +3144,26 @@ mod tests {
     #[test]
     fn value_set_round_trip_preserves_iteration_order() {
         // Round-trip guard: collect iteration order from a Value::Set, rebuild a
-        // fresh BTreeSet from the collected sequence, wrap in Value::Set, and assert
-        // that the rebuilt value equals the original and shares its content_hash.
+        // fresh BTreeSet from the collected sequence, and verify the golden ordering.
         //
-        // A golden ordering assertion is layered on top so the test fails loudly if
-        // Ord changes semantics even in a self-consistent way.
+        // Parts a-c (structural equality, content_hash identity, iteration-sequence
+        // preservation) are tautological given BTreeSet stdlib guarantees: Ord alone
+        // determines iteration order, not insertion order, so rebuilding from any
+        // sequence produces the same BTreeSet. The real regression value is the golden
+        // ordering assertion below.
         use std::collections::BTreeSet;
-        let boundary_floats: &[f64] = &[
-            0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -1.0, 1.0,
-        ];
         let mut original_inner = BTreeSet::new();
-        for &v in boundary_floats {
+        for &v in BOUNDARY_REALS {
             original_inner.insert(Value::Real(v));
         }
         let original = Value::Set(original_inner);
-        let original_hash = original.content_hash();
 
-        // Collect iteration order
+        // Collect iteration order, rebuild, then assert the golden IEEE 754 totalOrder
         let collected: Vec<Value> = if let Value::Set(ref s) = original {
             s.iter().cloned().collect()
         } else {
             panic!("expected Set");
         };
-
-        // Rebuild from the collected sequence (BTreeSet insertion order doesn't matter)
-        let rebuilt_inner: BTreeSet<Value> = collected.iter().cloned().collect();
-        let rebuilt = Value::Set(rebuilt_inner);
-
-        // (a) structural equality
-        assert_eq!(rebuilt, original, "rebuilt Value::Set must equal the original");
-        // (b) content_hash identity
-        assert_eq!(
-            rebuilt.content_hash(),
-            original_hash,
-            "rebuilt Value::Set content_hash must match the original"
-        );
-        // (c) same iteration sequence in same positions
-        let rebuilt_collected: Vec<Value> = if let Value::Set(ref s) = rebuilt {
-            s.iter().cloned().collect()
-        } else {
-            panic!("expected Set");
-        };
-        assert_eq!(
-            rebuilt_collected, collected,
-            "rebuilt Value::Set must iterate in the same order as the original"
-        );
-        // (d) golden ordering assertion: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
         let floats: Vec<f64> = collected
             .iter()
             .map(|v| match v {
@@ -3197,31 +3171,7 @@ mod tests {
                 _ => panic!("unexpected value"),
             })
             .collect();
-        let neg_inf_idx = floats
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_negative())
-            .expect("NEG_INFINITY");
-        let neg_one_idx = floats.iter().position(|&f| f == -1.0_f64).expect("-1.0");
-        let neg_zero_idx = floats
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_negative())
-            .expect("-0.0");
-        let pos_zero_idx = floats
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_positive())
-            .expect("+0.0");
-        let pos_one_idx = floats.iter().position(|&f| f == 1.0_f64).expect("1.0");
-        let pos_inf_idx = floats
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_positive())
-            .expect("INFINITY");
-        let nan_idx = floats.iter().position(|f| f.is_nan()).expect("NaN");
-        assert!(neg_inf_idx < neg_one_idx);
-        assert!(neg_one_idx < neg_zero_idx);
-        assert!(neg_zero_idx < pos_zero_idx);
-        assert!(pos_zero_idx < pos_one_idx);
-        assert!(pos_one_idx < pos_inf_idx);
-        assert!(pos_inf_idx < nan_idx);
+        assert_ieee754_total_order_real(&floats);
     }
 
     #[test]
