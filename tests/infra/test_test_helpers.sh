@@ -298,6 +298,10 @@ check "source test_helpers.sh has || error-handler attached" "$ok"
 if grep -Fq 'source "$REPO_ROOT/tests/infra/sync_ref_helpers.sh" || { echo "ERROR: failed to source sync_ref_helpers.sh"; exit 1; }' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
 check "source sync_ref_helpers.sh has || error-handler attached" "$ok"
 
+# (j) EXPR_FILE existence guard present before assert calls
+if grep -Fq '[ -f "$EXPR_FILE" ] || { echo "ERROR: $EXPR_FILE not found"; exit 1; }' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_comments_test.sh has EXPR_FILE existence guard" "$ok"
+
 # behavioral: extract_fn returns empty output for a non-existent function name,
 # confirming the non-empty guard would fire when a fn is renamed or missing.
 echo ""
