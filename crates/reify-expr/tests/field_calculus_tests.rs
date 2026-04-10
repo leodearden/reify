@@ -350,6 +350,106 @@ fn run_laplacian_quadratic_test(point: Value, point_literal_type: Type, label: &
     );
 }
 
+/// Run a metadata-only dimensional-correctness test for a calculus operator.
+///
+/// Builds a dummy `Value::Field` with the given `domain_type`, `codomain_type`, and
+/// `source`, creates a no-op lambda (body = `value_ref` to the first parameter),
+/// applies the named operator via `make_function_call`, and asserts:
+///   1. The result is `Value::Field { source: <expected from op>, .. }`.
+///   2. The result's `codomain_type` equals `expected_codomain`.
+///
+/// The lambda body is never sampled because `compute_laplacian` / `compute_divergence`
+/// derive the result codomain purely from type metadata.
+///
+/// `op` must be `"laplacian"` or `"divergence"`; other values cause a panic with `label`.
+/// `domain_type` must have arity 1–3; `Type::Point { n, .. }` yields `n` params,
+/// all other types yield 1 param (named `"x"`).
+fn run_dim_metadata_test(
+    op: &str,
+    domain_type: Type,
+    codomain_type: Type,
+    source: FieldSourceKind,
+    expected_codomain: Type,
+    label: &str,
+) {
+    // Derive arity from domain type.
+    let n: usize = match &domain_type {
+        Type::Point { n, .. } => *n,
+        _ => 1,
+    };
+    assert!(
+        (1..=3).contains(&n),
+        "{label}: arity {n} out of range 1..=3"
+    );
+
+    // Build n ValueCellIds from ["x", "y", "z"].
+    let names = ["x", "y", "z"];
+    let ids: Vec<ValueCellId> = names[..n]
+        .iter()
+        .map(|&name| ValueCellId::new("$lambda0.S", name))
+        .collect();
+
+    // Dummy body: value_ref to the first parameter (never evaluated).
+    let body = CompiledExpr::value_ref(ids[0].clone(), Type::Real);
+
+    // Build lambda.
+    let params: Vec<(&str, ValueCellId)> = names[..n].iter().copied().zip(ids).collect();
+    let lambda = make_value_lambda(params, body, ValueMap::new());
+
+    // Wrap in Value::Field.
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source,
+        lambda: Box::new(lambda),
+    };
+
+    // Wrap in Type::Field.
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Build the function call.
+    let expr = make_function_call(
+        op,
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type,
+    );
+
+    // Evaluate with empty bindings.
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    // Derive expected source kind from op.
+    let expected_source = match op {
+        "laplacian" => FieldSourceKind::Laplacian,
+        "divergence" => FieldSourceKind::Divergence,
+        other => panic!("{label}: unknown op {other:?}"),
+    };
+
+    // Destructure via let-else (review S2).
+    let Value::Field {
+        codomain_type: actual_codomain,
+        source: actual_source,
+        ..
+    } = &result
+    else {
+        panic!("{label}: {op} should return a Field, got {result:?}");
+    };
+
+    assert_eq!(
+        *actual_source, expected_source,
+        "{label}: expected source {:?}, got {:?}",
+        expected_source, actual_source
+    );
+    assert_eq!(
+        *actual_codomain, expected_codomain,
+        "{label}: expected codomain {:?}, got {:?}",
+        expected_codomain, actual_codomain
+    );
+}
+
 // ── Step 1: Gradient accuracy tests ──────────────────────────────────────────
 
 /// Gradient of f(x) = x*x at x=3.0 should be ≈6.0.
@@ -3472,4 +3572,218 @@ fn curl_sample_dimensionless_returns_real() {
             other
         ),
     }
+}
+
+// ── Step 12: Expanded dimensional-correctness coverage (Task 1238) ────────────
+
+/// Laplacian of a bare-scalar (1D) domain: `Type::Scalar{LENGTH}` → `Scalar<Temperature>`
+/// has codomain dimension `Temperature / Length²`.
+///
+/// Exercises the `_ if scalar_dimension(domain_type).is_some()` first arm of
+/// `compute_laplacian`'s domain match — the path where domain is a bare scalar
+/// rather than a `Point{n}`.
+#[test]
+fn laplacian_dimensional_correctness_1d_scalar_domain() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE,
+        },
+        FieldSourceKind::Analytical,
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2)),
+        },
+        "laplacian_dimensional_correctness_1d_scalar_domain",
+    );
+}
+
+/// Confirms dimension-agnostic behavior when domain is a 2D `Point{2}` —
+/// `compute_laplacian`'s Point arm handles any `n>=1` via the same
+/// `dim_quotient_type` derivation.
+#[test]
+fn laplacian_dimensional_correctness_2d_point_domain() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::point2(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE,
+        },
+        FieldSourceKind::Analytical,
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2)),
+        },
+        "laplacian_dimensional_correctness_2d_point_domain",
+    );
+}
+
+/// Laplacian of `Point{3,Length}` → `Int` field preserves `Int` codomain.
+///
+/// `Int` is treated as dimensionless (`scalar_dimension(Int)=Some(DIMENSIONLESS)`),
+/// so `dim_quotient_type`'s guard fails and the fallback path returns the codomain
+/// unchanged (`Type::Int`). Exercises the Int-codomain fall-through branch.
+#[test]
+fn laplacian_dimensional_correctness_int_codomain() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::Int,
+        FieldSourceKind::Analytical,
+        Type::Int,
+        "laplacian_dimensional_correctness_int_codomain",
+    );
+}
+
+/// Int-domain input-value coverage: verifies the `Int -> Int` case also returns `Type::Int`.
+///
+/// Not a distinct `dim_quotient_type` branch — the outer `cd != DIMENSIONLESS` guard
+/// short-circuits on `cd == DIMENSIONLESS`, so the domain dimension is never consulted
+/// once the codomain is `Int`. Retained as a smoke test that `Int`-quantity `Point`
+/// domains are accepted by `compute_laplacian`.
+#[test]
+fn laplacian_dimensional_correctness_int_domain_int_codomain() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::point3(Type::Int),
+        Type::Int,
+        FieldSourceKind::Analytical,
+        Type::Int,
+        "laplacian_dimensional_correctness_int_domain_int_codomain",
+    );
+}
+
+/// This is the only laplacian test exercising the `result_dim == DIMENSIONLESS => Type::Real`
+/// inner arm of `dim_quotient_type`. Codomain `Length²` divided by `Length²`
+/// (domain-dim squared) collapses to `DIMENSIONLESS`, so the inner arm returns `Type::Real`.
+#[test]
+fn laplacian_dimensional_correctness_result_dimensionless_returns_real() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH.pow(2),
+        },
+        FieldSourceKind::Analytical,
+        Type::Real,
+        "laplacian_dimensional_correctness_result_dimensionless_returns_real",
+    );
+}
+
+/// Exercises the `FieldSourceKind::Analytical | FieldSourceKind::Composed` source
+/// whitelist in `compute_laplacian`. No other laplacian test uses a `Composed` source.
+/// Mirrors `gradient_composed_field_returns_field` in `gradient_tests.rs`.
+#[test]
+fn laplacian_dimensional_correctness_composed_source() {
+    run_dim_metadata_test(
+        "laplacian",
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE,
+        },
+        FieldSourceKind::Composed,
+        Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2)),
+        },
+        "laplacian_dimensional_correctness_composed_source",
+    );
+}
+
+/// Confirms dimension-agnostic behavior for a 1D vector field (`Point{1}` → `Vector{1}`) —
+/// `compute_divergence`'s `Point{n, quantity}` arm accepts any `n>=1`.
+///
+/// The `point1` and `vec1` helpers do not exist in `ty.rs`, so types are
+/// constructed via struct literals.
+#[test]
+fn divergence_dimensional_correctness_1d() {
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+    run_dim_metadata_test(
+        "divergence",
+        Type::Point {
+            n: 1,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+        },
+        Type::Vector {
+            n: 1,
+            quantity: Box::new(Type::Scalar {
+                dimension: velocity_dim,
+            }),
+        },
+        FieldSourceKind::Analytical,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME).div(&DimensionVector::LENGTH),
+        },
+        "divergence_dimensional_correctness_1d",
+    );
+}
+
+/// Confirms dimension-agnostic behavior for a 2D vector field (`Point{2}` → `Vector{2}`) —
+/// `compute_divergence`'s `Point{n, quantity}` arm accepts any `n>=1`.
+#[test]
+fn divergence_dimensional_correctness_2d() {
+    run_dim_metadata_test(
+        "divergence",
+        Type::point2(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::vec2(Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME),
+        }),
+        FieldSourceKind::Analytical,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME).div(&DimensionVector::LENGTH),
+        },
+        "divergence_dimensional_correctness_2d",
+    );
+}
+
+/// This is the only divergence test exercising the `result_dim == DIMENSIONLESS => Type::Real`
+/// inner arm of `dim_quotient_type`. Codomain component `Length` divided by domain
+/// `Length` collapses to `DIMENSIONLESS`, so the inner arm returns `Type::Real`.
+#[test]
+fn divergence_dimensional_correctness_result_dimensionless_returns_real() {
+    run_dim_metadata_test(
+        "divergence",
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        FieldSourceKind::Analytical,
+        Type::Real,
+        "divergence_dimensional_correctness_result_dimensionless_returns_real",
+    );
+}
+
+/// Exercises the `FieldSourceKind::Analytical | FieldSourceKind::Composed` source
+/// whitelist in `compute_divergence`. No other divergence test uses a `Composed` source.
+/// Mirrors `gradient_composed_field_returns_field` in `gradient_tests.rs`.
+#[test]
+fn divergence_dimensional_correctness_composed_source() {
+    run_dim_metadata_test(
+        "divergence",
+        Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME),
+        }),
+        FieldSourceKind::Composed,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME).div(&DimensionVector::LENGTH),
+        },
+        "divergence_dimensional_correctness_composed_source",
+    );
 }

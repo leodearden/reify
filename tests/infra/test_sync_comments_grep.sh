@@ -120,8 +120,14 @@ assert "accepts: pub(in crate::foo) fn sanitize_value( (pub(in path)+fn combinat
 assert "accepts: pub(super) unsafe fn sanitize_value( (pub(super)+unsafe combination)" \
     bash -c 'printf "%s\n" "pub(super) unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
-assert "accepts: unsafe async fn sanitize_value( (unsafe+async combination)" \
-    bash -c 'printf "%s\n" "unsafe async fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+assert "accepts: const unsafe fn sanitize_value( (const+unsafe combination — Rust grammar order)" \
+    bash -c 'printf "%s\n" "const unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
+assert "accepts: async unsafe fn sanitize_value( (async+unsafe combination — Rust grammar order)" \
+    bash -c 'printf "%s\n" "async unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
+assert "rejects: unsafe async fn sanitize_value( (invalid Rust grammar order — Rust requires async unsafe, not unsafe async)" \
+    bash -c '! printf "%s\n" "unsafe async fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 # -- Reject cases: pattern must NOT match these strings ------------------------
 

@@ -1341,20 +1341,6 @@ fn test_self_read_paths_use_manifest_dir() {
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file via THIS_FILE");
 
-    // Precision guard: the THIS_FILE and BUILD_RS constants must be defined using
-    // env!("CARGO_MANIFEST_DIR") for portable compile-time path resolution.
-    // Checking for the exact macro invocation prevents false-positives from comments
-    // that merely mention the env var name.  This assertion is a regression guard —
-    // the constants already use env!("CARGO_MANIFEST_DIR"), so it passes immediately,
-    // but it will catch any future change that replaces the env! macro with a
-    // hard-coded path.
-    assert!(
-        source.contains("env!(\"CARGO_MANIFEST_DIR\")"),
-        "THIS_FILE and BUILD_RS constants must be defined using env!(\"CARGO_MANIFEST_DIR\") \
-         for portable compile-time path resolution; checking for the exact macro invocation \
-         prevents false-positives from comments that merely mention the env var name"
-    );
-
     let self_reading_fns = find_self_reading_test_fns(&source);
 
     // Exclude this meta-test itself to avoid circularity.
@@ -1387,6 +1373,47 @@ fn test_self_read_paths_use_manifest_dir() {
             fn_body
         );
     }
+}
+
+#[test]
+fn test_self_path_constants_use_manifest_dir() {
+    // Regression guard: the `THIS_FILE` and `BUILD_RS` constants must be defined using
+    // the `env!` macro on `CARGO_MANIFEST_DIR` for portable compile-time path resolution.
+    //
+    // Single responsibility: asserts only that the constant *definitions* use the portable
+    // env! macro form — orthogonal to `test_self_read_paths_use_manifest_dir`, which asserts
+    // that each self-reading *test function* references `THIS_FILE` (not a bare relative path).
+    // Splitting these checks yields unambiguous failure messages: a broken constant definition
+    // fails only here; a test that bypasses THIS_FILE fails only in the other test.
+    //
+    // The count-based check (>= 2) requires the exact macro invocation to appear at least twice,
+    // once for each constant, so neither definition can silently regress to a hardcoded path.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+
+    assert!(
+        source.matches("env!(\"CARGO_MANIFEST_DIR\")").count() >= 2,
+        "THIS_FILE and BUILD_RS constants must be defined using env!(\"CARGO_MANIFEST_DIR\") \
+         for portable compile-time path resolution; at least two occurrences required \
+         (one per constant)"
+    );
+}
+
+#[test]
+fn test_self_path_constants_guard_is_not_vacuous() {
+    // Meta-test: verifies that the count-based assertion in
+    // `test_self_path_constants_use_manifest_dir` is non-vacuous.  The number of
+    // uses of the env! macro on CARGO_MANIFEST_DIR in this file must be >= 2
+    // (one per constant definition), confirming the >= 2 threshold is meaningful.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+    let count = source.matches("env!(\"CARGO_MANIFEST_DIR\")").count();
+    assert!(
+        count >= 2,
+        "expected at least 2 occurrences of env!(\"CARGO_MANIFEST_DIR\") in this file \
+         (one for THIS_FILE const, one for BUILD_RS const), but found {}",
+        count
+    );
 }
 
 #[test]

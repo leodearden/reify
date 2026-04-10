@@ -14,6 +14,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/../tests/infra/test_helpers.sh"
 
 PKG_FILES='gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json'
+LOCK_FILES='gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json'
 
 echo "=== check-pm-standardization ==="
 
@@ -55,7 +56,6 @@ assert "all package.json files agree on packageManager version" bash -c "
 # ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
 echo ""
 echo "Check 3: npm lockfiles not gitignored"
-LOCK_FILES='gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json'
 assert "no npm lockfiles are gitignored" \
     bash -c "! (cd '$ROOT' && git check-ignore $LOCK_FILES)"
 if (cd "$ROOT" && git check-ignore $LOCK_FILES >/dev/null 2>&1); then
