@@ -3241,17 +3241,8 @@ mod tests {
         // the IEEE 754 totalOrder sequence matches BTreeSet iteration order.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
         use std::collections::BTreeSet;
-        let si_values: &[f64] = &[
-            0.0,           // +0.0
-            -0.0,          // -0.0
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-            -1.0,
-            1.0,
-        ];
         let mut inner = BTreeSet::new();
-        for &v in si_values {
+        for &v in BOUNDARY_REALS {
             inner.insert(Value::Scalar {
                 si_value: v,
                 dimension: DimensionVector::LENGTH,
@@ -3270,35 +3261,7 @@ mod tests {
             panic!("expected Set");
         };
 
-        assert_eq!(sorted.len(), 7, "all 7 bit-distinct boundary values must appear");
-
-        let neg_inf_idx = sorted
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_negative())
-            .expect("NEG_INFINITY must be present");
-        let neg_one_idx = sorted.iter().position(|&f| f == -1.0_f64).expect("-1.0 must be present");
-        let neg_zero_idx = sorted
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_negative())
-            .expect("-0.0 must be present");
-        let pos_zero_idx = sorted
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_positive())
-            .expect("+0.0 must be present");
-        let pos_one_idx = sorted.iter().position(|&f| f == 1.0_f64).expect("1.0 must be present");
-        let pos_inf_idx = sorted
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_positive())
-            .expect("INFINITY must be present");
-        let nan_idx = sorted.iter().position(|f| f.is_nan()).expect("NaN must be present");
-
-        // Full ordering: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
-        assert!(neg_inf_idx < neg_one_idx, "NEG_INFINITY must come before -1.0");
-        assert!(neg_one_idx < neg_zero_idx, "-1.0 must come before -0.0");
-        assert!(neg_zero_idx < pos_zero_idx, "-0.0 must come before +0.0");
-        assert!(pos_zero_idx < pos_one_idx, "+0.0 must come before 1.0");
-        assert!(pos_one_idx < pos_inf_idx, "1.0 must come before INFINITY");
-        assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
+        assert_ieee754_total_order_real(&sorted);
     }
 
     #[test]
@@ -3309,17 +3272,8 @@ mod tests {
         // from BTreeSet iteration over the im components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
         use std::collections::BTreeSet;
-        let im_values: &[f64] = &[
-            0.0,           // +0.0
-            -0.0,          // -0.0
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-            -1.0,
-            1.0,
-        ];
         let mut inner = BTreeSet::new();
-        for &v in im_values {
+        for &v in BOUNDARY_REALS {
             inner.insert(Value::Complex {
                 re: 0.0,
                 im: v,
@@ -3339,35 +3293,7 @@ mod tests {
             panic!("expected Set");
         };
 
-        assert_eq!(sorted.len(), 7, "all 7 bit-distinct boundary values must appear");
-
-        let neg_inf_idx = sorted
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_negative())
-            .expect("NEG_INFINITY must be present");
-        let neg_one_idx = sorted.iter().position(|&f| f == -1.0_f64).expect("-1.0 must be present");
-        let neg_zero_idx = sorted
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_negative())
-            .expect("-0.0 must be present");
-        let pos_zero_idx = sorted
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_positive())
-            .expect("+0.0 must be present");
-        let pos_one_idx = sorted.iter().position(|&f| f == 1.0_f64).expect("1.0 must be present");
-        let pos_inf_idx = sorted
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_positive())
-            .expect("INFINITY must be present");
-        let nan_idx = sorted.iter().position(|f| f.is_nan()).expect("NaN must be present");
-
-        // Full ordering: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
-        assert!(neg_inf_idx < neg_one_idx, "NEG_INFINITY must come before -1.0");
-        assert!(neg_one_idx < neg_zero_idx, "-1.0 must come before -0.0");
-        assert!(neg_zero_idx < pos_zero_idx, "-0.0 must come before +0.0");
-        assert!(pos_zero_idx < pos_one_idx, "+0.0 must come before 1.0");
-        assert!(pos_one_idx < pos_inf_idx, "1.0 must come before INFINITY");
-        assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
+        assert_ieee754_total_order_real(&sorted);
     }
 
     #[test]
@@ -3378,17 +3304,8 @@ mod tests {
         // 754 totalOrder sequence from BTreeSet iteration over the z components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
         use std::collections::BTreeSet;
-        let z_values: &[f64] = &[
-            0.0,           // +0.0
-            -0.0,          // -0.0
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-            -1.0,
-            1.0,
-        ];
         let mut inner = BTreeSet::new();
-        for &v in z_values {
+        for &v in BOUNDARY_REALS {
             inner.insert(orient(0.0, 0.0, 0.0, v));
         }
         let set_val = Value::Set(inner);
@@ -3404,35 +3321,7 @@ mod tests {
             panic!("expected Set");
         };
 
-        assert_eq!(sorted.len(), 7, "all 7 bit-distinct boundary values must appear");
-
-        let neg_inf_idx = sorted
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_negative())
-            .expect("NEG_INFINITY must be present");
-        let neg_one_idx = sorted.iter().position(|&f| f == -1.0_f64).expect("-1.0 must be present");
-        let neg_zero_idx = sorted
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_negative())
-            .expect("-0.0 must be present");
-        let pos_zero_idx = sorted
-            .iter()
-            .position(|f| *f == 0.0 && f.is_sign_positive())
-            .expect("+0.0 must be present");
-        let pos_one_idx = sorted.iter().position(|&f| f == 1.0_f64).expect("1.0 must be present");
-        let pos_inf_idx = sorted
-            .iter()
-            .position(|f| f.is_infinite() && f.is_sign_positive())
-            .expect("INFINITY must be present");
-        let nan_idx = sorted.iter().position(|f| f.is_nan()).expect("NaN must be present");
-
-        // Full ordering: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
-        assert!(neg_inf_idx < neg_one_idx, "NEG_INFINITY must come before -1.0");
-        assert!(neg_one_idx < neg_zero_idx, "-1.0 must come before -0.0");
-        assert!(neg_zero_idx < pos_zero_idx, "-0.0 must come before +0.0");
-        assert!(pos_zero_idx < pos_one_idx, "+0.0 must come before 1.0");
-        assert!(pos_one_idx < pos_inf_idx, "1.0 must come before INFINITY");
-        assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
+        assert_ieee754_total_order_real(&sorted);
     }
 
     #[test]
