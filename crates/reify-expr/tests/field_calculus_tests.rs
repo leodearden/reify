@@ -3640,74 +3640,22 @@ fn laplacian_dimensional_correctness_int_codomain() {
     );
 }
 
-/// Laplacian of Point{3,Int} → Int field preserves Int codomain.
+/// Int-domain input-value coverage: verifies the `Int -> Int` case also returns `Type::Int`.
 ///
-/// Both domain and codomain are dimensionless (Int→DIMENSIONLESS). The
-/// dim_quotient_type guard fails for both, so the fallback path returns
-/// Type::Int. Exercises the Int/Int dual fall-through path.
-/// Expected to pass immediately (coverage expansion).
+/// Not a distinct `dim_quotient_type` branch — the outer `cd != DIMENSIONLESS` guard
+/// short-circuits on `cd == DIMENSIONLESS`, so the domain dimension is never consulted
+/// once the codomain is `Int`. Retained as a smoke test that `Int`-quantity `Point`
+/// domains are accepted by `compute_laplacian`.
 #[test]
 fn laplacian_dimensional_correctness_int_domain_int_codomain() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    let domain_type = Type::point3(Type::Int);
-    let codomain_type = Type::Int;
-
-    // Lambda: |x, y, z| x + y + z — metadata-only, not sampled.
-    let body = CompiledExpr::binop(
-        BinOp::Add,
-        CompiledExpr::binop(
-            BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            Type::Real,
-        ),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
-    let lap_expr = make_function_call(
+    run_dim_metadata_test(
         "laplacian",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
+        Type::point3(Type::Int),
+        Type::Int,
+        FieldSourceKind::Analytical,
+        Type::Int,
+        "laplacian_dimensional_correctness_int_domain_int_codomain",
     );
-
-    let values = ValueMap::new();
-    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(&lap_result, Value::Field { .. }),
-        "laplacian of Point{{3,Int}}→Int should return a Field, got {:?}",
-        lap_result
-    );
-
-    if let Value::Field { codomain_type, .. } = &lap_result {
-        assert_eq!(
-            *codomain_type,
-            Type::Int,
-            "laplacian of Point{{3,Int}}→Int should preserve Int codomain, got {:?}",
-            codomain_type
-        );
-    }
 }
 
 /// Laplacian of Point{3,Length} → Scalar{Length²}: the quotient Length²/Length²
