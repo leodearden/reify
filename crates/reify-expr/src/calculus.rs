@@ -1826,4 +1826,46 @@ mod tests {
     fn dimensionless_fallback_int_returns_int() {
         assert_eq!(dimensionless_fallback(&Type::Int), Type::Int);
     }
+
+    // --- extract_explicit_domain_dim unit tests ---
+
+    #[test]
+    fn extract_explicit_domain_dim_scalar_length_returns_some_length() {
+        assert_eq!(
+            extract_explicit_domain_dim(&Type::length()),
+            Some(DimensionVector::LENGTH)
+        );
+    }
+
+    #[test]
+    fn extract_explicit_domain_dim_point_scalar_mass_returns_some_mass() {
+        let ty = Type::point3(Type::Scalar {
+            dimension: DimensionVector::MASS,
+        });
+        assert_eq!(
+            extract_explicit_domain_dim(&ty),
+            Some(DimensionVector::MASS)
+        );
+    }
+
+    #[test]
+    fn extract_explicit_domain_dim_real_returns_none() {
+        // Real is dimensionless — numerical functions pass Value::Real, not Value::Scalar
+        assert_eq!(extract_explicit_domain_dim(&Type::Real), None);
+    }
+
+    #[test]
+    fn extract_explicit_domain_dim_int_returns_none() {
+        assert_eq!(extract_explicit_domain_dim(&Type::Int), None);
+    }
+
+    #[test]
+    fn extract_explicit_domain_dim_point_real_returns_none() {
+        assert_eq!(extract_explicit_domain_dim(&Type::point3(Type::Real)), None);
+    }
+
+    #[test]
+    fn extract_explicit_domain_dim_bool_returns_none() {
+        assert_eq!(extract_explicit_domain_dim(&Type::Bool), None);
+    }
 }
