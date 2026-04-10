@@ -294,6 +294,10 @@ check "sync_comments_test.sh does NOT define assert_sync_ref_exists() locally" "
 if grep -Fq 'source "$REPO_ROOT/tests/infra/test_helpers.sh" || { echo "ERROR: failed to source test_helpers.sh"; exit 1; }' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
 check "source test_helpers.sh has || error-handler attached" "$ok"
 
+# (i) source call for sync_ref_helpers.sh has || error-handler attached
+if grep -Fq 'source "$REPO_ROOT/tests/infra/sync_ref_helpers.sh" || { echo "ERROR: failed to source sync_ref_helpers.sh"; exit 1; }' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "source sync_ref_helpers.sh has || error-handler attached" "$ok"
+
 # behavioral: extract_fn returns empty output for a non-existent function name,
 # confirming the non-empty guard would fire when a fn is renamed or missing.
 echo ""
