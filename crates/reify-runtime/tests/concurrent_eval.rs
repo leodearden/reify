@@ -2663,7 +2663,8 @@ mod poison_evaluate {
 
         let (subscriber, capture) = warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
-            let _ = evaluate_with_recovery(&adapter, node);
+            evaluate_with_recovery(&adapter, node)
+                .expect("evaluate() should recover from poisoned values lock");
         });
 
         capture.assert_any_event_has_fields(&[
@@ -2688,7 +2689,8 @@ mod poison_evaluate {
 
         let (subscriber, capture) = warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
-            let _ = evaluate_with_recovery(&adapter, node);
+            evaluate_with_recovery(&adapter, node)
+                .expect("evaluate() should recover from poisoned snapshot_values lock");
         });
 
         capture.assert_any_event_has_fields(&[
