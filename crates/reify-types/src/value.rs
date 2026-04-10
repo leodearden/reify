@@ -4518,6 +4518,49 @@ mod tests {
     }
 
     #[test]
+    fn value_orientation_ord_w_dominates_xyz() {
+        // Pins w's precedence over x, y, AND z in the Orientation Ord chain.
+        // Lower-priority components carry contradictory extreme totalOrder values:
+        // NaN (totalOrder-largest) on the "smaller" side and NEG_INFINITY
+        // (totalOrder-smallest) on the "larger" side. If any of x/y/z were
+        // compared before w (e.g. a bogus `x.total_cmp().then(w)...` chain),
+        // the NaN vs NEG_INFINITY signal would flip the ordering and this test
+        // would fail. Under the correct w-first chain, w=1.0 < w=2.0 determines
+        // the order regardless of the contradicting lower-priority values.
+        let smaller = orient(1.0, f64::NAN, f64::NAN, f64::NAN);
+        let larger = orient(2.0, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        assert_ord_consistent(&smaller, &larger, false);
+    }
+
+    #[test]
+    fn value_orientation_ord_x_dominates_yz() {
+        // With w held equal, pins x's precedence over y AND z in the Orientation
+        // Ord chain. Lower-priority components (y, z) carry contradicting extreme
+        // totalOrder values: NaN on the "smaller" side, NEG_INFINITY on the
+        // "larger" side. If y or z were compared before x after w ties (e.g. a
+        // bogus `w.then(y).then(x)...` chain), the NaN vs NEG_INFINITY signal
+        // would flip the ordering and this test would fail. Under the correct
+        // w → x chain, w ties at 0.0 and x=1.0 < x=2.0 determines the order.
+        let smaller = orient(0.0, 1.0, f64::NAN, f64::NAN);
+        let larger = orient(0.0, 2.0, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        assert_ord_consistent(&smaller, &larger, false);
+    }
+
+    #[test]
+    fn value_orientation_ord_y_dominates_z() {
+        // With w and x held equal, pins y's precedence over z in the Orientation
+        // Ord chain. The lower-priority component (z) carries a contradicting
+        // extreme totalOrder value: NaN on the "smaller" side, NEG_INFINITY on the
+        // "larger" side. If z were compared before y after w/x tie (e.g. a bogus
+        // `w.then(x).then(z).then(y)` chain), the NaN vs NEG_INFINITY signal
+        // would flip the ordering and this test would fail. Under the correct
+        // w → x → y chain, w and x tie at 0.0 and y=1.0 < y=2.0 determines the order.
+        let smaller = orient(0.0, 0.0, 1.0, f64::NAN);
+        let larger = orient(0.0, 0.0, 2.0, f64::NEG_INFINITY);
+        assert_ord_consistent(&smaller, &larger, false);
+    }
+
+    #[test]
     fn value_ord_orientation_negative_components() {
         // Negative component values must order correctly via total_cmp().
 
