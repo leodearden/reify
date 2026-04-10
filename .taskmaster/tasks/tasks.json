@@ -32398,11 +32398,11 @@
         "description": "Three fixes in tests/infra/test_tree_sitter_pipeline.sh lines 16-20: (1) Drop ${HOME:-~} fallback — tilde doesn't expand inside quoted parameter-default, use bare $HOME. (2) Replace `A && B || true` with `if [ -f \"$HOME/.cargo/env\" ]; then . \"$HOME/.cargo/env\"; fi` for safety under set -e. (3) Add pre-flight `command -v cargo` check in run_tests() that exits with clear diagnostic if cargo not on PATH.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T08:14:01.614Z"
+        "updatedAt": "2026-04-10T11:11:37.719Z"
       },
       {
         "id": "1594",
@@ -32550,9 +32550,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T11:10:39.280Z",
+      "lastModified": "2026-04-10T11:11:37.728Z",
       "taskCount": 1601,
-      "completedCount": 1220,
+      "completedCount": 1221,
       "tags": [
         "master"
       ]
