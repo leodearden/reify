@@ -29207,15 +29207,16 @@
         "description": "Follow-up from Task 1278 review (esc-1278-130, S4). Future-proofing for fn forms not currently used anywhere in the SYNC-tracked codebase.\n\nLocation: `tests/infra/sync_ref_helpers.sh:35`\n\nThe fn-existence regex in `assert_sync_ref_exists` does not handle:\n- `extern \"C\" fn foo(...)` (FFI declarations)\n- `default fn foo(...)` (specialised trait impls)\n\nNeither form appears in any current SYNC-tracked function, but if a future `// SYNC:` pair ever points at such a function, `assert_sync_ref_exists` will silently fail with a confusing \"fn does not exist\" message.\n\nTwo fix options:\n1. **Extend the regex**: add `(default[[:space:]]+)?` and `(extern([[:space:]]+\\\"[^\\\"]*\\\")?[[:space:]]+)?` alternation groups. Add matching accept assertions to `tests/infra/test_sync_comments_grep.sh`.\n2. **Document the limitation**: add a comment in the helper noting that `extern` and `default` fn forms are unsupported, and that SYNC pairs should avoid pointing at such functions (or be upgraded when first needed).\n\nOption 2 is preferred for now — this is purely speculative future work. Revisit if a SYNC pair ever needs it.\n\nVerify (option 2) with: `bash tests/infra/test_sync_comments_grep.sh` still passes.\n\nSource: esc-1278-130 S4 (steward-triage from Task 1278 post-merge review)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-10T00:13:36.457Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T00:13:35.940Z",
+      "lastModified": "2026-04-10T00:13:36.457Z",
       "taskCount": 1413,
       "completedCount": 1085,
       "tags": [
