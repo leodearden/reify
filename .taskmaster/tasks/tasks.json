@@ -32519,11 +32519,11 @@
         "description": "Three improvements in tests/infra/test_portable_timeout.sh: (1) Test 22/22b: extract regex into shared KILL_CMD_PID_RE variable so Test 22b validates the real regex, not a hardcoded copy. (2) Delete Test 24c (lines 731-744) — it only validates that grep counts substrings correctly; replace with inline comment in Test 24b explaining why _pt_grace_count==1 matters. (3) Lines 720-721: change sanity failure from echo-to-stderr (silenced by assert) to `exit 2` with distinct code, so the failure is observable.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T20:51:14.157Z",
+        "updatedAt": "2026-04-10T20:51:15.176Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -32863,7 +32863,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T20:51:14.157Z",
+      "lastModified": "2026-04-10T20:51:15.176Z",
       "taskCount": 1615,
       "completedCount": 1255,
       "tags": [
