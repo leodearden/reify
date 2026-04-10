@@ -31037,11 +31037,11 @@
         "description": "Four small post-review cleanups from Task 1402 review triage (esc-1402-234), bundled because they all live in the same two files.\n\n(1) crates/reify-runtime/tests/concurrent_eval.rs:1625-1640 — assert_poison_recovers doc says \"covers 9 of the 11\" then lists bullets that sum to 11 (5+6), not 9. Rewrite as explicit \"Covered (9): 3 helper-method read/exclusive sites + 6 into_result/build_result_shared sites\" and \"Not covered (2): write_values, write_snapshot_values — see poison_evaluate tests\".\n\n(2) crates/reify-runtime/tests/concurrent_eval.rs:2666-2706 — evaluate_emits_access_write_for_poisoned_values and evaluate_emits_access_write_for_poisoned_snapshot_values discard Result via `let _ = evaluate_with_recovery(&adapter, node);`. Replace with `.expect(\"evaluate() should recover from poisoned values lock\");` to match neighboring convention and surface panics clearly.\n\n(3) crates/reify-test-support/src/tracing_support.rs:1528 — delete trailing blank line before closing `}` of warn_capturing_structured_fields_are_captured.\n\n(4) crates/reify-runtime/tests/concurrent_eval.rs:2147 — delete trailing blank line before closing `}` of poison_recovery_extended module.\n\nVerify: cargo test -p reify-runtime --features test-utils concurrent_eval::poison, and cargo test -p reify-test-support --features test-utils tracing_support::tests::warn_capturing.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:05:28.591Z",
+        "updatedAt": "2026-04-10T16:05:43.950Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests"
@@ -32660,7 +32660,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-10T16:05:39.115Z",
+      "lastModified": "2026-04-10T16:05:43.950Z",
       "taskCount": 1605,
       "completedCount": 1223,
       "tags": [
