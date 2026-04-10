@@ -510,7 +510,7 @@ async fn initialize_with_invalid_field_type_returns_error() {
     hang_guard!(async {
         let lsp = InProcessLsp::new();
 
-        // processId is an Option<u32> in InitializeParams — passing a string makes
+        // processId is an Option<i32> in InitializeParams — passing a string makes
         // deserialization fail, exercising the error-propagation path.
         let result = lsp
             .handle_request("initialize", json!({ "processId": "not_a_number" }))
