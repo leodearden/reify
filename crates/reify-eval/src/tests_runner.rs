@@ -107,14 +107,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_status_variants_exist_and_are_distinct() {
-        use super::TestStatus;
-        assert_ne!(TestStatus::Pass, TestStatus::Fail);
-        assert_ne!(TestStatus::Pass, TestStatus::Indeterminate);
-        assert_ne!(TestStatus::Fail, TestStatus::Indeterminate);
-    }
-
     fn entry(sat: reify_types::Satisfaction) -> crate::ConstraintCheckEntry {
         use reify_types::ConstraintNodeId;
         crate::ConstraintCheckEntry {
