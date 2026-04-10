@@ -1750,4 +1750,97 @@ mod tests {
             &ctx,
         );
     }
+
+    // --- validate_differentiable_field unit tests ---
+
+    /// Helper: build a minimal valid Lambda value for use in Field construction.
+    fn make_test_lambda() -> Value {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+        let x_id = ValueCellId::new("$lambda0.S", "x");
+        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+        Value::Lambda {
+            params: vec![("x".to_string(), x_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        }
+    }
+
+    /// Helper: build a minimal valid Analytical Field with the given lambda.
+    fn make_analytical_field(lambda: Value) -> Value {
+        Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Box::new(lambda),
+        }
+    }
+
+    #[test]
+    fn validate_differentiable_field_analytical_with_lambda_returns_some() {
+        let lambda = make_test_lambda();
+        let field = make_analytical_field(lambda);
+        let result = validate_differentiable_field(&field, "test");
+        assert!(result.is_some());
+        let (domain, codomain) = result.unwrap();
+        assert_eq!(domain, &Type::Real);
+        assert_eq!(codomain, &Type::Real);
+    }
+
+    #[test]
+    fn validate_differentiable_field_composed_with_lambda_returns_some() {
+        let lambda = make_test_lambda();
+        let field = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Composed,
+            lambda: Box::new(lambda),
+        };
+        let result = validate_differentiable_field(&field, "test");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn validate_differentiable_field_non_field_returns_none() {
+        let result = validate_differentiable_field(&Value::Real(1.0), "test");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn validate_differentiable_field_sampled_source_returns_none() {
+        let field = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Sampled,
+            lambda: Box::new(Value::Undef),
+        };
+        let result = validate_differentiable_field(&field, "test");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn validate_differentiable_field_gradient_source_returns_none() {
+        // Gradient fields store the original field in the lambda slot, not a callable Lambda.
+        let lambda = make_test_lambda();
+        let original_field = make_analytical_field(lambda);
+        let field = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Gradient,
+            lambda: Box::new(original_field),
+        };
+        let result = validate_differentiable_field(&field, "test");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn validate_differentiable_field_non_lambda_slot_returns_none() {
+        let field = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        let result = validate_differentiable_field(&field, "test");
+        assert!(result.is_none());
+    }
 }
