@@ -310,13 +310,13 @@ fn run_curl_rotation_test(sample_point: SamplePoint, label: &str) {
     assert_gradient_vector(&sample_result, &[0.0, 0.0, 2.0], 1e-3, label);
 }
 
-/// Build the quadratic scalar field f(x,y,z)=x²+y²+z², compute its laplacian,
-/// sample at `sample_point`, and assert result ≈6.0.
+/// Build the quadratic scalar field f(x,y,z)=x²+y²+z², apply laplacian, eval, and return
+/// `(lap_result, lap_field_type)`.
 ///
-/// Used by both `laplacian_quadratic_accuracy` (Point sample) and
-/// `laplacian_accepts_vector_sample_point` (Vector sample).
-fn run_laplacian_quadratic_test(sample_point: SamplePoint, label: &str) {
-    let (point, point_literal_type) = sample_point.into_value_and_type();
+/// The caller is responsible for sampling the returned field and asserting the result.
+/// Shared by `run_laplacian_quadratic_test` (happy-path) and
+/// `laplacian_two_element_vector_sample_point_returns_undef` (dimension-guard).
+fn build_laplacian_quadratic_field(label: &str) -> (Value, Type) {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -391,6 +391,19 @@ fn run_laplacian_quadratic_test(sample_point: SamplePoint, label: &str) {
         codomain: Box::new(Type::Real),
     };
 
+    (lap_result, lap_field_type)
+}
+
+/// Build the quadratic scalar field f(x,y,z)=x²+y²+z², compute its laplacian,
+/// sample at `sample_point`, and assert result ≈6.0.
+///
+/// Used by both `laplacian_quadratic_accuracy` (Point sample) and
+/// `laplacian_accepts_vector_sample_point` (Vector sample).
+fn run_laplacian_quadratic_test(sample_point: SamplePoint, label: &str) {
+    let (point, point_literal_type) = sample_point.into_value_and_type();
+    let (lap_result, lap_field_type) = build_laplacian_quadratic_field(label);
+
+    let values = ValueMap::new();
     let sample_expr = make_function_call(
         "sample",
         vec![
