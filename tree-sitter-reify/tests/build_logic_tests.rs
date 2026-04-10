@@ -1262,6 +1262,14 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
         "#[test]\n",
         "fn test_with_bare_path() {\n",
         "    let _s = std::fs::read_to_string(\"tests/build_logic_tests.rs\").unwrap();\n",
+        "}\n\n",
+        // Case (g): a #[test] fn whose body calls read_self_source() with no direct
+        // (THIS_FILE) usage — should be collected by the broadened criterion.
+        // This RED test forces the step-2 impl that adds
+        // `|| body.contains("read_self_source()")` to the scanner.
+        "#[test]\n",
+        "fn test_uses_read_self_source() {\n",
+        "    let _s = read_self_source();\n",
         "}\n",
     );
 
@@ -1304,10 +1312,17 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
          literal \"tests/build_logic_tests.rs\" with literal quotes); got: {:?}",
         fns
     );
+    assert!(
+        fns.contains(&"fn test_uses_read_self_source()".to_string()),
+        "should discover test_uses_read_self_source (broadened criterion: body contains \
+         read_self_source() call); got: {:?}",
+        fns
+    );
     assert_eq!(
         fns.len(),
-        4,
-        "expected exactly 4 discovered functions (a=test_reads_this_file, a2=test_opens_this_file, e=test_with_attr_gap, f=test_with_bare_path); got: {:?}",
+        5,
+        "expected exactly 5 discovered functions (a=test_reads_this_file, a2=test_opens_this_file, \
+         e=test_with_attr_gap, f=test_with_bare_path, g=test_uses_read_self_source); got: {:?}",
         fns
     );
 }
