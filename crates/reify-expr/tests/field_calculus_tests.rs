@@ -285,11 +285,12 @@ fn run_curl_rotation_test(sample_point: SamplePoint, label: &str) {
 }
 
 /// Build the quadratic scalar field f(x,y,z)=x²+y²+z², compute its laplacian,
-/// sample at `point` (literal type `point_literal_type`), and assert result ≈6.0.
+/// sample at `sample_point`, and assert result ≈6.0.
 ///
 /// Used by both `laplacian_quadratic_accuracy` (Point sample) and
 /// `laplacian_accepts_vector_sample_point` (Vector sample).
-fn run_laplacian_quadratic_test(point: Value, point_literal_type: Type, label: &str) {
+fn run_laplacian_quadratic_test(sample_point: SamplePoint, label: &str) {
+    let (point, point_literal_type) = sample_point.into_value_and_type();
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -815,8 +816,7 @@ fn curl_two_element_vector_sample_point_returns_undef() {
 #[test]
 fn laplacian_quadratic_accuracy() {
     run_laplacian_quadratic_test(
-        Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::point3(Type::Real),
+        SamplePoint::Point3([1.0, 2.0, 3.0]),
         "laplacian of x²+y²+z² at (1,2,3)",
     );
 }
@@ -828,8 +828,7 @@ fn laplacian_quadratic_accuracy() {
 #[test]
 fn laplacian_accepts_vector_sample_point() {
     run_laplacian_quadratic_test(
-        Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-        Type::vec3(Type::Real),
+        SamplePoint::Vector3([1.0, 2.0, 3.0]),
         "laplacian of x²+y²+z² at Vector(1,2,3)",
     );
 }
