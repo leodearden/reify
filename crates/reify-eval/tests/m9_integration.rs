@@ -139,3 +139,45 @@ structure S {
         entry.satisfaction
     );
 }
+
+// ── Step 5: constraint def with determinacy — violated case ──────────────────
+
+/// Cross-feature: when the invoked param has no default (size : Length, Undetermined),
+/// determined(v) evaluates to false, so RequireDetermined[0] should be Violated.
+#[test]
+fn constraint_def_with_determinacy_violated() {
+    let source = r#"
+constraint def RequireDetermined {
+    param v : Length
+    determined(v)
+}
+structure S {
+    param size : Length
+    constraint RequireDetermined(v: size)
+}
+"#;
+    let result = check_source(source);
+
+    // Exactly one constraint result
+    assert_eq!(
+        result.constraint_results.len(),
+        1,
+        "expected 1 constraint result, got: {:?}",
+        result.constraint_results
+    );
+
+    let entry = &result.constraint_results[0];
+    assert_eq!(
+        entry.label,
+        Some("RequireDetermined[0]".to_string()),
+        "expected label Some(\"RequireDetermined[0]\"), got: {:?}",
+        entry.label
+    );
+    // determined(size) evaluates to Bool(false) when size is Undetermined → Violated
+    assert_ne!(
+        entry.satisfaction,
+        Satisfaction::Satisfied,
+        "RequireDetermined[0] should NOT be Satisfied when param is undetermined, got: {:?}",
+        entry.satisfaction
+    );
+}
