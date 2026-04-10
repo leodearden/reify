@@ -2936,17 +2936,8 @@ fn curl_dimensional_correctness() {
         ValueMap::new(),
     );
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), codomain_type.clone(), lambda);
 
     // curl(field) → vector field with codomain Vector{3, Scalar{Velocity/Length = 1/Time}}
     let curl_expr = make_function_call(
@@ -3004,17 +2995,8 @@ fn curl_dimensionless_still_vec3_real() {
         ValueMap::new(),
     );
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), codomain_type.clone(), lambda);
 
     let curl_expr = make_function_call(
         "curl",
@@ -3077,17 +3059,8 @@ fn curl_sample_dimensional_correctness_returns_scalar() {
         ValueMap::new(),
     );
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), codomain_type.clone(), lambda);
 
     let curl_expr = make_function_call(
         "curl",
@@ -3205,17 +3178,8 @@ fn curl_sample_dimensionless_returns_real() {
         ValueMap::new(),
     );
 
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    let (field, field_type) =
+        make_analytical_field(domain_type.clone(), codomain_type.clone(), lambda);
 
     let curl_expr = make_function_call(
         "curl",
