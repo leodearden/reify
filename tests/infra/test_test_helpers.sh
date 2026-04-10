@@ -594,6 +594,18 @@ else
 fi
 check "mk_fixture is subshell-safe (no array append lost in command substitution)" "$ok"
 
+# Self-check: all behavioral assert_sync_ref_exists subshells use bash with -eu flag.
+# Count subshell-initiating lines (_src_beh_*_out assignments using bash with strict mode).
+# Must equal 3 (guard, happy-path, mismatch-path).
+_eu_flag="-eu"
+_beh_eu_count=$(grep -cE "_src_beh.*_out=\\\$\(bash ${_eu_flag} -c" "${BASH_SOURCE[0]}" || true)
+if [ "$_beh_eu_count" -eq 3 ]; then
+    ok=true
+else
+    ok=false
+fi
+check "all 3 behavioral subshells use bash -eu -c (S3 hardening, got $_beh_eu_count)" "$ok"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
