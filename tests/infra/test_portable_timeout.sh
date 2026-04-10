@@ -607,6 +607,18 @@ assert "portable_timeout declares local _pt_kill_grace=2" \
 assert "both timer subshells reference \$_pt_kill_grace: exactly 2 occurrences" \
     bash -c 'count=$(grep -cF "sleep \"\$_pt_kill_grace\"" "$1"); [ "$count" -eq 2 ]' _ "$LIB_PORTABLE"
 
+# -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
+echo ""
+echo "--- Test 25a: structural: SAFETY_NET_GREP_LINE marker is present ---"
+
+# The safety-net cleanup comment (Test 16a, near the critical grep pipeline)
+# must carry a stable SAFETY_NET_GREP_LINE marker so meta-tests can locate
+# the grep by marker rather than brittle comment prose.
+# Use a regex anchored to a comment line (^spaces#space) so the grep command
+# itself — which does not start with '#' — is not a self-referential match.
+assert "SAFETY_NET_GREP_LINE comment marker exists in file" \
+    grep -qE '^[[:space:]]+#[[:space:]]SAFETY_NET_GREP_LINE' "${BASH_SOURCE[0]}"
+
 # -- Test 25: structural: Test 16a exit variable is quoted -------------------
 echo ""
 echo "--- Test 25: structural: Test 16a exit variable is quoted ---"
