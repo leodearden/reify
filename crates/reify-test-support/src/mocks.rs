@@ -2063,7 +2063,7 @@ mod tests {
 
     #[test]
     fn multi_call_spy_records_all_calls_and_returns_sequenced_results() {
-        use reify_types::{AutoParam, Type, ValueMap};
+        use reify_types::ValueMap;
 
         let mut values_a = HashMap::new();
         values_a.insert(ValueCellId::new("A", "x"), Value::length(0.005));
@@ -2084,12 +2084,7 @@ mod tests {
 
         // First call
         let problem1 = ResolutionProblem {
-            auto_params: vec![AutoParam {
-                id: ValueCellId::new("A", "x"),
-                param_type: Type::length(),
-                bounds: None,
-                free: false,
-            }],
+            auto_params: vec![single_auto_param(ValueCellId::new("A", "x"))],
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
@@ -2103,12 +2098,7 @@ mod tests {
 
         // Second call
         let problem2 = ResolutionProblem {
-            auto_params: vec![AutoParam {
-                id: ValueCellId::new("B", "y"),
-                param_type: Type::length(),
-                bounds: None,
-                free: false,
-            }],
+            auto_params: vec![single_auto_param(ValueCellId::new("B", "y"))],
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
