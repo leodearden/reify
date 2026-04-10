@@ -2164,7 +2164,7 @@ impl Engine {
                 // Create new instances based on new count
                 let new_count = match &new_count_val {
                     Value::Int(n) => *n,
-                    _ => 0,
+                    _ => unreachable!("Undef new_count guarded above"),
                 };
                 for i in 0..new_count {
                     let scoped_entity =
