@@ -33622,7 +33622,16 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "reify-eval"
+            ],
+            "queries": [
+              "test_runner.rs violation diagnostic assertion formatting rustfmt",
+              "task 1424 review suggestions follow-up reify-eval tests"
+            ]
+          }
         }
       },
       {
