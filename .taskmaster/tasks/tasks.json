@@ -3110,7 +3110,13 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "examples/m8_combined.ri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: M8 combined .ri example"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-11T07:19:32.258Z"
@@ -8099,7 +8105,13 @@
           "files": [
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/entity.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Include meta entries in content_hash and eliminate clone"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-11T07:19:33.485Z"
@@ -13333,7 +13345,7 @@
         "description": "Two pre-existing bugs in geometry compilation (crates/reify-compiler/src/lib.rs and crates/reify-eval):\n\n1. **compile_geometry_op None placeholder**: When compile_geometry_op returns None (compilation failure), no placeholder is pushed into step_handles. This causes silent corruption in GeomRef::Step(n) relative indexing — all subsequent step indices are off by one per failed op, leading to wrong geometry references downstream.\n\n2. **compile_geometry_call GeomRef::Step(0) hardcoding**: compile_geometry_call() hardcodes target: GeomRef::Step(0) for all pattern/modify/transform ops. This means all geometry operations target the first step regardless of the intended target geometry.\n\nFix: (1) Push a sentinel/error placeholder into step_handles when compile_geometry_op returns None. (2) Resolve the correct GeomRef target based on the geometry name→step index map.\n\nmemory_hints: search \"compile_geometry_op None placeholder step_handles\", search \"compile_geometry_call GeomRef Step hardcoded\", get_entity \"GeometryKernel\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -13370,7 +13382,7 @@
             "crates/reify-eval/src/lib.rs"
           ]
         },
-        "updatedAt": "2026-04-10T02:08:12.491Z"
+        "updatedAt": "2026-04-11T07:19:35.984Z"
       },
       {
         "id": "613",
@@ -13713,11 +13725,11 @@
         "description": "Refactor Value::Field to eliminate inner_field: Option<Box<Value>>. Change FieldSourceKind::Gradient to FieldSourceKind::Gradient(Box<Value>). This removes 16 bytes from all non-gradient Field instances, eliminates the redundant guard in the sample handler, and makes impossible state (Gradient + inner_field=None) unrepresentable. Update match arms in value.rs (PartialEq, Ord, ContentHash, Display), compute_gradient_field and sample dispatch in reify-expr/src/lib.rs. Also fix the stale doc comment on sample_gradient_field that says 'lambda slot' — should say 'inner_field'.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:46:26.631Z",
+        "updatedAt": "2026-04-11T07:19:36.044Z",
         "metadata": {
           "modules": [
             "crates/reify-types",
@@ -13990,7 +14002,7 @@
         "description": "In `crates/reify-eval/tests/recursive_unfold.rs`, the `cyclic_let_bindings_emit_diagnostic` test (line ~1380-1385) checks `d.message.contains(\"a\") && d.message.contains(\"b\")` to verify member names are mentioned in the diagnostic. Since \"a\" is a single character, this condition passes trivially for almost any diagnostic message. Fix: assert on the exact list format (e.g., `contains(\"[a, b]\")`) or on quoted member names (`contains(\"'a'\")` and `contains(\"'b'\")`).\n\nmemory_hints: search \"cyclic let-binding diagnostic\" in recursive_unfold.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14002,7 +14014,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:36.089Z"
       },
       {
         "id": "644",
@@ -14010,7 +14022,7 @@
         "description": "The `node_budget` exhaustion path in `unfold_recursive_sub` (lib.rs:3523-3530) is never exercised by any test. When `set_max_unfold_nodes(N)` is called with a small N on a template with multiple recursive subs (e.g., binary tree), the budget can exhaust independently of the depth limit. Add a test that: (1) calls `engine.set_max_unfold_nodes(3)` on a binary-tree template, (2) asserts the diagnostic \"total node budget exhausted\" is present, (3) verifies some levels that would exist under unlimited budget are absent.\n\nmemory_hints: search \"max_unfold_nodes\" and \"node_budget\" in lib.rs; look at existing depth-limit tests in recursive_unfold.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14022,7 +14034,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:36.133Z"
       },
       {
         "id": "645",
@@ -14030,7 +14042,7 @@
         "description": "The branch in `unfold_recursive_sub` handling a guard expression that evaluates to a non-Bool type (the `other` arm, lib.rs ~3572-3577) emits an error diagnostic \"guard for recursive sub ... expected Bool\" and terminates recursion. No test exercises this path. Add a test that: (1) builds a template whose guard expression produces `Value::Int(1)` instead of `Value::Bool(true)`, (2) evaluates it, (3) asserts no child entity is created, (4) asserts an error diagnostic containing \"expected Bool\" is present.\n\nmemory_hints: search \"expected Bool\" and \"guard\" in unfold_recursive_sub; look at existing guard tests in recursive_unfold.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14042,7 +14054,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:36.347Z"
       },
       {
         "id": "646",
@@ -15487,7 +15499,7 @@
         "description": "The `is_auto` predicate `graph.value_cells.get(id).is_some_and(|n| n.kind == ValueCellKind::Auto)` is inlined 4 times across two guard handling phases in edit_param (lib.rs ~1693, ~1724, ~1956, ~1991). Extract an `is_auto_cell(&self, id)` method on the graph type and a `deactivate_if_not_auto` helper to consolidate the guard-skip + Undef-insert pattern into one place.\n\nMemory hints: search \"guard re-elaboration\", \"Auto param deactivation\", entity: edit_param",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15500,7 +15512,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:36.516Z"
       },
       {
         "id": "714",
@@ -21003,11 +21015,11 @@
         "description": "Three test quality improvements in crates/reify-compiler/tests/recursive_detection_tests.rs: (1) three_node_cycle_emits_exactly_one_warning should verify all three node names (A, B, C) appear in the cycle path. (2) Add a multi-member SCC source label test (2+ node cycle) since only the self-loop case is currently tested. (3) Remove redundant mutual_recursion_cycle_path_format which duplicates indirect_two_node_cycle_both_recursive.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T19:05:23.436Z",
+        "updatedAt": "2026-04-11T07:19:36.618Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -33125,7 +33137,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:33.486Z",
+      "lastModified": "2026-04-11T07:19:36.618Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
