@@ -33500,6 +33500,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1632,
+        "title": "si_units: format_f64_as_decimal hardening",
+        "description": "Review follow-up from task 334 (escalation esc-334-7). Two related fixes to format_f64_as_decimal.",
+        "details": "Both changes target the same function `format_f64_as_decimal` in crates/reify-compiler/src/si_units.rs and its call-sites in stdlib_loader.rs. Unified error-handling refactor is cleaner than two overlapping patches.\n\n**S3 — Guard large-magnitude inputs:**\nformat_f64_as_decimal (lines ~368-395) clamps precision to 0 via `(17-log-1).max(0)`, so for inputs with `log >= 17` (e.g. 1e18, 1e30) it emits the full decimal of the actual stored f64 — e.g. `1000000000000000019884624838656` for 1e30. Currently masked because SI_DERIVED_UNITS factors stay under 1e17, but SI_PREFIX_BASES-generated power-of-ten factors at Q/R/Y/Z scale should route through format_power_of_ten.\n- Option A: Add `debug_assert!(log < 16, \"format_f64_as_decimal large-value path untested for log={}\", log);`.\n- Option B: Route power-of-ten inputs through format_power_of_ten even when coming from the derived-unit path.\n(B is more robust.)\n\n**S6 — Surface bad factors as compile errors, not process panics:**\nLine ~369 uses `assert!` (not `debug_assert!`) at stdlib-init time inside OnceLock::get_or_init. If a non-finite or non-positive factor ever sneaks into SI_DERIVED_UNITS, every consumer of the compiler panics with no recovery path. A unit-registration failure should be an internal compile error on the synthetic `std.si_units` module. Aligns with the project's 'no silent defaults' norm.\n- Change format_f64_as_decimal signature to `Result<String, &'static str>` (or a richer error type).\n- Bubble errors up through stdlib_loader.rs to a `Diagnostic::error` attached to the synthetic std.si_units module.\n- Alternatively, strengthen the invariant by making `SiDerivedUnit.factor` a newtype that rejects non-positive values at construction.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -33512,7 +33523,7 @@
       ],
       "created": "2026-04-11T11:51:30.137Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-11T11:51:30.161Z"
+      "updated": "2026-04-11T11:51:40.603Z"
     }
   }
 }
