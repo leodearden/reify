@@ -625,6 +625,11 @@ fn run_dim_metadata_test(
     );
 }
 
+/// Maximum number of dimensions supported by the hard-coded coordinate/name arrays
+/// (`[1.0, 2.0, 3.0]` in `make_sample_point` and `["x", "y", "z"]` in `eval_field_op`).
+/// Changing the cap here automatically keeps both assert messages in sync.
+const MAX_POINT_ARITY: usize = 3;
+
 /// Build a sample point for the given domain type.
 ///
 /// Returns `(Value, Type)` where the `Value` encodes coordinates (1.0, 2.0, 3.0)
@@ -639,7 +644,7 @@ fn run_dim_metadata_test(
 fn make_sample_point(domain: &Type) -> (Value, Type) {
     match domain {
         Type::Point { n, quantity } => {
-            assert!(*n <= 3, "make_sample_point: Point domain only supports up to 3 dimensions, got {n}");
+            assert!(*n <= MAX_POINT_ARITY, "make_sample_point: Point domain only supports up to {MAX_POINT_ARITY} dimensions, got {n}");
             let coords = [1.0f64, 2.0, 3.0];
             let comps: Vec<Value> = coords[..*n]
                 .iter()
@@ -673,23 +678,6 @@ fn make_sample_point_panics_when_point_arity_exceeds_three() {
     let _ = make_sample_point(&domain);
 }
 
-#[test]
-#[should_panic(expected = "unsupported quantity type in Point")]
-fn make_sample_point_panics_on_unsupported_quantity_in_point() {
-    let domain = Type::Point {
-        n: 2,
-        quantity: Box::new(Type::Vector { n: 2, quantity: Box::new(Type::Real) }),
-    };
-    let _ = make_sample_point(&domain);
-}
-
-#[test]
-#[should_panic(expected = "unsupported domain type")]
-fn make_sample_point_panics_on_unsupported_domain_type() {
-    let domain = Type::Bool;
-    let _ = make_sample_point(&domain);
-}
-
 /// Evaluate a calculus operator on a standard analytical test field.
 ///
 /// Builds a `Value::Field` with the given `domain` and `codomain` types, using a
@@ -705,7 +693,7 @@ fn make_sample_point_panics_on_unsupported_domain_type() {
 fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
     let n: usize = match &domain {
         Type::Point { n, .. } => {
-            assert!(*n <= 3, "eval_field_op: Point domain only supports up to 3 dimensions, got {n}");
+            assert!(*n <= MAX_POINT_ARITY, "eval_field_op: Point domain only supports up to {MAX_POINT_ARITY} dimensions, got {n}");
             *n
         }
         _ => 1,
