@@ -1535,6 +1535,40 @@ mod tests {
                 result
             );
         }
+        // (e) dot-access source @ Position(3,18) → DotAccess
+        {
+            let source =
+                "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}";
+            let ctx = AnalysisContext::new(source, &test_uri());
+            let result = determine_context(source, Position::new(3, 18), &ctx);
+            assert!(
+                matches!(result, CursorContext::DotAccess),
+                "expected DotAccess for dot-access source @ Position(3,18), got {:?}",
+                result
+            );
+        }
+        // (f) type-position source @ Position(1,13) → TypePosition
+        {
+            let source = "structure Foo {\n    param x: \n}";
+            let ctx = AnalysisContext::new(source, &test_uri());
+            let result = determine_context(source, Position::new(1, 13), &ctx);
+            assert!(
+                matches!(result, CursorContext::TypePosition),
+                "expected TypePosition for type-position source @ Position(1,13), got {:?}",
+                result
+            );
+        }
+        // (g) top-level source @ Position(3,0) → TopLevel
+        {
+            let source = "structure Foo {\n    param x: Scalar = 1mm\n}\n";
+            let ctx = AnalysisContext::new(source, &test_uri());
+            let result = determine_context(source, Position::new(3, 0), &ctx);
+            assert!(
+                matches!(result, CursorContext::TopLevel),
+                "expected TopLevel for top-level source @ Position(3,0), got {:?}",
+                result
+            );
+        }
     }
 
     // --- guarded-group completion tests ---
