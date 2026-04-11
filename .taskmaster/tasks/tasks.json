@@ -10060,7 +10060,7 @@
         "description": "Remove duplicate extract_dependency_trace call and consider pre-computing topological order at compile time",
         "details": "In crates/reify-eval/src/lib.rs:\n1. Replace duplicate extract_dependency_trace call at line ~2950 with let_traces[&node_id].clone() — the identical trace already exists in the let_traces HashMap built at lines 2919-2922\n2. Consider pre-computing let_cells/let_traces/topological order at compile time in TopologyTemplate since the expression graph is static after compilation. Store sorted_let_ids on TopologyTemplate to make evaluate_let_bindings a single linear pass with no per-call allocations.\n\nFrom review of task 397 (esc-397-121).\n\nmemory_hints:\n  search: \"evaluate_let_bindings extract_dependency_trace topological sort\"\n  entities: [\"evaluate_let_bindings\", \"TopologyTemplate\", \"extract_dependency_trace\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10073,7 +10073,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:20:45.297Z"
       },
       {
         "id": "471",
@@ -26585,11 +26585,11 @@
         "description": "In `crates/reify-compiler/src/lib.rs:4728`, `function` is listed as a valid context for `@test`, but `CompiledFunction` (re-exported from `reify_types`) has no `is_test` field and `CompiledModule` has no `test_functions()` helper. Either (a) remove `function` from the valid context match arm if test-functions are out of scope for Task 267, or (b) add `CompiledFunction::is_test()` in `reify_types` and `CompiledModule::test_functions()` / `non_test_functions()` in `crates/reify-compiler/src/lib.rs` to make the API coherent.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:20:45.276Z",
+        "updatedAt": "2026-04-09T02:57:43.171Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -33489,7 +33489,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:45.276Z",
+      "lastModified": "2026-04-11T07:20:45.318Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
