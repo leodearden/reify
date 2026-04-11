@@ -18456,8 +18456,8 @@
       {
         "id": 845,
         "title": "Fix label uniqueness for multiple constraint-def instantiations",
-        "description": "In crates/reify-compiler/src/lib.rs:5200-5208, the label format `format!(\"{}[{}]\", ci.name, pred_idx)` produces identical labels when the same constraint def is instantiated more than once in a single structure. Add a per-def instantiation counter (inst_idx) so labels become `\"Name#inst[pred]\"`. Then add a test in crates/reify-eval/tests/constraint_def_eval.rs that instantiates the same constraint def twice with different arguments and asserts the two resulting ConstraintCheckEntry labels are distinct.\n\nMemory hints: search for \"constraint def label format\", get_entity \"CompiledConstraint\", search for \"ConstraintCheckEntry label\" [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:28:11.518Z>\nThis task has been subsumed by Task 842 (bundle consolidation 2026-04-11). Please refer to Task 842 for further details and updates.\n</info added on 2026-04-11T07:28:11.518Z>",
+        "description": "In crates/reify-compiler/src/lib.rs:5200-5208, the label format `format!(\"{}[{}]\", ci.name, pred_idx)` produces identical labels when the same constraint def is instantiated more than once in a single structure. Add a per-def instantiation counter (inst_idx) so labels become `\"Name#inst[pred]\"`. Then add a test in crates/reify-eval/tests/constraint_def_eval.rs that instantiates the same constraint def twice with different arguments and asserts the two resulting ConstraintCheckEntry labels are distinct.\n\nMemory hints: search for \"constraint def label format\", get_entity \"CompiledConstraint\", search for \"ConstraintCheckEntry label\"",
+        "details": "",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -18478,8 +18478,8 @@
       {
         "id": 846,
         "title": "Harden labeled_diagnostics correctness and ordering safety",
-        "description": "Three correctness gaps in the labeled_diagnostics enrichment pipeline in crates/reify-eval/src/lib.rs:\n\n1. Extend the substitution loop (~line 2196) to also replace id_str in each `d.labels[i].message` field, not just `d.message`.\n2. Add a `debug_assert` or `tracing::warn` when a non-empty label is provided but the replacement produced no change in any message — catches Display format drift silently breaking enrichment.\n3. At each of the five `results.into_iter().zip(active_constraints.iter())` sites (lines 2249, 2639, 2735, 2799, 3113), add `debug_assert_eq!(result.id, compiled.id)` and a post-loop count assert to catch out-of-order or truncated checker results.\n\nMemory hints: search for \"labeled_diagnostics\", search for \"ConstraintNodeId Display format\", get_entity \"DiagnosticLabel\" [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:28:36.515Z>\nThis task has been subsumed by Task 842 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:28:36.515Z>",
+        "description": "Three correctness gaps in the labeled_diagnostics enrichment pipeline in crates/reify-eval/src/lib.rs:\n\n1. Extend the substitution loop (~line 2196) to also replace id_str in each `d.labels[i].message` field, not just `d.message`.\n2. Add a `debug_assert` or `tracing::warn` when a non-empty label is provided but the replacement produced no change in any message — catches Display format drift silently breaking enrichment.\n3. At each of the five `results.into_iter().zip(active_constraints.iter())` sites (lines 2249, 2639, 2735, 2799, 3113), add `debug_assert_eq!(result.id, compiled.id)` and a post-loop count assert to catch out-of-order or truncated checker results.\n\nMemory hints: search for \"labeled_diagnostics\", search for \"ConstraintNodeId Display format\", get_entity \"DiagnosticLabel\"",
+        "details": "",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -19088,11 +19088,11 @@
         "description": "Add compile_module, compile_template, error_diags, and parse_and_compile to crates/reify-test-support/src/. Remove per-file duplicates in: constraint_def_compile_tests.rs (lines 12-36), constraint_inst_tests.rs, and ~12 other compiler test files; and m9_constraint_def.rs (lines 20-34) plus m9_trait_conformance.rs, m5_integration.rs, m10_geometric_types.rs, purpose_eval.rs, determinacy_predicates.rs.\n\nNote: Prior consolidation tasks (2, 81, 614, 769) moved compile_source, eval_source, test_uri, and solver helpers. This task covers the remaining compile_module/compile_template/error_diags/parse_and_compile helpers that are still duplicated.\n\nmemory_hints: search \"reify-test-support helpers consolidate\" for prior consolidation work",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:23:42.683Z",
+        "updatedAt": "2026-04-11T07:27:30.128Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support",
@@ -19434,8 +19434,8 @@
       {
         "id": 893,
         "title": "Fill missing Complex guard-clause coverage (im.is_nan and re.is_infinite branches)",
-        "description": "In crates/reify-expr/src/lib.rs, add two new Complex sanitize tests to exercise the two unverified guard sub-clauses: (1) sanitize_complex_nan_im_returns_undef: Value::Complex { re: 1.0, im: f64::NAN, dimension: DimensionVector::DIMENSIONLESS } → is_undef(); (2) sanitize_complex_inf_re_returns_undef: Value::Complex { re: f64::INFINITY, im: 1.0, dimension: DimensionVector::DIMENSIONLESS } → is_undef(). All four clauses in `re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite()` will then be independently exercised.",
-        "details": "",
+        "description": "In crates/reify-expr/src/lib.rs, add two new Complex sanitize tests to exercise the two unverified guard sub-clauses: (1) sanitize_complex_nan_im_returns_undef: Value::Complex { re: 1.0, im: f64::NAN, dimension: DimensionVector::DIMENSIONLESS } → is_undef(); (2) sanitize_complex_inf_re_returns_undef: Value::Complex { re: f64::INFINITY, im: 1.0, dimension: DimensionVector::DIMENSIONLESS } → is_undef(). All four clauses in `re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite()` will then be independently exercised. [Updated: 4/11/2026]",
+        "details": "<info added on 2026-04-11T07:27:33.360Z>\nThis task has been subsumed by task 892 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:27:33.360Z>",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -21198,14 +21198,14 @@
       {
         "id": 979,
         "title": "Strengthen duplicate-template-name test assertions",
-        "description": "The duplicate_template_names_emits_diagnostic test in crates/reify-compiler/src/scc.rs (lines 351-367) has two gaps: (1) It filters by message substring 'duplicate' without asserting Severity::Error — a regression to warning would go undetected. (2) It doesn't verify that is_recursive is still computed correctly for the non-duplicate entries. Both assertions should be added.",
-        "details": "",
+        "description": "The duplicate_template_names_emits_diagnostic test in crates/reify-compiler/src/scc.rs (lines 351-367) has two gaps: (1) It filters by message substring 'duplicate' without asserting Severity::Error — a regression to warning would go undetected. (2) It doesn't verify that is_recursive is still computed correctly for the non-duplicate entries. Both assertions should be added. [Updated: 4/11/2026]",
+        "details": "<info added on 2026-04-11T07:27:52.567Z>\nThis task has been subsumed by Task 978 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:27:52.567Z>",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:23:43.517Z",
+        "updatedAt": "2026-04-11T07:27:18.565Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -21218,8 +21218,8 @@
       {
         "id": 980,
         "title": "Improve cycle-path and source-label test coverage in SCC tests",
-        "description": "Three test quality improvements in crates/reify-compiler/tests/recursive_detection_tests.rs: (1) three_node_cycle_emits_exactly_one_warning should verify all three node names (A, B, C) appear in the cycle path. (2) Add a multi-member SCC source label test (2+ node cycle) since only the self-loop case is currently tested. (3) Remove redundant mutual_recursion_cycle_path_format which duplicates indirect_two_node_cycle_both_recursive.",
-        "details": "",
+        "description": "Three test quality improvements in crates/reify-compiler/tests/recursive_detection_tests.rs: (1) three_node_cycle_emits_exactly_one_warning should verify all three node names (A, B, C) appear in the cycle path. (2) Add a multi-member SCC source label test (2+ node cycle) since only the self-loop case is currently tested. (3) Remove redundant mutual_recursion_cycle_path_format which duplicates indirect_two_node_cycle_both_recursive. [Updated: 4/11/2026]",
+        "details": "<info added on 2026-04-11T07:28:42.446Z>\nThis task has been subsumed by task 978 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:28:42.446Z>",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -26667,8 +26667,8 @@
       {
         "id": 1253,
         "title": "Encapsulate is_test on TopologyTemplate and document is_test asymmetry",
-        "description": "In `crates/reify-compiler/src/lib.rs` around line 248: (a) make `is_test` a private field and expose it via a `pub fn is_test(&self) -> bool` getter, with a doc note that mutating `annotations` post-construction is unsupported. This is symmetric with `ConstraintDef::is_test()`. (b) Add TODO comments on `test_constraint_defs`/`non_test_constraint_defs` (lib.rs ~192-199) and on `ConstraintDef::is_test()` in `crates/reify-syntax/src/lib.rs:465` noting that the method will move to a `CompiledConstraintDef::is_test` field once constraint-def lowering lands.",
-        "details": "",
+        "description": "In `crates/reify-compiler/src/lib.rs` around line 248: (a) make `is_test` a private field and expose it via a `pub fn is_test(&self) -> bool` getter, with a doc note that mutating `annotations` post-construction is unsupported. This is symmetric with `ConstraintDef::is_test()`. (b) Add TODO comments on `test_constraint_defs`/`non_test_constraint_defs` (lib.rs ~192-199) and on `ConstraintDef::is_test()` in `crates/reify-syntax/src/lib.rs:465` noting that the method will move to a `CompiledConstraintDef::is_test` field once constraint-def lowering lands. [Updated: 4/11/2026]",
+        "details": "<info added on 2026-04-11T07:27:27.451Z>\nThis task has been subsumed by task 1251 (bundle consolidation 2026-04-11). No further action is required on this task as it will be addressed within the scope of task 1251.\n</info added on 2026-04-11T07:27:27.451Z>",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -26698,8 +26698,8 @@
       {
         "id": 1254,
         "title": "Resolve @test-on-function half-support",
-        "description": "In `crates/reify-compiler/src/lib.rs:4728`, `function` is listed as a valid context for `@test`, but `CompiledFunction` (re-exported from `reify_types`) has no `is_test` field and `CompiledModule` has no `test_functions()` helper. Either (a) remove `function` from the valid context match arm if test-functions are out of scope for Task 267, or (b) add `CompiledFunction::is_test()` in `reify_types` and `CompiledModule::test_functions()` / `non_test_functions()` in `crates/reify-compiler/src/lib.rs` to make the API coherent.",
-        "details": "",
+        "description": "In `crates/reify-compiler/src/lib.rs:4728`, `function` is listed as a valid context for `@test`, but `CompiledFunction` (re-exported from `reify_types`) has no `is_test` field and `CompiledModule` has no `test_functions()` helper. Either (a) remove `function` from the valid context match arm if test-functions are out of scope for Task 267, or (b) add `CompiledFunction::is_test()` in `reify_types` and `CompiledModule::test_functions()` / `non_test_functions()` in `crates/reify-compiler/src/lib.rs` to make the API coherent. [Updated: 4/11/2026]",
+        "details": "<info added on 2026-04-11T07:27:29.592Z>\nThis task has been subsumed by Task 1251 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:27:29.592Z>",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -33899,13 +33899,13 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:26:14.958Z",
+      "lastModified": "2026-04-11T07:27:30.128Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
         "master"
       ],
-      "created": "2026-04-11T07:26:51.652Z",
+      "created": "2026-04-11T07:27:31.363Z",
       "description": "Tasks for master context"
     }
   }
