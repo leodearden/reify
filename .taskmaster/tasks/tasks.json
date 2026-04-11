@@ -8803,8 +8803,8 @@
       {
         "id": 418,
         "title": "Clean up UnitRegistry API: dimension mapping DRY, entry API, struct duplication, content hash, diagnostics",
-        "description": "Six code quality improvements in crates/reify-compiler/src/lib.rs:\n\n1. Extract shared dimension name->DimensionVector mapping used by both resolve_dimension_type and resolve_type_name.\n2. Use HashMap entry API in UnitRegistry::register() to avoid double lookup.\n3. Have register() return a reference to the inserted entry instead of requiring a separate lookup().\n4. Reduce field duplication between UnitEntry (7 fields) and CompiledUnit (6 of same fields).\n5. Include is_pub in unit content hash.\n6. Evaluate both sides of BinOp in evaluate_const_expr before returning, to collect all diagnostics.\n\nSource: review suggestions from esc-208-28 (task 208).",
-        "details": "",
+        "description": "Six code quality improvements in crates/reify-compiler/src/lib.rs:\n\n1. Extract shared dimension name->DimensionVector mapping used by both resolve_dimension_type and resolve_type_name.\n2. Use HashMap entry API in UnitRegistry::register() to avoid double lookup.\n3. Have register() return a reference to the inserted entry instead of requiring a separate lookup().\n4. Reduce field duplication between UnitEntry (7 fields) and CompiledUnit (6 of same fields).\n5. Include is_pub in unit content hash.\n6. Evaluate both sides of BinOp in evaluate_const_expr before returning, to collect all diagnostics.\n\nSource: review suggestions from esc-208-28 (task 208). [Updated: 4/11/2026]",
+        "details": "<info added on 2026-04-11T07:26:14.668Z>\nThis task has been subsumed by task 417 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:26:14.668Z>",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [
@@ -17254,7 +17254,7 @@
         "id": 787,
         "title": "Extract assert_no_eval_errors helper and eliminate duplication in m9_trait_conformance tests",
         "description": "Add assert_no_eval_errors helper to test module or reify-test-support; use it in all 5 test functions (including refinement_chain_values and diamond_merging_values which currently lack it). Rename shadowed `result` to `eval_result`. Consider reusing field_eval_tests.rs eval_source helper pattern.",
-        "details": "Source: escalation esc-434-29 (task 434 review). File: crates/reify-eval/tests/m9_trait_conformance.rs. Eval-error assertion block copy-pasted 3 times at lines 69-85, 448-464, 488-504.\n<info added on 2026-04-11T07:26:13.572Z>\nThis task now includes the scope of former tasks 788 and 790, focusing on improving test quality for both m9_trait_conformance and recursive_unfold.\n</info added on 2026-04-11T07:26:13.572Z>",
+        "details": "Source: escalation esc-434-29 (task 434 review). File: crates/reify-eval/tests/m9_trait_conformance.rs. Eval-error assertion block copy-pasted 3 times at lines 69-85, 448-464, 488-504.",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
