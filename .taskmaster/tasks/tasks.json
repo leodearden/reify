@@ -33571,7 +33571,7 @@
         "description": "Code reuse follow-up from task 958 review (reviewer_comprehensive). In crates/reify-eval/tests/collection_sub_eval.rs, `from_templates_creates_collection_instances` (lines 54-98) still inlines the same Bolt+Parent template construction that `make_bolt_parent_engine` builds. Split the helper so the template construction can be shared:\n\n- Add `make_bolt_parent_templates(n_default: Option<i64>) -> (TopologyTemplate, TopologyTemplate)` returning the (parent, bolt) templates.\n- Refactor `make_bolt_parent_engine` to call `make_bolt_parent_templates` and then build the CompiledModule + Engine on top.\n- Update `from_templates_creates_collection_instances` to call `make_bolt_parent_templates(Some(4))` and pass them to `EvaluationGraph::from_templates`.\n\nThis keeps the canonical Bolt/Parent shape in one place so both tests stay in sync if it changes.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -33582,7 +33582,8 @@
           "modules": [
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-11T07:21:24.986Z"
       },
       {
         "id": "1618",
@@ -33756,7 +33757,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:24.105Z",
+      "lastModified": "2026-04-11T07:21:24.986Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
