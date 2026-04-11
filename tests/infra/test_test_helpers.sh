@@ -290,6 +290,22 @@ check "sync_comments_test.sh sources sync_ref_helpers.sh" "$ok"
 if ! _has_assert_sync_ref_exists "$SYNC_FILE"; then ok=true; else ok=false; fi
 check "sync_comments_test.sh does NOT define assert_sync_ref_exists() locally" "$ok"
 
+# (h) source call for test_helpers.sh has || error-handler attached
+if grep -Fq 'source "$REPO_ROOT/tests/infra/test_helpers.sh" || { echo "ERROR: failed to source test_helpers.sh"; exit 1; }' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "source test_helpers.sh has || error-handler attached" "$ok"
+
+# (i) source call for sync_ref_helpers.sh has || error-handler attached
+if grep -Fq 'source "$REPO_ROOT/tests/infra/sync_ref_helpers.sh" || { echo "ERROR: failed to source sync_ref_helpers.sh"; exit 1; }' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "source sync_ref_helpers.sh has || error-handler attached" "$ok"
+
+# (j) EXPR_FILE existence guard present before assert calls
+if grep -Fq '[ -f "$EXPR_FILE" ] || { echo "ERROR: $EXPR_FILE not found"; exit 1; }' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_comments_test.sh has EXPR_FILE existence guard" "$ok"
+
+# (k) STDLIB_FILE existence guard present before assert calls
+if grep -Fq '[ -f "$STDLIB_FILE" ] || { echo "ERROR: $STDLIB_FILE not found"; exit 1; }' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+check "sync_comments_test.sh has STDLIB_FILE existence guard" "$ok"
+
 # behavioral: extract_fn returns empty output for a non-existent function name,
 # confirming the non-empty guard would fire when a fn is renamed or missing.
 echo ""
@@ -780,6 +796,45 @@ else
     ok=false
 fi
 check "defensive trap comment has no drifting 'lines ~NNN' references" "$ok"
+
+echo ""
+echo "--- Robustness: EXPR_FILE guard fires when reify-expr source file absent ---"
+
+_expr_guard_beh_dir=$(mktemp -d -p "$_robust_tmpdir")
+mkdir -p "$_expr_guard_beh_dir/tests"
+cp "$SYNC_FILE" "$_expr_guard_beh_dir/tests/sync_comments_test.sh"
+_expr_guard_beh_rc=0
+_expr_guard_beh_out=$(bash "$_expr_guard_beh_dir/tests/sync_comments_test.sh" 2>&1) || _expr_guard_beh_rc=$?
+
+if [ "$_expr_guard_beh_rc" -ne 0 ]; then ok=true; else ok=false; fi
+check "EXPR_FILE guard: exits non-zero when reify-expr source file absent" "$ok"
+
+if echo "$_expr_guard_beh_out" | grep -q 'ERROR:'; then ok=true; else ok=false; fi
+check "EXPR_FILE guard: output contains ERROR:" "$ok"
+
+if echo "$_expr_guard_beh_out" | grep -q 'reify-expr'; then ok=true; else ok=false; fi
+check "EXPR_FILE guard: error message names reify-expr path" "$ok"
+
+echo ""
+echo "--- Robustness: STDLIB_FILE guard fires when reify-stdlib source file absent ---"
+
+_stdlib_guard_beh_dir=$(mktemp -d -p "$_robust_tmpdir")
+mkdir -p "$_stdlib_guard_beh_dir/crates/reify-expr/src"
+mkdir -p "$_stdlib_guard_beh_dir/tests"
+printf '// SYNC: reify-stdlib::sanitize_value\nfn stub() {}\n' \
+    > "$_stdlib_guard_beh_dir/crates/reify-expr/src/sanitize.rs"
+cp "$SYNC_FILE" "$_stdlib_guard_beh_dir/tests/sync_comments_test.sh"
+_stdlib_guard_beh_rc=0
+_stdlib_guard_beh_out=$(bash "$_stdlib_guard_beh_dir/tests/sync_comments_test.sh" 2>&1) || _stdlib_guard_beh_rc=$?
+
+if [ "$_stdlib_guard_beh_rc" -ne 0 ]; then ok=true; else ok=false; fi
+check "STDLIB_FILE guard: exits non-zero when reify-stdlib source file absent" "$ok"
+
+if echo "$_stdlib_guard_beh_out" | grep -q 'ERROR:'; then ok=true; else ok=false; fi
+check "STDLIB_FILE guard: output contains ERROR:" "$ok"
+
+if echo "$_stdlib_guard_beh_out" | grep -q 'reify-stdlib'; then ok=true; else ok=false; fi
+check "STDLIB_FILE guard: error message names reify-stdlib path" "$ok"
 
 # ==============================================================================
 # Pipeline divergence documentation check
