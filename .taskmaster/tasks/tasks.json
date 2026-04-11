@@ -28885,7 +28885,13 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: e2e_meta.rs polish: cardinality guards, drop vestigial binding, extract find_template helper"
+            ]
+          }
         }
       },
       {
@@ -33727,11 +33733,11 @@
         "description": "Follow-up from Task 1263 review triage (esc-1263-61, S1).\n\nIn crates/reify-expr/tests/field_calculus_tests.rs, the `#[ignore]` reason strings on `divergence_sample_mixed_length_to_real_placeholder` (line ~1866) and `laplacian_sample_mixed_length_to_real_placeholder` (line ~2179) reference `plan step-3` and `plan step-5`. Those pointers risk going stale once the plan document is merged or removed, leaving future readers (or a CI that runs `--ignored` and flips the test) without a usable breadcrumb.\n\nFix: replace the plan-step reference with either (a) a one-line summary of the failure mode inlined into the reason string (e.g. \"expected Scalar{1/Length} from dim_quotient_type cd==DIMENSIONLESS branch\"), or (b) a tracked task/issue ID that will outlive the plan file. Option (a) is simpler and self-contained; the test docstrings above already contain the full analysis, so the reason string only needs a brief pointer.\n\nModules: crates/reify-expr/tests",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T06:35:31.795Z",
+        "updatedAt": "2026-04-11T07:21:33.272Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -33813,7 +33819,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:32.875Z",
+      "lastModified": "2026-04-11T07:21:33.272Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
