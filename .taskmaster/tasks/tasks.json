@@ -10490,7 +10490,13 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Attach source spans to geometry arg-count diagnostics in compiler"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:20:52.128Z"
       },
@@ -27000,7 +27006,13 @@
           ],
           "files": [
             "crates/reify-eval/src/tests_runner.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Optimize run_tests to avoid per-test full CompiledModule clone"
+            ]
+          }
         }
       },
       {
@@ -32792,11 +32804,11 @@
         "description": "Two improvements in tests/infra/test_sync_comments_grep.sh: (1) Lines 60-66: add a second self-check assertion that greps for double-quoted bash -c lines containing $SYNC_TEST, $SYNC_REF_HELPERS, or $_SECT3_HELPER — enforces the single-quoted hardening convention for Sections 2/3 (currently only Section 1 is guarded). (2) Lines 189-195: extend comment to note that sourcing SYNC_TEST executes its top-level assertions as a side effect, and they must be non-fatal for the meta-tests to work. Consider follow-up to wrap sync_comments_test.sh assertions in a main() function.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:05:28.921Z",
+        "updatedAt": "2026-04-11T07:20:54.510Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh"
@@ -33538,7 +33550,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:53.028Z",
+      "lastModified": "2026-04-11T07:20:54.510Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
