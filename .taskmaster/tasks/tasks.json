@@ -3130,7 +3130,7 @@
         "dependencies": [
           "179"
         ],
-        "status": "deferred",
+        "status": "cancelled",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -3142,7 +3142,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:23:41.693Z"
+        "updatedAt": "2026-04-11T07:27:24.489Z"
       },
       {
         "id": "181",
@@ -3162,7 +3162,7 @@
           "173",
           "177"
         ],
-        "status": "deferred",
+        "status": "cancelled",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -3174,7 +3174,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:23:41.746Z"
+        "updatedAt": "2026-04-11T07:27:24.706Z"
       },
       {
         "id": "182",
@@ -33899,7 +33899,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:27:23.525Z",
+      "lastModified": "2026-04-11T07:27:24.706Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
