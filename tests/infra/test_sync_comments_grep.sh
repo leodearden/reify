@@ -300,11 +300,19 @@ assert "sync_ref_helpers.sh uses POSIX-portable [[:space:](<] post-name class" \
 # File-wide fixed-string searches were replaced because a documentation comment
 # like '# POSIX: do not use \b here' would trigger them as false positives,
 # breaking CI without any real regression.
+# Both sync_ref_helpers.sh and sync_comments_test.sh are checked (paired) to
+# guard against regressions in either file.
 assert "no \\b in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
     bash -c '! grep -E "^[^#]*grep[[:space:]].*\\\\b" "$SYNC_REF_HELPERS"'
 
+assert "no \\b in grep invocations in sync_comments_test.sh (non-comment lines, scoped)" \
+    bash -c '! grep -E "^[^#]*grep[[:space:]].*\\\\b" "$SYNC_TEST"'
+
 assert "no grep -P in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
     bash -c '! grep -E "^[^#]*grep[[:space:]]+-P" "$SYNC_REF_HELPERS"'
+
+assert "no grep -P in grep invocations in sync_comments_test.sh (non-comment lines, scoped)" \
+    bash -c '! grep -E "^[^#]*grep[[:space:]]+-P" "$SYNC_TEST"'
 
 assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC marker'" \
     grep -q '"reify-stdlib has SYNC marker referencing reify-expr::sanitize_value"' "$SYNC_TEST"
