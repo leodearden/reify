@@ -12120,7 +12120,13 @@
           "files": [
             "crates/reify-compiler/tests/stdlib_loader_tests.rs",
             "crates/reify-compiler/tests/structural_physical_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add missing test coverage for under-tested stdlib traits"
+            ]
+          }
         }
       },
       {
@@ -12129,7 +12135,7 @@
         "description": "Two hardening fixes in `crates/reify-eval/src/lib.rs`:\n\n1. **filter+unwrap → filter_map** (lines ~2916-2917 and ~3715-3719): The pattern `.filter(|c| c.default_expr.is_some()).map(|c| c.default_expr.as_ref().unwrap())` is safe today but fragile under refactor. Replace with `.filter_map(|c| c.default_expr.as_ref().map(|expr| (NodeId::Value(c.id.clone()), expr)))`.\n\n2. **unreachable!() → graceful diagnostic** (lines ~2930-2932): In `evaluate_let_bindings` and `elaborate_child_lets_only`, `_ => unreachable!()` on NodeId match is a latent panic. Replace with: `_ => { diagnostics.push(Diagnostic::error(...)); continue; }`.\n\nConsistent with project convention: logic errors should be noisy, not silent, and should not crash.\n\nmemory_hints: search \"fragile unwrap pattern eval\", search \"silent defaults pattern\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12142,7 +12148,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:21:26.143Z"
       },
       {
         "id": "556",
@@ -28041,7 +28047,13 @@
           ],
           "files": [
             "crates/reify-eval/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Tighten extrude/revolve degenerate-guard boundary tests"
+            ]
+          }
         }
       },
       {
@@ -33757,7 +33769,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:24.986Z",
+      "lastModified": "2026-04-11T07:21:26.143Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
