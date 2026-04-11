@@ -27405,7 +27405,13 @@
           "files": [
             "crates/reify-compiler/tests/trait_merge_tests.rs",
             "crates/reify-eval/tests/trait_merge_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Trait merge test hardening: richer assertions + diamond inheritance"
+            ]
+          }
         }
       },
       {
@@ -33242,7 +33248,13 @@
           "modules": [
             "crates/reify-expr",
             "crates/reify-test-support"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: calculus.rs: remove stale \"Currently FAILS\" comments + extract test setup helpers"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:21:08.928Z"
       },
@@ -33318,11 +33330,11 @@
         "description": "The compiler's `compile_geometry_call` in `crates/reify-compiler/src/geometry.rs` only accepts inline geometry function calls as arguments to `difference()`, `union()`, and `intersection()`. It does not resolve `let`-bound geometry variable references, forcing users to inline all geometry expressions.\n\nCurrently fails:\n```\nlet body = cylinder(outer_radius, height)\nlet hole = cylinder(hole_radius, height)\nlet result = difference(body, holes)  // ERROR: argument 1 must be a geometry expression\n```\n\nCurrently works (but unreadable for complex models):\n```\nlet result = difference(cylinder(outer_radius, height), cylinder(hole_radius, height))\n```\n\nThis also blocks `circular_pattern` + `difference` compositions needed for the flange example (`examples/m5_geometry_flange.ri`).",
         "details": "## Root cause\n\nIn `geometry.rs:54-74`, when `compile_geometry_call` encounters a boolean op argument, it calls itself recursively on the argument AST node. If the argument is an `ExprKind::Identifier` (a variable reference), the recursive call fails because identifiers aren't geometry function calls. The fix is to resolve identifiers by looking up the `let` binding in scope and recursively compiling its initializer expression.\n\n## Implementation approach\n\n1. In `compile_geometry_call`, when an argument is an `ExprKind::Identifier`, look it up in `scope` to find the `let` binding's initializer expression\n2. Recursively call `compile_geometry_call` on the initializer\n3. Handle the case where the binding's initializer is itself a variable reference (transitive resolution)\n4. Same fix needed for `circular_pattern`'s target argument (line 273+)\n\n## Files to modify\n- `crates/reify-compiler/src/geometry.rs` — main fix\n- `crates/reify-compiler/tests/let_scope_tests.rs` — add tests for variable-ref boolean ops\n\n## memory_hints\n- search: \"compile_geometry_call boolean op arguments\"\n- search: \"geometry variable reference let binding\"\n- entity: \"compile_geometry_call\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-10T17:22:35.425Z",
+        "updatedAt": "2026-04-11T07:21:11.669Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -33654,7 +33666,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:10.370Z",
+      "lastModified": "2026-04-11T07:21:11.669Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
