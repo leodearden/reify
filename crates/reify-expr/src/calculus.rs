@@ -627,6 +627,15 @@ fn eval_perturbed_point<F: Fn(f64) -> Value>(
     // Recover work_point from work_args (single_point_param only).
     // apply_lambda borrows &[Value] and cannot mutate work_args, so pop() returns
     // exactly the Value::Point we pushed; any other outcome is a programming error.
+    //
+    // Structural precondition: this recovery MUST complete before the next
+    // `work_args.clear()` executes (i.e., at the top of the next call to this
+    // function). If a future refactor ever called `work_args.clear()` after the
+    // `std::mem::take` push but before this pop, the `Value::Point` (and the
+    // inner Vec it holds) would be dropped by `clear()`, destroying `work_point`
+    // state and causing the next axis iteration to panic on `work_point[i] = …`
+    // (empty index). The current layout — clear at the top, push/take, apply,
+    // pop/restore — preserves this invariant.
     if single_point_param {
         match work_args.pop() {
             Some(Value::Point(inner)) => *work_point = inner,
