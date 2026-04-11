@@ -102,25 +102,37 @@ mod tests {
         CompiledExpr::literal(v, ty)
     }
 
+    // Helper: build and evaluate a Complex method call, returning the result Value.
+    // `dim` / `elem_ty` describe the component type (DIMENSIONLESS + Real for
+    // dimensionless tests; LENGTH + length() for dimensioned tests).
+    // `ret_ty` is the declared return type of the method (Real, length(), angle(),
+    // complex(Real), etc.).
+    fn call_complex_method(
+        re: f64,
+        im: f64,
+        dim: DimensionVector,
+        elem_ty: Type,
+        method: &str,
+        ret_ty: Type,
+    ) -> Value {
+        let complex_val = Value::Complex { re, im, dimension: dim };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(elem_ty)),
+            method.to_string(),
+            vec![],
+            ret_ty,
+        );
+        let values = ValueMap::new();
+        eval_expr(&expr, &EvalContext::simple(&values))
+    }
+
     // ── method: re ────────────────────────────────────────────────────────────
 
     #[test]
     fn re_nan_dimensionless_returns_undef() {
         // Complex{re:NaN, im:1.0, DIMENSIONLESS}.re → Undef
-        let complex_val = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "re".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::NAN, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "re", Type::Real).is_undef(),
             "z.re with NaN real part should return Undef"
         );
     }
@@ -128,20 +140,8 @@ mod tests {
     #[test]
     fn re_inf_dimensionless_returns_undef() {
         // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.re → Undef
-        let complex_val = Value::Complex {
-            re: f64::INFINITY,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "re".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::INFINITY, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "re", Type::Real).is_undef(),
             "z.re with Inf real part should return Undef"
         );
     }
@@ -149,20 +149,8 @@ mod tests {
     #[test]
     fn re_nan_dimensioned_returns_undef() {
         // Complex{re:NaN, im:1.0, LENGTH}.re → Undef (dimensioned Scalar path)
-        let complex_val = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::LENGTH,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::length())),
-            "re".to_string(),
-            vec![],
-            Type::length(),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::NAN, 1.0, DimensionVector::LENGTH, Type::length(), "re", Type::length()).is_undef(),
             "z.re with NaN real part (dimensioned) should return Undef"
         );
     }
@@ -170,20 +158,8 @@ mod tests {
     #[test]
     fn re_neg_inf_dimensionless_returns_undef() {
         // Complex{re:-Inf, im:1.0, DIMENSIONLESS}.re → Undef
-        let complex_val = Value::Complex {
-            re: f64::NEG_INFINITY,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "re".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::NEG_INFINITY, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "re", Type::Real).is_undef(),
             "z.re with NEG_INFINITY real part should return Undef"
         );
     }
@@ -193,20 +169,8 @@ mod tests {
     #[test]
     fn im_nan_dimensionless_returns_undef() {
         // Complex{re:1.0, im:NaN, DIMENSIONLESS}.im → Undef
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NAN,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "im".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(1.0, f64::NAN, DimensionVector::DIMENSIONLESS, Type::Real, "im", Type::Real).is_undef(),
             "z.im with NaN imaginary part should return Undef"
         );
     }
@@ -214,20 +178,8 @@ mod tests {
     #[test]
     fn im_inf_dimensionless_returns_undef() {
         // Complex{re:1.0, im:+Inf, DIMENSIONLESS}.im → Undef
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::INFINITY,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "im".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(1.0, f64::INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "im", Type::Real).is_undef(),
             "z.im with Inf imaginary part should return Undef"
         );
     }
@@ -235,20 +187,8 @@ mod tests {
     #[test]
     fn im_nan_dimensioned_returns_undef() {
         // Complex{re:1.0, im:NaN, LENGTH}.im → Undef (dimensioned Scalar path)
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NAN,
-            dimension: DimensionVector::LENGTH,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::length())),
-            "im".to_string(),
-            vec![],
-            Type::length(),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(1.0, f64::NAN, DimensionVector::LENGTH, Type::length(), "im", Type::length()).is_undef(),
             "z.im with NaN imaginary part (dimensioned) should return Undef"
         );
     }
@@ -256,20 +196,8 @@ mod tests {
     #[test]
     fn im_neg_inf_dimensionless_returns_undef() {
         // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.im → Undef
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NEG_INFINITY,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "im".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "im", Type::Real).is_undef(),
             "z.im with NEG_INFINITY imaginary part should return Undef"
         );
     }
@@ -279,20 +207,8 @@ mod tests {
     #[test]
     fn magnitude_nan_dimensionless_returns_undef() {
         // Complex{re:NaN, im:1.0, DIMENSIONLESS}.magnitude → Undef
-        let complex_val = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "magnitude".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::NAN, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "magnitude", Type::Real).is_undef(),
             "z.magnitude with NaN should return Undef"
         );
     }
@@ -300,20 +216,8 @@ mod tests {
     #[test]
     fn magnitude_overflow_dimensionless_returns_undef() {
         // Complex{re:f64::MAX, im:f64::MAX, DIMENSIONLESS}.magnitude → Undef (overflow to +Inf)
-        let complex_val = Value::Complex {
-            re: f64::MAX,
-            im: f64::MAX,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "magnitude".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::MAX, f64::MAX, DimensionVector::DIMENSIONLESS, Type::Real, "magnitude", Type::Real).is_undef(),
             "z.magnitude overflowing to +Inf should return Undef"
         );
     }
@@ -321,20 +225,8 @@ mod tests {
     #[test]
     fn magnitude_nan_dimensioned_returns_undef() {
         // Complex{re:NaN, im:1.0, LENGTH}.magnitude → Undef (dimensioned path)
-        let complex_val = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::LENGTH,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::length())),
-            "magnitude".to_string(),
-            vec![],
-            Type::length(),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::NAN, 1.0, DimensionVector::LENGTH, Type::length(), "magnitude", Type::length()).is_undef(),
             "z.magnitude with NaN (dimensioned) should return Undef"
         );
     }
@@ -342,20 +234,8 @@ mod tests {
     #[test]
     fn magnitude_inf_dimensionless_returns_undef() {
         // Complex{re:+Inf, im:0.0, DIMENSIONLESS}.magnitude → Undef (direct Inf input)
-        let complex_val = Value::Complex {
-            re: f64::INFINITY,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "magnitude".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::INFINITY, 0.0, DimensionVector::DIMENSIONLESS, Type::Real, "magnitude", Type::Real).is_undef(),
             "z.magnitude with +Inf input should return Undef"
         );
     }
@@ -364,20 +244,8 @@ mod tests {
     fn magnitude_nan_im_returns_undef() {
         // Complex{re:1.0, im:NaN, DIMENSIONLESS}.magnitude → Undef
         // hypot propagates NaN when neither argument is ±∞ (IEEE 754)
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NAN,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "magnitude".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(1.0, f64::NAN, DimensionVector::DIMENSIONLESS, Type::Real, "magnitude", Type::Real).is_undef(),
             "z.magnitude with NaN imaginary part should return Undef"
         );
     }
@@ -386,20 +254,8 @@ mod tests {
     fn magnitude_inf_im_returns_undef() {
         // Complex{re:1.0, im:+Inf, DIMENSIONLESS}.magnitude → Undef
         // hypot returns +Inf when any argument is ±∞; sanitize_value catches it
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::INFINITY,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "magnitude".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(1.0, f64::INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "magnitude", Type::Real).is_undef(),
             "z.magnitude with +Inf imaginary part should return Undef"
         );
     }
@@ -506,20 +362,8 @@ mod tests {
     fn phase_nan_re_returns_undef() {
         // Complex{re:NaN, im:1.0, DIMENSIONLESS}.phase → Undef
         // atan2(1.0, NaN) = NaN; phase should return Undef
-        let complex_val = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::NAN, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
             "z.phase with NaN real part should return Undef"
         );
     }
@@ -528,20 +372,8 @@ mod tests {
     fn phase_nan_im_returns_undef() {
         // Complex{re:1.0, im:NaN, DIMENSIONLESS}.phase → Undef
         // atan2(NaN, 1.0) = NaN; phase should return Undef
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NAN,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(1.0, f64::NAN, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
             "z.phase with NaN imaginary part should return Undef"
         );
     }
@@ -551,20 +383,8 @@ mod tests {
         // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.phase → Undef
         // Note: atan2(1.0, +Inf) = 0.0 which is finite — sanitize_value alone
         // would NOT catch this Inf input. The pre-guard is what correctly rejects it.
-        let complex_val = Value::Complex {
-            re: f64::INFINITY,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::INFINITY, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
             "z.phase with +Inf real part should return Undef"
         );
     }
@@ -573,20 +393,8 @@ mod tests {
     fn phase_neg_inf_im_returns_undef() {
         // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.phase → Undef
         // The Complex carries an Inf component, violating sanitization convention
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NEG_INFINITY,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
             "z.phase with -Inf imaginary part should return Undef"
         );
     }
@@ -599,20 +407,8 @@ mod tests {
         // would NOT catch this -Inf input and would silently return a wrong result.
         // The pre-guard (!re.is_finite() || !im.is_finite()) is what correctly
         // rejects this case. This test locks that behaviour as a regression guard.
-        let complex_val = Value::Complex {
-            re: f64::NEG_INFINITY,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::NEG_INFINITY, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
             "z.phase with -Inf real part should return Undef (atan2(1.0,-Inf)=π is finite, \
              so the pre-guard, not sanitize_value, is what catches this)"
         );
@@ -695,20 +491,8 @@ mod tests {
     fn conjugate_nan_re_returns_undef() {
         // Complex{re:NaN, im:1.0, DIMENSIONLESS}.conjugate → Undef
         // -1.0 (or -NaN) is still NaN; conjugate should return Undef
-        let complex_val = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "conjugate".to_string(),
-            vec![],
-            Type::complex(Type::Real),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::NAN, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "conjugate", Type::complex(Type::Real)).is_undef(),
             "z.conjugate with NaN real part should return Undef"
         );
     }
@@ -717,20 +501,8 @@ mod tests {
     fn conjugate_nan_im_returns_undef() {
         // Complex{re:1.0, im:NaN, DIMENSIONLESS}.conjugate → Undef
         // -(NaN) is still NaN; conjugate should return Undef
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NAN,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "conjugate".to_string(),
-            vec![],
-            Type::complex(Type::Real),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(1.0, f64::NAN, DimensionVector::DIMENSIONLESS, Type::Real, "conjugate", Type::complex(Type::Real)).is_undef(),
             "z.conjugate with NaN imaginary part should return Undef"
         );
     }
@@ -739,20 +511,8 @@ mod tests {
     fn conjugate_inf_re_returns_undef() {
         // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.conjugate → Undef
         // The output would carry +Inf in the re field; conjugate should return Undef
-        let complex_val = Value::Complex {
-            re: f64::INFINITY,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "conjugate".to_string(),
-            vec![],
-            Type::complex(Type::Real),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::INFINITY, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "conjugate", Type::complex(Type::Real)).is_undef(),
             "z.conjugate with +Inf real part should return Undef"
         );
     }
@@ -761,20 +521,8 @@ mod tests {
     fn conjugate_neg_inf_im_returns_undef() {
         // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.conjugate → Undef
         // The conjugate would flip -Inf → +Inf, still non-finite; should return Undef
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NEG_INFINITY,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "conjugate".to_string(),
-            vec![],
-            Type::complex(Type::Real),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "conjugate", Type::complex(Type::Real)).is_undef(),
             "z.conjugate with -Inf imaginary part should return Undef"
         );
     }
@@ -783,20 +531,8 @@ mod tests {
     fn conjugate_neg_inf_re_returns_undef() {
         // Complex{re:-Inf, im:1.0, DIMENSIONLESS}.conjugate → Undef
         // The output would carry -Inf in the re field; conjugate should return Undef
-        let complex_val = Value::Complex {
-            re: f64::NEG_INFINITY,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "conjugate".to_string(),
-            vec![],
-            Type::complex(Type::Real),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(f64::NEG_INFINITY, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "conjugate", Type::complex(Type::Real)).is_undef(),
             "z.conjugate with -Inf real part should return Undef"
         );
     }
@@ -805,20 +541,8 @@ mod tests {
     fn conjugate_pos_inf_im_returns_undef() {
         // Complex{re:1.0, im:+Inf, DIMENSIONLESS}.conjugate → Undef
         // The conjugate would flip +Inf → -Inf, still non-finite; should return Undef
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::INFINITY,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "conjugate".to_string(),
-            vec![],
-            Type::complex(Type::Real),
-        );
-        let values = ValueMap::new();
         assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            call_complex_method(1.0, f64::INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "conjugate", Type::complex(Type::Real)).is_undef(),
             "z.conjugate with +Inf imaginary part should return Undef"
         );
     }
