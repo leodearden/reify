@@ -32955,11 +32955,11 @@
         "description": "Three small improvements to the assert_gradient_vector characterization test block in crates/reify-expr/tests/gradient_tests.rs (lines 120-186): (1) Add a #[should_panic(expected = \"differs from expected\")] test that passes values exceeding tolerance to exercise the out-of-tolerance failure branch (lines 105-113). (2) Change the length-mismatch test's expected substring from \"components, expected\" to \"gradient vector has\" for robustness against message reformatting. (3) Replace absolute line-number references in doc comments (e.g., \"helper lines 94-100\", \"value.rs:264-271\") with symbolic references like function/branch names, or drop them entirely.\n\nSource: review-suggestion triage for task 1331 (esc-1331-347).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T16:39:35.403Z",
+        "updatedAt": "2026-04-11T21:16:12.879Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -33633,9 +33633,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T21:14:56.177Z",
+      "lastModified": "2026-04-11T21:16:12.883Z",
       "taskCount": 1634,
-      "completedCount": 1292,
+      "completedCount": 1293,
       "tags": [
         "master"
       ]
