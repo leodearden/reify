@@ -752,7 +752,7 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
 # (b) No comment line with the stale 'Uses the grep -cF <<< idiom' cross-ref
 #     (the original was: '# Uses the grep -cF <<< idiom validated by Test 24c.')
 assert "Test 24c block absent and stale cross-reference removed from Test 24b" \
-    bash -c '! grep -qE '"'"'^# -- Test 24c'"'"' "$1" && ! grep -qE '"'"'^\s+# Uses the grep -cF <<< idiom'"'"' "$1"' \
+    bash -c '! grep -qE '"'"'^# -- Test 24c'"'"' "$1" && ! grep -qE '"'"'^[[:space:]]+# Uses the grep -cF <<< idiom'"'"' "$1"' \
     _ "${BASH_SOURCE[0]}"
 
 # -- Test 24d (structural): all count-grep uses in this file include -cF ------
@@ -797,11 +797,16 @@ assert "Test 24d regex does not match count-grep -cF invocation" \
 
 # -- Meta: Test 24b sanity failures use a distinct exit code (not the default) -
 # Both sanity checks must be updated so a precondition failure is distinguishable
-# from a normal assertion failure at the bash-c level.
-# Count-based check: the grep command itself contributes one hit; after the
-# implementation step the two sanity-check lines add two more (total >= 2).
-assert "sanity failures use distinct exit code (exit two, not silenced exit one)" \
-    bash -c '[ "$(grep -c '"'"'exit 2'"'"' "$1")" -ge 2 ]' _ "${BASH_SOURCE[0]}"
+# from a normal assertion failure at the bash-c level. Each sanity call site is
+# guarded independently with grep -qF, so reverting either line alone still
+# fails loudly. The needle is assembled via bash string concatenation of two
+# halves (first half ends in 'ex', second half begins with 'it') so that the
+# assertion line itself does not contain the full distinct-code literal and
+# cannot self-match.
+assert "Test 24b sanity branch 1 (unmatched case) uses exit 2 distinct code" \
+    bash -c 'target="ex""it 2 ;;  # sanity: local"; grep -qF "$target" "$1"' _ "${BASH_SOURCE[0]}"
+assert "Test 24b sanity branch 2 (count check) uses exit 2 distinct code" \
+    bash -c 'target="|| ex""it 2  # sanity: expected"; grep -qF "$target" "$1"' _ "${BASH_SOURCE[0]}"
 
 # -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
 echo ""
