@@ -1769,12 +1769,19 @@ fn divergence_sample_dimensionless_returns_real() {
     let domain = Type::point3(Type::Real);
     let div_result = eval_field_op("divergence", domain.clone(), Type::vec3(Type::Real));
     let sampled = sample_field(div_result, domain);
-    match &sampled {
-        Value::Real(_) => {} // ← correct: dimensionless fallback returns Real
+    match sampled {
+        Value::Real(v) => {
+            // The identity body `vec3(x, y, z)` has divergence ∂x/∂x + ∂y/∂y + ∂z/∂z = 3.0.
+            assert!(
+                (v - 3.0).abs() < 1e-4,
+                "divergence_sample_dimensionless_returns_real: si_value should be ≈3.0 \
+                 (identity body ∂x/∂x+∂y/∂y+∂z/∂z = 3.0), got {}",
+                v
+            );
+        }
         Value::Scalar { .. } => panic!(
             "divergence_sample_dimensionless_returns_real: expected Value::Real but got \
-             Value::Scalar — the dimensionless fallback path is broken: {:?}",
-            sampled
+             Value::Scalar — the dimensionless fallback path is broken"
         ),
         other => panic!(
             "divergence_sample_dimensionless_returns_real: expected Value::Real, got {:?}",
