@@ -26664,7 +26664,13 @@
           "files": [
             "crates/reify-test-support/src/lib.rs",
             "crates/reify-compiler/tests/port_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract shared compile_source helper into reify-test-support"
+            ]
+          }
         }
       },
       {
@@ -32566,7 +32572,7 @@
         "description": "Two tests (module_dag_tests and unit_registry tests) check label existence but don't assert the expected count. Add assert_eq! on label count (expected 1) to both tests to prevent silent regressions. Source: review of task 1074 (S4, S5).",
         "details": "Files: module_dag_tests.rs, unit_registry tests.\\n\\nmemory_hints:\\n- search: \"module_dag test label\"\\n- search: \"unit_registry test label\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -32578,7 +32584,8 @@
           "modules": [
             "crates/reify-compiler"
           ]
-        }
+        },
+        "updatedAt": "2026-04-11T07:20:48.777Z"
       },
       {
         "id": "1577",
@@ -33507,7 +33514,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:48.167Z",
+      "lastModified": "2026-04-11T07:20:48.777Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
