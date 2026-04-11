@@ -26651,11 +26651,11 @@
         "description": "The validation helper added in Task 1247 (`crates/reify-test-support/src/fixtures.rs:1247-1285`) duplicates parse+compile+filter-by-severity boilerplate that already lives in `crates/reify-compiler/tests/port_compile_tests.rs:9-28` (`compile_module` / `compile_first_template`).\n\nSince `reify-test-support` already depends on `reify-compiler`, this helper could be lifted to a public utility in test-support and reused by both call sites.\n\nProposed approach:\n- Add `pub fn compile_source(source: &str) -> CompiledModule` (and optionally `compile_first_template`) in a `reify-test-support` module — likely a new `compile_helpers.rs` so `fixtures.rs` stays focused on data fixtures.\n- Migrate `crates/reify-compiler/tests/port_compile_tests.rs` to use the shared helper.\n- Migrate the in-`fixtures.rs` test mod to call the shared helper.\n\nWatch for: dev-dependency direction. `reify-test-support` is already a normal dep of `reify-compiler` (so `port_compile_tests.rs` can use it via dev-deps). Confirm Cargo.toml wiring before refactor.\n\nNot blocking — the duplication is small and intents differ slightly (fixture validation vs. compiler behavior tests) — but worth doing as the codebase keeps growing copies of this pattern.\n\nSource: review_comprehensive S4 on Task 1247 (esc-1247-1023).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:00:18.165Z",
+        "updatedAt": "2026-04-11T07:20:48.167Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support",
@@ -33507,7 +33507,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:47.731Z",
+      "lastModified": "2026-04-11T07:20:48.167Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
