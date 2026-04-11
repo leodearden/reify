@@ -314,6 +314,17 @@ assert "no grep -P in grep invocations in sync_ref_helpers.sh (non-comment lines
 assert "no grep -P in grep invocations in sync_comments_test.sh (non-comment lines, scoped)" \
     bash -c '! grep -E "^[^#]*grep[[:space:]]+-P" "$SYNC_TEST"'
 
+# S1: regression guard — Section 2 header must not claim it "fails before the
+# impl step" (past-tense reframe applied by task 1581).
+# Fragments split across two variables prevent self-match.
+_S1_FRAG1='fails before the impl'
+_S1_FRAG2=' step'
+_no_present_tense_redgreen_claim() {
+    ! grep -qF "${_S1_FRAG1}${_S1_FRAG2}" "$THIS_SCRIPT"
+}
+assert 'Section 2 header uses past-tense/regression-guard framing, not present-tense red→green claim (S1)' \
+    _no_present_tense_redgreen_claim
+
 assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC marker'" \
     grep -q '"reify-stdlib has SYNC marker referencing reify-expr::sanitize_value"' "$SYNC_TEST"
 
