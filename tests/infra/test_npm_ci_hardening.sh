@@ -438,10 +438,10 @@ git -C "$FIXTURE24" config user.name "Test"
 printf 'gui/package-lock.json\n' > "$FIXTURE24/.gitignore"
 
 # The || true makes the capture tolerant of the script's non-zero exit: Check 3's
-# assert fails when a lockfile is gitignored, and because test_pm_standardization.sh
-# has set -e, it short-circuits before test_summary. The explicit printf | grep avoids
-# depending on the outer bash -c to not enable pipefail, or on assert()'s internal
-# >/dev/null 2>&1 redirection swallowing the output before grep can see it.
+# assert fails when a lockfile is gitignored (FAIL>0), and the script exits non-zero
+# via test_summary at the end (not via set -e — assert() always returns 0, it just
+# increments the FAIL counter). The DIAGNOSTIC: lines are printed by Check 3's
+# diagnostic branch *after* the failing assert, before test_summary runs.
 out24=$(bash "$FIXTURE24/scripts/test_pm_standardization.sh" 2>&1 || true)
 assert "Check 3 emits DIAGNOSTIC: when gui/package-lock.json is gitignored" \
     bash -c 'printf "%s\n" "$1" | grep -q DIAGNOSTIC:' _ "$out24"
@@ -525,7 +525,7 @@ assert "29a: Check 4 block has at least 2 assert calls (broad + specific)" \
     bash -c "[ \"\$(awk '/Check 4:/,/test_summary/' '$SCRIPT' | grep -cE '^[[:space:]]*assert ')\" -ge 2 ]"
 
 assert "29b: Check 4 block has a broad pnpm-lock.yaml grep (no gui/ path prefix)" \
-    bash -c "awk '/Check 4:/,/test_summary/' '$SCRIPT' | grep -qE \"grep.*'[^/]*pnpm-lock\""
+    bash -c "awk '/Check 4:/,/test_summary/' '$SCRIPT' | grep -q 'is mentioned in .gitignore'"
 
 assert "29c: Check 4 block has a specific-form grep with '^gui/' anchor or '**/' glob" \
     bash -c "awk '/Check 4:/,/test_summary/' '$SCRIPT' | grep -qF '^gui/'"

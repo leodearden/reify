@@ -61,12 +61,12 @@ assert "all package.json files agree on packageManager version" bash -c "
 
 # ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
 # Refactored in task 976 for three reasons:
-#   1. No subshell: eliminates the embedded bash subprocess wrapper (items 1+5).
+#   1. No subshell: eliminates the embedded subprocess shell invocation entirely.
 #   2. Pre-computed: git check-ignore runs exactly once; both the assert and the
-#      diagnostic guard reuse the cached exit code (item 3).
+#      diagnostic guard reuse the cached exit code, avoiding a second process fork.
 #   3. Exit-code disambiguation: exit codes >=128 indicate a broken git invocation
 #      (corrupt repo, missing binary) and are surfaced as an explicit ERROR rather
-#      than masquerading as 'not ignored' (item 6). Stderr passes through naturally;
+#      than masquerading as 'not ignored'. Stderr passes through naturally;
 #      no 2>/dev/null suppression.
 echo ""
 echo "Check 3: npm lockfiles not gitignored"
@@ -81,7 +81,9 @@ if [ "$check_ignore_status" -ge 128 ]; then
     exit 1
 fi
 assert "no npm lockfiles are gitignored" test "$check_ignore_status" -eq 1
-if [ "$check_ignore_status" -eq 0 ]; then
+if [ "$check_ignore_status" -ne 1 ]; then
+    echo "  DIAGNOSTIC: gitignored lockfiles (status=$check_ignore_status):"
+    printf '%s\n' "$check_ignore_output" | sed 's/^/    /'
     echo "  DIAGNOSTIC: re-running 'git check-ignore -v' per file to identify offender(s):"
     for f in $LOCK_FILES; do
         (cd "$ROOT" && git check-ignore -v "$f") || true
