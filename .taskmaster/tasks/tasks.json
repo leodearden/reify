@@ -33065,6 +33065,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1626,
+        "title": "Remove stale task-2 comment block in completion.rs (task 1619 follow-up)",
+        "description": "In crates/reify-lsp/src/completion.rs at ~lines 926-929 (after task 1619's 8 TODO deletions), remove or rewrite the stale comment block: `// --- position-sensitive completion tests (task 481) --- / These tests assert that completions are context-sensitive based on cursor position. / They are #[ignore] because the current implementation returns everything everywhere; / task 2 will implement position-sensitive filtering to make them pass.` Both claims are stale: (a) the referenced tests are no longer `#[ignore]`'d and are active and passing; (b) \"task 2 will implement\" is wrong — that work was done by tasks 481/482, both DONE. Task 1619 left this untouched as out-of-scope. Simple cleanup: delete the block entirely or replace with a brief accurate comment.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -33077,7 +33088,7 @@
       ],
       "created": "2026-04-11T06:53:54.434Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-11T06:54:04.764Z"
+      "updated": "2026-04-11T06:54:10.071Z"
     }
   }
 }
