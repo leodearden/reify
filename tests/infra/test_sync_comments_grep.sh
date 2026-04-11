@@ -83,6 +83,8 @@ assert 'no Section 1 bash -c $PATTERN interpolation in this script' \
     _no_unhardened_pattern_interp
 assert 'no double-quoted bash -c in this script (all bash -c must be single-outer-quoted)' \
     _no_double_quoted_bash_c
+assert 'no Section 2/3 unhardened bash -c interpolation in this script' \
+    _no_unhardened_section23_interp
 
 # -- S3: behavioral assertion that PATTERN is actually exported at runtime -----
 assert 'PATTERN is actually exported (behavioral)' \
