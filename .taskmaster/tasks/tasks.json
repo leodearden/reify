@@ -6883,7 +6883,13 @@
             "crates/reify-syntax/src/ts_parser.rs",
             "crates/reify-compiler/src/units.rs",
             "crates/reify-compiler/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib: imperial units — ft, thou, yd, lb, oz, lbf, psi, ksi, fl_oz, gal"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-11T16:13:22.694Z"
@@ -33516,11 +33522,17 @@
         "description": "Review follow-up from task 334 (escalation esc-334-7). Three related table-edits in crates/reify-compiler/src/si_units.rs.",
         "details": "Three related changes, all table-edits in crates/reify-compiler/src/si_units.rs with matching test updates in crates/reify-compiler/tests/si_units_tests.rs:\n\n**S1 — Add sr (steradian) for SolidAngle:**\nCurrently the error message in type_resolution.rs lists SolidAngle as a valid dimension, but there is no `sr` unit declared anywhere in the stdlib, so `param x : SolidAngle = 1sr` errors with 'unknown unit'. Fix:\n- Add `SiDerivedUnit { name: \"sr\", dimension: \"SolidAngle\", factor: 1.0, prefix_combos: &[] }` to SI_DERIVED_UNITS.\n- Bump the expected count in `si_units_tests.rs::si_derived_units_table_defines_newtons_pascals_joules` from 24 to 25.\n- Remove or update the NOTE comment (~line 237-242) that rationalizes this as out-of-scope.\n\n**S4 — Per-base prefix subsets for SI_PREFIX_BASES:**\nSI_PREFIX_BASES currently has no prefix_combos, so the generator applies all 20 prefixes to every base (K, cd, rad, ...), producing 159+ nonsensical entries like QK (quettakelvin), qcd (quectocandela), Qrad, qrad. The SI_DERIVED_UNITS comment explicitly rejects this 'every prefix × every unit' pattern. Fix:\n- Give SI_PREFIX_BASES entries their own `prefix_combos: &[&str]` field mirroring SI_DERIVED_UNITS.\n- Suggested subsets: K → [n, u, m]; cd → [m, u]; rad → [m, u, n]. (Final choice is reviewer's call.)\n\n**S5 — Extend F/S prefix_combos for RF/IC engineering range:**\nF (farad) at si_units.rs:116 has `[\"p\", \"n\", \"u\", \"m\"]` — missing femtofarads (fF), which are standard in RF/IC design. S (siemens) at ~:96 omits both `p` and `f` variants.\n- Add `\"f\"` to F's prefix_combos (and optionally `\"a\"`).\n- Add `\"p\"` and `\"f\"` to S's prefix_combos.\n- Update any affected test count assertions in si_units_tests.rs.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T16:05:45.159Z"
+        "updatedAt": "2026-04-11T16:14:07.128Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "1632",
@@ -33537,7 +33549,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T16:13:22.694Z",
+      "lastModified": "2026-04-11T16:14:07.128Z",
       "taskCount": 1632,
       "completedCount": 1284,
       "tags": [
