@@ -126,13 +126,28 @@ mod tests {
         eval_expr(&expr, &EvalContext::simple(&values))
     }
 
+    // Thin wrapper for the common case: dimensionless Complex with Real-valued
+    // components and Real return type.  Covers the majority of re/im/magnitude
+    // edge-case tests, making the dimensioned and non-Real-return callsites
+    // (which still use `call_complex_method` directly) stand out naturally.
+    fn call_complex_method_real(re: f64, im: f64, method: &str) -> Value {
+        call_complex_method(
+            re,
+            im,
+            DimensionVector::DIMENSIONLESS,
+            Type::Real,
+            method,
+            Type::Real,
+        )
+    }
+
     // ── method: re ────────────────────────────────────────────────────────────
 
     #[test]
     fn re_nan_dimensionless_returns_undef() {
         // Complex{re:NaN, im:1.0, DIMENSIONLESS}.re → Undef
         assert!(
-            call_complex_method(f64::NAN, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "re", Type::Real).is_undef(),
+            call_complex_method_real(f64::NAN, 1.0, "re").is_undef(),
             "z.re with NaN real part should return Undef"
         );
     }
@@ -141,7 +156,7 @@ mod tests {
     fn re_inf_dimensionless_returns_undef() {
         // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.re → Undef
         assert!(
-            call_complex_method(f64::INFINITY, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "re", Type::Real).is_undef(),
+            call_complex_method_real(f64::INFINITY, 1.0, "re").is_undef(),
             "z.re with Inf real part should return Undef"
         );
     }
@@ -159,8 +174,19 @@ mod tests {
     fn re_neg_inf_dimensionless_returns_undef() {
         // Complex{re:-Inf, im:1.0, DIMENSIONLESS}.re → Undef
         assert!(
-            call_complex_method(f64::NEG_INFINITY, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "re", Type::Real).is_undef(),
+            call_complex_method_real(f64::NEG_INFINITY, 1.0, "re").is_undef(),
             "z.re with NEG_INFINITY real part should return Undef"
+        );
+    }
+
+    #[test]
+    fn re_neg_inf_dimensioned_returns_undef() {
+        // Complex{re:-Inf, im:1.0, LENGTH}.re → Undef (dimensioned Scalar path)
+        // Mirrors re_nan_dimensioned_returns_undef but for NEG_INFINITY to lock
+        // the Scalar{si_value: -Inf} → Undef path in sanitize_value.
+        assert!(
+            call_complex_method(f64::NEG_INFINITY, 1.0, DimensionVector::LENGTH, Type::length(), "re", Type::length()).is_undef(),
+            "z.re with NEG_INFINITY real part (dimensioned) should return Undef"
         );
     }
 
@@ -170,7 +196,7 @@ mod tests {
     fn im_nan_dimensionless_returns_undef() {
         // Complex{re:1.0, im:NaN, DIMENSIONLESS}.im → Undef
         assert!(
-            call_complex_method(1.0, f64::NAN, DimensionVector::DIMENSIONLESS, Type::Real, "im", Type::Real).is_undef(),
+            call_complex_method_real(1.0, f64::NAN, "im").is_undef(),
             "z.im with NaN imaginary part should return Undef"
         );
     }
@@ -179,7 +205,7 @@ mod tests {
     fn im_inf_dimensionless_returns_undef() {
         // Complex{re:1.0, im:+Inf, DIMENSIONLESS}.im → Undef
         assert!(
-            call_complex_method(1.0, f64::INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "im", Type::Real).is_undef(),
+            call_complex_method_real(1.0, f64::INFINITY, "im").is_undef(),
             "z.im with Inf imaginary part should return Undef"
         );
     }
@@ -197,8 +223,19 @@ mod tests {
     fn im_neg_inf_dimensionless_returns_undef() {
         // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.im → Undef
         assert!(
-            call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "im", Type::Real).is_undef(),
+            call_complex_method_real(1.0, f64::NEG_INFINITY, "im").is_undef(),
             "z.im with NEG_INFINITY imaginary part should return Undef"
+        );
+    }
+
+    #[test]
+    fn im_neg_inf_dimensioned_returns_undef() {
+        // Complex{re:1.0, im:-Inf, LENGTH}.im → Undef (dimensioned Scalar path)
+        // Mirrors im_nan_dimensioned_returns_undef but for NEG_INFINITY to lock
+        // the Scalar{si_value: -Inf} → Undef path in sanitize_value.
+        assert!(
+            call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::LENGTH, Type::length(), "im", Type::length()).is_undef(),
+            "z.im with NEG_INFINITY imaginary part (dimensioned) should return Undef"
         );
     }
 
@@ -208,7 +245,7 @@ mod tests {
     fn magnitude_nan_dimensionless_returns_undef() {
         // Complex{re:NaN, im:1.0, DIMENSIONLESS}.magnitude → Undef
         assert!(
-            call_complex_method(f64::NAN, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "magnitude", Type::Real).is_undef(),
+            call_complex_method_real(f64::NAN, 1.0, "magnitude").is_undef(),
             "z.magnitude with NaN should return Undef"
         );
     }
@@ -217,7 +254,7 @@ mod tests {
     fn magnitude_overflow_dimensionless_returns_undef() {
         // Complex{re:f64::MAX, im:f64::MAX, DIMENSIONLESS}.magnitude → Undef (overflow to +Inf)
         assert!(
-            call_complex_method(f64::MAX, f64::MAX, DimensionVector::DIMENSIONLESS, Type::Real, "magnitude", Type::Real).is_undef(),
+            call_complex_method_real(f64::MAX, f64::MAX, "magnitude").is_undef(),
             "z.magnitude overflowing to +Inf should return Undef"
         );
     }
@@ -235,7 +272,7 @@ mod tests {
     fn magnitude_inf_dimensionless_returns_undef() {
         // Complex{re:+Inf, im:0.0, DIMENSIONLESS}.magnitude → Undef (direct Inf input)
         assert!(
-            call_complex_method(f64::INFINITY, 0.0, DimensionVector::DIMENSIONLESS, Type::Real, "magnitude", Type::Real).is_undef(),
+            call_complex_method_real(f64::INFINITY, 0.0, "magnitude").is_undef(),
             "z.magnitude with +Inf input should return Undef"
         );
     }
@@ -245,7 +282,7 @@ mod tests {
         // Complex{re:1.0, im:NaN, DIMENSIONLESS}.magnitude → Undef
         // hypot propagates NaN when neither argument is ±∞ (IEEE 754)
         assert!(
-            call_complex_method(1.0, f64::NAN, DimensionVector::DIMENSIONLESS, Type::Real, "magnitude", Type::Real).is_undef(),
+            call_complex_method_real(1.0, f64::NAN, "magnitude").is_undef(),
             "z.magnitude with NaN imaginary part should return Undef"
         );
     }
@@ -255,7 +292,7 @@ mod tests {
         // Complex{re:1.0, im:+Inf, DIMENSIONLESS}.magnitude → Undef
         // hypot returns +Inf when any argument is ±∞; sanitize_value catches it
         assert!(
-            call_complex_method(1.0, f64::INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "magnitude", Type::Real).is_undef(),
+            call_complex_method_real(1.0, f64::INFINITY, "magnitude").is_undef(),
             "z.magnitude with +Inf imaginary part should return Undef"
         );
     }
