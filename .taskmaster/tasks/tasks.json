@@ -33652,15 +33652,16 @@
         "description": "Review suggestion from esc-861-20 (reviewer_comprehensive): the new `magnitude_nan_im_returns_undef` and `magnitude_inf_im_returns_undef` tests in `crates/reify-expr/src/complex.rs` only exercise the dimensionless path. The dimensioned magnitude branch has coverage for NaN on `re` (see ~line 266) but no symmetric NaN/Inf-on-im case — a regression isolated to the dimensioned im branch of sanitize_value could slip through.\n\nAdd dimensioned mirrors, e.g.:\n- `magnitude_nan_im_dimensioned_returns_undef` — `call_complex_method(1.0, f64::NAN, DimensionVector::LENGTH, Type::length(), \"magnitude\", Type::length())`\n- `magnitude_inf_im_dimensioned_returns_undef` — `call_complex_method(1.0, f64::INFINITY, DimensionVector::LENGTH, Type::length(), \"magnitude\", Type::length())`\n\nto lock the dimensioned branch symmetrically.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-11T21:20:08.653Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T21:20:08.183Z",
+      "lastModified": "2026-04-11T21:20:08.653Z",
       "taskCount": 1635,
       "completedCount": 1292,
       "tags": [
