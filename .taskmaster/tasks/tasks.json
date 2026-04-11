@@ -33681,15 +33681,16 @@
         "description": "Follow-up from task 1446 review. Add `pub fn make_simple_engine() -> reify_eval::Engine { reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None) }` in reify-test-support (under an appropriate feature gate alongside the existing `make_engine()` / `eval-helpers` feature that currently wraps `MockConstraintChecker`). Then migrate the duplicated engine construction in m9 integration tests — `crates/reify-eval/tests/m9_combined.rs`, `m9_trait_conformance.rs`, `m9_integration.rs`, `m9_constraint_def.rs` — to call the shared helper. This eliminates the repeated `SimpleConstraintChecker` + `Engine::new(Box::new(...), None)` pattern across m9 test files.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-11T21:36:45.768Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T21:36:45.401Z",
+      "lastModified": "2026-04-11T21:36:45.768Z",
       "taskCount": 1637,
       "completedCount": 1295,
       "tags": [
