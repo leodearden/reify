@@ -9532,16 +9532,9 @@
             "crates/reify-types"
           ],
           "memory_hints": {
-            "entities": [
-              "Type::Error",
-              "reify-types",
-              "reify-expr",
-              "type inference"
-            ],
+            "entities": [],
             "queries": [
-              "Type::Error sentinel leaks through wildcard arms in type inference",
-              "task 248 review followup cascading diagnostics",
-              "infer_binop_type index access quantifier member access error propagation"
+              "resolution for: Propagate Type::Error through type inference to prevent cascading diagnostics"
             ]
           },
           "reconciliation_note": "Blocked with empty dependency array as of 2026-04-03 — may be stale block from removed dependency. Review whether block reason still applies."
@@ -30845,7 +30838,13 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add shared-infrastructure coverage for units, imports, pragmas, module_path in build_isolated_module test"
+            ]
+          }
         }
       },
       {
@@ -31087,11 +31086,11 @@
         "description": "Fix 6 review suggestions from Task 220's M9 integration tests:\n\n1. **Two-engine pattern** (m9_integration.rs:615-622): Replace two separate Engine instances (eval_engine, check_engine) with a single engine — `engine.eval()` then `engine.check()` on the same instance, matching codebase conventions.\n\n2. **assert_ne → assert_eq Violated** (m9_integration.rs:158-167): In `constraint_def_with_determinacy_violated`, replace `assert_ne!(satisfaction, Satisfied)` with `assert_eq!(satisfaction, Violated)` to catch erroneous Indeterminate returns.\n\n3. **assert_ne → assert_eq Violated** (m9_integration.rs:364-368): Same fix in `recursive_structure_determinacy_terminates_on_undetermined`.\n\n4. **Weak template count assertion** (m9_integration.rs:100-103): In `ri_file_parses_and_compiles`, assert expected template count (>= 4) and/or check that specific template names (Widget, Bracket, RecursiveChain, Plate) are present.\n\n5. **Bracket DeterminedInRange count** (m9_integration.rs:557-563): Change `bracket_dir0.len() >= 1` to `>= 2` to verify both DeterminedInRange invocations (size and length) produce results.\n\n6. **Doc comment inaccuracy** (examples/m9_integration.ri:17-18): Update Feature G description from 'determined(span) && depth > 0' to match actual implementation ('depth > 0' guard + per-level `constraint determined(span)`).\n\nmemory_hints: search(\"M9 integration test assertions\", project_id=\"reify\"); get_entity(\"m9_integration.rs\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:05:28.517Z",
+        "updatedAt": "2026-04-11T07:20:35.704Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests",
@@ -33424,7 +33423,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:34.311Z",
+      "lastModified": "2026-04-11T07:20:35.705Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
