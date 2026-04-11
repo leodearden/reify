@@ -506,4 +506,35 @@ assert "28d: Check 3 block has explicit '-ge 128' branch for git error exit code
 assert "28e: Check 3 block references 'check_ignore_status' at least twice (cached value reused)" \
     bash -c "[ \"\$(awk '/Check 3:/,/Check 4:/' '$SCRIPT' | grep -c 'check_ignore_status')\" -ge 2 ]"
 
+# -- Test 29: Check 4 two-step pnpm-lock.yaml assertion (task 976) ------------
+echo ""
+echo "--- Test 29: Check 4 two-step pnpm-lock.yaml assertion (task 976) ---"
+
+# Structural assertions (29a-29c) FAIL against the current single-assert Check 4
+# and PASS only after the step-4 refactor. The behavioral assertion (29d) verifies
+# that a bare 'pnpm-lock.yaml' .gitignore entry causes the specific-form step to
+# fail while the broad step passes — proving the two-step distinguishes failure modes.
+
+assert "29a: Check 4 block has at least 2 assert calls (broad + specific)" \
+    bash -c "[ \"\$(awk '/Check 4:/,/test_summary/' '$SCRIPT' | grep -cE '^[[:space:]]*assert ')\" -ge 2 ]"
+
+assert "29b: Check 4 block has a broad pnpm-lock.yaml grep (no gui/ path prefix)" \
+    bash -c "awk '/Check 4:/,/test_summary/' '$SCRIPT' | grep -qE \"grep.*'[^/]*pnpm-lock\""
+
+assert "29c: Check 4 block has a specific-form grep with '^gui/' anchor or '**/' glob" \
+    bash -c "awk '/Check 4:/,/test_summary/' '$SCRIPT' | grep -qF '^gui/'"
+
+# 29d: behavioral fixture — bare 'pnpm-lock.yaml' in .gitignore satisfies the broad
+# step (pnpm-lock.yaml IS mentioned) but fails the specific step (no gui/ or **/ prefix).
+# Before the step-4 refactor the broad step does not exist, so its PASS message is absent.
+setup_fixture_dir FIXTURE_T29
+printf 'pnpm-lock.yaml\n' > "$FIXTURE_T29/.gitignore"
+for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+    printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_T29/$pkg"
+done
+out29d=$(cd "$FIXTURE_T29" && bash scripts/check-pm-standardization.sh 2>&1 || true)
+
+assert "29d: broad step PASSES when pnpm-lock.yaml is mentioned (bare form, no gui/ prefix)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "PASS:.*pnpm-lock.yaml is mentioned"' _ "$out29d"
+
 test_summary
