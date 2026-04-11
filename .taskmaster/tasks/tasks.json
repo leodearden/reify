@@ -10017,7 +10017,13 @@
           "modules": [
             "crates/reify-runtime",
             "crates/reify-eval"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Replace check-then-unwrap with idiomatic if-let/filter_map for default_expr"
+            ]
+          }
         }
       },
       {
@@ -32180,7 +32186,13 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add non-collection sub trait-qualified access test & fix sub_member_types doc comment"
+            ]
+          }
         }
       },
       {
@@ -32400,11 +32412,11 @@
         "description": "Two follow-up improvements: (1) entity.rs:417-447: collapse duplicate HashMap building for sub_member_types and collection_sub_member_types into single build. (2) expr.rs:1518-1530: ICE fallback should return CompiledExpr::literal(Value::Undef, Type::Real) instead of value_ref with fabricated type, matching other error paths in the same match arm.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T11:08:22.866Z",
+        "updatedAt": "2026-04-11T07:20:42.423Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -33465,7 +33477,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:40.775Z",
+      "lastModified": "2026-04-11T07:20:42.423Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
