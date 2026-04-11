@@ -403,3 +403,100 @@ fn si_derived_units_table_defines_newtons_pascals_joules() {
         );
     }
 }
+
+// ─── step-15: task-specified derived units (and prefixed) via stdlib ─────────
+
+#[test]
+fn task_test_derived_units_and_prefixed_resolve_via_stdlib() {
+    // Each case: (param_type, literal, expected_si_value, expected_dimension).
+    // Epsilon is proportional to magnitude: small factors use a tight absolute
+    // check, large factors use a relative check.
+    let cases: &[(&str, &str, f64, DimensionVector)] = &[
+        // Force + prefixes.
+        ("Force", "1N", 1.0, DimensionVector::FORCE),
+        ("Force", "1kN", 1000.0, DimensionVector::FORCE),
+        ("Force", "1MN", 1e6, DimensionVector::FORCE),
+        // Pressure + prefixes + non-SI accepted units.
+        ("Pressure", "1Pa", 1.0, DimensionVector::PRESSURE),
+        ("Pressure", "1kPa", 1000.0, DimensionVector::PRESSURE),
+        ("Pressure", "1MPa", 1e6, DimensionVector::PRESSURE),
+        ("Pressure", "1GPa", 1e9, DimensionVector::PRESSURE),
+        ("Pressure", "1bar", 100000.0, DimensionVector::PRESSURE),
+        ("Pressure", "1mbar", 100.0, DimensionVector::PRESSURE),
+        // Energy + prefixes + eV variants.
+        ("Energy", "1J", 1.0, DimensionVector::ENERGY),
+        ("Energy", "1kJ", 1000.0, DimensionVector::ENERGY),
+        ("Energy", "1MJ", 1e6, DimensionVector::ENERGY),
+        ("Energy", "1eV", 1.602176634e-19, DimensionVector::ENERGY),
+        ("Energy", "1keV", 1.602176634e-16, DimensionVector::ENERGY),
+        ("Energy", "1MeV", 1.602176634e-13, DimensionVector::ENERGY),
+        // Power + prefixes.
+        ("Power", "1W", 1.0, DimensionVector::POWER),
+        ("Power", "1kW", 1000.0, DimensionVector::POWER),
+        ("Power", "1MW", 1e6, DimensionVector::POWER),
+        // Frequency + prefixes.
+        ("Frequency", "1Hz", 1.0, DimensionVector::FREQUENCY),
+        ("Frequency", "1kHz", 1000.0, DimensionVector::FREQUENCY),
+        ("Frequency", "1MHz", 1e6, DimensionVector::FREQUENCY),
+        ("Frequency", "1GHz", 1e9, DimensionVector::FREQUENCY),
+        ("Frequency", "1Bq", 1.0, DimensionVector::FREQUENCY),
+        // Voltage.
+        ("Voltage", "1V", 1.0, DimensionVector::VOLTAGE),
+        ("Voltage", "1mV", 1e-3, DimensionVector::VOLTAGE),
+        ("Voltage", "1kV", 1000.0, DimensionVector::VOLTAGE),
+        // Resistance.
+        ("Resistance", "1ohm", 1.0, DimensionVector::RESISTANCE),
+        ("Resistance", "1kohm", 1000.0, DimensionVector::RESISTANCE),
+        // Capacitance.
+        ("Capacitance", "1F", 1.0, DimensionVector::CAPACITANCE),
+        ("Capacitance", "1uF", 1e-6, DimensionVector::CAPACITANCE),
+        ("Capacitance", "1pF", 1e-12, DimensionVector::CAPACITANCE),
+        // Inductance.
+        ("Inductance", "1H", 1.0, DimensionVector::INDUCTANCE),
+        // Magnetic flux + density.
+        ("MagneticFlux", "1Wb", 1.0, DimensionVector::MAGNETIC_FLUX),
+        ("MagneticFluxDensity", "1T", 1.0, DimensionVector::MAGNETIC_FLUX_DENSITY),
+        // Luminous flux + illuminance.
+        ("LuminousFlux", "1lm", 1.0, DimensionVector::LUMINOUS_FLUX),
+        ("Illuminance", "1lx", 1.0, DimensionVector::ILLUMINANCE),
+        // Absorbed dose (Gy and Sv share dim).
+        ("AbsorbedDose", "1Gy", 1.0, DimensionVector::ABSORBED_DOSE),
+        ("AbsorbedDose", "1Sv", 1.0, DimensionVector::ABSORBED_DOSE),
+        // Angular velocity.
+        (
+            "AngularVelocity",
+            "1rpm",
+            std::f64::consts::PI / 30.0,
+            DimensionVector::ANGULAR_VELOCITY,
+        ),
+        (
+            "AngularVelocity",
+            "1rad_per_s",
+            1.0,
+            DimensionVector::ANGULAR_VELOCITY,
+        ),
+        // Dynamic viscosity.
+        ("DynamicViscosity", "1Pa_s", 1.0, DimensionVector::DYNAMIC_VISCOSITY),
+    ];
+
+    for (ptype, literal, expected, expected_dim) in cases {
+        let (v, d) = stdlib_param_si_value(ptype, literal);
+        // Tolerance: 1e-12 relative or 1e-25 absolute (whichever larger) to
+        // accommodate both large (1e9) and tiny (1.6e-19) expected values.
+        let tol = (expected.abs() * 1e-12).max(1e-25);
+        assert!(
+            (v - expected).abs() < tol,
+            "{} : {} — expected {}, got {} (tol {})",
+            ptype,
+            literal,
+            expected,
+            v,
+            tol
+        );
+        assert_eq!(
+            d, *expected_dim,
+            "{} : {} — dimension mismatch",
+            ptype, literal
+        );
+    }
+}
