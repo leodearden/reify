@@ -33669,10 +33669,11 @@
         "description": "Two refinements in crates/reify-eval/tests/m9_combined.rs following task 1446 review. (1) Change `source()` to return `&'static str` instead of cloning the cached String on every call; update call sites (`parse_and_compile(source())`, `source().replace(...)`) to drop the `&source()` indirection. (2) Tighten `violated_constraint_detected` (lines 391-430) so it asserts the violation corresponds specifically to the `clearance < width` constraint on entity `Bracket` (e.g. `violations.iter().any(|e| e.id.entity == \"Bracket\")`) and also confirms that other previously-passing Bracket constraints (`width < length`, `clearance > 0mm`) remain Satisfied — guards against cascade-failure regressions masking the real bug.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-11T21:36:45.401Z"
       },
       {
         "id": "1637",
@@ -33688,7 +33689,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T21:36:42.585Z",
+      "lastModified": "2026-04-11T21:36:45.401Z",
       "taskCount": 1637,
       "completedCount": 1295,
       "tags": [
