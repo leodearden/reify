@@ -54,7 +54,9 @@ assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 # The awk start-pattern mirrors the assert_sync_ref_exists regex in
 # tests/infra/sync_ref_helpers.sh so both helpers accept exactly the same set
 # of fn declarations.  Allowed prefixes (in canonical Rust grammar order):
-#   pub, pub(...), const, async, unsafe — in any valid subset before 'fn'.
+#   pub, pub(...), const, async, unsafe — each independently optional but MUST
+#   appear in this canonical order (the regex enforces it; 'unsafe async fn'
+#   and 'unsafe const fn' are rejected).
 # The pattern rejects embedded-fn expressions like 'let y = fn foo(x);' because
 # the leading identifier ('let') is not one of the permitted modifier keywords.
 extract_fn() {
