@@ -2069,7 +2069,7 @@ mod tests {
 
     #[test]
     fn make_domain_arg_none_returns_real() {
-        assert_eq!(make_domain_arg(3.14, None), Value::Real(3.14));
+        assert_eq!(make_domain_arg(2.71, None), Value::Real(2.71));
     }
 
     #[test]

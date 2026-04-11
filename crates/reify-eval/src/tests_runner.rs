@@ -266,19 +266,19 @@ constraint def Positive {
         let isolated = build_isolated_module(&module, target);
         assert_eq!(isolated.constraint_defs.len(), module.constraint_defs.len(),
             "constraint_defs must be preserved");
-        assert!(module.functions.len() > 0, "functions must be non-empty in source module");
+        assert!(!module.functions.is_empty(), "functions must be non-empty in source module");
         assert_eq!(isolated.functions.len(), module.functions.len(),
             "functions must be preserved");
-        assert!(module.fields.len() > 0, "fields must be non-empty in source module");
+        assert!(!module.fields.is_empty(), "fields must be non-empty in source module");
         assert_eq!(isolated.fields.len(), module.fields.len(),
             "fields must be preserved");
-        assert!(module.type_aliases.len() > 0, "type_aliases must be non-empty in source module");
+        assert!(!module.type_aliases.is_empty(), "type_aliases must be non-empty in source module");
         assert_eq!(isolated.type_aliases.len(), module.type_aliases.len(),
             "type_aliases must be preserved");
-        assert!(module.enum_defs.len() > 0, "enum_defs must be non-empty in source module");
+        assert!(!module.enum_defs.is_empty(), "enum_defs must be non-empty in source module");
         assert_eq!(isolated.enum_defs.len(), module.enum_defs.len(),
             "enum_defs must be preserved");
-        assert!(module.trait_defs.len() > 0, "trait_defs must be non-empty in source module");
+        assert!(!module.trait_defs.is_empty(), "trait_defs must be non-empty in source module");
         assert_eq!(isolated.trait_defs.len(), module.trait_defs.len(),
             "trait_defs must be preserved");
     }

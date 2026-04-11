@@ -648,7 +648,7 @@ fn full_pipeline_cross_feature_values() {
         .collect();
     // Two DeterminedInRange invocations → two [0] entries
     assert!(
-        bracket_dir0.len() >= 1,
+        !bracket_dir0.is_empty(),
         "expected at least one DeterminedInRange[0] for Bracket, got 0"
     );
     for e in &bracket_dir0 {

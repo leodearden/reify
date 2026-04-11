@@ -198,7 +198,6 @@ macro_rules! hang_guard {
 /// Panics with `"{caller} must not hang (timed out after {seconds}s)"` if
 /// `f` does not complete within `seconds` seconds, where `{caller}` is the
 /// auto-derived file:line of the call site.
-#[track_caller]
 async fn with_hang_guard<F: std::future::Future<Output = ()>>(seconds: u64, f: F) {
     let caller = std::panic::Location::caller();
     tokio::time::timeout(Duration::from_secs(seconds), f)
@@ -1172,12 +1171,10 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
                 }),
             )
             .await;
-        if let Some(val) = assert_ok_or_nonempty_err(completion_result, "completion before initialized") {
-            if !val.is_null() {
-                // Non-null Ok — must be a well-formed CompletionResponse variant.
-                // completion_items() panics with an actionable message if the shape is wrong.
-                let _items = completion_items(&val);
-            }
+        if let Some(val) = assert_ok_or_nonempty_err(completion_result, "completion before initialized")
+            && !val.is_null()
+        {
+            let _items = completion_items(&val);
         }
     });
 }

@@ -601,7 +601,7 @@ mod tests {
     use super::*;
     use crate::assert_value_approx;
     use crate::values::{meters, mm2, mm3, point3};
-    use reify_types::{AutoParam, CompiledExpr, Type, Value, ValueMap};
+    use reify_types::{CompiledExpr, Type, Value, ValueMap};
     use std::sync::Barrier;
 
     #[test]

@@ -2756,7 +2756,7 @@ mod tests {
         }
         let set_val = Value::Set(inner);
         let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
-            s.iter().map(|v| extract(v)).collect()
+            s.iter().map(extract).collect()
         } else {
             panic!("expected Set");
         };
