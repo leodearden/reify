@@ -32976,7 +32976,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src-tauri/src/tests/engine_tests.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": 1621,
@@ -32987,7 +32995,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-mcp/Cargo.toml",
+            "crates/reify-types/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-mcp",
+            "crates/reify-types/src"
+          ]
+        }
       }
     ],
     "metadata": {
