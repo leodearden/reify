@@ -3131,7 +3131,7 @@
         "dependencies": [
           "179"
         ],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -3143,7 +3143,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-11T07:19:36.329Z"
       },
       {
         "id": "181",
@@ -3163,7 +3163,7 @@
           "173",
           "177"
         ],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -3175,7 +3175,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-11T07:19:36.387Z"
       },
       {
         "id": "182",
@@ -4710,7 +4710,7 @@
         "id": "249",
         "title": "Ad-hoc port selectors: compiler",
         "description": "Compile ad-hoc selectors to CompiledAdHocPort { base_entity, selector_kind, args, memory_hints }. Selector kinds: Face, Point, Edge, Region, Body. Generate a synthetic port with a frame derived from the geometry query result. The synthetic port is created in the parent scope. Incorporate memory_hints to optimize knowledge context during execution.",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [
           "248"
         ],
@@ -4739,7 +4739,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-11T06:51:55.148Z"
+        "updatedAt": "2026-04-11T07:19:36.432Z"
       },
       {
         "id": "250",
@@ -4751,7 +4751,7 @@
         "dependencies": [
           "249"
         ],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -4769,7 +4769,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T06:51:55.750Z"
+        "updatedAt": "2026-04-11T07:19:36.475Z"
       },
       {
         "id": "251",
@@ -4781,7 +4781,7 @@
         "dependencies": [
           "250"
         ],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests",
@@ -4795,7 +4795,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T06:51:56.268Z"
+        "updatedAt": "2026-04-11T07:19:36.637Z"
       },
       {
         "id": "252",
@@ -4975,7 +4975,7 @@
         "dependencies": [
           "258"
         ],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -4989,7 +4989,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:24:37.001Z"
+        "updatedAt": "2026-04-11T07:19:36.681Z"
       },
       {
         "id": "260",
@@ -5001,7 +5001,7 @@
         "dependencies": [
           "259"
         ],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests",
@@ -5015,7 +5015,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-11T07:19:36.724Z"
       },
       {
         "id": "261",
@@ -5048,7 +5048,7 @@
           "256",
           "260"
         ],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "examples"
@@ -5060,7 +5060,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-11T07:19:36.871Z"
       },
       {
         "id": "263",
@@ -5072,7 +5072,7 @@
         "dependencies": [
           "262"
         ],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -5084,7 +5084,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-11T07:19:36.916Z"
       },
       {
         "id": "264",
@@ -5299,7 +5299,7 @@
         "dependencies": [
           "265"
         ],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -5316,7 +5316,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:56.708Z"
+        "updatedAt": "2026-04-11T07:19:36.957Z"
       },
       {
         "id": "274",
@@ -14022,7 +14022,7 @@
         "description": "The `node_budget` exhaustion path in `unfold_recursive_sub` (lib.rs:3523-3530) is never exercised by any test. When `set_max_unfold_nodes(N)` is called with a small N on a template with multiple recursive subs (e.g., binary tree), the budget can exhaust independently of the depth limit. Add a test that: (1) calls `engine.set_max_unfold_nodes(3)` on a binary-tree template, (2) asserts the diagnostic \"total node budget exhausted\" is present, (3) verifies some levels that would exist under unlimited budget are absent.\n\nmemory_hints: search \"max_unfold_nodes\" and \"node_budget\" in lib.rs; look at existing depth-limit tests in recursive_unfold.rs",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14034,7 +14034,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-11T07:19:36.133Z"
+        "updatedAt": "2026-04-10T00:00:00.000Z"
       },
       {
         "id": "645",
@@ -14042,7 +14042,7 @@
         "description": "The branch in `unfold_recursive_sub` handling a guard expression that evaluates to a non-Bool type (the `other` arm, lib.rs ~3572-3577) emits an error diagnostic \"guard for recursive sub ... expected Bool\" and terminates recursion. No test exercises this path. Add a test that: (1) builds a template whose guard expression produces `Value::Int(1)` instead of `Value::Bool(true)`, (2) evaluates it, (3) asserts no child entity is created, (4) asserts an error diagnostic containing \"expected Bool\" is present.\n\nmemory_hints: search \"expected Bool\" and \"guard\" in unfold_recursive_sub; look at existing guard tests in recursive_unfold.rs",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14054,7 +14054,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-11T07:19:36.347Z"
+        "updatedAt": "2026-04-10T00:00:00.000Z"
       },
       {
         "id": "646",
@@ -15499,7 +15499,7 @@
         "description": "The `is_auto` predicate `graph.value_cells.get(id).is_some_and(|n| n.kind == ValueCellKind::Auto)` is inlined 4 times across two guard handling phases in edit_param (lib.rs ~1693, ~1724, ~1956, ~1991). Extract an `is_auto_cell(&self, id)` method on the graph type and a `deactivate_if_not_auto` helper to consolidate the guard-skip + Undef-insert pattern into one place.\n\nMemory hints: search \"guard re-elaboration\", \"Auto param deactivation\", entity: edit_param",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15512,7 +15512,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-11T07:19:36.516Z"
+        "updatedAt": "2026-04-10T00:00:00.000Z"
       },
       {
         "id": "714",
@@ -21015,11 +21015,11 @@
         "description": "Three test quality improvements in crates/reify-compiler/tests/recursive_detection_tests.rs: (1) three_node_cycle_emits_exactly_one_warning should verify all three node names (A, B, C) appear in the cycle path. (2) Add a multi-member SCC source label test (2+ node cycle) since only the self-loop case is currently tested. (3) Remove redundant mutual_recursion_cycle_path_format which duplicates indirect_two_node_cycle_both_recursive.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:36.618Z",
+        "updatedAt": "2026-04-04T19:05:23.436Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -33137,7 +33137,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:36.618Z",
+      "lastModified": "2026-04-11T07:19:36.958Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
