@@ -9167,11 +9167,11 @@
         "description": "Move parse_and_compile helper from 3 test files (m9_trait_conformance.rs, m5_integration.rs, purpose_eval.rs) into crates/reify-test-support. Use CARGO_MANIFEST_DIR for fixture paths in m9_trait_conformance.rs (9 occurrences). Bind count_for results to local variables before assertions. (Review followup from task 194)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-03T14:00:11.317Z",
+        "updatedAt": "2026-04-11T07:20:26.345Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -24833,7 +24833,13 @@
           ],
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add missing pragma test coverage: occurrences and #no_prelude storage"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:20:25.052Z"
       },
@@ -33370,7 +33376,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:25.760Z",
+      "lastModified": "2026-04-11T07:20:26.346Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
