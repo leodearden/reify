@@ -32559,11 +32559,11 @@
         "description": "Two issues in sync_comments test scripts: (1) \"RED test\" label uses present tense for pre-fix behavior, which is misleading. (2) Comment claims modifiers accepted \"in any valid subset/order\" but the regex pattern enforces a specific order. Fix both to match actual behavior. Source: review of task 1309 (S1, S2).",
         "details": "Files: test_sync_comments_grep.sh, sync_comments_test.sh\\n\\nmemory_hints:\\n- search: \"sync_comments RED test\"\\n- search: \"sync_comments modifier order\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T06:40:15.632Z",
+        "updatedAt": "2026-04-11T11:00:29.403Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh",
@@ -33338,11 +33338,11 @@
         "description": "Follow-up from Task 1263 review triage (esc-1263-61, S2).\n\nIn crates/reify-expr/tests/field_calculus_tests.rs, the test helper `eval_field_op` (around lines 693–715) unconditionally builds the lambda body with `Type::Real`-typed `value_ref`s. For `divergence_sample_mixed_real_to_velocity_returns_scalar` (lines ~1886–1896, 2159–2169 for the lap counterpart), the declared codomain is `Vec3(Scalar<Velocity>)` but the lambda body is still `vec3(x,y,z)` with Real components. The regression guard passes only because the numerical differentiation path is loose about component types — it does not type-check that the lambda body's return type matches the field's declared codomain component type.\n\nThis couples the test to an evaluator quirk: a future tightening of type-checking in `vec3`/`sample` could break the regression guard for reasons unrelated to the dimensional-quotient logic it is meant to guard.\n\nFix options:\n1. Preferred: extend `eval_field_op` (and the helpers it calls) to stamp the lambda body with codomain-consistent component types — parameterize the body construction on the codomain type and generate `value_ref`s with the matching component type. Then the Case B tests exercise the real invariant.\n2. Fallback: add a short comment on the Case B tests noting the known type looseness so a future refactor is less surprising, and cross-reference this task.\n\nModules: crates/reify-expr/tests",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T06:32:00.386Z",
+        "updatedAt": "2026-04-11T11:00:29.518Z",
         "metadata": {
           "files": [
             "crates/reify-expr/tests/field_calculus_tests.rs"
@@ -33457,7 +33457,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T11:00:29.304Z",
+      "lastModified": "2026-04-11T11:00:29.518Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
