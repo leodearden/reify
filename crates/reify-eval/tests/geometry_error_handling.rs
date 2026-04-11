@@ -1212,3 +1212,548 @@ fn build_modify_missing_arg_no_kernel_error() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression guard: negative scale factor → compile-time rejection, specific Warning
+// ---------------------------------------------------------------------------
+
+/// When a Transform::Scale op has a negative factor (-1.0), build() should:
+/// 1. Call kernel exactly once — for the preceding Box that provides the target
+///    handle — but never call kernel for the Scale op itself.
+/// 2. Return geometry_output=None (the realization as a whole fails).
+/// 3. Emit a Warning whose message contains both 'scale dropped' and 'negative'
+///    (the site-specific diagnostic from lib.rs:3551).
+/// 4. Emit an Error containing 'failed to compile geometry operation'.
+/// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
+///    called for the Scale op).
+///
+/// This is a regression-coverage test for lib.rs:3546-3555 (the negative-factor
+/// check in the Transform::Scale branch of compile_geometry_op). It drives the
+/// full Engine::build() path to verify the Warning propagates to BuildResult.diagnostics.
+#[test]
+fn build_scale_negative_factor_emits_diagnostic() {
+    use reify_compiler::TransformKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+
+    // Op 0: Box primitive with all three required args — provides step_handles[0]
+    // as the Scale op's target
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+
+    // Op 1: Scale with factor=-1.0 — rejected because negative factor produces
+    // inside-out (point-symmetry) geometry
+    let scale_op = CompiledGeometryOp::Transform {
+        kind: TransformKind::Scale,
+        target: GeomRef::Step(0),
+        args: vec![("factor".into(), real_literal(-1.0))],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
+        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
+        .realization(e, 0, vec![box_op, scale_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_scale_negative"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (1) Kernel was called exactly once — for the Box — but never for the Scale
+    {
+        let ops = ops_ref.lock().unwrap();
+        assert_eq!(
+            ops.len(),
+            1,
+            "kernel.execute() should be called only for the Box (not the Scale), \
+             got {} kernel ops",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[0].op, reify_types::GeometryOp::Box { .. }),
+            "expected the only recorded kernel op to be Box, got: {:?}",
+            ops[0].op
+        );
+    }
+
+    // (2) No geometry output — Scale failed to compile
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when Scale factor is negative"
+    );
+
+    // (3) Warning: 'scale dropped' and 'negative'
+    let has_scale_warning = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning
+            && d.message.contains("scale dropped")
+            && d.message.contains("negative")
+    });
+    assert!(
+        has_scale_warning,
+        "expected a Warning diagnostic containing 'scale dropped' and 'negative', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (4) Error about failed compile
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (5) No 'geometry error' diagnostic — kernel was never called for the Scale
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for Scale), \
+         but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("geometry error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regression guard: non-finite extrude distance → compile-time rejection, specific Warning
+// ---------------------------------------------------------------------------
+
+/// When a Sweep::Extrude op has a NaN distance, build() should:
+/// 1. Call kernel exactly once — for the preceding Sphere that provides the
+///    profile handle — but never call kernel for the Extrude op itself.
+/// 2. Return geometry_output=None (the realization as a whole fails).
+/// 3. Emit a Warning whose message contains both 'extrude dropped' and 'degenerate'
+///    (the site-specific diagnostic from lib.rs:3670).
+/// 4. Emit an Error containing 'failed to compile geometry operation'.
+/// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
+///    called for the Extrude op).
+///
+/// Uses NaN rather than 0.0 to exercise the non-finite arm of the check at
+/// lib.rs:3667-3678, complementing the existing zero-distance test in
+/// stress_sweep_degenerate.rs which covers the near-zero arm.
+#[test]
+fn build_extrude_nonfinite_distance_emits_diagnostic() {
+    use reify_compiler::SweepKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Sphere primitive with radius — provides step_handles[0] as the
+    // Extrude's profile handle
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    // Op 1: Extrude with NaN distance — rejected because NaN is non-finite
+    let nan_distance = reify_types::CompiledExpr::literal(
+        reify_types::Value::Scalar {
+            si_value: f64::NAN,
+            dimension: reify_types::DimensionVector::LENGTH,
+        },
+        Type::length(),
+    );
+    let extrude_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Extrude,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![("distance".into(), nan_distance)],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "radius", Type::length(), Some(mm_literal(50.0)))
+        .realization(e, 0, vec![sphere_op, extrude_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extrude_nan_distance"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (1) Kernel was called exactly once — for the Sphere — but never for the Extrude
+    {
+        let ops = ops_ref.lock().unwrap();
+        assert_eq!(
+            ops.len(),
+            1,
+            "kernel.execute() should be called only for the Sphere (not the Extrude), \
+             got {} kernel ops",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
+            "expected the only recorded kernel op to be Sphere, got: {:?}",
+            ops[0].op
+        );
+    }
+
+    // (2) No geometry output — Extrude failed to compile
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when Extrude distance is NaN"
+    );
+
+    // (3) Warning: 'extrude dropped' and 'degenerate'
+    let has_extrude_warning = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning
+            && d.message.contains("extrude dropped")
+            && d.message.contains("degenerate")
+    });
+    assert!(
+        has_extrude_warning,
+        "expected a Warning diagnostic containing 'extrude dropped' and 'degenerate', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (4) Error about failed compile
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (5) No 'geometry error' diagnostic — kernel was never called for the Extrude
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for Extrude), \
+         but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("geometry error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regression guard: degenerate revolve axis → compile-time rejection, specific Warning
+// ---------------------------------------------------------------------------
+
+/// When a Sweep::Revolve op has a zero-length axis (ax=ay=az=0.0), build() should:
+/// 1. Call kernel exactly once — for the preceding Sphere that provides the
+///    profile handle — but never call kernel for the Revolve op itself.
+/// 2. Return geometry_output=None (the realization as a whole fails).
+/// 3. Emit a Warning whose message contains both 'revolve dropped' and 'axis'
+///    (the site-specific diagnostic from lib.rs:3699).
+/// 4. Emit an Error containing 'failed to compile geometry operation'.
+/// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
+///    called for the Revolve op).
+///
+/// This specifically exercises the axis-magnitude check at lib.rs:3698, which
+/// is distinct from the angle check tested in build_revolve_zero_angle_emits_diagnostic.
+#[test]
+fn build_revolve_degenerate_axis_emits_diagnostic() {
+    use reify_compiler::SweepKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+
+    // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    // Op 1: Revolve with ax=ay=az=0.0 (zero-length axis) — rejected before angle is evaluated
+    let revolve_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(0.0)),
+            ("angle".into(), real_literal(std::f64::consts::PI)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "radius", Type::length(), Some(mm_literal(50.0)))
+        .realization(e, 0, vec![sphere_op, revolve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_revolve_degenerate_axis",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (1) Kernel was called exactly once — for the Sphere — but never for the Revolve
+    {
+        let ops = ops_ref.lock().unwrap();
+        assert_eq!(
+            ops.len(),
+            1,
+            "kernel.execute() should be called only for the Sphere (not the Revolve), \
+             got {} kernel ops",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
+            "expected the only recorded kernel op to be Sphere, got: {:?}",
+            ops[0].op
+        );
+    }
+
+    // (2) No geometry output — Revolve failed to compile
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when Revolve axis is degenerate (zero-length)"
+    );
+
+    // (3) Warning: 'revolve dropped' and 'axis'
+    let has_revolve_warning = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning
+            && d.message.contains("revolve dropped")
+            && d.message.contains("axis")
+    });
+    assert!(
+        has_revolve_warning,
+        "expected a Warning diagnostic containing 'revolve dropped' and 'axis', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (4) Error about failed compile
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (5) No 'geometry error' diagnostic — kernel was never called for the Revolve
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for Revolve), \
+         but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("geometry error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regression guard: zero revolve angle → compile-time rejection, specific Warning
+// ---------------------------------------------------------------------------
+
+/// When a Sweep::Revolve op has a zero angle (0.0 rad) with a valid z-axis,
+/// build() should:
+/// 1. Call kernel exactly once — for the preceding Sphere that provides the
+///    profile handle — but never call kernel for the Revolve op itself.
+/// 2. Return geometry_output=None (the realization as a whole fails).
+/// 3. Emit a Warning whose message contains both 'revolve dropped' and 'angle'
+///    (the site-specific diagnostic from lib.rs:3711).
+/// 4. Emit an Error containing 'failed to compile geometry operation'.
+/// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
+///    called for the Revolve op).
+///
+/// Although stress_sweep_degenerate.rs already has a revolve_zero_angle test,
+/// this test lives in geometry_error_handling.rs alongside the other
+/// build_*_emits_diagnostic tests and follows the stricter assertion pattern
+/// (kernel-ops count + specific Warning + compile Error + no kernel error),
+/// ensuring the angle-check site at lib.rs:3710 is guarded by this file's suite.
+#[test]
+fn build_revolve_zero_angle_emits_diagnostic() {
+    use reify_compiler::SweepKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+
+    // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    // Op 1: Revolve with valid z-axis (az=1.0) but angle=0.0 — rejected because
+    // |angle| < 1e-12 cannot produce a meaningful revolve
+    let revolve_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)),
+            ("angle".into(), real_literal(0.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "radius", Type::length(), Some(mm_literal(50.0)))
+        .realization(e, 0, vec![sphere_op, revolve_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_revolve_zero_angle"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (1) Kernel was called exactly once — for the Sphere — but never for the Revolve
+    {
+        let ops = ops_ref.lock().unwrap();
+        assert_eq!(
+            ops.len(),
+            1,
+            "kernel.execute() should be called only for the Sphere (not the Revolve), \
+             got {} kernel ops",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
+            "expected the only recorded kernel op to be Sphere, got: {:?}",
+            ops[0].op
+        );
+    }
+
+    // (2) No geometry output — Revolve failed to compile
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when Revolve angle is zero"
+    );
+
+    // (3) Warning: 'revolve dropped' and 'angle'
+    let has_revolve_warning = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning
+            && d.message.contains("revolve dropped")
+            && d.message.contains("angle")
+    });
+    assert!(
+        has_revolve_warning,
+        "expected a Warning diagnostic containing 'revolve dropped' and 'angle', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (4) Error about failed compile
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (5) No 'geometry error' diagnostic — kernel was never called for the Revolve
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for Revolve), \
+         but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("geometry error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
