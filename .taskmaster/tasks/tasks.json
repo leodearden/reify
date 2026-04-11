@@ -9005,7 +9005,13 @@
           ],
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Recursive detection test quality improvements"
+            ]
+          }
         }
       },
       {
@@ -24801,7 +24807,13 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Include module-level pragmas in CompiledModule content hash"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:20:22.833Z"
       },
@@ -24811,7 +24823,7 @@
         "description": "Two test coverage gaps in pragma_compile_tests.rs:\n\n1. **Occurrence-level pragmas untested**: Tests cover pragma propagation for structures, traits, and purposes, but not occurrences. The `From<&'a OccurrenceDef>` → `EntityDefRef` conversion path that carries pragmas is untested. Add a test like `occurrence_pragma_propagated_to_topology_template`.\n\n2. **#no_prelude not verified in CompiledModule.pragmas**: Existing tests verify the behavioral effect (suppressing stdlib units) but not that `#no_prelude` itself appears in `module.pragmas`. Add an assertion like `module.pragmas.iter().any(|p| p.name == \"no_prelude\")` to `no_prelude_simple_structure_compiles_clean` or a new test.\n\nBoth are low-risk (shared code paths / behavioral coverage exists) but worth closing.\n\nMemory hints: search for \"pragma compile tests\" and \"EntityDefRef\" in reify-compiler.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -24823,7 +24835,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:20:25.052Z"
       },
       {
         "id": "1166",
@@ -30147,7 +30159,13 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add compiler test for non-collection sub-component member access"
+            ]
+          }
         }
       },
       {
@@ -33352,7 +33370,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:23.971Z",
+      "lastModified": "2026-04-11T07:20:25.052Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
