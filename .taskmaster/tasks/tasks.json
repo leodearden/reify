@@ -33090,6 +33090,19 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1628,
+        "title": "Refactor compile_geometry_op rejection tests: helper + NaN assert + revolve dedup",
+        "description": "Follow-up from task 1213 reviewer_comprehensive. Three related improvements to crates/reify-eval/tests/geometry_error_handling.rs, all touching the four `build_*_emits_diagnostic` tests added in task 1213.\n\nS1 (code_duplication, ~520 lines in the four new tests): Extract a private helper `fn assert_rejected_at_compile(result: &BuildResult, ops: &[GeometryOpRecord], expected_primitive: fn(&GeometryOp) -> bool, warning_needles: &[&str])` that performs the shared 5-assertion block (kernel-ops count + primitive-kind match, geometry_output is None, specific Warning, compile Error, absence of 'geometry error' diagnostic). Rewrite each of the four tests to call the helper — ~30 lines of setup + one helper call. See review at crates/reify-eval/tests/geometry_error_handling.rs:1215-1759.\n\nS2 (test_specificity): `build_extrude_nonfinite_distance_emits_diagnostic` currently asserts only 'extrude dropped' + 'degenerate' in the warning message, but both the non-finite arm and the near-zero arm of the Extrude check (lib.rs:3667-3678) share the same Some(v) branch and emit the same warning template. A regression swapping `v.is_finite()` for `true` would not be caught, since the sibling zero-distance test in stress_sweep_degenerate.rs would still pass. Add `.contains(\"NaN\")` (Rust's Display format for f64::NAN) to the Warning assertion in this one test to pin the non-finite arm specifically. See review at crates/reify-eval/tests/geometry_error_handling.rs:1321-1396.\n\nS3 (duplicate_coverage): `build_revolve_zero_angle_emits_diagnostic` in geometry_error_handling.rs intentionally duplicates `revolve_zero_angle` in stress_sweep_degenerate.rs. Both exercise the same code path (Sweep::Revolve zero-angle guard at lib.rs:3710). The new test has stricter assertions (ops_len==1, no 'geometry error') but the real guard coverage is identical. Decision: delete `revolve_zero_angle` from stress_sweep_degenerate.rs so `geometry_error_handling::build_revolve_zero_angle_emits_diagnostic` becomes the canonical angle-guard test. Confirm no other sibling stress tests depend on it.\n\nAll three changes land in the same file (plus one deletion in stress_sweep_degenerate.rs) and form one cohesive TDD cycle. Memory hints: entity \"compile_geometry_op\", search \"geometry_error_handling helper pattern\".",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1213
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -33102,7 +33115,7 @@
       ],
       "created": "2026-04-11T06:58:16.339Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-11T06:58:16.357Z"
+      "updated": "2026-04-11T07:02:19.731Z"
     }
   }
 }
