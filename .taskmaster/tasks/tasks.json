@@ -8456,7 +8456,13 @@
           ],
           "modules": [
             "crates/reify-compiler"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix depth/visited guard ordering in collect_all_requirements"
+            ]
+          }
         }
       },
       {
@@ -23392,7 +23398,13 @@
           ],
           "modules": [
             "crates/reify-types"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen `nan_payload_canonicalized_in_content_hash` Test"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:20:01.845Z"
       },
@@ -29402,11 +29414,11 @@
         "description": "Refactor the duplicated diagnostic-assertion block shared by `build_primitive_missing_arg_no_kernel_error` (lines 972-1070) and `build_modify_missing_arg_no_kernel_error` (lines 1097-1214) in `crates/reify-eval/tests/geometry_error_handling.rs`.\n\nThe five-assertion structure — (1) kernel op count/kind, (2) geometry_output=None, (3) missing-arg warning, (4) compile-error, (5) no 'geometry error' — is nearly verbatim between the two tests. Both are likely to evolve together.\n\nExtract a helper such as:\n```rust\nfn assert_compile_failure_diagnostics(\n    result: &BuildResult,\n    expected_missing_arg: &str,\n    expected_kind_label: &str,\n) { ... }\n```\n\ntaking the result, the expected missing arg name, and the expected kind label ('Box', 'Fillet', etc.). The helper can live in-file or move to `reify-test-support` if we expect sibling coverage (Transform/Pattern/Sweep) — which is plausible given the rest of the file's structure.\n\nAfter extraction, each sibling test shrinks to its differentiating setup (which op is malformed, which kernel ops should be recorded).\n\n**Not blocking** — the reviewer explicitly noted tests are often kept self-contained for clarity. Consider this if/when a third sibling test is added.\n\n**Source:** Review suggestion S4 from Task 1286 (esc-1286-133).\n\nmemory_hints: search \"build_modify_missing_arg_no_kernel_error assert_compile_failure_diagnostics helper\" entity \"geometry_error_handling\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:18:42.348Z",
+        "updatedAt": "2026-04-11T07:20:03.165Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -33233,7 +33245,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:02.456Z",
+      "lastModified": "2026-04-11T07:20:03.165Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
