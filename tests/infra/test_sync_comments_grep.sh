@@ -326,6 +326,9 @@ assert "sync_ref_helpers.sh documents extern fn limitation" \
 assert "sync_ref_helpers.sh documents default fn limitation" \
     grep -qF 'default fn' "$SYNC_REF_HELPERS"
 
+assert "sync_ref_helpers.sh documents qualifier order mirrors canonical Rust grammar" \
+    grep -qF 'const → async → unsafe → fn' "$SYNC_REF_HELPERS"
+
 echo ""
 echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
 
