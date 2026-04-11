@@ -1,5 +1,6 @@
 pub mod module_dag;
 mod scc;
+pub mod si_units;
 pub mod stdlib_loader;
 mod types;
 mod units;
