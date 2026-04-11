@@ -20,6 +20,22 @@ fn assert_no_error_diagnostics(diagnostics: &[reify_types::Diagnostic], phase: &
     assert!(errors.is_empty(), "{} errors: {:?}", phase, errors);
 }
 
+/// Mutual-exclusion guard: assert that no Error-severity diagnostic has a message
+/// containing `phrase`.  Used in regression-guard tests to confirm the compiler
+/// took exactly one error path and not the other.
+fn assert_no_error_containing(diagnostics: &[reify_types::Diagnostic], phrase: &str) {
+    let false_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains(phrase))
+        .collect();
+    assert!(
+        false_errors.is_empty(),
+        "unexpected error containing {:?}: {:?}",
+        phrase,
+        false_errors
+    );
+}
+
 // ---------------------------------------------------------------------------
 // --- let binding uses meta.key ---
 // ---------------------------------------------------------------------------
@@ -354,18 +370,7 @@ fn e2e_meta_access_missing_key() {
     // Mutual-exclusion guard: the missing-key path must NOT produce the
     // no-meta-block error.  If both appear (or the wrong one appears), a future
     // compiler regression would otherwise stay hidden.
-    let counter_phrase = "entity has no meta block";
-    let false_errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains(counter_phrase))
-        .collect();
-    assert!(
-        false_errors.is_empty(),
-        "unexpected counter-path error ({:?}) in missing-key test: {:?}",
-        counter_phrase,
-        false_errors
-    );
+    assert_no_error_containing(&compiled.diagnostics, "entity has no meta block");
 }
 
 /// Regression guard (suggestion 9): accessing `meta.description` on a structure
@@ -387,18 +392,7 @@ fn e2e_meta_access_no_meta_block() {
     // Mutual-exclusion guard: the no-meta-block path must NOT produce the
     // missing-key error.  If both appear (or the wrong one appears), a future
     // compiler regression would otherwise stay hidden.
-    let counter_phrase = "meta block has no key";
-    let false_errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains(counter_phrase))
-        .collect();
-    assert!(
-        false_errors.is_empty(),
-        "unexpected counter-path error ({:?}) in no-meta-block test: {:?}",
-        counter_phrase,
-        false_errors
-    );
+    assert_no_error_containing(&compiled.diagnostics, "meta block has no key");
 }
 
 // ---------------------------------------------------------------------------
