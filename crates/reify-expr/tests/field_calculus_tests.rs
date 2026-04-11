@@ -625,6 +625,11 @@ fn run_dim_metadata_test(
     );
 }
 
+/// Maximum number of dimensions supported by the hard-coded coordinate/name arrays
+/// (`[1.0, 2.0, 3.0]` in `make_sample_point` and `["x", "y", "z"]` in `eval_field_op`).
+/// Changing the cap here automatically keeps both assert messages in sync.
+const MAX_POINT_ARITY: usize = 3;
+
 /// Build a sample point for the given domain type.
 ///
 /// Returns `(Value, Type)` where the `Value` encodes coordinates (1.0, 2.0, 3.0)
@@ -639,6 +644,7 @@ fn run_dim_metadata_test(
 fn make_sample_point(domain: &Type) -> (Value, Type) {
     match domain {
         Type::Point { n, quantity } => {
+            assert!(*n <= MAX_POINT_ARITY, "make_sample_point: Point domain only supports up to {MAX_POINT_ARITY} dimensions, got {n}");
             let coords = [1.0f64, 2.0, 3.0];
             let comps: Vec<Value> = coords[..*n]
                 .iter()
@@ -648,7 +654,7 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
                         si_value: v,
                         dimension: *dimension,
                     },
-                    _ => Value::Real(v),
+                    other => panic!("make_sample_point: unsupported quantity type in Point: {:?}", other),
                 })
                 .collect();
             (Value::Point(comps), domain.clone())
@@ -661,8 +667,15 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
             },
             domain.clone(),
         ),
-        _ => (Value::Real(1.0), Type::Real),
+        other => panic!("make_sample_point: unsupported domain type: {:?}", other),
     }
+}
+
+#[test]
+#[should_panic(expected = "make_sample_point: Point domain only supports")]
+fn make_sample_point_panics_when_point_arity_exceeds_three() {
+    let domain = Type::Point { n: 4, quantity: Box::new(Type::Real) };
+    let _ = make_sample_point(&domain);
 }
 
 /// Evaluate a calculus operator on a standard analytical test field.
@@ -679,7 +692,10 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
 /// Returns the operator-result `Value` (a `Value::Field` for valid inputs).
 fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
     let n: usize = match &domain {
-        Type::Point { n, .. } => *n,
+        Type::Point { n, .. } => {
+            assert!(*n <= MAX_POINT_ARITY, "eval_field_op: Point domain only supports up to {MAX_POINT_ARITY} dimensions, got {n}");
+            *n
+        }
         _ => 1,
     };
 
@@ -727,6 +743,13 @@ fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
 
     let values = ValueMap::new();
     eval_expr(&op_expr, &EvalContext::simple(&values))
+}
+
+#[test]
+#[should_panic(expected = "eval_field_op: Point domain only supports")]
+fn eval_field_op_panics_when_point_arity_exceeds_three() {
+    let domain = Type::Point { n: 4, quantity: Box::new(Type::Real) };
+    let _ = eval_field_op("gradient", domain, Type::Real);
 }
 
 /// Sample a field value at the standard test point for its domain type.
