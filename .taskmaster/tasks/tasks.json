@@ -29091,7 +29091,13 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix stale docstring and fragile function name in silent_defaults_tests"
+            ]
+          }
         }
       },
       {
@@ -29100,11 +29106,11 @@
         "description": "The tests in crates/reify-eval/tests/e2e_meta.rs (around line 412) use \"meta\" as a broad substring needle for two distinct error conditions: missing key and no meta block. Replace with more specific needles that distinguish the two error paths to prevent false greens.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:07:43.430Z",
+        "updatedAt": "2026-04-11T07:21:44.102Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -33873,7 +33879,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:41.903Z",
+      "lastModified": "2026-04-11T07:21:44.102Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
