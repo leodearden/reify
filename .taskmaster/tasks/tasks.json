@@ -8811,14 +8811,9 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [
-              "UnitRegistry",
-              "UnitEntry",
-              "CompiledUnit"
-            ],
+            "entities": [],
             "queries": [
-              "UnitRegistry API cleanup dimension mapping DRY entry API",
-              "task 208 unit declarations registry branch"
+              "resolution for: Clean up UnitRegistry API: dimension mapping DRY, entry API, struct duplication, content hash, diagnostics"
             ]
           },
           "files": [
@@ -24503,7 +24498,13 @@
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/annotations.rs",
             "crates/reify-compiler/tests/deprecated_use_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Deprecation check refinements: merge loops, return &str, consistent labels, occurrence test"
+            ]
+          }
         }
       },
       {
@@ -24512,11 +24513,11 @@
         "description": "TraitDecl.refinements is currently `Vec<String>` without individual spans. The deprecation warning for trait refinements (L4177-4191 in lib.rs) uses `trait_decl.span` (the entire child trait declaration) rather than pointing at the specific `: Base` refinement reference. This makes the warning highlight too much code.\n\nChange `refinements: Vec<String>` to `refinements: Vec<SpannedIdent>` (or similar span-bearing type) in reify-types, update the parser in reify-syntax to capture per-refinement spans, and update the compiler to use the precise span in the deprecation warning.\n\nmemory_hints: search \"TraitDecl refinements Vec<String>\" in reify-types; get_entity \"TraitDecl\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:52:03.121Z",
+        "updatedAt": "2026-04-11T07:20:16.046Z",
         "metadata": {
           "modules": [
             "crates/reify-types",
@@ -29805,7 +29806,13 @@
           "modules": [
             "crates/reify-eval/src",
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Suppress redundant generic error when compile_geometry_op emits a specific diagnostic"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:20:14.644Z"
       },
@@ -33295,7 +33302,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:14.805Z",
+      "lastModified": "2026-04-11T07:20:16.046Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
