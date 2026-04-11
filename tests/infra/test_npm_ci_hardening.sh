@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Infrastructure tests for npm ci hardening (task 816).
-# Validates that check-pm-standardization.sh lives in scripts/ and that
+# Validates that test_pm_standardization.sh lives in scripts/ and that
 # orchestrator.yaml uses if/then/fi guards instead of || true for npm ci.
 
 set -euo pipefail
@@ -18,7 +18,7 @@ trap cleanup EXIT
 # setup_fixture_dir VARNAME
 # Creates a temp dir with the standard fixture layout used by Tests 23a/23c/23d:
 #   scripts/, tests/infra/, gui/sidecar/, tree-sitter-reify/
-# Copies check-pm-standardization.sh and test_helpers.sh into the fixture.
+# Copies test_pm_standardization.sh and test_helpers.sh into the fixture.
 # Initialises a git repo so 'git check-ignore' works inside Check 3.
 # Appends the dir to _TMPDIRS so cleanup() removes it at script exit.
 # Writes the path back to the caller via printf -v (bash 3.1+; no subshell).
@@ -33,7 +33,7 @@ setup_fixture_dir() {
     dir="$(mktemp -d)"
     _TMPDIRS+=("$dir")
     mkdir -p "$dir/scripts" "$dir/tests/infra" "$dir/gui/sidecar" "$dir/tree-sitter-reify"
-    cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$dir/scripts/"
+    cp "$REPO_ROOT/scripts/test_pm_standardization.sh" "$dir/scripts/"
     cp "$SCRIPT_DIR/test_helpers.sh" "$dir/tests/infra/"
     git -C "$dir" init -q
     printf -v "$_varname" '%s' "$dir"
@@ -41,24 +41,27 @@ setup_fixture_dir() {
 
 echo "=== npm ci hardening tests ==="
 
-# -- Test 1: check-pm-standardization.sh location ----------------------------
+# -- Test 1: test_pm_standardization.sh location ----------------------------
 echo ""
 echo "--- Test 1: script lives in scripts/, not tests/ ---"
 
-assert "scripts/check-pm-standardization.sh exists" \
-    test -f "$REPO_ROOT/scripts/check-pm-standardization.sh"
+assert "scripts/test_pm_standardization.sh exists" \
+    test -f "$REPO_ROOT/scripts/test_pm_standardization.sh"
 
-assert "scripts/check-pm-standardization.sh is executable" \
-    test -x "$REPO_ROOT/scripts/check-pm-standardization.sh"
+assert "scripts/test_pm_standardization.sh is executable" \
+    test -x "$REPO_ROOT/scripts/test_pm_standardization.sh"
 
-assert "tests/check-pm-standardization.sh does NOT exist" \
-    bash -c "! test -f '$REPO_ROOT/tests/check-pm-standardization.sh'"
+assert "tests/test_pm_standardization.sh does NOT exist" \
+    bash -c "! test -f '$REPO_ROOT/tests/test_pm_standardization.sh'"
+
+assert "scripts/check-pm-standardization.sh (old name) does NOT exist after rename" \
+    bash -c "! test -f '$REPO_ROOT/scripts/check-pm-standardization.sh'"
 
 # -- Test 2: script has only checks 1-4 (no 5-9) ----------------------------
 echo ""
 echo "--- Test 2: script contains only checks 1-4 ---"
 
-SCRIPT="$REPO_ROOT/scripts/check-pm-standardization.sh"
+SCRIPT="$REPO_ROOT/scripts/test_pm_standardization.sh"
 
 assert "script has no grep calls referencing hooks/project-checks" \
     bash -c "! grep -qE 'grep.*hooks/project-checks|hooks/project-checks.*grep' '$SCRIPT'"
@@ -137,11 +140,11 @@ echo ""
 echo "--- Test 9: orchestrator command placement and existence guards ---"
 
 # S1: full-path assertion (the guard-pattern assertion below also provides full-path coverage)
-assert "scripts/check-pm-standardization.sh (full path) is in lint_command" \
-    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'scripts/check-pm-standardization.sh'"
+assert "scripts/test_pm_standardization.sh (full path) is in lint_command" \
+    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'scripts/test_pm_standardization.sh'"
 
-assert "check-pm-standardization.sh is NOT in test_command" \
-    bash -c "! grep 'test_command:' '$ORCH' | grep -q 'check-pm-standardization.sh'"
+assert "test_pm_standardization.sh is NOT in test_command" \
+    bash -c "! grep 'test_command:' '$ORCH' | grep -q 'test_pm_standardization.sh'"
 
 # S2: symmetric negative assertion — test-only scripts should not be in lint_command
 assert "sync_comments_test.sh is NOT in lint_command" \
@@ -150,8 +153,11 @@ assert "sync_comments_test.sh is NOT in lint_command" \
 assert "sync_comments_test.sh uses 'if test -f' guard in test_command" \
     bash -c "grep 'test_command:' '$ORCH' | grep -q 'if test -f tests/sync_comments_test.sh'"
 
-assert "check-pm-standardization.sh uses 'if test -f' guard in lint_command" \
-    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'if test -f scripts/check-pm-standardization.sh'"
+assert "test_pm_standardization.sh uses 'if test -f' guard in lint_command" \
+    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'if test -f scripts/test_pm_standardization.sh'"
+
+assert "check-pm-standardization.sh (old name) is NOT in lint_command after rename" \
+    bash -c "! grep 'lint_command:' '$ORCH' | grep -q 'check-pm-standardization.sh'"
 
 # -- Test 10: WARNING echoes when guards trigger a skip ------------------------
 echo ""
@@ -160,15 +166,15 @@ echo "--- Test 10: WARNING echoes for guard skips ---"
 assert "test_command has WARNING echo for sync_comments_test.sh skip" \
     bash -c "grep 'test_command:' '$ORCH' | grep -q 'WARNING.*sync_comments_test'"
 
-assert "lint_command has WARNING echo for check-pm-standardization.sh skip" \
-    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'WARNING.*check-pm-standardization'"
+assert "lint_command has WARNING echo for test_pm_standardization.sh skip" \
+    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'WARNING.*test_pm_standardization'"
 
 # -- Test 11: end-to-end execution test ----------------------------------------
 echo ""
-echo "--- Test 11: check-pm-standardization.sh runs successfully ---"
+echo "--- Test 11: test_pm_standardization.sh runs successfully ---"
 
-assert "check-pm-standardization.sh runs successfully in repo context" \
-    bash "$REPO_ROOT/scripts/check-pm-standardization.sh"
+assert "test_pm_standardization.sh runs successfully in repo context" \
+    bash "$REPO_ROOT/scripts/test_pm_standardization.sh"
 
 # -- Test 12: build artifact tracking hygiene ----------------------------------
 echo ""
@@ -271,7 +277,7 @@ _TMPDIRS+=("$FIX_DIR")
 CHECK2_HELPER="$FIX_DIR/check2_logic.sh"
 cat > "$CHECK2_HELPER" <<'CHECK2EOF'
 #!/usr/bin/env bash
-# Mirror of scripts/check-pm-standardization.sh Check 2 subshell body.
+# Mirror of scripts/test_pm_standardization.sh Check 2 subshell body.
 set -euo pipefail
 expected=$#
 for f in "$@"; do
@@ -359,7 +365,7 @@ done
 # Test 23a: all files agree on the same version -> script exits 0
 # Capture combined stdout+stderr so we can pin both the exit status and the
 # absence of DIAGNOSTIC: emissions with two separate named assertions.
-out23a=$(cd "$FIXTURE_DIR" && bash scripts/check-pm-standardization.sh 2>&1); status23a=$?
+out23a=$(cd "$FIXTURE_DIR" && bash scripts/test_pm_standardization.sh 2>&1); status23a=$?
 
 assert "23a: consistent packageManager versions -> exit 0" \
     bash -c '[ "$1" = "0" ]' _ "$status23a"
@@ -371,7 +377,7 @@ assert "23a: no DIAGNOSTIC: emitted when no npm lockfiles are gitignored" \
 printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/package.json"
 
 assert "23b: mismatched packageManager versions -> exit non-zero" \
-    bash -c "! (cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh)"
+    bash -c "! (cd '$FIXTURE_DIR' && bash scripts/test_pm_standardization.sh)"
 
 # Test 23c: all files use the SAME non-npm@ packageManager (yarn@1.22.0)
 # Check 1 fails (no npm@ prefix); Check 2 still passes (total=3, unique=1 — same value everywhere)
@@ -387,7 +393,7 @@ for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.j
 done
 
 assert "23c: non-npm@ packageManager (yarn@1.22.0 in all files) -> exit non-zero (Check 1 fails)" \
-    bash -c "! (cd '$FIXTURE_23C' && bash scripts/check-pm-standardization.sh)"
+    bash -c "! (cd '$FIXTURE_23C' && bash scripts/test_pm_standardization.sh)"
 
 # Test 23d: consistent npm@ versions but gui/package-lock.json gitignored
 # Checks 1 and 2 pass (npm@10.9.0 in all files, total=3, unique=1)
@@ -404,7 +410,7 @@ for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.j
 done
 
 assert "23d: gui/package-lock.json gitignored -> exit non-zero (Check 3 fails)" \
-    bash -c "! (cd '$FIXTURE_23D' && bash scripts/check-pm-standardization.sh)"
+    bash -c "! (cd '$FIXTURE_23D' && bash scripts/test_pm_standardization.sh)"
 
 # -- Test 24: LOCK_FILES is hoisted (defined before 'Check 1:' echo) ----------
 echo ""
@@ -424,7 +430,7 @@ echo "--- Test 25: Check 3 emits DIAGNOSTIC: when a lockfile is gitignored ---"
 FIXTURE24="$(mktemp -d)"
 _TMPDIRS+=("$FIXTURE24")
 mkdir -p "$FIXTURE24/scripts" "$FIXTURE24/tests/infra"
-cp "$SCRIPT" "$FIXTURE24/scripts/check-pm-standardization.sh"
+cp "$SCRIPT" "$FIXTURE24/scripts/test_pm_standardization.sh"
 cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE24/tests/infra/test_helpers.sh"
 git -C "$FIXTURE24" init -q
 git -C "$FIXTURE24" config user.email "test@test.com"
@@ -432,11 +438,11 @@ git -C "$FIXTURE24" config user.name "Test"
 printf 'gui/package-lock.json\n' > "$FIXTURE24/.gitignore"
 
 # The || true makes the capture tolerant of the script's non-zero exit: Check 3's
-# assert fails when a lockfile is gitignored, and because check-pm-standardization.sh
+# assert fails when a lockfile is gitignored, and because test_pm_standardization.sh
 # has set -e, it short-circuits before test_summary. The explicit printf | grep avoids
 # depending on the outer bash -c to not enable pipefail, or on assert()'s internal
 # >/dev/null 2>&1 redirection swallowing the output before grep can see it.
-out24=$(bash "$FIXTURE24/scripts/check-pm-standardization.sh" 2>&1 || true)
+out24=$(bash "$FIXTURE24/scripts/test_pm_standardization.sh" 2>&1 || true)
 assert "Check 3 emits DIAGNOSTIC: when gui/package-lock.json is gitignored" \
     bash -c 'printf "%s\n" "$1" | grep -q DIAGNOSTIC:' _ "$out24"
 
@@ -457,8 +463,8 @@ assert "setup_fixture_dir: gui/sidecar/ subdir exists" \
     test -d "$FIXTURE_T26/gui/sidecar"
 assert "setup_fixture_dir: tree-sitter-reify/ subdir exists" \
     test -d "$FIXTURE_T26/tree-sitter-reify"
-assert "setup_fixture_dir: check-pm-standardization.sh copied" \
-    test -f "$FIXTURE_T26/scripts/check-pm-standardization.sh"
+assert "setup_fixture_dir: test_pm_standardization.sh copied" \
+    test -f "$FIXTURE_T26/scripts/test_pm_standardization.sh"
 assert "setup_fixture_dir: test_helpers.sh copied" \
     test -f "$FIXTURE_T26/tests/infra/test_helpers.sh"
 assert "setup_fixture_dir: fixture is a git work tree" \
@@ -532,7 +538,7 @@ printf 'pnpm-lock.yaml\n' > "$FIXTURE_T29/.gitignore"
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
     printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_T29/$pkg"
 done
-out29d=$(cd "$FIXTURE_T29" && bash scripts/check-pm-standardization.sh 2>&1 || true)
+out29d=$(cd "$FIXTURE_T29" && bash scripts/test_pm_standardization.sh 2>&1 || true)
 
 assert "29d: broad step PASSES when pnpm-lock.yaml is mentioned (bare form, no gui/ prefix)" \
     bash -c 'printf "%s\n" "$1" | grep -q "PASS:.*pnpm-lock.yaml is mentioned"' _ "$out29d"

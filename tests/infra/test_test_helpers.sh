@@ -177,7 +177,7 @@ CONSUMERS=(
     "scripts/test_lib.sh"
     "scripts/test_tree_sitter_generate.sh"
     "tests/sync_comments_test.sh"
-    "scripts/check-pm-standardization.sh"
+    "scripts/test_pm_standardization.sh"
     "tests/infra/sync_ref_helpers.sh"
 )
 
