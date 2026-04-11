@@ -32503,11 +32503,11 @@
         "description": "test_make_gradient_field_quadratic_body (line ~2820) in crates/reify-expr/tests/gradient_tests.rs is nearly identical to gradient_single_point_param_quadratic (line ~2912). Both build the same quadratic gradient field (dot(p,p)) via the same closure, sample at (2,3,5), and assert gradient = (4,6,10). The only difference is that the latter uses the make_3d_quadratic_gradient_field() helper. Remove test_make_gradient_field_quadratic_body and verify gradient_single_point_param_quadratic provides equivalent coverage.\n\nmemory_hints: search \"gradient test quadratic\" in gradient_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:07:35.859Z",
+        "updatedAt": "2026-04-11T11:39:25.126Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -33481,7 +33481,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T11:39:23.910Z",
+      "lastModified": "2026-04-11T11:39:25.126Z",
       "taskCount": 1629,
       "completedCount": 1281,
       "tags": [
