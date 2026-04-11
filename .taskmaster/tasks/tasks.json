@@ -8146,7 +8146,7 @@
         "testStrategy": "",
         "priority": "medium",
         "dependencies": [],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests",
@@ -8159,7 +8159,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T20:59:19.418Z"
+        "updatedAt": "2026-04-11T07:19:43.535Z"
       },
       {
         "id": "392",
@@ -18812,11 +18812,11 @@
         "description": "Either filter constraint_defs to only pub defs at collection time (lib.rs:3812-3822) so non-pub defs never appear in the compiled artifact, or explicitly document that the field contains all local defs and callers must apply is_pub filtering themselves. Update the doc comment from 'Stored so downstream modules can reference them' to accurately describe visibility behavior: only is_pub==true defs are propagated to downstream modules.\n\nmemory_hints: search \"constraint_defs is_pub visibility\" for prior context on pub visibility implementation",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T22:14:00.454Z",
+        "updatedAt": "2026-04-11T07:19:38.458Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -33137,7 +33137,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:38.412Z",
+      "lastModified": "2026-04-11T07:19:43.535Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
