@@ -33495,11 +33495,11 @@
         "description": "Follow-up from review of task 1466. Three related changes in crates/reify-expr/tests/field_calculus_tests.rs.",
         "details": "In crates/reify-expr/tests/field_calculus_tests.rs:\n\n1. Replace the MAX_POINT_ARITY const (line 628-631) with array-derived constants so raising the cap is a one-edit change that automatically grows the hard-coded arrays:\n   const COORDS: [f64; 3] = [1.0, 2.0, 3.0];\n   const NAMES: [&str; 3] = [\"x\", \"y\", \"z\"];\n   const MAX_POINT_ARITY: usize = COORDS.len();\n   Then use COORDS/NAMES in make_sample_point (line 648) and eval_field_op (line 702) instead of the inline literals. Remove or update the stale doc comment that claims changing the cap auto-syncs assert messages — the new formulation makes the dependency structural.\n\n2. Delete the two guard-on-guard #[should_panic] tests: make_sample_point_panics_when_point_arity_exceeds_three (lines 674-679) and eval_field_op_panics_when_point_arity_exceeds_three (lines 748-753). They add no production-behavior coverage and impose lockstep maintenance cost. If MAX_POINT_ARITY becomes array-derived per item 1, the asserts themselves become structurally redundant too — consider removing the asserts along with the tests, letting the array slice bound check be the single source of truth (optional).\n\n3. Change the two panic! calls at lines 657 and 670 to use captured-identifier format strings consistent with the rest of the file:\n   panic!(\"make_sample_point: unsupported quantity type in Point: {other:?}\")\n   panic!(\"make_sample_point: unsupported domain type: {other:?}\")\n\nSource: review follow-up from task 1466 (escalation esc-1466-6).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T11:49:35.189Z"
+        "updatedAt": "2026-04-11T16:09:16.684Z"
       },
       {
         "id": "1631",
@@ -33528,7 +33528,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T16:05:45.160Z",
+      "lastModified": "2026-04-11T16:09:16.685Z",
       "taskCount": 1632,
       "completedCount": 1282,
       "tags": [
