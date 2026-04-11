@@ -92,21 +92,48 @@ pub(crate) fn resolve_dimension_type(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<DimensionVector> {
     match type_expr.name.as_str() {
+        // SI base dimensions
         "Length" => Some(DimensionVector::LENGTH),
         "Mass" => Some(DimensionVector::MASS),
         "Time" => Some(DimensionVector::TIME),
         "Current" => Some(DimensionVector::CURRENT),
         "Temperature" => Some(DimensionVector::TEMPERATURE),
+        "AmountOfSubstance" => Some(DimensionVector::AMOUNT_OF_SUBSTANCE),
+        "LuminousIntensity" => Some(DimensionVector::LUMINOUS_INTENSITY),
         "Angle" => Some(DimensionVector::ANGLE),
+        "SolidAngle" => Some(DimensionVector::SOLID_ANGLE),
+        // Geometric derived dimensions
         "Area" => Some(DimensionVector::AREA),
         "Volume" => Some(DimensionVector::VOLUME),
-        "Force" => Some(reify_types::dimension::FORCE),
+        // SI derived dimensions
+        "Force" => Some(DimensionVector::FORCE),
+        "Energy" => Some(DimensionVector::ENERGY),
+        "Power" => Some(DimensionVector::POWER),
+        "Pressure" => Some(DimensionVector::PRESSURE),
+        "Frequency" => Some(DimensionVector::FREQUENCY),
+        "Voltage" => Some(DimensionVector::VOLTAGE),
+        "Charge" => Some(DimensionVector::CHARGE),
+        "Capacitance" => Some(DimensionVector::CAPACITANCE),
+        "Resistance" => Some(DimensionVector::RESISTANCE),
+        "Conductance" => Some(DimensionVector::CONDUCTANCE),
+        "Inductance" => Some(DimensionVector::INDUCTANCE),
+        "MagneticFlux" => Some(DimensionVector::MAGNETIC_FLUX),
+        "MagneticFluxDensity" => Some(DimensionVector::MAGNETIC_FLUX_DENSITY),
+        "LuminousFlux" => Some(DimensionVector::LUMINOUS_FLUX),
+        "Illuminance" => Some(DimensionVector::ILLUMINANCE),
+        "AbsorbedDose" => Some(DimensionVector::ABSORBED_DOSE),
+        "AngularVelocity" => Some(DimensionVector::ANGULAR_VELOCITY),
+        "DynamicViscosity" => Some(DimensionVector::DYNAMIC_VISCOSITY),
         "Dimensionless" => Some(DimensionVector::DIMENSIONLESS),
         other => {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "unknown dimension type '{}': expected one of Length, Mass, Time, Current, \
-                     Temperature, Angle, Area, Volume, Force, Dimensionless",
+                     Temperature, AmountOfSubstance, LuminousIntensity, Angle, SolidAngle, \
+                     Area, Volume, Force, Energy, Power, Pressure, Frequency, Voltage, \
+                     Charge, Capacitance, Resistance, Conductance, Inductance, MagneticFlux, \
+                     MagneticFluxDensity, LuminousFlux, Illuminance, AbsorbedDose, \
+                     AngularVelocity, DynamicViscosity, Dimensionless",
                     other
                 ))
                 .with_label(DiagnosticLabel::new(
@@ -347,6 +374,7 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "Int" => Some(Type::Int),
         "Real" => Some(Type::Real),
         "String" => Some(Type::String),
+        // SI base dimensions
         "Length" => Some(Type::Scalar {
             dimension: DimensionVector::LENGTH,
         }),
@@ -362,17 +390,79 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "Temperature" => Some(Type::Scalar {
             dimension: DimensionVector::TEMPERATURE,
         }),
+        "AmountOfSubstance" => Some(Type::Scalar {
+            dimension: DimensionVector::AMOUNT_OF_SUBSTANCE,
+        }),
+        "LuminousIntensity" => Some(Type::Scalar {
+            dimension: DimensionVector::LUMINOUS_INTENSITY,
+        }),
         "Angle" => Some(Type::Scalar {
             dimension: DimensionVector::ANGLE,
         }),
+        "SolidAngle" => Some(Type::Scalar {
+            dimension: DimensionVector::SOLID_ANGLE,
+        }),
+        // Geometric derived dimensions
         "Area" => Some(Type::Scalar {
             dimension: DimensionVector::AREA,
         }),
         "Volume" => Some(Type::Scalar {
             dimension: DimensionVector::VOLUME,
         }),
+        // SI derived dimensions
         "Force" => Some(Type::Scalar {
-            dimension: reify_types::dimension::FORCE,
+            dimension: DimensionVector::FORCE,
+        }),
+        "Energy" => Some(Type::Scalar {
+            dimension: DimensionVector::ENERGY,
+        }),
+        "Power" => Some(Type::Scalar {
+            dimension: DimensionVector::POWER,
+        }),
+        "Pressure" => Some(Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        }),
+        "Frequency" => Some(Type::Scalar {
+            dimension: DimensionVector::FREQUENCY,
+        }),
+        "Voltage" => Some(Type::Scalar {
+            dimension: DimensionVector::VOLTAGE,
+        }),
+        "Charge" => Some(Type::Scalar {
+            dimension: DimensionVector::CHARGE,
+        }),
+        "Capacitance" => Some(Type::Scalar {
+            dimension: DimensionVector::CAPACITANCE,
+        }),
+        "Resistance" => Some(Type::Scalar {
+            dimension: DimensionVector::RESISTANCE,
+        }),
+        "Conductance" => Some(Type::Scalar {
+            dimension: DimensionVector::CONDUCTANCE,
+        }),
+        "Inductance" => Some(Type::Scalar {
+            dimension: DimensionVector::INDUCTANCE,
+        }),
+        "MagneticFlux" => Some(Type::Scalar {
+            dimension: DimensionVector::MAGNETIC_FLUX,
+        }),
+        "MagneticFluxDensity" => Some(Type::Scalar {
+            dimension: DimensionVector::MAGNETIC_FLUX_DENSITY,
+        }),
+        "LuminousFlux" => Some(Type::Scalar {
+            dimension: DimensionVector::LUMINOUS_FLUX,
+        }),
+        "Illuminance" => Some(Type::Scalar {
+            dimension: DimensionVector::ILLUMINANCE,
+        }),
+        "AbsorbedDose" => Some(Type::Scalar {
+            dimension: DimensionVector::ABSORBED_DOSE,
+        }),
+        "AngularVelocity" => Some(Type::Scalar {
+            dimension: DimensionVector::ANGULAR_VELOCITY,
+        }),
+        "DynamicViscosity" => Some(Type::Scalar {
+            dimension: DimensionVector::DYNAMIC_VISCOSITY,
         }),
         "Dimensionless" => Some(Type::Scalar {
             dimension: DimensionVector::DIMENSIONLESS,
