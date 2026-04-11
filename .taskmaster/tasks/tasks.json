@@ -4772,7 +4772,7 @@
         "id": 251,
         "title": "Ad-hoc port selectors: tests",
         "description": ">=15 tests: @face with named face, @point with coordinates, @edge, connect with ad-hoc ports generates frame constraints, selector failure -> undef, unknown selector error, @face on entity without geometry, ad-hoc port in forall quantifier.",
-        "details": "",
+        "details": "<info added on 2026-04-11T21:08:33.510Z>\nDESIGN DECISION REQUIRED — DO NOT ASSIGN TO ORCHESTRATOR: CompiledAdHocPort does not exist in the codebase; assignment must await user design decision on struct shape and geometry query mapping.\n</info added on 2026-04-11T21:08:33.510Z>",
         "testStrategy": ">=15 tests.",
         "priority": "high",
         "dependencies": [
@@ -4789,7 +4789,8 @@
           "files": [
             "crates/reify-eval/tests/connect_eval.rs",
             "crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs"
-          ]
+          ],
+          "_causation_id": "283e1c40-9b29-4c7b-aec9-d9c466f74095"
         },
         "subtasks": [],
         "updatedAt": "2026-04-11T06:51:56.268Z"
