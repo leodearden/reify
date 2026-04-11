@@ -30051,11 +30051,11 @@
         "description": "Two improvements: (1) tests/infra/test_sync_comments_grep.sh: add accept test for `pub(crate) const unsafe fn sanitize_value(` to cover the full visibility+multi-qualifier combination path. (2) tests/sync_comments_test.sh:48: add comment above the grep pattern explaining the qualifier order mirrors Rust grammar: const → unsafe → async → fn.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T02:23:00.948Z",
+        "updatedAt": "2026-04-11T06:14:29.170Z",
         "metadata": {
           "modules": [
             "tests/infra/sync_ref_helpers.sh",
@@ -33017,7 +33017,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T06:14:26.170Z",
+      "lastModified": "2026-04-11T06:14:29.170Z",
       "taskCount": 1621,
       "completedCount": 1271,
       "tags": [
