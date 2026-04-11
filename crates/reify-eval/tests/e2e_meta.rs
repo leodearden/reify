@@ -383,7 +383,22 @@ fn e2e_meta_access_no_meta_block() {
         }
     "#;
 
-    parse_compile_expect_err(source, "meta");
+    let compiled = parse_compile_expect_err(source, "entity has no meta block");
+    // Mutual-exclusion guard: the no-meta-block path must NOT produce the
+    // missing-key error.  If both appear (or the wrong one appears), a future
+    // compiler regression would otherwise stay hidden.
+    let counter_phrase = "meta block has no key";
+    let false_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains(counter_phrase))
+        .collect();
+    assert!(
+        false_errors.is_empty(),
+        "unexpected counter-path error ({:?}) in no-meta-block test: {:?}",
+        counter_phrase,
+        false_errors
+    );
 }
 
 // ---------------------------------------------------------------------------
