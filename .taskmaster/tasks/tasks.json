@@ -32658,11 +32658,11 @@
         "description": "Two improvements in tests/infra/test_sync_comments_grep.sh: (1) Lines 60-66: add a second self-check assertion that greps for double-quoted bash -c lines containing $SYNC_TEST, $SYNC_REF_HELPERS, or $_SECT3_HELPER — enforces the single-quoted hardening convention for Sections 2/3 (currently only Section 1 is guarded). (2) Lines 189-195: extend comment to note that sourcing SYNC_TEST executes its top-level assertions as a side effect, and they must be non-fatal for the meta-tests to work. Consider follow-up to wrap sync_comments_test.sh assertions in a main() function.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:05:28.921Z",
+        "updatedAt": "2026-04-11T11:31:13.626Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh"
@@ -33481,7 +33481,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T11:31:13.047Z",
+      "lastModified": "2026-04-11T11:31:13.626Z",
       "taskCount": 1629,
       "completedCount": 1280,
       "tags": [
