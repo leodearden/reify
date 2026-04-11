@@ -29044,7 +29044,13 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix misleading conformance diagnostic + add let-trait coverage test"
+            ]
+          }
         }
       },
       {
@@ -29053,11 +29059,11 @@
         "description": "The ICE diagnostic pattern (format ICE message + DiagnosticLabel + push + fallback to Type::Real) is repeated nearly identically across four sites:\n- entity.rs:534-546 (structure param pass 2 resolution)\n- entity.rs:877-889 (port param pass 2 resolution)\n- guards.rs:269-281 (guarded member pass 2 resolution)\n\nAll share the same structure: \"internal compiler error: unresolved name '...' in pass 2\" with label \"ICE: name should have been registered in pass 1\".\n\nExtract a helper like `fn emit_ice_unresolved(diagnostics: &mut Vec<Diagnostic>, name: &str, span: Span, context: &str) -> Type` that pushes the ICE diagnostic and returns `Type::Real`. This reduces ~12 lines per site to 1 and centralizes the ICE format.\n\nmemory_hints: search(\"ICE diagnostic pattern entity guards unresolved pass 2\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:09:10.202Z",
+        "updatedAt": "2026-04-11T07:21:39.675Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -33848,12 +33854,20 @@
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:21:37.820Z"
+        "updatedAt": "2026-04-11T07:21:37.820Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Refactor compile_geometry_op rejection tests: helper + NaN assert + revolve dedup"
+            ]
+          }
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:37.820Z",
+      "lastModified": "2026-04-11T07:21:39.675Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
