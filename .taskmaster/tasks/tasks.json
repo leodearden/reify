@@ -32880,16 +32880,22 @@
         "description": "Three small follow-ups from task 838 refactor: (1) Delete 7 verbatim-duplicate tests from gui/src-tauri/src/tests/engine_tests.rs (~lines 1312-1510) that now duplicate reify-types/src/source_location.rs tests (basic_conversion, empty_source, offset_beyond_len, offset_beyond_len_release, multibyte_chars, at_source_len, returns_one_based_columns). (2) Add debug_assert!(line <= u32::MAX as usize) guards at the 6 usize→u32 cast sites in crates/reify-cli/src/mcp_context.rs (~lines 160-161, 300-301, 316-317). (3) Convert 2 intra-doc links in gui/src-tauri/src/engine.rs (~lines 832, 845) from bracket-link [`reify_types::byte_offset_to_line_col`] to plain-text references — cross-crate links from pub(crate) items may not resolve.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T01:20:17.626Z",
+        "updatedAt": "2026-04-11T01:20:34.905Z",
         "metadata": {
           "modules": [
             "crates/reify-cli/src",
             "gui/src-tauri/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: byte_offset_to_line_col post-refactor cleanup"
+            ]
+          }
         }
       },
       {
@@ -33011,9 +33017,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T01:20:17.634Z",
+      "lastModified": "2026-04-11T01:20:34.906Z",
       "taskCount": 1621,
-      "completedCount": 1267,
+      "completedCount": 1268,
       "tags": [
         "master"
       ]
