@@ -30415,11 +30415,11 @@
         "description": "The existing test `sub_member_type_resolves_without_ice` only covers collection subs (List<Inner>). The sub_member_types lookup change at expr.rs:1508 was specifically to fix non-collection sub instance qualified access, but there is no test proving a non-collection sub's `self.sub.(Trait::member)` resolves its type correctly without an ICE.\n\nAdd a test case with a non-collection sub that uses instance qualified access (e.g., `self.motor.(PowerTrait::output)` where `motor` is a plain sub, not a collection) to prove the fix works and prevent regression.\n\nMemory hints: search \"sub_member_type_resolves_without_ice test collection sub\" for the existing test pattern.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T02:27:50.401Z",
+        "updatedAt": "2026-04-11T07:20:31.272Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -33406,7 +33406,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:30.128Z",
+      "lastModified": "2026-04-11T07:20:31.273Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
