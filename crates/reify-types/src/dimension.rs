@@ -331,6 +331,89 @@ mod tests {
     }
 
     #[test]
+    fn all_new_derived_dimensions_have_correct_exponents() {
+        // Helper: build a DimensionVector from (index, exponent) pairs.
+        let make = |entries: &[(usize, i16)]| {
+            let mut v = [Rational::ZERO; 9];
+            for (i, e) in entries {
+                v[*i] = Rational::new(*e, 1);
+            }
+            DimensionVector(v)
+        };
+
+        // Base-dimension constants that must exist.
+        assert_eq!(DimensionVector::AMOUNT_OF_SUBSTANCE, make(&[(5, 1)]));
+        assert_eq!(DimensionVector::LUMINOUS_INTENSITY, make(&[(6, 1)]));
+        assert_eq!(DimensionVector::SOLID_ANGLE, make(&[(8, 1)]));
+
+        // Derived-dimension constants.
+        // Frequency: s⁻¹
+        assert_eq!(DimensionVector::FREQUENCY, make(&[(2, -1)]));
+        // Energy: kg·m²·s⁻²
+        assert_eq!(DimensionVector::ENERGY, make(&[(0, 2), (1, 1), (2, -2)]));
+        // Power: kg·m²·s⁻³
+        assert_eq!(DimensionVector::POWER, make(&[(0, 2), (1, 1), (2, -3)]));
+        // Pressure: kg·m⁻¹·s⁻²
+        assert_eq!(DimensionVector::PRESSURE, make(&[(0, -1), (1, 1), (2, -2)]));
+        // Voltage: kg·m²·s⁻³·A⁻¹
+        assert_eq!(
+            DimensionVector::VOLTAGE,
+            make(&[(0, 2), (1, 1), (2, -3), (3, -1)])
+        );
+        // Charge: s·A
+        assert_eq!(DimensionVector::CHARGE, make(&[(2, 1), (3, 1)]));
+        // Capacitance: kg⁻¹·m⁻²·s⁴·A²
+        assert_eq!(
+            DimensionVector::CAPACITANCE,
+            make(&[(0, -2), (1, -1), (2, 4), (3, 2)])
+        );
+        // Resistance: kg·m²·s⁻³·A⁻²
+        assert_eq!(
+            DimensionVector::RESISTANCE,
+            make(&[(0, 2), (1, 1), (2, -3), (3, -2)])
+        );
+        // Conductance: kg⁻¹·m⁻²·s³·A²
+        assert_eq!(
+            DimensionVector::CONDUCTANCE,
+            make(&[(0, -2), (1, -1), (2, 3), (3, 2)])
+        );
+        // Inductance: kg·m²·s⁻²·A⁻²
+        assert_eq!(
+            DimensionVector::INDUCTANCE,
+            make(&[(0, 2), (1, 1), (2, -2), (3, -2)])
+        );
+        // Magnetic flux: kg·m²·s⁻²·A⁻¹
+        assert_eq!(
+            DimensionVector::MAGNETIC_FLUX,
+            make(&[(0, 2), (1, 1), (2, -2), (3, -1)])
+        );
+        // Magnetic flux density: kg·s⁻²·A⁻¹
+        assert_eq!(
+            DimensionVector::MAGNETIC_FLUX_DENSITY,
+            make(&[(1, 1), (2, -2), (3, -1)])
+        );
+        // Luminous flux: cd·sr
+        assert_eq!(DimensionVector::LUMINOUS_FLUX, make(&[(6, 1), (8, 1)]));
+        // Illuminance: cd·sr·m⁻²
+        assert_eq!(
+            DimensionVector::ILLUMINANCE,
+            make(&[(0, -2), (6, 1), (8, 1)])
+        );
+        // Absorbed dose: m²·s⁻²
+        assert_eq!(DimensionVector::ABSORBED_DOSE, make(&[(0, 2), (2, -2)]));
+        // Angular velocity: rad·s⁻¹
+        assert_eq!(
+            DimensionVector::ANGULAR_VELOCITY,
+            make(&[(2, -1), (7, 1)])
+        );
+        // Dynamic viscosity: kg·m⁻¹·s⁻¹
+        assert_eq!(
+            DimensionVector::DYNAMIC_VISCOSITY,
+            make(&[(0, -1), (1, 1), (2, -1)])
+        );
+    }
+
+    #[test]
     fn content_hash_determinism() {
         assert_eq!(
             DimensionVector::LENGTH.content_hash(),
