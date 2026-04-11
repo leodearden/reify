@@ -10071,7 +10071,13 @@
           ],
           "modules": [
             "crates/reify-eval"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Eliminate redundant computation in evaluate_let_bindings"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:20:45.297Z"
       },
@@ -10081,7 +10087,7 @@
         "description": "Add explanatory comment on merged Analytical|Composed match arm, document values/snapshot_values invariant, rename/strengthen no_quadratic_clone test, consolidate guard loops",
         "details": "1. crates/reify-eval/src/lib.rs: Add comment on merged Analytical|Composed match arm explaining why they share evaluation path\n2. crates/reify-runtime/src/concurrent_eval.rs: Document values/snapshot_values invariant in edit_check_concurrent\n3. crates/reify-runtime/tests/concurrent_eval.rs: Rename concurrent_eval_large_graph_no_quadratic_clone to concurrent_eval_100_node_chain_correctness (or add allocation/timing guard)\n4. crates/reify-eval/src/lib.rs lines 1561-1594: Consolidate guard member/else_member loops in edit_param re-elaboration to use the same `for (cells, is_active) in [...]` pattern\n\nFrom review of task 397 (esc-397-121).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10096,7 +10102,7 @@
             "crates/reify-runtime"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:20:47.731Z"
       },
       {
         "id": "472",
@@ -26598,7 +26604,13 @@
           "files": [
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-types/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Resolve @test-on-function half-support"
+            ]
+          }
         }
       },
       {
@@ -32539,7 +32551,13 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add compile_project-level test for stdlib unit collision path"
+            ]
+          }
         }
       },
       {
@@ -33489,7 +33507,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:45.318Z",
+      "lastModified": "2026-04-11T07:20:47.731Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
