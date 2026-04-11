@@ -584,6 +584,16 @@ fn init_work_buffers(
 ///
 /// After the call (when `single_point_param` is true), `work_point.len() == n`.
 /// A `debug_assert_eq!` enforces this in debug builds.
+///
+/// # Performance
+///
+/// `std::mem::take` transfers ownership of `work_point`'s inner Vec into
+/// `work_args` without any allocation, avoiding the per-axis `.collect()`
+/// that would otherwise rebuild the inner Vec from scratch each call.
+/// However, `apply_lambda` still clones the Vec once per evaluation when
+/// populating its `eval_map` via `eval_map.insert(id.clone(), arg.clone())`,
+/// so the savings are roughly halving inner-Vec allocations rather than
+/// reducing to O(1) overall.
 #[allow(clippy::too_many_arguments)]
 fn eval_perturbed_point<F: Fn(f64) -> Value>(
     lambda: &Value,
@@ -605,6 +615,9 @@ fn eval_perturbed_point<F: Fn(f64) -> Value>(
     work_args.clear();
     if single_point_param {
         // Update only the perturbed element; transfer ownership via take.
+        // Note: apply_lambda still clones the Vec once per eval when populating
+        // its eval_map, so the savings are roughly halving inner-Vec allocations,
+        // not reducing to O(1) overall.
         work_point[i] = make_arg(work_coords[i]);
         work_args.push(Value::Point(std::mem::take(work_point)));
     } else {
