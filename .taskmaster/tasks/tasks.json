@@ -11456,7 +11456,13 @@
           ],
           "modules": [
             "crates/reify-eval"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add parametric tests for all required revolve args in compile_geometry_op"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:21:17.070Z"
       },
@@ -27922,7 +27928,13 @@
           ],
           "files": [
             "crates/reify-compiler/tests/termination_check_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Rename misleading test recursive_sub_inside_block_guard_no_error"
+            ]
+          }
         }
       },
       {
@@ -33410,7 +33422,13 @@
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Simplify gradient_result_type, consolidate result_type helpers, fix misleading doc"
+            ]
+          }
         }
       },
       {
@@ -33419,11 +33437,11 @@
         "description": "In crates/reify-expr/tests/field_calculus_tests.rs, run_dim_metadata_test (~line 542) manually constructs Value::Field + Type::Field (~lines 574-586) instead of calling make_analytical_field. Add a source parameter to make_analytical_field (or create make_field_with_source variant) to support non-Analytical sources, then replace the inline construction in run_dim_metadata_test.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T17:13:55.244Z",
+        "updatedAt": "2026-04-11T07:21:18.387Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -33702,7 +33720,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:17.071Z",
+      "lastModified": "2026-04-11T07:21:18.387Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
