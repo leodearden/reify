@@ -33581,7 +33581,16 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "reify-compiler"
+            ],
+            "queries": [
+              "format_f64_as_decimal si_units.rs large magnitude guard power of ten",
+              "stdlib_loader.rs SI unit registration error handling panic assert"
+            ]
+          }
         }
       }
     ],
