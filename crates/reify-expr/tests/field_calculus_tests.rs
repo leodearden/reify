@@ -589,7 +589,7 @@ fn run_dim_metadata_test(
     let expr = make_function_call(
         op,
         vec![CompiledExpr::literal(field, field_type)],
-        codomain_type,
+        expected_codomain.clone(),
     );
 
     // Evaluate with empty bindings.
