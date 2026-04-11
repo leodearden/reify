@@ -32954,7 +32954,7 @@
         "description": "Eight TODO comments in `crates/reify-lsp/src/completion.rs` (lines 759, 787, 821, 837, 887, 926, 1502, 1530) reference `task-2`, but task #2 is the OCCT FFI binding task — not a completion task. The actual position-sensitive completion tracking tasks are #481 (test-first) and #482 (implementation), both already DONE: `CursorContext`, `determine_context`, and the narrowing logic are all implemented in completion.rs and used by `compute_completions`.\n\nEach TODO says something like \"When position-sensitive filtering lands, verify these assertions still hold in StructureBody/Expression context.\" Since position-sensitive filtering HAS landed and tests are still passing at the listed positions (Position(1,0) is inside structure body, Position(7,17) is Expression context), the requested verification is implicitly complete.\n\nAction: remove the 8 stale `TODO(task-2)` comments from `crates/reify-lsp/src/completion.rs`. Spot-check that each test's position is consistent with the narrowing predicted by `determine_context` so removal is safe.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -32965,7 +32965,8 @@
           "modules": [
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-11T01:10:59.612Z"
       },
       {
         "id": "1620",
@@ -33010,7 +33011,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T01:10:57.892Z",
+      "lastModified": "2026-04-11T01:10:59.612Z",
       "taskCount": 1621,
       "completedCount": 1267,
       "tags": [
