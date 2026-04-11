@@ -12,7 +12,7 @@
 //!   4. User unit in quantity literal → SI   (test 1, multi-unit)
 //!   5. Unit with compound dimension         (tests 2)
 
-use reify_compiler::{CompiledModule, compile, compile_with_prelude};
+use reify_compiler::{CompiledModule, compile, compile_with_prelude, stdlib_loader};
 use reify_types::{DimensionVector, ModulePath, Severity};
 
 // ─── helpers ───────────────────────────────────────────────────────────────────
@@ -27,22 +27,22 @@ fn parse_and_compile(source: &str) -> CompiledModule {
     compile(&parsed)
 }
 
-fn compile_with_prelude_helper(source: &str, prelude: &[CompiledModule]) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile_with_prelude(&parsed, prelude)
-}
-
 fn errors_only(module: &CompiledModule) -> Vec<&reify_types::Diagnostic> {
     module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect()
+}
+
+fn compile_with_stdlib_helper(source: &str) -> CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    compile_with_prelude(&parsed, stdlib_loader::load_stdlib())
 }
 
 // ─── category 1: basic unit declaration ───────────────────────────────────────
@@ -236,6 +236,164 @@ fn custom_unit_with_compound_dimension_force() {
 }
 
 #[test]
+fn negative_factor_unit_in_quantity_literal() {
+    // unit neg_m : Length = 0 - 0.5  → factor = -0.5.
+    // 10neg_m → si_value = 10 * (-0.5) = -5.0 m.
+    // unit_registry_tests.rs::valid_negative_factor_still_compiles verifies the
+    // negative factor is registered, but no existing test verifies it is applied
+    // correctly in a runtime quantity literal.
+    let module = parse_and_compile(
+        "unit neg_m : Length = 0 - 0.5\n\
+         structure S { param x : Length = 10neg_m }",
+    );
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "neg_m")
+        .expect("unit 'neg_m' not found in module.units");
+    assert!(
+        (unit.factor - (-0.5)).abs() < 1e-12,
+        "neg_m factor should be ≈-0.5, got {}",
+        unit.factor
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template 'S' not found");
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "x")
+        .expect("value cell 'x' not found");
+    if let Some(expr) = &x_cell.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, dimension, ..
+        }) = &expr.kind
+        {
+            assert!(
+                (si_value - (-5.0)).abs() < 1e-12,
+                "10neg_m should be ≈-5.0 m, got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "10neg_m quantity literal should carry LENGTH dimension"
+            );
+        } else {
+            panic!("expected scalar literal for 'x', got {:?}", expr.kind);
+        }
+    } else {
+        panic!("value cell 'x' has no default_expr");
+    }
+}
+
+#[test]
+fn compound_dimension_volume_unit_in_quantity_literal() {
+    // mm3: Volume = 1e-9 m³;  5mm3 → si_value = 5 * 1e-9 = 5e-9 m³.
+    // Covers the Volume compound dimension in a quantity literal — not exercised
+    // by any existing test in unit_registry_tests.rs or unit_declaration_tests.rs.
+    let module = parse_and_compile(
+        "unit mm3 : Volume = 0.000000001\n\
+         structure S { param v : Volume = 5mm3 }",
+    );
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    // Unit-table entry
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "mm3")
+        .expect("unit 'mm3' not found in module.units");
+    assert_eq!(unit.dimension, DimensionVector::VOLUME, "mm3 should have VOLUME dimension");
+
+    // Quantity-literal scalar value
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template 'S' not found");
+    let v_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "v")
+        .expect("value cell 'v' not found");
+    if let Some(expr) = &v_cell.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, dimension, ..
+        }) = &expr.kind
+        {
+            assert!(
+                (si_value - 5e-9).abs() < 1e-15,
+                "5mm3 should be ≈5e-9 m³, got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::VOLUME,
+                "5mm3 quantity literal should carry VOLUME dimension"
+            );
+        } else {
+            panic!("expected scalar literal for 'v', got {:?}", expr.kind);
+        }
+    } else {
+        panic!("value cell 'v' has no default_expr");
+    }
+}
+
+#[test]
+fn custom_unit_with_compound_dimension_force_in_quantity_literal() {
+    // kN: Force = 1000 N (SI = kg·m·s⁻²);  2kN → si_value = 2 * 1000 = 2000 N.
+    // Extends custom_unit_with_compound_dimension_force (which only checks the
+    // unit-table entry) by verifying the full quantity-literal-to-scalar pipeline
+    // including the dimension carried by the compiled scalar value.
+    let module = parse_and_compile(
+        "unit kN : Force = 1000\n\
+         structure S { param f : Force = 2kN }",
+    );
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template 'S' not found");
+    let f_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "f")
+        .expect("value cell 'f' not found");
+    if let Some(expr) = &f_cell.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, dimension, ..
+        }) = &expr.kind
+        {
+            assert!(
+                (si_value - 2000.0).abs() < 1e-9,
+                "2kN should be ≈2000.0 N (SI), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                reify_types::dimension::FORCE,
+                "2kN quantity literal should carry FORCE dimension"
+            );
+        } else {
+            panic!("expected scalar literal for 'f', got {:?}", expr.kind);
+        }
+    } else {
+        panic!("value cell 'f' has no default_expr");
+    }
+}
+
+#[test]
 fn custom_unit_with_compound_dimension_area_in_quantity_literal() {
     // cm2: Area = 0.0001 m²;  50cm2 → si_value = 50 * 0.0001 = 0.005 m².
     // Exercises the full pipeline for a compound-dimension custom unit used in
@@ -271,7 +429,7 @@ fn custom_unit_with_compound_dimension_area_in_quantity_literal() {
         .expect("value cell 'a' not found");
     if let Some(expr) = &a_cell.default_expr {
         if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
+            si_value, dimension, ..
         }) = &expr.kind
         {
             assert!(
@@ -279,10 +437,48 @@ fn custom_unit_with_compound_dimension_area_in_quantity_literal() {
                 "50cm2 should be ≈0.005 m², got {}",
                 si_value
             );
+            assert_eq!(
+                *dimension,
+                DimensionVector::AREA,
+                "50cm2 quantity literal should carry AREA dimension"
+            );
         } else {
             panic!("expected scalar literal for 'a', got {:?}", expr.kind);
         }
     } else {
         panic!("value cell 'a' has no default_expr");
     }
+}
+
+// ─── category 6: stdlib cross-reference (angle via deg) ───────────────────────
+
+#[test]
+fn user_defined_angle_unit_via_stdlib_deg() {
+    // Declares `unit quarter_turn : Angle = 90deg` with the stdlib prelude seeded
+    // so that `deg` (factor = PI/180) is already in the registry.
+    // Expected: quarter_turn.factor ≈ 90 * (PI/180) = PI/2 ≈ 1.5707963267948966.
+    // unit_registry_tests.rs::prelude_unit_resolves_in_unit_conversion_expr
+    // covers the same cross-registry path for the Length/mm variant; this test
+    // extends coverage to the affine-free Angle dimension via stdlib deg.
+    let module = compile_with_stdlib_helper("unit quarter_turn : Angle = 90deg");
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "quarter_turn")
+        .expect("unit 'quarter_turn' not found in module.units");
+    assert_eq!(
+        unit.dimension,
+        DimensionVector::ANGLE,
+        "quarter_turn should have ANGLE dimension"
+    );
+    let expected = 90.0 * std::f64::consts::PI / 180.0; // PI/2
+    assert!(
+        (unit.factor - expected).abs() < 1e-12,
+        "quarter_turn factor should be ≈{} (PI/2), got {}",
+        expected,
+        unit.factor
+    );
+    assert!(unit.offset.is_none(), "quarter_turn should have no offset");
 }
