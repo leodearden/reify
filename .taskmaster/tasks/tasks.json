@@ -33369,7 +33369,18 @@
           ],
           "modules": [
             "crates/reify-lsp/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "CursorContext",
+              "reify-lsp"
+            ],
+            "queries": [
+              "determine_context completion cursor context reify-lsp",
+              "CursorContext DotAccess TypePosition TopLevel variants",
+              "completion test helper pattern reify-lsp"
+            ]
+          }
         }
       },
       {
