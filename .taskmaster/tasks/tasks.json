@@ -7176,7 +7176,7 @@
           "330",
           "343"
         ],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
@@ -7192,7 +7192,7 @@
         },
         "subtasks": [],
         "details": "Two tests: (1) patterns — pattern of patterns, count=0/1, 10×10 grid, pattern+union_all; (2) large_assembly — 50+ structures with geometry+material+ports, computed mass propagation, simulation_ready purpose. Target: <5s eval.",
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:53.926Z"
       },
       {
         "id": "348",
@@ -7587,11 +7587,11 @@
         "description": "Type::Real used as sentinel for \"no annotation\" in DefaultKind::Let (lib.rs:4271-4277). Explicitly-annotated `: Real` is indistinguishable from unannotated. Change cell_type to Option&lt;Type&gt; to disambiguate.\n\nMemory hints: search \"DefaultKind Let cell_type Type::Real sentinel\", entities: DefaultKind, compile_traits",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T07:37:18.006Z",
+        "updatedAt": "2026-04-11T07:19:54.046Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -21228,7 +21228,13 @@
           ],
           "modules": [
             "crates/reify-compiler"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: SCC test improvements: extract cycle_warnings helper, strengthen assertions, remove redundant test"
+            ]
+          }
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
       },
@@ -29094,7 +29100,13 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix misleading 'stdlib prelude' wording in duplicate-unit diagnostic"
+            ]
+          }
         }
       },
       {
@@ -33179,7 +33191,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:52.582Z",
+      "lastModified": "2026-04-11T07:19:54.046Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
