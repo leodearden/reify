@@ -152,8 +152,8 @@ fn run_tests_propagates_violation_diagnostics() {
         results[0]
             .diagnostics
             .iter()
-            .any(|d| d.severity == Severity::Error && d.message.contains("Positive[0]") && (d.message.contains("violated") || d.message.contains("constraint"))),
-        "expected at least one Error diagnostic with message containing 'Positive[0]' and one of 'violated'/'constraint', got: {:?}",
+            .any(|d| d.severity == Severity::Error && d.message.contains("Positive[0]") && (d.message.contains("violated") && d.message.contains("constraint"))),
+        "expected at least one Error diagnostic with message containing 'Positive[0]', 'violated', and 'constraint', got: {:?}",
         results[0].diagnostics
     );
 }
