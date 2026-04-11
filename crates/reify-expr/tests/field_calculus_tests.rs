@@ -649,7 +649,7 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
                         si_value: v,
                         dimension: *dimension,
                     },
-                    _ => Value::Real(v),
+                    other => panic!("make_sample_point: unsupported quantity type in Point: {:?}", other),
                 })
                 .collect();
             (Value::Point(comps), domain.clone())
@@ -670,6 +670,16 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
 #[should_panic(expected = "make_sample_point: Point domain only supports")]
 fn make_sample_point_panics_when_point_arity_exceeds_three() {
     let domain = Type::Point { n: 4, quantity: Box::new(Type::Real) };
+    let _ = make_sample_point(&domain);
+}
+
+#[test]
+#[should_panic(expected = "unsupported quantity type in Point")]
+fn make_sample_point_panics_on_unsupported_quantity_in_point() {
+    let domain = Type::Point {
+        n: 2,
+        quantity: Box::new(Type::Vector { n: 2, quantity: Box::new(Type::Real) }),
+    };
     let _ = make_sample_point(&domain);
 }
 
