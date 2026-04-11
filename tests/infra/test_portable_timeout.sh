@@ -50,7 +50,21 @@ _build_posix_fallback_env() {
     printf '    source "$LIB_PORTABLE"\n'
 }
 
+# -- Shared regex: canonical 'kill -- -$cmd_pid' form -------------------------
+# Used by Test 22 (structural assertion: no non-comment line in LIB_PORTABLE uses
+# this form) and by Test 22b (meta-assertions validating match/reject semantics).
+# Single-quoted to preserve the backslash-dollar literal; grep -E sees \$ as a
+# literal dollar sign (matching the unquoted $cmd_pid in the shell text).
+KILL_CMD_PID_RE='kill[[:space:]]+--[[:space:]]+"?-\$cmd_pid'
+
 echo "=== portable_timeout unit tests ==="
+
+# -- Meta: KILL_CMD_PID_RE shared-setup constant is declared ------------------
+# Verifies the shared regex variable is set before any test that uses it.
+# KILL_CMD_PID_RE is used by Test 22 (structural assertion against LIB_PORTABLE)
+# and by Test 22b (meta-assertions validating the regex's discrimination semantics).
+assert "KILL_CMD_PID_RE variable is declared (shared by Test 22 structural assertion and Test 22b meta-assertions)" \
+    env KILL_CMD_PID_RE="${KILL_CMD_PID_RE:-}" bash -c '[ -n "$KILL_CMD_PID_RE" ]'
 
 # -- Test 1: portable_timeout is defined after sourcing -----------------------
 echo ""
@@ -646,7 +660,7 @@ assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)
 # cannot match the intervening '-9' — no prefix anchor is needed.
 # Comment lines are excluded first to avoid false matches on inline documentation.
 assert "no line uses the canonical kill -- -\$cmd_pid form (quoted or unquoted)" \
-    bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
+    env KILL_CMD_PID_RE="$KILL_CMD_PID_RE" bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "$KILL_CMD_PID_RE"' _ "$LIB_PORTABLE"
 
 # -- Test 22b (meta): simplified kill regex discrimination semantics -----------
 echo ""
@@ -656,10 +670,10 @@ echo "--- Test 22b (meta): simplified kill regex matches/rejects correctly ---"
 # matches 'kill -- -$cmd_pid' and correctly rejects 'kill -9 -- -$cmd_pid'.
 # Self-contained; does not depend on lib_portable.sh content.
 assert "simplified kill regex matches canonical kill -- -\$cmd_pid" \
-    bash -c 'printf "%s\n" "kill -- -\$cmd_pid" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"'
+    env KILL_CMD_PID_RE="$KILL_CMD_PID_RE" bash -c 'printf "%s\n" "kill -- -\$cmd_pid" | grep -qE "$KILL_CMD_PID_RE"'
 
 assert "simplified kill regex rejects kill -9 -- -\$cmd_pid" \
-    bash -c '! printf "%s\n" "kill -9 -- -\$cmd_pid" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"'
+    env KILL_CMD_PID_RE="$KILL_CMD_PID_RE" bash -c '! printf "%s\n" "kill -9 -- -\$cmd_pid" | grep -qE "$KILL_CMD_PID_RE"'
 
 # -- Test 23: structural: both timer subshells quote the PGID argument (S1) ---
 echo ""
@@ -715,16 +729,15 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
         func_text=$(declare -f portable_timeout)
         case "$func_text" in
             *"local _pt_kill_grace=2"*) ;;
-            *) echo "SANITY FAIL: local _pt_kill_grace=2 not found in portable_timeout" >&2; exit 1 ;;
+            *) exit 2 ;;  # sanity: local _pt_kill_grace=2 missing from portable_timeout
         esac
         # Count-exactly-1 check: bash ${var/pat/repl} replaces only the first
         # occurrence, so a second local _pt_kill_grace=2 in portable_timeout
         # would silently leave the default in place at runtime (the later
         # local declaration overrides the first).  Fail loudly here with a
         # clear count instead of a mysterious timing failure below.
-        # Uses the grep -cF <<< idiom validated by Test 24c.
         _pt_grace_count=$(grep -cF "local _pt_kill_grace=2" <<< "$func_text")
-        [ "$_pt_grace_count" -eq 1 ] || { echo "SANITY FAIL: expected exactly 1 occurrence of local _pt_kill_grace=2, found $_pt_grace_count" >&2; exit 1; }
+        [ "$_pt_grace_count" -eq 1 ] || exit 2  # sanity: expected exactly 1 occurrence of local _pt_kill_grace=2
         eval "${func_text/local _pt_kill_grace=2/local _pt_kill_grace=5}"
 
         t_start=$("$_abs_date" +%s)
@@ -734,20 +747,13 @@ assert "behavioral: _pt_kill_grace=5 override causes >=5s elapsed (SIGKILL path)
         [ "$gap" -ge 5 ]
     '
 
-# -- Test 24c (meta): grep -cF count distinguishes 1- vs 2-occurrence inputs --
-echo ""
-echo "--- Test 24c (meta): grep -cF count correctly distinguishes 1 vs 2 occurrences ---"
-
-# Verifies the 'grep -cF "local _pt_kill_grace=2" <<< $var' idiom used by
-# the Test 24b uniqueness guard correctly reports 1 for a single occurrence
-# and 2 for two occurrences.  Self-contained; does not depend on lib_portable.sh.
-_pt_single=$'portable_timeout ()\n{\n    local _pt_kill_grace=2\n    echo done\n}'
-assert "grep -cF count == 1 for single occurrence of 'local _pt_kill_grace=2'" \
-    bash -c '[ "$(grep -cF "local _pt_kill_grace=2" <<< "$1")" -eq 1 ]' _ "$_pt_single"
-
-_pt_double=$'portable_timeout ()\n{\n    local _pt_kill_grace=2\n    local _pt_kill_grace=2\n    echo done\n}'
-assert "grep -cF count == 2 for two occurrences of 'local _pt_kill_grace=2'" \
-    bash -c '[ "$(grep -cF "local _pt_kill_grace=2" <<< "$1")" -eq 2 ]' _ "$_pt_double"
+# -- Meta: Test 24c block is gone and Test 24b stale cross-reference removed --
+# (a) No comment line starting with '# -- Test 24c' (anchored to the header form)
+# (b) No comment line with the stale 'Uses the grep -cF <<< idiom' cross-ref
+#     (the original was: '# Uses the grep -cF <<< idiom validated by Test 24c.')
+assert "Test 24c block absent and stale cross-reference removed from Test 24b" \
+    bash -c '! grep -qE '"'"'^# -- Test 24c'"'"' "$1" && ! grep -qE '"'"'^[[:space:]]+# Uses the grep -cF <<< idiom'"'"' "$1"' \
+    _ "${BASH_SOURCE[0]}"
 
 # -- Test 24d (structural): all count-grep uses in this file include -cF ------
 echo ""
@@ -774,8 +780,9 @@ echo ""
 echo "--- Test 24e (meta): guard regex discriminates bare vs -cF correctly ---"
 
 # Verifies _24d_regex (assembled above) correctly matches a flagless count-grep
-# invocation and correctly rejects count-grep -cF.  Mirrors the Test 22b and
-# Test 24c meta-assertion shape: feed two synthetic inputs, assert discrimination.
+# invocation and correctly rejects count-grep -cF.  Mirrors the Test 22b
+# positive/negative meta-assertion shape: feed two synthetic inputs and assert
+# the regex discriminates correctly.
 #
 # Synthetic strings are assembled via printf to avoid placing any source
 # substring that the guard regex would detect in this source file.
@@ -787,6 +794,19 @@ assert "Test 24d regex matches flagless count-grep invocation" \
 # negative: count-grep -cF should NOT match
 assert "Test 24d regex does not match count-grep -cF invocation" \
     bash -c '! printf "%s%s\n" "grep" " -cF pattern" | grep -qE "$1"' _ "$_24d_regex"
+
+# -- Meta: Test 24b sanity failures use a distinct exit code (not the default) -
+# Both sanity checks must be updated so a precondition failure is distinguishable
+# from a normal assertion failure at the bash-c level. Each sanity call site is
+# guarded independently with grep -qF, so reverting either line alone still
+# fails loudly. The needle is assembled via bash string concatenation of two
+# halves (first half ends in 'ex', second half begins with 'it') so that the
+# assertion line itself does not contain the full distinct-code literal and
+# cannot self-match.
+assert "Test 24b sanity branch 1 (unmatched case) uses exit 2 distinct code" \
+    bash -c 'target="ex""it 2 ;;  # sanity: local"; grep -qF "$target" "$1"' _ "${BASH_SOURCE[0]}"
+assert "Test 24b sanity branch 2 (count check) uses exit 2 distinct code" \
+    bash -c 'target="|| ex""it 2  # sanity: expected"; grep -qF "$target" "$1"' _ "${BASH_SOURCE[0]}"
 
 # -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
 echo ""
