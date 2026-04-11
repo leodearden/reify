@@ -3104,12 +3104,12 @@ fn gradient_single_point_param_irrational_coords() {
     );
 }
 
-/// Regression test for the point_scratch (work_point) take/recover idiom across
+/// Regression test for the `work_point` take/recover idiom across
 /// all 3 axes, sampled at two distinct points.
 ///
-/// The single_point_param path uses a pre-allocated inner Vec (`point_scratch`,
-/// soon to be renamed `work_point`) that is transferred to `work_args` via
-/// `std::mem::take` and then recovered by popping the `Value::Point` back out.
+/// The single_point_param path uses a pre-allocated inner Vec (`work_point`)
+/// that is transferred to `work_args` via `std::mem::take` and then recovered
+/// by popping the `Value::Point` back out.
 /// This pattern runs for both f_plus and f_minus on every axis — 6 take/recover
 /// cycles per sample call on a 3D field.
 ///
