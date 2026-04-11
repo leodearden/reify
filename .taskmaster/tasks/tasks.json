@@ -4784,7 +4784,13 @@
             "crates/reify-eval/tests/connect_eval.rs",
             "crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs"
           ],
-          "_causation_id": "283e1c40-9b29-4c7b-aec9-d9c466f74095"
+          "_causation_id": "283e1c40-9b29-4c7b-aec9-d9c466f74095",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Ad-hoc port selectors: tests"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-11T21:08:38.249Z"
@@ -33599,7 +33605,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T21:07:52.860Z"
+        "updatedAt": "2026-04-11T21:07:52.860Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       }
     ],
     "metadata": {
