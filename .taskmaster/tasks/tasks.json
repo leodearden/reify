@@ -8769,13 +8769,13 @@
         "description": "CompilationScope stores UnitRegistry as *const UnitRegistry raw pointer (lib.rs:1099) to bypass lifetime constraints. All other registries are threaded as explicit parameters. Refactor to thread unit_registry as a &UnitRegistry parameter to compile_expr_guarded, and remove unit_registry_ptr, set_unit_registry, and lookup_unit_in_registry from CompilationScope.\n\nSource: review suggestions from esc-208-28 (task 208).",
         "details": "<info added on 2026-04-10T07:13:22.488Z>\nTask 208 has been successfully merged into the main branch with commits 3682b2082 and 6a9cbd02d. The UnitRegistry code from task 208 is now available on the main branch, allowing this task to proceed. Replace the unsafe raw *const UnitRegistry pointer in CompilationScope with a safe &UnitRegistry reference threading.\n</info added on 2026-04-10T07:13:22.488Z>",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [
           "208"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T20:15:31.506Z",
+        "updatedAt": "2026-04-11T07:20:11.516Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
@@ -29736,7 +29736,13 @@
           ],
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Delete redundant FailingExportMockGeometryKernel mock"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:20:10.137Z"
       },
@@ -33288,7 +33294,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:10.137Z",
+      "lastModified": "2026-04-11T07:20:11.516Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
