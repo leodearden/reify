@@ -6,8 +6,9 @@
 # Section 1 — fixture assertions — exercise the expected regex literal against
 #   synthetic strings and pass on any version of sync_comments_test.sh.
 # Section 2 — source-file consistency assertions — grep sync_comments_test.sh
-#   for the new pattern and the absence of \b; these are the TDD red→green
-#   driver that fails before the impl step and passes after.
+#   for the new pattern and the absence of \b; these originally served as the
+#   TDD red→green driver for the task 1309 impl step and now act as regression
+#   guards.
 
 set -euo pipefail
 
