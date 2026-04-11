@@ -1487,31 +1487,72 @@ mod tests {
         );
     }
 
-    /// Spot-check that representative (source, position) pairs resolve to every variant
-    /// of `CursorContext`. Complements the per-variant `determine_context_*` unit tests
-    /// by asserting the mapping in a single compact table and serves as a regression
-    /// guard against future refactors that silently break one of the branches.
+    /// Spot-check that one representative (source, position) pair per `CursorContext`
+    /// variant resolves to the expected context. Intentionally covers every variant of
+    /// the enum — including `DotAccess`, `TypePosition`, and `TopLevel` which also have
+    /// dedicated per-variant `determine_context_*` tests — so that this table acts as a
+    /// single compact regression guard for all branches simultaneously. The overlap with
+    /// per-variant tests is deliberate: it ensures no future refactor silently breaks one
+    /// branch without this table catching it.
     #[test]
     fn determine_context_at_sampled_positions() {
-        let check = |source: &str, pos: Position, label: &str, matcher: fn(&CursorContext) -> bool| {
+        let check = |source: &str,
+                     pos: Position,
+                     label: &str,
+                     matcher: fn(&CursorContext) -> bool| {
             let ctx = AnalysisContext::new(source, &test_uri());
             let result = determine_context(source, pos, &ctx);
             assert!(matcher(&result), "expected {} @ {:?}, got {:?}", label, pos, result);
         };
         // (a) bracket_source() @ Position(1,0) → StructureBody
-        check(reify_test_support::bracket_source(), Position::new(1, 0), "bracket_source/StructureBody", |r| matches!(r, CursorContext::StructureBody { .. }));
+        check(
+            reify_test_support::bracket_source(),
+            Position::new(1, 0),
+            "bracket_source/StructureBody",
+            |r| matches!(r, CursorContext::StructureBody { .. }),
+        );
         // (b) bracket_source() @ Position(7,17) → Expression
-        check(reify_test_support::bracket_source(), Position::new(7, 17), "bracket_source/Expression", |r| matches!(r, CursorContext::Expression { .. }));
+        check(
+            reify_test_support::bracket_source(),
+            Position::new(7, 17),
+            "bracket_source/Expression",
+            |r| matches!(r, CursorContext::Expression { .. }),
+        );
         // (c) occurrence def Joint source @ Position(1,0) → StructureBody
-        check("occurrence def Joint {\n    param diameter: Scalar = 10mm\n}", Position::new(1, 0), "Joint occurrence/StructureBody", |r| matches!(r, CursorContext::StructureBody { .. }));
+        check(
+            "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}",
+            Position::new(1, 0),
+            "Joint occurrence/StructureBody",
+            |r| matches!(r, CursorContext::StructureBody { .. }),
+        );
         // (d) guarded-group source @ Position(1,0) → StructureBody
-        check(GUARDED_GROUP_SOURCE, Position::new(1, 0), "guarded-group/StructureBody", |r| matches!(r, CursorContext::StructureBody { .. }));
+        check(
+            GUARDED_GROUP_SOURCE,
+            Position::new(1, 0),
+            "guarded-group/StructureBody",
+            |r| matches!(r, CursorContext::StructureBody { .. }),
+        );
         // (e) dot-access source @ Position(3,18) → DotAccess
-        check("structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}", Position::new(3, 18), "dot-access/DotAccess", |r| matches!(r, CursorContext::DotAccess));
+        check(
+            "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}",
+            Position::new(3, 18),
+            "dot-access/DotAccess",
+            |r| matches!(r, CursorContext::DotAccess),
+        );
         // (f) type-position source @ Position(1,13) → TypePosition
-        check("structure Foo {\n    param x: \n}", Position::new(1, 13), "type-position/TypePosition", |r| matches!(r, CursorContext::TypePosition));
+        check(
+            "structure Foo {\n    param x: \n}",
+            Position::new(1, 13),
+            "type-position/TypePosition",
+            |r| matches!(r, CursorContext::TypePosition),
+        );
         // (g) top-level source @ Position(3,0) → TopLevel
-        check("structure Foo {\n    param x: Scalar = 1mm\n}\n", Position::new(3, 0), "top-level/TopLevel", |r| matches!(r, CursorContext::TopLevel));
+        check(
+            "structure Foo {\n    param x: Scalar = 1mm\n}\n",
+            Position::new(3, 0),
+            "top-level/TopLevel",
+            |r| matches!(r, CursorContext::TopLevel),
+        );
     }
 
     // --- guarded-group completion tests ---
