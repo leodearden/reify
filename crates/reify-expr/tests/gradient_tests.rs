@@ -188,9 +188,9 @@ fn test_assert_gradient_vector_panics_on_out_of_tolerance() {
 ///
 /// Constructs a 2-element Value::Vector but passes a 3-element expected slice.
 /// This exercises the `assert_eq!(components.len(), expected.len(), ...)` branch
-/// (helper lines 94-100).  The panic message contains "components, expected" verbatim.
+/// (helper lines 94-100).  The panic message begins with "gradient vector has" verbatim.
 #[test]
-#[should_panic(expected = "components, expected")]
+#[should_panic(expected = "gradient vector has")]
 fn test_assert_gradient_vector_panics_on_length_mismatch() {
     let result = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
     assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "length mismatch");
