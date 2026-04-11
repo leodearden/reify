@@ -33554,7 +33554,16 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "reify-compiler"
+            ],
+            "queries": [
+              "SI units table SI_DERIVED_UNITS SI_PREFIX_BASES steradian SolidAngle prefix_combos crates/reify-compiler/src/si_units.rs",
+              "task 334 SI derived units prefix table implementation done"
+            ]
+          }
         }
       },
       {
