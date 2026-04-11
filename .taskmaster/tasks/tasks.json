@@ -3124,14 +3124,14 @@
       {
         "id": 180,
         "title": "M8 pipeline integration tests",
-        "description": "Create `reify-eval/tests/m8_integration.rs` with cross-feature pipeline tests: type aliases combined with range constraints, fn overloading with collection methods, chained comparisons with implies, auto(free) with minimize, temperature offsets in engineering calculations. Each test loads a .ri source string, parses, compiles, evaluates, and asserts on final values.",
-        "details": "",
+        "description": "Create `reify-eval/tests/m8_integration.rs` with cross-feature pipeline tests: type aliases combined with range constraints, fn overloading with collection methods, chained comparisons with implies, auto(free) with minimize, temperature offsets in engineering calculations. Each test loads a .ri source string, parses, compiles, evaluates, and asserts on final values. [Updated: 4/11/2026]",
+        "details": "<info added on 2026-04-11T07:28:04.762Z>\nThis task has been subsumed by task 179 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:28:04.762Z>",
         "testStrategy": ">=10 cross-feature pipeline tests.",
         "priority": "high",
         "dependencies": [
           "179"
         ],
-        "status": "deferred",
+        "status": "cancelled",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -3143,7 +3143,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:23:41.693Z"
+        "updatedAt": "2026-04-11T07:27:54.487Z"
       },
       {
         "id": 181,
@@ -3163,7 +3163,7 @@
           "173",
           "177"
         ],
-        "status": "deferred",
+        "status": "cancelled",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -3175,7 +3175,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:23:41.746Z"
+        "updatedAt": "2026-04-11T07:27:54.533Z"
       },
       {
         "id": 182,
@@ -9168,8 +9168,8 @@
       {
         "id": 433,
         "title": "Extract parse_and_compile into reify-test-support and use CARGO_MANIFEST_DIR paths",
-        "description": "Move parse_and_compile helper from 3 test files (m9_trait_conformance.rs, m5_integration.rs, purpose_eval.rs) into crates/reify-test-support. Use CARGO_MANIFEST_DIR for fixture paths in m9_trait_conformance.rs (9 occurrences). Bind count_for results to local variables before assertions. (Review followup from task 194) [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:28:01.125Z>\nThis task has been subsumed by task 401 (bundle consolidation 2026-04-11). No further action is required on this task.\n</info added on 2026-04-11T07:28:01.125Z>",
+        "description": "Move parse_and_compile helper from 3 test files (m9_trait_conformance.rs, m5_integration.rs, purpose_eval.rs) into crates/reify-test-support. Use CARGO_MANIFEST_DIR for fixture paths in m9_trait_conformance.rs (9 occurrences). Bind count_for results to local variables before assertions. (Review followup from task 194)",
+        "details": "",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -33898,13 +33898,13 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:27:35.594Z",
+      "lastModified": "2026-04-11T07:27:54.533Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
         "master"
       ],
-      "created": "2026-04-11T07:27:36.644Z",
+      "created": "2026-04-11T07:27:58.175Z",
       "description": "Tasks for master context"
     }
   }
