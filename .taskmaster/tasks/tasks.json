@@ -33615,7 +33615,7 @@
         "description": "Test-quality follow-ups from task 958 review (reviewer_comprehensive) for `edit_param_count_int_undef_undef_int_transition` in crates/reify-eval/tests/collection_sub_eval.rs (~lines 440-485):\n\n1. **Intermediate assertions.** The test only checks the final state after the full Int(4)→Undef→Undef→Int(2) sequence. A regression of step 1 or step 2 could be silently masked by step 3 overwriting bolts[0..2). Capture each EvalResult:\n   - `let r1 = engine.edit_param(n_id.clone(), Value::Undef)?;` — assert bolts[0..4) are absent in `r1.values`.\n   - `let r2 = engine.edit_param(n_id.clone(), Value::Undef)?;` — assert bolts[0..4) are absent in `r2.values`.\n   - Then proceed to Int(2) and assert the existing final state.\n\n2. **Behavior-focused comments.** The current comments tie the test to internal implementation details (`new_count=0 via `_ => 0``, `short-circuits via equality check`). Rephrase to describe observable contract instead:\n   - `// Int(4) → Undef must clear all bolt instances`\n   - `// Undef → Undef must be a no-op`\n   - `// Undef → Int(2) must elaborate exactly bolts[0..2)`\n\nThese changes improve regression diagnosability and decouple the test from internal renames.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -33626,7 +33626,8 @@
           "modules": [
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-11T07:21:28.021Z"
       },
       {
         "id": "1619",
@@ -33781,7 +33782,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:27.830Z",
+      "lastModified": "2026-04-11T07:21:28.021Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
