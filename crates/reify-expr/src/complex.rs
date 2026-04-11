@@ -382,6 +382,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn magnitude_inf_im_returns_undef() {
+        // Complex{re:1.0, im:+Inf, DIMENSIONLESS}.magnitude → Undef
+        // hypot returns +Inf when any argument is ±∞; sanitize_value catches it
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "magnitude".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.magnitude with +Inf imaginary part should return Undef"
+        );
+    }
+
     // ── method regressions: finite values still work ──────────────────────────
 
     #[test]
