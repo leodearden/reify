@@ -1845,6 +1845,122 @@ fn divergence_sample_dimensional_correctness_returns_scalar() {
     }
 }
 
+/// Case A placeholder — Dimensioned domain, dimensionless codomain (divergence).
+///
+/// A divergence of a `Point{3,Scalar<Length>} → Vector{3,Real}` field has a physical
+/// result dimension of 1/Length: the codomain (dimensionless) divided by the domain
+/// unit (Length).  The DESIRED behavior is therefore `Value::Scalar { dimension: 1/Length }`.
+///
+/// **Current behavior (bug):** `compute_divergence` calls `dim_quotient_type` with
+/// `codomain_dim = DIMENSIONLESS` and `domain_dim = LENGTH`.  Because the codomain is
+/// already dimensionless, the guard `cd != DIMENSIONLESS` fails and the `_ =>` arm
+/// returns the fallback `Type::Real` unchanged.  `wrap_scalar_result` then produces
+/// `Value::Real` — the dimensional information is lost.
+///
+/// **`#[ignore]` is load-bearing:** un-ignoring this test without also fixing *both*
+/// `compute_divergence`/`dim_quotient_type` (type-level) *and* the
+/// `compute_numerical_divergence_at_point` / `wrap_scalar_result` path (runtime) will
+/// cause it to fail with `Value::Real`.  This is the early-warning signal: a naïve
+/// un-ignore serves as a concrete, executable spec for the required fix.
+#[test]
+#[ignore = "known bug: dim_quotient_type returns Type::Real when codomain is dimensionless, \
+            losing the 1/domain-unit result dimension — see analysis in plan step-3"]
+fn divergence_sample_mixed_length_to_real_placeholder() {
+    let domain = Type::point3(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    });
+    // Dimensionless codomain: Vector{3, Real}
+    let codomain = Type::vec3(Type::Real);
+
+    let div_result = eval_field_op("divergence", domain.clone(), codomain);
+    let sampled = sample_field(div_result, domain);
+
+    // Desired: Scalar[1/Length, si_value ≈ 3.0]
+    // (identity body ∂x/∂x+∂y/∂y+∂z/∂z = 3.0, result dimension = 1/Length)
+    let one_over_length = DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH);
+    match sampled {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension, one_over_length,
+                "divergence_sample_mixed_length_to_real_placeholder: \
+                 expected dimension 1/Length ({:?}), got {:?}",
+                one_over_length, dimension,
+            );
+            assert!(
+                (si_value - 3.0).abs() < 1e-4,
+                "divergence_sample_mixed_length_to_real_placeholder: \
+                 si_value should be ≈3.0, got {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "divergence_sample_mixed_length_to_real_placeholder: \
+             expected Value::Scalar{{1/Length}}, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Case B regression guard — Dimensionless domain, dimensioned codomain (divergence).
+///
+/// A divergence of a `Point{3,Real} → Vector{3,Scalar<Velocity>}` field has a physical
+/// result dimension of Velocity/dimensionless = Velocity (a derivative per dimensionless
+/// coordinate keeps the codomain dimension).
+///
+/// **Current behavior (correct today):** `compute_divergence` calls `dim_quotient_type`
+/// with `codomain_dim = Velocity` and `domain_dim = DIMENSIONLESS`.  Because the *domain*
+/// is dimensionless, the guard `dd != DIMENSIONLESS` fails and the `_ =>` arm returns
+/// the fallback `dimensionless_fallback(Scalar<Velocity>) = Scalar<Velocity>` unchanged.
+/// `wrap_scalar_result` then produces `Value::Scalar { dimension: Velocity }` — the
+/// codomain dimension is preserved.  This is physically correct.
+///
+/// This test is NOT `#[ignore]` — it locks in the currently-correct behavior as a
+/// regression guard.  If it starts failing, it means the `_ =>` arm or
+/// `dimensionless_fallback` was changed in a way that breaks the dimensionless-domain path.
+#[test]
+fn divergence_sample_mixed_real_to_velocity_returns_scalar() {
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+    // Dimensionless domain: Point{3, Real}
+    let domain = Type::point3(Type::Real);
+    // Dimensioned codomain: Vector{3, Scalar<Velocity>}
+    let codomain = Type::vec3(Type::Scalar {
+        dimension: velocity_dim,
+    });
+
+    let div_result = eval_field_op("divergence", domain.clone(), codomain);
+    let sampled = sample_field(div_result, domain);
+
+    // Expected: Scalar[Velocity, si_value ≈ 3.0]
+    // (identity body ∂x/∂x+∂y/∂y+∂z/∂z = 3.0; Velocity / dimensionless = Velocity)
+    match sampled {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension, velocity_dim,
+                "divergence_sample_mixed_real_to_velocity_returns_scalar: \
+                 expected dimension Velocity ({:?}), got {:?}",
+                velocity_dim, dimension,
+            );
+            assert!(
+                (si_value - 3.0).abs() < 1e-4,
+                "divergence_sample_mixed_real_to_velocity_returns_scalar: \
+                 si_value should be ≈3.0, got {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "divergence_sample_mixed_real_to_velocity_returns_scalar: \
+             expected Value::Scalar{{Velocity}}, got {:?}",
+            other
+        ),
+    }
+}
+
 /// Laplacian of a dimensionless Point{3,Real} → Real field still returns
 /// Type::Real as the result codomain (regression guard).
 ///
