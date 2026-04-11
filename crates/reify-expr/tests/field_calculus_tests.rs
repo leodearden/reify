@@ -662,7 +662,7 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
             },
             domain.clone(),
         ),
-        _ => (Value::Real(1.0), Type::Real),
+        other => panic!("make_sample_point: unsupported domain type: {:?}", other),
     }
 }
 
@@ -680,6 +680,13 @@ fn make_sample_point_panics_on_unsupported_quantity_in_point() {
         n: 2,
         quantity: Box::new(Type::Vector { n: 2, quantity: Box::new(Type::Real) }),
     };
+    let _ = make_sample_point(&domain);
+}
+
+#[test]
+#[should_panic(expected = "unsupported domain type")]
+fn make_sample_point_panics_on_unsupported_domain_type() {
+    let domain = Type::Bool;
     let _ = make_sample_point(&domain);
 }
 
