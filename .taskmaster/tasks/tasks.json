@@ -26476,11 +26476,11 @@
         "description": "In `crates/reify-compiler/src/lib.rs` lines 178-199, change `test_templates`, `non_test_templates`, `test_constraint_defs`, and `non_test_constraint_defs` to return `impl Iterator<Item = &TopologyTemplate>` / `&ConstraintDef` instead of `Vec`. While doing so, evaluate whether the four methods can be replaced by two (`test_templates_iter`, `test_constraint_defs_iter`) and let callers negate with `.filter(|t| !t.is_test)` — eliminating the API-surface doubling identified in suggestion [1].",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:33:27.098Z",
+        "updatedAt": "2026-04-11T07:20:38.571Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -33447,7 +33447,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:38.281Z",
+      "lastModified": "2026-04-11T07:20:38.571Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
