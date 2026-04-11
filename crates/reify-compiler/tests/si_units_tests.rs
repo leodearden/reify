@@ -148,3 +148,64 @@ fn si_prefixes_table_has_20_entries_with_correct_factors() {
         );
     }
 }
+
+// ─── step-7: build_si_units_source emits base prefixed units ─────────────────
+
+#[test]
+fn build_si_units_source_contains_base_prefixed_units() {
+    let src = si_units::build_si_units_source();
+
+    // Length prefixed bases.
+    for line in &[
+        "pub unit km : Length =",
+        "pub unit nm : Length =",
+        "pub unit pm : Length =",
+        "pub unit fm : Length =",
+        "pub unit Tm : Length =",
+        "pub unit Qm : Length =",
+    ] {
+        assert!(
+            src.contains(line),
+            "generated source missing length line: `{}`\n\nfull source:\n{}",
+            line,
+            src
+        );
+    }
+
+    // Mass prefixed (gram base — kg is SI base and NOT emitted).
+    for line in &[
+        "pub unit mg : Mass =",
+        "pub unit ug : Mass =",
+        "pub unit ng : Mass =",
+        "pub unit pg : Mass =",
+        "pub unit Gg : Mass =",
+        "pub unit Tg : Mass =",
+    ] {
+        assert!(
+            src.contains(line),
+            "generated source missing mass line: `{}`",
+            line
+        );
+    }
+    // kg must NOT be regenerated (it's the SI base, lives in units.ri).
+    assert!(
+        !src.contains("pub unit kg "),
+        "generator must not emit `kg` (already SI base in units.ri)"
+    );
+
+    // Time prefixed bases.
+    for line in &[
+        "pub unit ks : Time =",
+        "pub unit ns : Time =",
+        "pub unit ps : Time =",
+        "pub unit fs : Time =",
+        "pub unit Ts : Time =",
+        "pub unit Qs : Time =",
+    ] {
+        assert!(
+            src.contains(line),
+            "generated source missing time line: `{}`",
+            line
+        );
+    }
+}
