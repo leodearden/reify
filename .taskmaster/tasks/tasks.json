@@ -25543,7 +25543,7 @@
         "description": "Four validation checks in `compile_geometry_op` (crates/reify-eval/src/lib.rs) return `None` without pushing a specific diagnostic. The caller only pushes a generic \"failed to compile geometry operation\" error, making it impossible for users to know WHY the operation failed.\n\n**Sites to fix (all in compile_geometry_op):**\n\n1. **Line ~3539** — Transform::Scale negative factor: `if factor < 0.0 { return None; }` → push \"negative scale factor not allowed — OCCT SetScale produces inside-out geometry, not mirroring\"\n2. **Line ~3647** — Sweep::Extrude: `_distance_f64 = distance.as_f64().filter(|v| v.is_finite() && *v != 0.0)?` → push diagnostic for non-finite or zero extrude distance\n3. **Line ~3663** — Sweep::Revolve degenerate axis: `if !mag.is_finite() || mag < 1e-12 { return None; }` → push \"revolve axis is degenerate (zero-length or non-finite)\"\n4. **Line ~3668** — Sweep::Revolve zero angle: `if angle_rad == 0.0 { return None; }` → push \"revolve angle is zero — operation would produce no geometry\"\n\n**Pattern to follow:** `eval_named_arg` (same file, line ~3349) pushes a `Diagnostic::warning(...)` before returning `None`. Use the same pattern here with `Diagnostic::warning(...)` before the early return.\n\n**Test additions:** Add tests for each case verifying the specific diagnostic message is emitted (similar to the existing `_missing_arg_emits_diagnostic` tests).\n\nMemory hints: search \"eval_named_arg diagnostic pattern\", entity \"compile_geometry_op\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -25556,7 +25556,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T06:09:41.826Z"
       },
       {
         "id": "1214",
@@ -33017,7 +33017,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T06:09:23.947Z",
+      "lastModified": "2026-04-11T06:09:41.832Z",
       "taskCount": 1621,
       "completedCount": 1270,
       "tags": [
