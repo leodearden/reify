@@ -29114,7 +29114,13 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Use specific needle strings in e2e_meta.rs tests"
+            ]
+          }
         }
       },
       {
@@ -29174,11 +29180,11 @@
         "description": "Four improvements in crates/reify-eval/src/deps.rs: (1) Lines 4-7: reword module doc — \"exactly\" is misleading for conditional short-circuits, should say \"superset of or equal to\" (safe over-approximation). (2) Line 476: renumber or remove orphaned \"Step 6\"/\"Step 7\" references from test doc-comments. (3) Line 428: add a test with x+x (same ValueCellId in both operands) to document whether trace.reads preserves or deduplicates duplicates. (4) Lines 496-539: add comment noting invalidate_dependents test is an intentional cross-module integration test.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:10:26.026Z",
+        "updatedAt": "2026-04-11T07:21:46.164Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -33879,7 +33885,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:44.102Z",
+      "lastModified": "2026-04-11T07:21:46.164Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
