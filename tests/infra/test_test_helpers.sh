@@ -189,7 +189,7 @@ for consumer in "${CONSUMERS[@]}"; do
     echo "--- Consumer: $cname ---"
 
     # (a) file contains 'source.*test_helpers.sh'
-    if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$cfile" 2>/dev/null; then ok=true; else ok=false; fi
+    if grep -qE '(source|\.)[[:space:]]+.*test_helpers\.sh' "$cfile" 2>/dev/null; then ok=true; else ok=false; fi
     check "$cname sources test_helpers.sh" "$ok"
 
     # (b) file does NOT contain assert() function definition
@@ -208,7 +208,7 @@ for consumer in "${CONSUMERS[@]}"; do
     # (e) scripts/ consumers must have a comment explaining cross-directory
     #     sourcing from tests/infra/ (gated to scripts/ consumers only)
     case "$consumer" in scripts/*)
-        if grep -B3 -E '(source|\.)\s+.*test_helpers\.sh' "$cfile" 2>/dev/null \
+        if grep -B3 -E '(source|\.)[[:space:]]+.*test_helpers\.sh' "$cfile" 2>/dev/null \
              | grep -qi 'test script.*not.*build'; then ok=true; else ok=false; fi
         check "$cname has cross-directory sourcing comment" "$ok"
         ;;
@@ -243,7 +243,7 @@ SYNC_REF_HELPERS_FILE="$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
 # expr_body short-circuits via test_summary on the same line. NOTE: if the
 # guard is ever reformatted to span multiple lines, this per-line grep will
 # need to be replaced with an awk-based multiline matcher.
-_has_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
+_has_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists[[:space:]]*\(\)' "$1" 2>/dev/null; }
 _has_if_n_guard() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -qE '(if|&&|\|\|)[[:space:]]*(\[\[?|test)[[:space:]]+(-n|![[:space:]]+-z)'; }
 _has_expr_body_empty_guard_short_circuit() { grep -qE '\[ -z "\$expr_body".*test_summary' "$1" 2>/dev/null; }
 
@@ -283,7 +283,7 @@ if _has_expr_body_empty_guard_short_circuit "$SYNC_FILE"; then ok=true; else ok=
 check "extract_fn empty-guard short-circuits via test_summary for expr_body" "$ok"
 
 # (f) sync_comments_test.sh sources sync_ref_helpers.sh (function moved out)
-if grep -qE '(source|\.)\s+.*sync_ref_helpers\.sh' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+if grep -qE '(source|\.)[[:space:]]+.*sync_ref_helpers\.sh' "$SYNC_FILE" 2>/dev/null; then ok=true; else ok=false; fi
 check "sync_comments_test.sh sources sync_ref_helpers.sh" "$ok"
 
 # (g) sync_comments_test.sh does NOT define assert_sync_ref_exists() locally
@@ -372,7 +372,7 @@ if _has_assert_sync_ref_exists "$SYNC_REF_HELPERS_FILE"; then ok=true; else ok=f
 check "sync_ref_helpers.sh defines assert_sync_ref_exists()" "$ok"
 
 # (c) file sources test_helpers.sh
-if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
+if grep -qE '(source|\.)[[:space:]]+.*test_helpers\.sh' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
 check "sync_ref_helpers.sh sources test_helpers.sh" "$ok"
 
 # (d) file has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)
