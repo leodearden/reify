@@ -754,6 +754,8 @@ mod tests {
         Url::parse("file:///test.ri").unwrap()
     }
 
+    const GUARDED_GROUP_SOURCE: &str = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n}";
+
     // --- step-9: completion tests ---
 
     #[test]
@@ -1526,7 +1528,7 @@ mod tests {
         }
         // (d) guarded-group source @ Position(1,0) → StructureBody
         {
-            let source = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n}";
+            let source = GUARDED_GROUP_SOURCE;
             let ctx = AnalysisContext::new(source, &test_uri());
             let result = determine_context(source, Position::new(1, 0), &ctx);
             assert!(
@@ -1575,12 +1577,7 @@ mod tests {
 
     #[test]
     fn completions_include_guarded_group_members() {
-        let source = r#"structure S {
-    param cond : Bool = true
-    where cond {
-        param guarded_x : Scalar = 5mm
-    }
-}"#;
+        let source = GUARDED_GROUP_SOURCE;
         let items = compute_completions(source, &test_uri(), Position::new(1, 0));
         let variables: Vec<_> = items
             .iter()
