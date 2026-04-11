@@ -8124,7 +8124,7 @@
         "testStrategy": "",
         "priority": "medium",
         "dependencies": [],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -8136,7 +8136,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T20:59:19.374Z"
+        "updatedAt": "2026-04-11T07:22:59.372Z"
       },
       {
         "id": "391",
@@ -29313,7 +29313,13 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: docs(compiler): clarify sub_member_types vs collection_sub_member_types in scope/expr"
+            ]
+          }
         }
       },
       {
@@ -33891,7 +33897,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:48.616Z",
+      "lastModified": "2026-04-11T07:22:59.375Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
