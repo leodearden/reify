@@ -33505,7 +33505,18 @@
             "crates/reify-test-support/src",
             "crates/reify-types/src",
             "gui/src-tauri/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Value",
+              "reify-types"
+            ],
+            "queries": [
+              "Value::Field lambda Box Arc clone performance differential operators",
+              "compute_gradient compute_divergence compute_curl compute_laplacian lambda field_val clone",
+              "task 412 Value::Field optimization Arc refcount"
+            ]
+          }
         }
       },
       {
