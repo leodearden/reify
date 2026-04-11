@@ -10381,7 +10381,13 @@
           ],
           "modules": [
             "crates/reify-eval"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix `_distance_f64` validation pattern in reify-eval"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:20:50.001Z"
       },
@@ -10471,7 +10477,7 @@
         "description": "The arg-count error diagnostics for box(), cylinder(), sphere(), linear_pattern(), circular_pattern(), mirror(), union(), shell(), thicken(), draft() in reify-compiler/src/lib.rs (lines 5183-5287) use Diagnostic::error(format!(...)) which creates spanless diagnostics. Other diagnostics in the same file attach labels with source spans. These should follow the same pattern.\\n\\nMemory hints: search \"Diagnostic error labels spans\", entities: Diagnostic, compile_geometry_function",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10486,7 +10492,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-10T20:29:24.630Z"
+        "updatedAt": "2026-04-11T07:20:52.128Z"
       },
       {
         "id": "488",
@@ -26809,7 +26815,13 @@
           ],
           "files": [
             "crates/reify-compiler/tests/deprecated_use_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Consolidate Task 272 @deprecated tests with pre-existing coverage"
+            ]
+          }
         }
       },
       {
@@ -33526,7 +33538,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:50.941Z",
+      "lastModified": "2026-04-11T07:20:52.128Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
