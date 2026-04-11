@@ -6042,15 +6042,14 @@
         "updatedAt": "2026-03-24T23:30:54.912Z"
       },
       {
-        "id": "303",
+        "id": 303,
         "title": "Stdlib: cone primitive — FFI + compiler + eval wiring",
-        "description": "Bundle consolidating five stdlib geometry primitives (cone, torus, wedge, box_centered, cylinder_centered) behind a single FFI + compiler + eval wiring sweep. Subsumes tasks 304 and 305 (bundle consolidation 2026-04-11). Each primitive adds OCCT FFI, PrimitiveKind/GeometryOp variants, is_geometry_function() recognition, compile_geometry_op() arm, and OcctKernel::execute() dispatch.",
-        "status": "deferred",
-        "dependencies": [],
+        "description": "Implement cone(bottom_radius, top_radius, height). New OCCT FFI make_cone via BRepPrimAPI_MakeCone. Add PrimitiveKind::Cone, GeometryOp::Cone. Wire through is_geometry_function(), compile_geometry_op(), OcctKernel::execute().",
+        "details": "## Implementation\n1. cpp: make_cone(bottom_r, top_r, height) — BRepPrimAPI_MakeCone. Handle top_r=0 (pointed).\n2. ffi.rs: CXX bridge\n3. reify-types: GeometryOp::Cone { bottom_radius, top_radius, height }\n4. reify-compiler: add 'cone' to is_geometry_function(), PrimitiveKind::Cone, compile 3 args\n5. reify-eval: compile_geometry_op for Cone\n6. reify-kernel-occt: execute Cone → validate positive dims → call FFI\n\n## Tests\n- cone(10mm, 5mm, 20mm) → valid handle\n- cone(10mm, 0, 20mm) → pointed cone\n- Zero/negative dims → error\n- Volume ≈ (π/3)h(r1²+r1r2+r2²)\n- STEP export succeeds",
+        "testStrategy": "cargo test -p reify-kernel-occt -- cone && cargo test -p reify-eval -- cone",
         "priority": "high",
-        "details": "## Scope\nFive stdlib primitives to add in a single bundle. Preserve FFI signatures and function names exactly as listed.\n\n## 1. Cone primitive — cone(bottom_radius, top_radius, height)\n- cpp: make_cone(bottom_r, top_r, height) via BRepPrimAPI_MakeCone. Handle top_r=0 (pointed).\n- ffi.rs: CXX bridge entry make_cone\n- reify-types: GeometryOp::Cone { bottom_radius, top_radius, height }\n- reify-compiler: add 'cone' to is_geometry_function(), PrimitiveKind::Cone, compile_geometry_op 3-arg arm\n- reify-eval: compile_geometry_op for Cone\n- reify-kernel-occt: OcctKernel::execute Cone arm → validate positive dims → call FFI\n- Tests: cone(10mm,5mm,20mm) valid handle; cone(10mm,0,20mm) pointed; zero/negative → error; volume ≈ (π/3)h(r1²+r1r2+r2²); STEP export succeeds.\n\n## 2. Torus primitive — torus(major_radius, minor_radius)\n- cpp: make_torus(major_r, minor_r) via BRepPrimAPI_MakeTorus\n- ffi.rs: CXX bridge entry make_torus\n- reify-types: GeometryOp::Torus, PrimitiveKind::Torus\n- reify-compiler: recognize 'torus' in is_geometry_function() with 2 args, compile_geometry_op arm\n- reify-eval: compile_geometry_op for Torus\n- reify-kernel-occt: OcctKernel::execute Torus arm → validate both positive and minor<major → call FFI\n- Tests: torus(20mm,5mm) valid; volume ≈ 2π²Rr²; minor>major → error; zero → error; STEP export.\n\n## 3. Wedge primitive — wedge(width, depth, height, top_width)\n- cpp: make_wedge(dx, dy, dz, ltx) via BRepPrimAPI_MakeWedge\n- ffi.rs, reify-types GeometryOp::Wedge, PrimitiveKind::Wedge\n- reify-compiler: is_geometry_function() 'wedge' with 4 args, compile_geometry_op arm\n- reify-eval + OcctKernel::execute wiring\n- Tests: wedge(20,10,15,5mm) has 5–6 faces\n\n## 4. box_centered(width, depth, height)\n- Implemented as existing Box + Translate(-w/2, -d/2, -h/2) compound (kernel-level wiring, no new FFI)\n- reify-compiler: is_geometry_function() 'box_centered' with 3 args, compile_geometry_op arm emitting translate-wrapped Box GeometryOp\n- reify-eval: compile_geometry_op dispatch\n- Tests: centroid at origin; volume equals non-centered box with same dims\n\n## 5. cylinder_centered(radius, height)\n- Implemented as existing Cylinder + Translate(0, 0, -h/2) (kernel-level wiring, no new FFI)\n- reify-compiler: is_geometry_function() 'cylinder_centered' with 2 args, compile_geometry_op arm\n- reify-eval: compile_geometry_op dispatch\n- Tests: centroid at origin; volume preserved vs. non-centered cylinder\n\n## Files touched\n- crates/reify-kernel-occt/cpp/* (make_cone, make_torus, make_wedge)\n- crates/reify-kernel-occt/src/ffi.rs\n- crates/reify-kernel-occt/src/lib.rs (OcctKernel::execute)\n- crates/reify-kernel-occt/tests/*\n- crates/reify-types/src/* (GeometryOp, PrimitiveKind)\n- crates/reify-compiler/src/lib.rs (is_geometry_function)\n- crates/reify-compiler/src/geometry.rs (compile_geometry_op)\n- crates/reify-eval/src/lib.rs (compile_geometry_op eval path)\n- crates/reify-eval/tests/*",
-        "testStrategy": "cargo test -p reify-kernel-occt -- cone torus wedge centered && cargo test -p reify-eval -- cone torus wedge centered",
-        "subtasks": [],
+        "dependencies": [],
+        "status": "deferred",
         "metadata": {
           "milestone": "stdlib-M8.1",
           "modules": [
@@ -6068,7 +6067,9 @@
             "crates/reify-compiler/src/geometry.rs",
             "crates/reify-eval/src/lib.rs"
           ]
-        }
+        },
+        "subtasks": [],
+        "updatedAt": "2026-04-11T07:19:47.977Z"
       },
       {
         "id": 304,
@@ -8769,7 +8770,7 @@
         }
       },
       {
-        "id": 417,
+        "id": "417",
         "title": "Replace unsafe raw UnitRegistry pointer with safe reference threading in CompilationScope",
         "description": "Consolidated bundle of three UnitRegistry follow-ups from esc-208-28 (task 208 review). Covers (A) replacing unsafe raw UnitRegistry pointer with safe reference threading in CompilationScope, (B) DRY/API cleanup of UnitRegistry and dimension mapping, and (C) closing unit_registry_tests coverage gaps. Subsumes tasks 418 and 419.",
         "status": "deferred",
@@ -18987,13 +18988,14 @@
       {
         "id": 872,
         "title": "Introduce CompiledConstraintDef to eliminate AST nodes from CompiledModule",
-        "description": "Bundled polish of CompiledConstraintDef: introduce struct, fix visibility semantics, dedupe allocations, harden tests, and diagnose collisions (subsumes 873-880).",
+        "description": "Replace `pub constraint_defs: Vec<reify_syntax::ConstraintDef>` with a new `CompiledConstraintDef` struct (in reify-compiler or reify-types) that captures name, is_pub, compiled param descriptors, and compiled predicates. Update compile_with_prelude to produce CompiledConstraintDef at definition-compile time rather than cloning raw AST nodes. This maintains the abstraction boundary where CompiledModule only contains compiler-crate or semantic types, not raw syntax AST nodes.\n\nmemory_hints: search \"CompiledConstraintDef constraint_defs CompiledModule\" for prior context; get_entity \"CompiledModule\" for field structure",
+        "details": "",
+        "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
         "priority": "medium",
-        "details": "This bundle consolidates tasks 872, 873, 874, 875, 877, 878, 879, 880 into a single unit of work around CompiledConstraintDef and its compile/propagation pipeline.\n\n1. CompiledConstraintDef struct (from 872)\n- Replace `pub constraint_defs: Vec<reify_syntax::ConstraintDef>` on CompiledModule with a new `CompiledConstraintDef` struct defined in reify-compiler or reify-types (candidate files: crates/reify-types/src/constraint.rs or crates/reify-compiler/src/lib.rs).\n- Struct fields: name, is_pub, compiled param descriptors, and compiled predicates.\n- Update compile_with_prelude to produce CompiledConstraintDef at definition-compile time rather than cloning raw AST nodes.\n- Goal: maintain the abstraction boundary where CompiledModule only contains compiler-crate or semantic types, not raw syntax AST nodes.\n- Touches: crates/reify-compiler/src/lib.rs, crates/reify-compiler/src/module_dag.rs, crates/reify-types/src/lib.rs, crates/reify-types/src/constraint.rs.\n\n2. Visibility semantics and doc comment (from 873)\n- At lib.rs:3812-3822, either filter constraint_defs to only pub defs at collection time so non-pub defs never appear in the compiled artifact, OR explicitly document that the field contains all local defs and callers must apply is_pub filtering themselves.\n- Update the doc comment from \"Stored so downstream modules can reference them\" to accurately describe visibility behavior: only is_pub==true defs are propagated to downstream modules.\n\n3. Performance/allocation dedup (from 874)\n- (a) module_dag.rs:168-178 — change compile_with_prelude to accept &[&[ConstraintDef]] (or equivalent slice-of-slices) instead of &[CompiledModule] to avoid full module clones.\n- (b) module_dag.rs:161-178 — merge the two Declaration::Import iteration passes into one that both compiles dependencies and collects prelude defs.\n- (c) lib.rs:3804-3822 — merge the two Declaration::Constraint passes in compile_with_prelude into one that simultaneously inserts into the registry and pushes to the output vec.\n\n4. Non-asserting test 13 fix (from 875)\n- Test 13 in crates/reify-compiler/tests/constraint_def_compile_tests.rs (line ~607-641, type_mismatch_bool_for_length) always passes regardless of compiler behavior — it branches on diagnostics.is_empty() and passes in both branches.\n- Mark it `#[ignore = \"known gap: param-level type checking not implemented\"]` and add a failing assertion inside (e.g. `assert!(!errors.is_empty(), ...)`), so when type checking is implemented the test is explicitly re-enabled rather than silently passing.\n\n5. Test tempdir thread safety (from 877)\n- In crates/reify-compiler/tests/constraint_def_compile_tests.rs (lines ~469-520), replace the PID-based temp dir path with `tempfile::TempDir::new()`, which generates a unique path per call and cleans up automatically on drop.\n- Fixes thread-isolation race conditions where parallel test runs in the same process derive the same path.\n- Consider extracting the write-files-to-temp-dir pattern into a reify-test-support::fixtures helper for reuse by other cross-module tests.\n\n6. Missing test coverage (from 878)\n- (a) constraint_def_compile_tests.rs — add test that a non-pub constraint def in module A is NOT instantiable in module B (guards the is_pub filter at lib.rs:3792).\n- (b) constraint_def_compile_tests.rs — add test asserting module.constraint_defs.len(), plus each entry's .name and .is_pub, after compile_module.\n- (c) constraint_def_compile_tests.rs, test 4 (named_args_different_order, line 173) — add assertions for tmpl.constraints[1]: op==Le, left==ValueRef(d), right==100mm literal.\n- (d) crates/reify-eval/tests/m9_constraint_def.rs — add guarded_constraint_active test filtering constraint_results for ActiveWall, asserting exactly 1 Satisfied result labeled MinThickness[0].\n\n7. Test naming + single-char assertion strengthening (from 879)\n- (a) Rename wrong_arg_count_zero (line 368) to wrong_arg_name_single or misnamed_single_arg_produces_two_errors to accurately describe the scenario.\n- (b) In tests 7, 8, and 9 (lines ~350, ~387, ~430), replace single-char char-literal contains checks (contains('c'), contains('y'), contains('b')) with multi-char quoted strings like \"'c'\" or \"arg 'c'\" to prevent false-positives on any English word containing those characters.\n\n8. Diagnostic on name collision + module_dag invariant (from 880)\n- (a) lib.rs:3799-3803 — Before inserting a prelude def into constraint_def_registry, check if the name is already present from a different module; if so, emit a warning-level diagnostic (e.g. \"constraint def X from module b shadows import from module a\") so the ambiguity is visible rather than silently discarding the first definition.\n- (b) module_dag.rs:167 — Add a debug_assert or explanatory comment before the preludes collection pass making explicit that all imports were compiled successfully above (via early-return ?) and are therefore guaranteed to be present in self.modules.\n\nFiles touched across bundle: crates/reify-compiler/src/lib.rs, crates/reify-compiler/src/module_dag.rs, crates/reify-types/src/lib.rs, crates/reify-types/src/constraint.rs, crates/reify-compiler/tests/constraint_def_compile_tests.rs, crates/reify-eval/tests/m9_constraint_def.rs, and optionally crates/reify-test-support/ for the fixtures helper.",
-        "testStrategy": "memory_hints: search \"CompiledConstraintDef constraint_defs CompiledModule\"; search \"constraint_defs is_pub visibility\"; search \"compile_with_prelude constraint def compilation\"; search \"type_mismatch_bool_for_length constraint def test\"; search \"tempfile TempDir test temp directory\"; search \"constraint def compile test coverage\"; search \"constraint def compile test error assertions\"; search \"constraint def registry name collision shadow\"; get_entity \"CompiledModule\" for field structure.",
         "subtasks": [],
+        "updatedAt": "2026-04-11T07:19:38.412Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -21172,14 +21174,13 @@
       {
         "id": 978,
         "title": "SCC diagnostic quality: fix duplicate-name error format and add early-return",
-        "description": "Two related issues with the duplicate-template-name handling in detect_recursive_structures (crates/reify-compiler/src/scc.rs lines 19-29): (1) The error diagnostic exposes raw array indices ('indices 0 and 1') instead of using source span labels like the rest of the compiler. Should use with_label() pointing at the two template definition spans. (2) After emitting the error, the function continues SCC analysis on a corrupted index map, which can produce confusing follow-on warnings. Should early-return with an empty cyclic_sccs vec after detecting duplicates.",
-        "details": "",
-        "testStrategy": "",
+        "description": "Consolidated SCC (strongly connected components) review follow-ups covering duplicate-name diagnostics, early-return correctness, label dedup, perf, naming, and test hardening in crates/reify-compiler.",
         "status": "deferred",
         "dependencies": [],
         "priority": "medium",
+        "details": "This bundle consolidates tasks 978, 979, 980, 981, 986, 987, 988 (review suggestions S1-S17 from task 362 review) targeting crates/reify-compiler/src/scc.rs and crates/reify-compiler/tests/recursive_detection_tests.rs. Preserve every concrete code change and test requirement below.\n\n1. Duplicate-name diagnostic format + early-return (S1, S4, from 978/986)\n- scc.rs:19-29 / 21-28: detect_recursive_structures currently emits an error that exposes raw array indices (e.g., \"indices 0 and 1\"). Replace with with_label() pointing at the two template definition spans (\"first defined here\" / \"duplicate defined here\"). This requires adding a span field to TopologyTemplate (crates/reify-types/src/lib.rs) so the diagnostic can carry source locations.\n- scc.rs:19-29: After emitting the duplicate error, the function currently continues SCC analysis on a corrupted index map, producing confusing follow-on warnings. Early-return with an empty cyclic_sccs vec (vec![]) immediately after the duplicate-name error.\n\n2. Validation/cycle-detection separation + naming (S2, S3, from 986)\n- scc.rs:15-34: detect_recursive_structures conflates name validation with cycle detection. Extract a validate_template_names() helper (or rename the outer function) so each concern has a clear single responsibility.\n- scc.rs:81-107: Rename the local binding scc_set to scc_member_set or cycle_member_indices to reflect what it actually holds.\n\n3. Label dedup / asymmetry + bounded emission (S5, S7, from 986/987)\n- scc.rs:91-102: Label generation currently iterates raw sub_components (not the deduped adjacency). Either (a) dedup label emission by tracking emitted (v, target) pairs or iterating the deduped adjacency, or (b) add an explicit code comment documenting the deliberate asymmetry between adjacency dedup and label non-dedup. Guards against unbounded label emission on adversarial inputs.\n\n4. Perf: share HashSet + pre-allocate labels Vec (S6, S8, from 987)\n- scc.rs:84 + scc.rs:205: HashSet<usize> is allocated twice per cyclic SCC — once in detect_recursive_structures and once in reconstruct_scc_cycle. Share by passing the set as a parameter or returning it from the first site.\n- scc.rs:85: The labels Vec is not pre-allocated. Pre-compute the expected label count and call Vec::with_capacity / reserve to avoid growth reallocations.\n\n5. Test assertion hardening (S11, S12, S13, S14, from 979/980/988)\n- scc.rs:349-370 (duplicate_template_names_emits_diagnostic, was lines 351-367): currently filters by message substring \"duplicate\" without asserting Severity::Error — a regression to Warning would go undetected. Add Severity::Error assertion (S11).\n- Same test: also assert !is_recursive on both duplicate template entries so is_recursive is verified to still be computed correctly for non-duplicate entries (S12).\n- scc.rs:320-348 (duplicate_sub_refs_deduped): assert label count == 2 to lock in the dedup behaviour (S14).\n- tests/recursive_detection_tests.rs:476-515 (three_node_cycle_emits_exactly_one_warning): verify that all three node names A, B, C appear in the cycle path string (S13).\n\n6. Test coverage additions + cleanups (S9, S15, S16, from 980/981/988)\n- tests/recursive_detection_tests.rs:517-551: add a multi-member SCC source-label test (e.g., A<->B with 2 labels) — currently only the self-loop case exercises labels (S16).\n- tests/recursive_detection_tests.rs:440-474: remove mutual_recursion_cycle_path_format — it duplicates indirect_two_node_cycle_both_recursive. Delete or repurpose (S15).\n- tests/recursive_detection_tests.rs: extract a module-level helper fn cycle_warnings() that encapsulates the (Severity::Warning + message contains \"recursive structure cycle\") filter currently copy-pasted across 7 test functions (S9).\n\n7. Test fixture DRY (S10, S17, from 988)\n- scc.rs:285-298 (sub_ref helper): the builder could drift — either derive Default on the relevant type or move the helper to a shared fixtures module so tests/recursive_detection_tests.rs and scc.rs unit tests share one source of truth.",
+        "testStrategy": "Ensure all changes are covered by unit tests and integration tests. Verify that diagnostics are correctly formatted and early returns prevent further analysis on corrupted data. Validate performance improvements by measuring execution time before and after changes. Confirm test assertions and coverage additions are effective by running the full test suite.",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:23:43.477Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -24948,7 +24949,7 @@
         "description": "The content hash computation for CompiledModule (lib.rs:4530-4552) does not include module-level pragmas. If pragmas like `#precision(value=64)` are semantically meaningful for downstream compilation (solver config, numeric precision), a change to pragmas alone won't invalidate cached content hashes, risking stale results in incremental compilation.\n\nEither:\n- Hash the pragmas vector into `all_hashes` if they affect semantics, OR\n- Document that pragmas are intentionally excluded from the content hash if they are purely advisory/metadata.\n\nMemory hints: search for \"content hash\" and \"CompiledModule\" in reify-compiler. Check task 12 for content-hash caching context.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -24967,7 +24968,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-11T07:20:22.833Z"
+        "updatedAt": "2026-04-11T07:26:00.325Z"
       },
       {
         "id": 1165,
@@ -24975,7 +24976,7 @@
         "description": "Two test coverage gaps in pragma_compile_tests.rs:\n\n1. **Occurrence-level pragmas untested**: Tests cover pragma propagation for structures, traits, and purposes, but not occurrences. The `From<&'a OccurrenceDef>` → `EntityDefRef` conversion path that carries pragmas is untested. Add a test like `occurrence_pragma_propagated_to_topology_template`.\n\n2. **#no_prelude not verified in CompiledModule.pragmas**: Existing tests verify the behavioral effect (suppressing stdlib units) but not that `#no_prelude` itself appears in `module.pragmas`. Add an assertion like `module.pragmas.iter().any(|p| p.name == \"no_prelude\")` to `no_prelude_simple_structure_compiles_clean` or a new test.\n\nBoth are low-risk (shared code paths / behavioral coverage exists) but worth closing.\n\nMemory hints: search for \"pragma compile tests\" and \"EntityDefRef\" in reify-compiler.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -24993,7 +24994,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-11T07:20:25.052Z"
+        "updatedAt": "2026-04-11T07:26:00.688Z"
       },
       {
         "id": 1166,
@@ -26671,11 +26672,11 @@
         "description": "In `crates/reify-compiler/src/lib.rs` around line 248: (a) make `is_test` a private field and expose it via a `pub fn is_test(&self) -> bool` getter, with a doc note that mutating `annotations` post-construction is unsupported. This is symmetric with `ConstraintDef::is_test()`. (b) Add TODO comments on `test_constraint_defs`/`non_test_constraint_defs` (lib.rs ~192-199) and on `ConstraintDef::is_test()` in `crates/reify-syntax/src/lib.rs:465` noting that the method will move to a `CompiledConstraintDef::is_test` field once constraint-def lowering lands.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:20:42.897Z",
+        "updatedAt": "2026-04-11T07:26:00.982Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -33900,13 +33901,13 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:23:43.877Z",
+      "lastModified": "2026-04-11T07:26:00.992Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
         "master"
       ],
-      "created": "2026-04-11T07:24:50.168Z",
+      "created": "2026-04-11T07:26:01.421Z",
       "description": "Tasks for master context"
     }
   }
