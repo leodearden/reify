@@ -32980,7 +32980,7 @@
         "description": "After the migration of `byte_offset_to_line_col` from `gui/src-tauri/src/engine.rs` into `crates/reify-types/src/source_location.rs` (commits 488135f03, f776a7567, 3a86df10b), the canonical tests now live in `crates/reify-types/src/source_location.rs`. However, equivalent edge-case tests still exist in `gui/src-tauri/src/tests/engine_tests.rs` around lines 1311–1419 (basic_conversion, empty_source, offset_beyond_len, offset_beyond_len_release, multibyte_chars, returns_one_based_columns) — they merely import the function from `reify_types` and re-test the same edge cases.\n\nAction: delete the duplicated `byte_offset_to_line_col_*` test bodies from `gui/src-tauri/src/tests/engine_tests.rs`. Keep only tests that meaningfully exercise GUI-specific consumers of the function (e.g. `get_diagnostics_empty_span_has_identical_start_end` at line 1359 — that one tests the GUI engine's use of the helper, not the helper itself).\n\nThis eliminates dual-source test maintenance and reflects the new \"the function lives in reify-types\" reality.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -32991,7 +32991,8 @@
           "modules": [
             "gui/src-tauri/src/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-11T06:14:31.014Z"
       },
       {
         "id": "1621",
@@ -33017,7 +33018,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T06:14:30.284Z",
+      "lastModified": "2026-04-11T06:14:31.015Z",
       "taskCount": 1621,
       "completedCount": 1271,
       "tags": [
