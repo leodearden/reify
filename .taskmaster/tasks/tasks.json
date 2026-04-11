@@ -10869,7 +10869,7 @@
         "description": "Multiple test quality issues in stdlib_loader_tests.rs and stdlib_prelude_tests.rs need fixing.",
         "details": "1. Add negative test: compile Steel:Elastic with plain compile() (no prelude) and assert error diagnostic (proves prelude is required)\n2. Strengthen eval_with_prelude_trait_conformance to check specific param values (youngs_modulus, poissons_ratio, shear_modulus) not just !is_empty()\n3. Strengthen compile_with_prelude_injects_trait_constraints to verify constraint content (uts >= yield_strength), not just !is_empty()\n4. Add HardnessScale enum check to materials_mechanical_traits_present\n\nFiles: crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs\n\nmemory_hints: search \"stdlib prelude test\" \"compile_with_prelude\" | entities: stdlib_loader, Engine",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10884,7 +10884,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:20:57.052Z"
       },
       {
         "id": "505",
@@ -33568,7 +33568,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:56.819Z",
+      "lastModified": "2026-04-11T07:20:57.052Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
