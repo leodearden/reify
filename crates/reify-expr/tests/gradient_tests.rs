@@ -187,8 +187,8 @@ fn test_assert_gradient_vector_panics_on_out_of_tolerance() {
 /// Characterization test: `assert_gradient_vector` panics when vector length mismatches.
 ///
 /// Constructs a 2-element Value::Vector but passes a 3-element expected slice.
-/// This exercises the `assert_eq!(components.len(), expected.len(), ...)` branch
-/// (helper lines 94-100).  The panic message begins with "gradient vector has" verbatim.
+/// This exercises the `assert_eq!(components.len(), expected.len(), ...)` branch.
+/// The panic message begins with "gradient vector has" verbatim.
 #[test]
 #[should_panic(expected = "gradient vector has")]
 fn test_assert_gradient_vector_panics_on_length_mismatch() {
@@ -199,9 +199,8 @@ fn test_assert_gradient_vector_panics_on_length_mismatch() {
 /// Characterization test: `assert_gradient_vector` panics when a component is non-numeric.
 ///
 /// Constructs a Value::Vector whose first element is Value::Undef.  `Value::Undef.as_f64()`
-/// returns None (verified in crates/reify-types/src/value.rs:264-271), which triggers the
-/// `unwrap_or_else` panic at helper lines 102-104.  The panic message contains
-/// "should be numeric" verbatim.
+/// returns None, which triggers the `unwrap_or_else` panic inside the component-decoding
+/// branch of assert_gradient_vector.  The panic message contains "should be numeric" verbatim.
 #[test]
 #[should_panic(expected = "should be numeric")]
 fn test_assert_gradient_vector_panics_on_non_numeric_component() {
