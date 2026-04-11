@@ -2158,6 +2158,124 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
     }
 }
 
+/// Case A placeholder — Dimensioned domain, dimensionless codomain (laplacian).
+///
+/// A Laplacian of a `Point{3,Scalar<Length>} → Real` field has a physical result
+/// dimension of 1/Length²: the codomain (dimensionless) divided by the domain unit
+/// squared.  The DESIRED behavior is therefore `Value::Scalar { dimension: 1/Length² }`.
+///
+/// **Current behavior (bug):** `compute_laplacian` calls `dim_quotient_type` with
+/// `codomain_dim = DIMENSIONLESS` and `domain_dim = LENGTH`.  Because the codomain is
+/// already dimensionless, the guard `cd != DIMENSIONLESS` fails and the `_ =>` arm
+/// returns the fallback `Type::Real` unchanged.  `wrap_scalar_result` then produces
+/// `Value::Real` — the 1/Length² dimensional information is lost.
+///
+/// **`#[ignore]` is load-bearing:** un-ignoring this test without also fixing *both*
+/// `compute_laplacian`/`dim_quotient_type` (type-level) *and* the
+/// `compute_numerical_laplacian_at_point` / `wrap_scalar_result` path (runtime) will
+/// cause it to fail with `Value::Real`.  This is the early-warning signal: a naïve
+/// un-ignore serves as a concrete, executable spec for the required fix.
+#[test]
+#[ignore = "known bug: dim_quotient_type returns Type::Real when codomain is dimensionless, \
+            losing the 1/domain-unit² result dimension — see analysis in plan step-5"]
+fn laplacian_sample_mixed_length_to_real_placeholder() {
+    let domain = Type::point3(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    });
+    // Dimensionless codomain: Real
+    let codomain = Type::Real;
+
+    let lap_result = eval_field_op("laplacian", domain.clone(), codomain);
+    let sampled = sample_field(lap_result, domain);
+
+    // Desired: Scalar[1/Length², si_value ≈ 0.0]
+    // (linear body `x+y+z`, ∇²(linear) = 0; result dimension = 1/Length²)
+    let one_over_length_sq =
+        DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH.pow(2));
+    match sampled {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension, one_over_length_sq,
+                "laplacian_sample_mixed_length_to_real_placeholder: \
+                 expected dimension 1/Length² ({:?}), got {:?}",
+                one_over_length_sq, dimension,
+            );
+            assert!(
+                si_value.abs() < 1e-4,
+                "laplacian_sample_mixed_length_to_real_placeholder: \
+                 si_value should be ≈0.0 (∇²(x+y+z) = 0), got {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "laplacian_sample_mixed_length_to_real_placeholder: \
+             expected Value::Scalar{{1/Length²}}, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Case B regression guard — Dimensionless domain, dimensioned codomain (laplacian).
+///
+/// A Laplacian of a `Point{3,Real} → Scalar<Temperature>` field has a physical result
+/// dimension of Temperature/dimensionless = Temperature (a second derivative per
+/// dimensionless² coordinate keeps the codomain dimension).
+///
+/// **Current behavior (correct today):** `compute_laplacian` calls `dim_quotient_type`
+/// with `codomain_dim = Temperature` and `domain_dim = DIMENSIONLESS`.  Because the
+/// *domain* is dimensionless, the guard `dd != DIMENSIONLESS` fails and the `_ =>` arm
+/// returns the fallback `dimensionless_fallback(Scalar<Temperature>) = Scalar<Temperature>`
+/// unchanged.  `wrap_scalar_result` then produces `Value::Scalar { dimension: Temperature }`.
+/// This is physically correct.
+///
+/// This test is NOT `#[ignore]` — it locks in the currently-correct behavior as a
+/// regression guard.  If it starts failing, the `_ =>` arm or `dimensionless_fallback`
+/// was changed in a way that breaks the dimensionless-domain path.
+#[test]
+fn laplacian_sample_mixed_real_to_temperature_returns_scalar() {
+    // Dimensionless domain: Point{3, Real}
+    let domain = Type::point3(Type::Real);
+    // Dimensioned codomain: Scalar<Temperature>
+    let codomain = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
+
+    let lap_result = eval_field_op("laplacian", domain.clone(), codomain);
+    let sampled = sample_field(lap_result, domain);
+
+    // Expected: Scalar[Temperature, si_value ≈ 0.0]
+    // (linear body `x+y+z`, ∇²(linear) = 0; Temperature / dimensionless = Temperature)
+    match sampled {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::TEMPERATURE,
+                "laplacian_sample_mixed_real_to_temperature_returns_scalar: \
+                 expected dimension Temperature ({:?}), got {:?}",
+                DimensionVector::TEMPERATURE,
+                dimension,
+            );
+            assert!(
+                si_value.abs() < 1e-4,
+                "laplacian_sample_mixed_real_to_temperature_returns_scalar: \
+                 si_value should be ≈0.0 (∇²(x+y+z) = 0), got {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "laplacian_sample_mixed_real_to_temperature_returns_scalar: \
+             expected Value::Scalar{{Temperature}}, got {:?}",
+            other
+        ),
+    }
+}
+
 // ── Step 10: Edge-case Undef return paths ─────────────────────────────────────
 
 /// divergence(Real) returns Undef when the argument is not a Field.
