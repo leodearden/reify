@@ -261,3 +261,75 @@ fn generated_source_parses_and_compiles_cleanly() {
     assert_eq!(ks.dimension, DimensionVector::TIME);
     assert!((ks.factor - 1000.0).abs() < 1e-6);
 }
+
+// ─── step-11: task-specified prefixed-base resolution via stdlib ─────────────
+
+/// Compile a structure with a default-valued param and return the Scalar's
+/// si_value from its default expression.
+fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVector) {
+    let source = format!(
+        "structure def S {{ param x : {} = {} }}",
+        param_type, literal
+    );
+    let module = compile_with_stdlib_helper(&source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "source `{}` produced errors: {:?}",
+        source,
+        errs
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template not found");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "x")
+        .expect("x cell not found");
+    let expr = cell.default_expr.as_ref().expect("x has no default_expr");
+    if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+        si_value,
+        dimension,
+        ..
+    }) = &expr.kind
+    {
+        (*si_value, *dimension)
+    } else {
+        panic!("unexpected expression kind: {:?}", expr.kind);
+    }
+}
+
+#[test]
+fn task_test_prefixed_bases_resolve_via_stdlib() {
+    // 1km = 1000m
+    let (v, d) = stdlib_param_si_value("Length", "1km");
+    assert!((v - 1000.0).abs() < 1e-9, "1km should be 1000, got {}", v);
+    assert_eq!(d, DimensionVector::LENGTH);
+
+    // 1nm = 1e-9m
+    let (v, d) = stdlib_param_si_value("Length", "1nm");
+    assert!((v - 1e-9).abs() < 1e-15, "1nm should be 1e-9, got {}", v);
+    assert_eq!(d, DimensionVector::LENGTH);
+
+    // 1Tm = 1e12 m
+    let (v, d) = stdlib_param_si_value("Length", "1Tm");
+    assert!((v - 1e12).abs() < 1e-3, "1Tm should be 1e12, got {}", v);
+    assert_eq!(d, DimensionVector::LENGTH);
+
+    // 1ks = 1000 s
+    let (v, d) = stdlib_param_si_value("Time", "1ks");
+    assert!((v - 1000.0).abs() < 1e-9, "1ks should be 1000, got {}", v);
+    assert_eq!(d, DimensionVector::TIME);
+
+    // 1pg = 1e-15 kg
+    let (v, d) = stdlib_param_si_value("Mass", "1pg");
+    assert!(
+        (v - 1e-15).abs() < 1e-20,
+        "1pg should be 1e-15, got {}",
+        v
+    );
+    assert_eq!(d, DimensionVector::MASS);
+}
