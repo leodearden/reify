@@ -9297,7 +9297,7 @@
         "description": "TypeExpr currently conflates named types (where `name` is an identifier like \"Force\") and binary dimensional operators (where `name` is a symbol like \"/\" or \"*\") in a single struct. Downstream phases must inspect `name` for operator characters — a fragile implicit convention. Introduce a `TypeExprKind` enum to make this distinction explicit: `Named { name, type_args }` vs `DimensionalOp { op, left, right }`. Memory hints: search \"TypeExpr dimensional type_alias\" and get_entity \"TypeExpr\", \"TypeAliasDecl\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [
           "144"
         ],
@@ -9317,7 +9317,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:20:31.608Z"
       },
       {
         "id": "439",
@@ -25286,7 +25286,13 @@
           "files": [
             "crates/reify-eval/src/lib.rs",
             "crates/reify-types/src/diagnostics.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Attach source span/label to missing-geometry-arg diagnostics"
+            ]
+          }
         }
       },
       {
@@ -33406,7 +33412,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:31.273Z",
+      "lastModified": "2026-04-11T07:20:31.608Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
