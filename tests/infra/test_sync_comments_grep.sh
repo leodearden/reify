@@ -438,6 +438,21 @@ echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
 # _SECT3_HELPER is exported so the single-quoted `bash -c '...'` subshells
 # below read it from their own environment (matching the Section 1 hardening
 # convention from Task 1322). SYNC_TEST is already exported near the top.
+#
+# SOURCE SIDE EFFECT: sourcing SYNC_TEST inside the subshell is not a clean
+# import — it also executes sync_comments_test.sh's top-level assertions as
+# a side effect (the SYNC-marker grep, the extract_fn / sanitize_value body-
+# diff assert, etc.). Those assertions must remain non-fatal: the shared
+# `assert` helper in test_helpers.sh already is (it only increments FAIL, it
+# does not exit), and `test_summary` is stubbed to no-op by each Section 3
+# subshell.  Any future refactor of sync_comments_test.sh must preserve this
+# non-fatal contract — introducing a top-level `exit` would silently abort
+# the Section 3 subshell and turn a PASS into a silent empty-output failure.
+#
+# Follow-up: consider wrapping sync_comments_test.sh's top-level assertions
+# in a main() function so that sourcing the file becomes side-effect-free.
+# That refactor touches tests/sync_comments_test.sh, which is outside the
+# scope of this task (tests/infra only).
 _SECT3_HELPER="$SCRIPT_DIR/test_helpers.sh"
 export _SECT3_HELPER
 
