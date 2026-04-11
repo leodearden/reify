@@ -11129,7 +11129,13 @@
           "modules": [
             "crates/reify-eval",
             "crates/reify-compiler"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib perf: cache prelude functions, remove unnecessary allocations"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:21:10.370Z"
       },
@@ -27568,7 +27574,13 @@
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/termination.rs",
             "crates/reify-compiler/tests/termination_check_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Improve guard compilation failure handling: distinguish no-guard from broken-guard, filter by severity"
+            ]
+          }
         }
       },
       {
@@ -33340,7 +33352,13 @@
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests",
             "examples/m5_geometry_flange.ri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Support let-bound geometry variables as boolean op arguments"
+            ]
+          }
         }
       },
       {
@@ -33349,11 +33367,11 @@
         "description": "Delete the four tautological tests in crates/reify-expr/tests/field_calculus_tests.rs that duplicate helper bodies as expected values: make_analytical_field_constructs_expected_pair (~line 117), divergence_result_type_returns_field_real (~line 142), curl_result_type_returns_field_vec3_real (~line 154), laplacian_result_type_returns_field_real (~line 165). These tests reconstruct the helper body as the expected value, so they can never detect bugs. Optionally replace with property-based assertions (e.g., returned field has source==Analytical).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T17:16:53.724Z",
+        "updatedAt": "2026-04-11T07:21:13.831Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -33666,7 +33684,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:12.543Z",
+      "lastModified": "2026-04-11T07:21:13.831Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
