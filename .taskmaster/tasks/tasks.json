@@ -33294,11 +33294,11 @@
         "description": "Follow-up quality improvements from task 1332 review:\\n\\n1. **parse_or_panic DRY** (S2): Extract private `fn parse_or_panic(source) -> ParsedModule` from the three pipeline helpers in helpers.rs to remove the triplicated parse+assert prologue.\\n2. **Remaining copies** (S3): Two more copies of `parse_and_compile` remain in reify-compiler tests (type_alias_compile_tests.rs, unit_registry_tests.rs). Migrate them to reify_test_support::parse_and_compile. Verify no test relies on the custom ModulePath names.\\n3. **Test quality** (S4-S7): Strengthen helper unit tests — use non-geometry source in test_make_engine, use controlled needle in test_parse_compile_expect_err_needle_match, reduce stdlib-shape coupling in test_parse_and_compile_with_stdlib.\\n\\nSource: reviewer suggestions S2-S7 from task 1332 unblock.\\nFiles: crates/reify-test-support/src/helpers.rs, crates/reify-compiler/tests/type_alias_compile_tests.rs, crates/reify-compiler/tests/unit_registry_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:21:01.367Z",
+        "updatedAt": "2026-04-11T07:27:35.594Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests",
@@ -33899,7 +33899,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:27:33.488Z",
+      "lastModified": "2026-04-11T07:27:35.594Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
