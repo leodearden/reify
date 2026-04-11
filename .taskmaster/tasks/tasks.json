@@ -12078,11 +12078,11 @@
         "description": "Six test improvements across two files:\n\n**crates/reify-compiler/tests/recursive_detection_tests.rs:**\n1. `sub_referencing_unknown_structure_not_recursive` (line ~339): Assert S is present in templates before checking is_recursive, or explicitly document as smoke test. Currently if-let silently passes with zero assertions.\n2. `warning_diagnostic_emitted_for_cycle` (line ~249): Also test multi-node cycle path string format (e.g. 'A -> B -> A') — currently only tests self-reference 'S -> S'.\n\n**crates/reify-eval/tests/recursive_unfold.rs:**\n3. `cyclic_let_bindings_emit_diagnostic` (line ~1232): Replace single-char member names `a`/`b` with distinctive names (e.g. `count_x`/`count_y`) to avoid false positive assertions.\n4. Add missing test: guarded sub on non-recursive template (`is_recursive=false` + guard_expr present). Verify guarded sub is NOT unfolded.\n5. `unfold_mutual_recursion_heterogeneous_members` (line ~1069): Extend to verify depth 2 (`A.b.a.width == 5`), not just depth 1.\n6. `unfold_mutual_recursion_with_let_bindings` (line ~995): Give each template unique let-binding names (e.g. A has `a_only`, B has `b_only`) to distinguish correct per-entity template lookup from buggy fixed-parent-template.\n\nmemory_hints: search \"recursive detection tests\", search \"recursive unfold test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T09:16:59.191Z",
+        "updatedAt": "2026-04-11T07:21:21.748Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests",
@@ -27954,7 +27954,13 @@
           ],
           "files": [
             "crates/reify-compiler/src/guards.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Replace wildcard catch-all with explicit match arms in compile_guarded_members"
+            ]
+          }
         }
       },
       {
@@ -33490,7 +33496,13 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Harden collection_sub_eval count-change test coverage"
+            ]
+          }
         }
       },
       {
@@ -33726,7 +33738,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:20.588Z",
+      "lastModified": "2026-04-11T07:21:21.748Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
