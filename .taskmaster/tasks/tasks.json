@@ -25358,11 +25358,11 @@
         "description": "The unit tests added in Task 1167 (crates/reify-eval/src/lib.rs lines ~4863-5054) cover only `Primitive::Box` (1 of 3 primitive variants) and `Modify::Fillet` (1 of 5 modify variants). The shared `eval_arg` closures are exercised but the per-kind formatting and other variant code paths are not validated. There is also no end-to-end test confirming that the warning actually reaches `BuildResult.diagnostics` / `TessellateResult.diagnostics` via `Engine::build()`, `Engine::build_snapshot()`, or `Engine::tessellate_realizations()` (call sites at lib.rs lines ~2899-2906, 2979-2986, 3099-3107). Future refactors that break the `&mut diagnostics` plumbing would not be caught by the new unit tests.\n\n**Add the following tests:**\n\n1. `compile_geometry_op_primitive_cylinder_missing_radius_emits_diagnostic` — `Primitive::Cylinder` missing `radius`.\n2. `compile_geometry_op_primitive_sphere_missing_radius_emits_diagnostic` — `Primitive::Sphere` missing `radius`.\n3. `compile_geometry_op_modify_chamfer_missing_distance_emits_diagnostic` — `Modify::Chamfer` missing `distance`.\n4. `compile_geometry_op_modify_shell_missing_thickness_emits_diagnostic` — `Modify::Shell` missing `thickness` while a `face_0` arg is present (confirms only the required-arg path warns, not the optional `face_*` collection).\n5. `compile_geometry_op_modify_draft_missing_angle_emits_diagnostic` — `Modify::Draft` missing `angle`.\n6. `compile_geometry_op_modify_thicken_missing_offset_emits_diagnostic` — `Modify::Thicken` missing `offset`.\n7. `compile_geometry_op_box_two_missing_args_emits_two_diagnostics_in_order` — `Primitive::Box` missing both `width` and `height`; assert `diagnostics.len() == 2` and verify message order matches caller iteration order (`width` before `height`).\n8. **End-to-end plumbing test** in the same module: construct a `CompiledModule` containing a `Primitive::Box` op with an intentionally missing required arg, run `engine.build(...)`, and assert the resulting `BuildResult.diagnostics` contains a `Severity::Warning` mentioning the missing arg name. Doing this for one of the three call sites is sufficient to lock the wiring in place.\n\nTests (1)–(7) can reuse the helpers in the existing module; (8) needs an `Engine` fixture — look at sibling tests for the right setup.\n\n**Source review suggestions:** S5 (test_coverage) + S6 (test_coverage) from Task 1167 review.\n\nmemory_hints: search \"compile_geometry_op test coverage primitive modify\" entity \"BuildResult\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-11T06:56:17.892Z",
+        "updatedAt": "2026-04-11T11:00:29.221Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -30599,11 +30599,11 @@
         "description": "Replace silent wildcard fallbacks in `make_sample_point` and `eval_field_op` test helpers with explicit panics so future misuse fails loudly.\n\nThree changes from Task 1291 review (S1, S5, S6):\n\n1. **Line 546 / line 590 — dimension cap**: `make_sample_point` uses a fixed `[1.0, 2.0, 3.0]` array and `eval_field_op` uses `[\"x\", \"y\", \"z\"]`, both capping at 3 dimensions. Add `assert!(*n <= 3, \"...only supports up to 3 dimensions\")` at the top of the Point arm in both functions.\n\n2. **Line 554 — inner wildcard**: The `_ => Value::Real(v)` arm inside the `Type::Point` match of `make_sample_point` silently falls back for unexpected quantity types (e.g., Type::Vector, Type::Field). Replace with `other => panic!(\"make_sample_point: unsupported quantity type in Point: {:?}\", other)`.\n\n3. **Line 567 — outer wildcard**: The top-level `_ => (Value::Real(1.0), Type::Real)` arm silently handles unexpected domain types. Replace with `other => panic!(\"make_sample_point: unsupported domain type: {:?}\", other)`.\n\nMemory hints:\n- search \"field_calculus_tests make_sample_point eval_field_op\" for helper context\n- search \"Task 1291 review suggestions defensive coding\" for origin",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T06:31:59.129Z",
+        "updatedAt": "2026-04-11T11:00:29.304Z",
         "metadata": {
           "modules": [
             ".task/plan.json",
@@ -33457,7 +33457,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T11:00:29.110Z",
+      "lastModified": "2026-04-11T11:00:29.304Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
