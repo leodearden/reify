@@ -6897,7 +6897,7 @@
           "334",
           "335"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-M8.3",
           "modules": [
@@ -6915,7 +6915,7 @@
         },
         "subtasks": [],
         "details": "Four .ri integration tests: (1) materials — aluminum bracket Physical+Elastic+Strong, computed mass; (2) ports — motor+gearbox RotaryPort, ThreadedPort M8; (3) tolerancing — flange with Position(MMC), Flatness, Ra 1.6μm; (4) units — all SI prefixes, imperial conversions, cross-system arithmetic.",
-        "updatedAt": "2026-04-11T07:19:51.235Z"
+        "updatedAt": "2026-03-24T00:00:00.000Z"
       },
       {
         "id": "337",
@@ -7015,7 +7015,7 @@
           "337",
           "326"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-M8.4",
           "modules": [
@@ -7031,7 +7031,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:51.290Z"
+        "updatedAt": "2026-03-24T00:00:00.000Z"
       },
       {
         "id": "342",
@@ -7064,7 +7064,7 @@
           "260",
           "326"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-M8.4",
           "modules": [
@@ -7079,7 +7079,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:51.332Z"
+        "updatedAt": "2026-03-24T00:00:00.000Z"
       },
       {
         "id": "344",
@@ -21217,7 +21217,7 @@
         "description": "Review suggestions S9-S17 from task 362 review.\n\nS9 (recursive_detection_tests.rs): Extract cycle_warnings() helper — filter copy-pasted 7 times across test file.\nS10 (scc.rs:285-298): sub_ref helper could drift — consider Default derive or shared fixtures module.\nS11 (scc.rs:349-370): duplicate_template_names test should assert Severity::Error.\nS12 (scc.rs:349-370): duplicate_template_names test should assert !is_recursive on both templates.\nS13 (tests:476-515): three_node_cycle test should check all 3 names (A, B, C) present.\nS14 (scc.rs:320-348): duplicate_sub_refs_deduped should assert label count == 2.\nS15 (tests:440-474): mutual_recursion_cycle_path_format duplicates indirect_two_node_cycle_both_recursive — remove or repurpose.\nS16 (tests:517-551): Add multi-member SCC label test (A<->B with 2 labels).\nS17: sub_ref builder could use Default or shared module.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -21230,7 +21230,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-11T07:19:51.414Z"
+        "updatedAt": "2026-04-10T00:00:00.000Z"
       },
       {
         "id": "989",
@@ -29085,11 +29085,11 @@
         "description": "In crates/reify-compiler/src/lib.rs:272-286, the duplicate-unit diagnostic hardcodes 'already defined in stdlib prelude' whenever the original entry has span SourceSpan::empty(0). Post-task-209, prelude units flow in from user imports via compile_project / compile_module as well, so a collision with an imported pub unit (e.g. the local_unit_duplicating_imported_pub_unit_produces_error test) emits a message that misattributes the conflict to stdlib. Fix options: (a) track the source of seeded prelude units (UnitEntry::source: Stdlib | Imported(module_path)) and select wording accordingly — 'already defined in stdlib prelude' vs 'already imported from module X'; (b) minimally, soften wording to 'already defined in imported prelude' so it reads correctly in both cases. The existing test only asserts 'duplicate' and 'mil' appear, so tighten the assertion to cover the new wording. Files: crates/reify-compiler/src/lib.rs, crates/reify-compiler/src/units.rs (UnitRegistry/UnitEntry if tracking source), crates/reify-compiler/tests/user_defined_unit_tests.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:01:25.659Z",
+        "updatedAt": "2026-04-11T07:19:51.245Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -33179,7 +33179,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:51.435Z",
+      "lastModified": "2026-04-11T07:19:51.245Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
