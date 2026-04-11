@@ -1497,6 +1497,58 @@ mod tests {
         );
     }
 
+    /// Spot-check that the four (source, position) pairs referenced by the 8 stale
+    /// `TODO(task-2)` comments all resolve to the contexts those comments claimed.
+    /// This is a permanent regression guard: any future change to `determine_context`
+    /// that silently breaks these mappings will be caught here.
+    #[test]
+    fn stale_todo_positions_map_to_expected_contexts() {
+        // (a) bracket_source() @ Position(1,0) → StructureBody
+        {
+            let source = reify_test_support::bracket_source();
+            let ctx = AnalysisContext::new(source, &test_uri());
+            let result = determine_context(source, Position::new(1, 0), &ctx);
+            assert!(
+                matches!(result, CursorContext::StructureBody { .. }),
+                "expected StructureBody for bracket_source @ Position(1,0), got {:?}",
+                result
+            );
+        }
+        // (b) bracket_source() @ Position(7,17) → Expression
+        {
+            let source = reify_test_support::bracket_source();
+            let ctx = AnalysisContext::new(source, &test_uri());
+            let result = determine_context(source, Position::new(7, 17), &ctx);
+            assert!(
+                matches!(result, CursorContext::Expression { .. }),
+                "expected Expression for bracket_source @ Position(7,17), got {:?}",
+                result
+            );
+        }
+        // (c) occurrence def Joint source @ Position(1,0) → StructureBody
+        {
+            let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+            let ctx = AnalysisContext::new(source, &test_uri());
+            let result = determine_context(source, Position::new(1, 0), &ctx);
+            assert!(
+                matches!(result, CursorContext::StructureBody { .. }),
+                "expected StructureBody for Joint occurrence @ Position(1,0), got {:?}",
+                result
+            );
+        }
+        // (d) guarded-group source @ Position(1,0) → StructureBody
+        {
+            let source = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n}";
+            let ctx = AnalysisContext::new(source, &test_uri());
+            let result = determine_context(source, Position::new(1, 0), &ctx);
+            assert!(
+                matches!(result, CursorContext::StructureBody { .. }),
+                "expected StructureBody for guarded-group source @ Position(1,0), got {:?}",
+                result
+            );
+        }
+    }
+
     // --- guarded-group completion tests ---
 
     // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
