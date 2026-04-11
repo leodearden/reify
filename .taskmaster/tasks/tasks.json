@@ -29068,7 +29068,13 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract ICE diagnostic helper to reduce duplication in entity.rs/guards.rs"
+            ]
+          }
         }
       },
       {
@@ -29077,11 +29083,11 @@
         "description": "Two minor issues in silent_defaults_tests.rs from task 823 review:\n\n1. **Stale docstring (line ~506-509):** The docstring for `stdlib_fn_no_args_emits_type_inference_warning` says \"This test is currently FAILING because no warning is emitted\" — but the corresponding production code change (expr.rs:586) is included in the same commit, so the test passes. Remove or update the stale comment.\n\n2. **Fragile function name (line ~514):** The test uses `pi()` as a test case. If `pi` becomes a recognized constant or keyword, the test may fail or test a different code path. Use a clearly fake/unlikely function name like `__test_zero_arg_fn()` instead to avoid collision with future stdlib additions.\n\nmemory_hints: search(\"silent_defaults_tests stdlib zero-arg pi\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:08:53.542Z",
+        "updatedAt": "2026-04-11T07:21:41.903Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -33867,7 +33873,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:39.675Z",
+      "lastModified": "2026-04-11T07:21:41.903Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
