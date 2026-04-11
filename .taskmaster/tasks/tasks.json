@@ -33402,7 +33402,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T06:56:20.091Z"
+        "updatedAt": "2026-04-11T06:56:20.091Z",
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/completion.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": 1627,
@@ -33413,7 +33421,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/geometry_error_handling.rs",
+            "crates/reify-eval/tests/stress_sweep_degenerate.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 1628,
