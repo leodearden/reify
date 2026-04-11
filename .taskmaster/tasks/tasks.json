@@ -19018,11 +19018,11 @@
         "description": "Add two robustness improvements to tests/sync_comments_test.sh:\n\n1. **Source error handling (line 15):** Change `source \"$REPO_ROOT/tests/infra/test_helpers.sh\"` to include an error handler: `source \"$REPO_ROOT/tests/infra/test_helpers.sh\" || { echo \"ERROR: failed to source test_helpers.sh\"; exit 1; }`. Currently if test_helpers.sh exists but fails to parse/execute (syntax error, permission denied), `source` silently returns non-zero and the script continues with `assert` and `test_summary` undefined, producing unhelpful \"command not found\" errors.\n\n2. **File-existence guards (before line 18):** Add guards for the target files before the assert calls:\n   ```bash\n   [ -f \"$EXPR_FILE\" ] || { echo \"ERROR: $EXPR_FILE not found\"; exit 1; }\n   [ -f \"$STDLIB_FILE\" ] || { echo \"ERROR: $STDLIB_FILE not found\"; exit 1; }\n   ```\n   The shared `assert` helper redirects stderr to /dev/null (`\"$@\" >/dev/null 2>&1`), so if either file is missing, grep's \"No such file or directory\" is swallowed and the test reports a generic FAIL with no indication the file itself is missing.\n\nThis follows the existing guard pattern already used on line 14 for test_helpers.sh itself.\n\nMemory hints: search \"test_helpers.sh shared test infrastructure\", search \"sync_comments_test.sh\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T22:06:43.303Z",
+        "updatedAt": "2026-04-11T01:08:49.162Z",
         "metadata": {
           "modules": [
             "tests/infra/test_test_helpers.sh",
@@ -32931,19 +32931,30 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1619,
+        "title": "Clean up stale `TODO(task-2)` references in completion.rs",
+        "description": "Eight TODO comments in `crates/reify-lsp/src/completion.rs` (lines 759, 787, 821, 837, 887, 926, 1502, 1530) reference `task-2`, but task #2 is the OCCT FFI binding task — not a completion task. The actual position-sensitive completion tracking tasks are #481 (test-first) and #482 (implementation), both already DONE: `CursorContext`, `determine_context`, and the narrowing logic are all implemented in completion.rs and used by `compute_completions`.\n\nEach TODO says something like \"When position-sensitive filtering lands, verify these assertions still hold in StructureBody/Expression context.\" Since position-sensitive filtering HAS landed and tests are still passing at the listed positions (Position(1,0) is inside structure body, Position(7,17) is Expression context), the requested verification is implicitly complete.\n\nAction: remove the 8 stale `TODO(task-2)` comments from `crates/reify-lsp/src/completion.rs`. Spot-check that each test's position is consistent with the narrowing predicted by `determine_context` so removal is safe.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T01:03:42.345Z",
-      "taskCount": 1616,
-      "completedCount": 1265,
+      "lastModified": "2026-04-11T01:08:49.162Z",
+      "taskCount": 1618,
+      "completedCount": 1266,
       "tags": [
         "master"
       ],
-      "created": "2026-04-11T01:03:50.091Z",
+      "created": "2026-04-11T01:09:19.555Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-11T01:03:58.624Z"
+      "updated": "2026-04-11T01:09:19.571Z"
     }
   }
 }
