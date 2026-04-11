@@ -199,8 +199,8 @@ fn cross_module_private_unit_not_visible_via_compile_with_prelude() {
     assert!(
         errors
             .iter()
-            .any(|d| d.message.contains("unknown") || d.message.contains("privmil")),
-        "error should mention unknown unit; got: {:?}",
+            .any(|d| d.message.to_lowercase().contains("unknown unit") && d.message.contains("privmil")),
+        "error should mention 'unknown unit' and 'privmil'; got: {:?}",
         errors
     );
 }
