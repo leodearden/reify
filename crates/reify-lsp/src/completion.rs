@@ -1487,12 +1487,12 @@ mod tests {
         );
     }
 
-    /// Spot-check that the four (source, position) pairs referenced by the 8 stale
-    /// `TODO(task-2)` comments all resolve to the contexts those comments claimed.
-    /// This is a permanent regression guard: any future change to `determine_context`
-    /// that silently breaks these mappings will be caught here.
+    /// Spot-check that representative (source, position) pairs resolve to every variant
+    /// of `CursorContext`. Complements the per-variant `determine_context_*` unit tests
+    /// by asserting the mapping in a single compact table and serves as a regression
+    /// guard against future refactors that silently break one of the branches.
     #[test]
-    fn stale_todo_positions_map_to_expected_contexts() {
+    fn determine_context_at_sampled_positions() {
         let check = |source: &str, pos: Position, label: &str, matcher: fn(&CursorContext) -> bool| {
             let ctx = AnalysisContext::new(source, &test_uri());
             let result = determine_context(source, pos, &ctx);
