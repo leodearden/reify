@@ -12,38 +12,10 @@
 //!   4. User unit in quantity literal → SI   (test 1, multi-unit)
 //!   5. Unit with compound dimension         (tests 2)
 
-use reify_compiler::{CompiledModule, compile, compile_with_prelude, stdlib_loader};
-use reify_types::{DimensionVector, ModulePath, Severity};
+mod common;
 
-// ─── helpers ───────────────────────────────────────────────────────────────────
-
-fn parse_and_compile(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile(&parsed)
-}
-
-fn errors_only(module: &CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
-}
-
-fn compile_with_stdlib_helper(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile_with_prelude(&parsed, stdlib_loader::load_stdlib())
-}
+use common::{compile_with_stdlib_helper, errors_only, parse_and_compile};
+use reify_types::DimensionVector;
 
 // ─── category 1: basic unit declaration ───────────────────────────────────────
 
@@ -76,7 +48,14 @@ fn offset_unit_degc_compiles_with_factor_and_offset() {
     // The canonical degC declaration: factor=1 (1:1 Kelvin scale) plus additive
     // offset. The compiled entry must have dimension=TEMPERATURE, factor≈1.0,
     // offset=Some(273.15).
-    let module = parse_and_compile("unit degC : Temperature = 1 offset 273.15");
+    //
+    // Also verifies the explicit `= 1 offset X` form round-trips through a
+    // quantity literal (unit_registry_tests.rs::offset_unit_quantity_literal_applies_offset
+    // covers the short `offset X` form; this exercises the explicit-factor path).
+    let module = parse_and_compile(
+        "unit degC : Temperature = 1 offset 273.15\n\
+         structure S { param t : Temperature = 5degC }",
+    );
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
     let unit = module
@@ -100,6 +79,34 @@ fn offset_unit_degc_compiles_with_factor_and_offset() {
         "degC offset should be ≈273.15, got {}",
         off
     );
+
+    // Quantity-literal round-trip: 5degC → 5 * 1.0 + 273.15 = 278.15 K
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template 'S' not found");
+    let t_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "t")
+        .expect("value cell 't' not found");
+    if let Some(expr) = &t_cell.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
+            assert!(
+                (si_value - 278.15).abs() < 1e-9,
+                "5degC should be ≈278.15 K (5 * 1.0 + 273.15), got {}",
+                si_value
+            );
+        } else {
+            panic!("expected scalar literal for 't', got {:?}", expr.kind);
+        }
+    } else {
+        panic!("value cell 't' has no default_expr");
+    }
 }
 
 // ─── category 3: conversion factor arithmetic ─────────────────────────────────
