@@ -11444,7 +11444,7 @@
         "description": "The Revolve arm in compile_geometry_op has 7 independently required args (ox, oy, oz, ax, ay, az, angle), each using ?-propagation. Currently only 'ox' is tested for the missing-arg→None path. Add a table-driven test that omits each required arg in turn and asserts None in every case. Memory hint: search for \"compile_geometry_op revolve\" and \"task 351\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11458,7 +11458,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:21:17.070Z"
       },
       {
         "id": "527",
@@ -33702,7 +33702,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:16.259Z",
+      "lastModified": "2026-04-11T07:21:17.071Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
