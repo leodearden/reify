@@ -20074,11 +20074,11 @@
         "description": "In crates/reify-compiler/src/lib.rs, when check_trait_conformance encounters an unresolvable member type, use a sentinel (Type::Error or skip the member) instead of Type::Real fallback, so downstream conformance comparison doesn't emit a second misleading diagnostic.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:10:51.310Z",
+        "updatedAt": "2026-04-11T07:19:44.366Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -20247,11 +20247,11 @@
         "description": "In crates/reify-types/src/value.rs, add pub fn orientation_is_finite() that checks all four quaternion components with !is_finite(). Use it in crates/reify-expr/src/lib.rs sanitize_value + Transform guards and crates/reify-stdlib/src/lib.rs sanitize_value. Normalizes verbose is_nan()||is_infinite() to !is_finite().",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:04:07.627Z",
+        "updatedAt": "2026-04-11T07:19:44.409Z",
         "metadata": {
           "modules": [
             "crates/reify-types",
@@ -20272,11 +20272,11 @@
         "description": "In crates/reify-expr/src/lib.rs tests: (1) Add symmetric NaN/Inf tests for each quaternion field. (2) Non-identity orientation passthrough test. (3) Multi-bad-field test. (4) Complex passthrough test confirming intentional divergence from stdlib. Use parameterized helper/macro.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:03:41.277Z",
+        "updatedAt": "2026-04-11T07:19:44.450Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -20379,11 +20379,11 @@
         "description": "Move 7 conjugate NaN/Inf tests from crates/reify-expr/src/lib.rs to crates/reify-expr/tests/complex_eval_tests.rs using existing complex_val() and eval_method() helpers. Add missing +Inf im test case and negative-im regression test.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:05:52.643Z",
+        "updatedAt": "2026-04-11T07:19:44.493Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -20401,11 +20401,11 @@
         "description": "In crates/reify-expr/src/lib.rs: (1) Add phase_inf_im_returns_undef test for im=+Infinity. (2) Add phase_zero_complex_returns_undef test for 0+0i. (3) Update stale comment on phase_neg_inf_im noting atan2(-Inf,1.0) is finite so pre-guard catches it. (4) Expand 'pre-guard is essential' comment to name both is_finite guard and zero-vector guard.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:02:32.084Z",
+        "updatedAt": "2026-04-11T07:19:44.535Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -20968,11 +20968,11 @@
         "description": "Two related issues with the duplicate-template-name handling in detect_recursive_structures (crates/reify-compiler/src/scc.rs lines 19-29): (1) The error diagnostic exposes raw array indices ('indices 0 and 1') instead of using source span labels like the rest of the compiler. Should use with_label() pointing at the two template definition spans. (2) After emitting the error, the function continues SCC analysis on a corrupted index map, which can produce confusing follow-on warnings. Should early-return with an empty cyclic_sccs vec after detecting duplicates.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T19:07:18.707Z",
+        "updatedAt": "2026-04-11T07:19:44.576Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -20995,11 +20995,11 @@
         "description": "The duplicate_template_names_emits_diagnostic test in crates/reify-compiler/src/scc.rs (lines 351-367) has two gaps: (1) It filters by message substring 'duplicate' without asserting Severity::Error — a regression to warning would go undetected. (2) It doesn't verify that is_recursive is still computed correctly for the non-duplicate entries. Both assertions should be added.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T19:06:29.554Z",
+        "updatedAt": "2026-04-11T07:19:44.620Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -33137,7 +33137,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:44.218Z",
+      "lastModified": "2026-04-11T07:19:44.620Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
