@@ -29188,7 +29188,13 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: deps.rs: fix doc accuracy, test naming, duplicate contract, cross-module comment"
+            ]
+          }
         }
       },
       {
@@ -29299,11 +29305,11 @@
         "description": "Two related documentation issues around sub_member_types after Task 1365's landing:\n\n1. crates/reify-compiler/src/scope.rs:36 — the doc comment reads \"Member types for non-collection sub-components\" but entity.rs:417-429 populates sub_member_types for ALL subs unconditionally (no is_collection guard). Update to: \"Member types for all sub-components: sub_name → { member_name → Type }. Populated for ALL subs (collection and non-collection) for self.sub.member resolution.\" This aligns with the new comment already in expr.rs:1506 (\"sub_member_types covers ALL subs\").\n\n2. crates/reify-compiler/src/expr.rs:1512-1517 — the `.or_else(|| ... collection_sub_member_types ...)` fallback branch is unreachable because sub_member_types is a superset of collection_sub_member_types (entity.rs:417 populates for all subs; entity.rs:431 populates for collection subs only). Add a brief comment like \"// Defensive: sub_member_types is a superset, but fall back just in case.\" to explain why the branch exists and prevent future confusion. Do NOT remove the fallback — keep it as defensive coding.\n\nBoth are documentation-only changes, no behavior change. Source: reviewer_comprehensive on Task 1365.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:06:38.451Z",
+        "updatedAt": "2026-04-11T07:21:48.616Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -33885,7 +33891,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:46.164Z",
+      "lastModified": "2026-04-11T07:21:48.616Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
