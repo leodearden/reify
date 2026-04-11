@@ -9846,7 +9846,13 @@
           "modules": [
             "crates/reify-eval",
             "crates/reify-compiler"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Improve unfold_recursive_sub naming, reuse, and test coverage"
+            ]
+          }
         }
       },
       {
@@ -26489,7 +26495,13 @@
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Return iterators and slim API surface of CompiledModule filter helpers"
+            ]
+          }
         }
       },
       {
@@ -31279,7 +31291,13 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Recursive detection: domain-tag hash, hoist constant, DRY compile_all, test comment"
+            ]
+          }
         }
       },
       {
@@ -32153,11 +32171,11 @@
         "description": "Two related improvements for sub_member_types in reify-compiler:\n\n1. **Test coverage gap (from esc-1345-302 S1):** The existing `sub_member_type_resolves_without_ice` test in silent_defaults_tests.rs uses a collection sub (`sub parts : List<Inner>`), so `collection_sub_member_types` is populated and the `or_else` fallback to `sub_member_types` in expr.rs:1510-1516 is never reached. Add a companion test using a non-collection sub (e.g., `sub part : Inner` instead of `sub parts : List<Inner>`) with trait-qualified access `part.(MechTrait::diameter)`. This exercises the fallback path that was the fix's primary target.\n\n2. **Doc comment mismatch (from esc-1345-302 S2):** scope.rs:36 says `Member types for non-collection sub-components` but entity.rs:417 populates `sub_member_types` for ALL subs (confirmed by the comment at expr.rs:1506: \"sub_member_types covers ALL subs\"). Update scope.rs:36 to: `/// Member types for all sub-components: sub_name → { member_name → Type }.`\n\nmemory_hints:\n- search: \"sub_member_types scope entity population\"\n- get_entity: \"sub_member_types\"\n- search: \"non-collection sub trait-qualified access fallback expr.rs\"\n\nSource: esc-1322-29 → esc-1345-302 (S1, S2)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T06:33:34.661Z",
+        "updatedAt": "2026-04-11T07:20:40.260Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -33447,7 +33465,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:38.571Z",
+      "lastModified": "2026-04-11T07:20:40.260Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
