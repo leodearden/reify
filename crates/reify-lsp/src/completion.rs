@@ -929,10 +929,7 @@ mod tests {
         );
     }
 
-    // --- position-sensitive completion tests (task 481) ---
-    // These tests assert that completions are context-sensitive based on cursor position.
-    // They are #[ignore] because the current implementation returns everything everywhere;
-    // task 2 will implement position-sensitive filtering to make them pass.
+    // --- position-sensitive completion tests ---
 
     #[test]
     fn completion_top_level_excludes_body_keywords() {
