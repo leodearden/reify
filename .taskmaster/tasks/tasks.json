@@ -33378,11 +33378,11 @@
         "description": "Two meta-assertions added to tests/infra/test_portable_timeout.sh on task 1597 silently pass under partial regression or on macOS BSD grep. (1) Assertion at ~line 764 uses `grep -c 'exit 2' -ge 2`, but the grep command line self-matches giving a baseline of 3. Reverting one of the two sanity-check `exit 2` lines to `exit 1` leaves count=2 and the assertion still passes. Fix: replace with two independent `grep -qF` assertions, one per sanity-check line (structural, not count-based). (2) Negative assertion at ~line 755 uses `grep -qE '^\\s+# Uses the grep -cF <<< idiom'`. `\\s` is a GNU grep / PCRE extension; BSD ERE (macOS default) does not interpret it as whitespace class, so on macOS the pattern never matches and the negative assertion trivially passes even if the stale cross-reference is reintroduced. Fix: replace `^\\s+` with `^[[:space:]]+` to match the convention used elsewhere in the file.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-11T06:56:18.625Z",
+        "updatedAt": "2026-04-11T11:00:29.710Z",
         "metadata": {
           "files": [
             "tests/infra/test_portable_timeout.sh"
@@ -33398,11 +33398,11 @@
         "description": "In crates/reify-lsp/src/completion.rs at ~lines 926-929 (after task 1619's 8 TODO deletions), remove or rewrite the stale comment block: `// --- position-sensitive completion tests (task 481) --- / These tests assert that completions are context-sensitive based on cursor position. / They are #[ignore] because the current implementation returns everything everywhere; / task 2 will implement position-sensitive filtering to make them pass.` Both claims are stale: (a) the referenced tests are no longer `#[ignore]`'d and are active and passing; (b) \"task 2 will implement\" is wrong — that work was done by tasks 481/482, both DONE. Task 1619 left this untouched as out-of-scope. Simple cleanup: delete the block entirely or replace with a brief accurate comment.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T06:56:20.091Z",
+        "updatedAt": "2026-04-11T11:00:29.811Z",
         "metadata": {
           "files": [
             "crates/reify-lsp/src/completion.rs"
@@ -33457,7 +33457,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T11:00:29.608Z",
+      "lastModified": "2026-04-11T11:00:29.811Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
