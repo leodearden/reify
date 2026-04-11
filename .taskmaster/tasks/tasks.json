@@ -8215,7 +8215,13 @@
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/connect.rs",
             "crates/reify-compiler/tests/connect_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Guard auto_match_port_members behind direction compatibility check"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-11T07:19:48.390Z"
@@ -8228,7 +8234,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -8241,7 +8247,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:50.485Z"
       },
       {
         "id": "395",
@@ -21195,7 +21201,13 @@
           ],
           "modules": [
             "crates/reify-compiler"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: SCC minor perf: share HashSet, pre-allocate labels Vec"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:19:48.808Z"
       },
@@ -29058,7 +29070,13 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen user_unit_in_let_binding test to verify computed value"
+            ]
+          }
         }
       },
       {
@@ -33161,7 +33179,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:48.921Z",
+      "lastModified": "2026-04-11T07:19:50.485Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
