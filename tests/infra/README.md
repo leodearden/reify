@@ -1,7 +1,7 @@
 # tests/infra/
 
 Shell meta-tests for reify's infrastructure scripts (`scripts/lib_portable.sh`,
-`scripts/tree-sitter-generate.sh`, `scripts/check-pm-standardization.sh`, etc.).
+`scripts/tree-sitter-generate.sh`, `scripts/test_pm_standardization.sh`, etc.).
 
 ## Auto-discovery
 

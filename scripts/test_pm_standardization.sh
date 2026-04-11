@@ -22,7 +22,7 @@ set -- $PKG_FILES
 PKG_COUNT=$#
 LOCK_FILES='gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json'
 
-echo "=== check-pm-standardization ==="
+echo "=== test_pm_standardization ==="
 
 # ── Preflight: required tools ────────────────────────────────────────
 assert "git is available" command -v git
