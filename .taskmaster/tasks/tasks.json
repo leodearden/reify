@@ -2779,7 +2779,13 @@
             "crates/reify-eval/src/lib.rs",
             "crates/reify-compiler/tests/option_compile_tests.rs",
             "crates/reify-compiler/tests/match_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: some/none: match patterns"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-11T07:19:27.859Z"
@@ -2794,7 +2800,7 @@
         "dependencies": [
           "164"
         ],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "examples",
@@ -2810,7 +2816,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-11T07:19:29.950Z"
       },
       {
         "id": "166",
@@ -33107,7 +33113,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:27.862Z",
+      "lastModified": "2026-04-11T07:19:29.950Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
