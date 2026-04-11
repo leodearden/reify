@@ -166,6 +166,24 @@ fn test_assert_gradient_vector_accepts_within_tolerance() {
     assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "within tolerance");
 }
 
+/// Characterization test: `assert_gradient_vector` panics when a component exceeds tolerance.
+///
+/// Calls the helper with Value::Vector([Real(1.001), Real(2.0), Real(3.0)]) and
+/// expected &[1.0, 2.0, 3.0] with tol=1e-4.  The first component differs by 1e-3,
+/// which exceeds 1e-4, exercising the failure side of the `(val - exp).abs() < tol`
+/// tolerance assertion.  This complements the within-tolerance happy-path test by
+/// covering the failure path of the same branch.
+#[test]
+#[should_panic(expected = "differs from expected")]
+fn test_assert_gradient_vector_panics_on_out_of_tolerance() {
+    let result = Value::Vector(vec![
+        Value::Real(1.001),
+        Value::Real(2.0),
+        Value::Real(3.0),
+    ]);
+    assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "out of tolerance");
+}
+
 /// Characterization test: `assert_gradient_vector` panics when vector length mismatches.
 ///
 /// Constructs a 2-element Value::Vector but passes a 3-element expected slice.
