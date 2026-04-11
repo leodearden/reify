@@ -29035,11 +29035,11 @@
         "description": "Two related issues in conformance.rs from task 823 review:\n\n1. **Misleading diagnostic message (conformance.rs:48):** The diagnostic says \"trait member '{}' has no type annotation\" but `p` is iterated from `structure.members`, not the trait's member list. Users see \"trait member X has no type annotation\" and look at the trait definition instead of the structure. Change message to \"structure member '{}' has no type annotation; cannot infer type for trait conformance check\" or similar wording.\n\n2. **Behavioral change test gap (conformance.rs:58-83):** The Let branch now uses `?` to skip let bindings without type annotations from `structure_members`. Previously `let y = expr` (no annotation) would contribute `(y, Type::Real)` and potentially satisfy a trait requirement. Now it is excluded, so a trait requiring that member gets \"missing required member\" instead. The test `trait_let_no_type_annotation_compiles_clean` only covers the case where the trait does NOT require that let member. Add a test where the trait DOES require member `y` and the structure provides `let y = expr` without a type annotation, asserting the \"missing required member\" diagnostic fires.\n\nmemory_hints: search(\"conformance check trait structure member diagnostic\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:11:08.558Z",
+        "updatedAt": "2026-04-11T07:21:37.290Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -33852,7 +33852,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:37.103Z",
+      "lastModified": "2026-04-11T07:21:37.290Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
