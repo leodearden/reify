@@ -25710,7 +25710,7 @@
         "description": "Two small cleanup items from Task 1186 review:\n\n1. **Test coverage gap (S3):** The new missing-arg diagnostic tests cover Linear (spacing), Translate (dy), Extrude (distance), and Revolve (ox), but there are no tests for `PatternKind::Circular` (e.g., missing 'angle') or `PatternKind::Mirror` (e.g., missing 'nx'). Add these to complete coverage of the Pattern branch refactoring.\n\n2. **Stale docstring (S4):** The `compile_geometry_op` docstring at line ~3378 says \"Returns None... which signals the caller to skip this op and emit a diagnostic.\" With the eval_named_arg/eval_named_arg_f64 helpers, missing-argument diagnostics are now emitted internally by the function itself, not by the caller. Update to: \"Returns None when a required argument is missing, non-finite, or invalid. Missing arguments emit a Warning diagnostic before returning None.\"\n\nmemory_hints: search \"compile_geometry_op docstring\" \"pattern missing-arg test\" entity \"compile_geometry_op\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -25723,7 +25723,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:20:36.404Z"
       },
       {
         "id": "1212",
@@ -33429,7 +33429,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:36.036Z",
+      "lastModified": "2026-04-11T07:20:36.404Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
