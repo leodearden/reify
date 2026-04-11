@@ -1347,3 +1347,137 @@ fn build_scale_negative_factor_emits_diagnostic() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression guard: non-finite extrude distance → compile-time rejection, specific Warning
+// ---------------------------------------------------------------------------
+
+/// When a Sweep::Extrude op has a NaN distance, build() should:
+/// 1. Call kernel exactly once — for the preceding Sphere that provides the
+///    profile handle — but never call kernel for the Extrude op itself.
+/// 2. Return geometry_output=None (the realization as a whole fails).
+/// 3. Emit a Warning whose message contains both 'extrude dropped' and 'degenerate'
+///    (the site-specific diagnostic from lib.rs:3670).
+/// 4. Emit an Error containing 'failed to compile geometry operation'.
+/// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
+///    called for the Extrude op).
+///
+/// Uses NaN rather than 0.0 to exercise the non-finite arm of the check at
+/// lib.rs:3667-3678, complementing the existing zero-distance test in
+/// stress_sweep_degenerate.rs which covers the near-zero arm.
+#[test]
+fn build_extrude_nonfinite_distance_emits_diagnostic() {
+    use reify_compiler::SweepKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Sphere primitive with radius — provides step_handles[0] as the
+    // Extrude's profile handle
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    // Op 1: Extrude with NaN distance — rejected because NaN is non-finite
+    let nan_distance = reify_types::CompiledExpr::literal(
+        reify_types::Value::Scalar {
+            si_value: f64::NAN,
+            dimension: reify_types::DimensionVector::LENGTH,
+        },
+        Type::length(),
+    );
+    let extrude_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Extrude,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![("distance".into(), nan_distance)],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "radius", Type::length(), Some(mm_literal(50.0)))
+        .realization(e, 0, vec![sphere_op, extrude_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_extrude_nan_distance"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (1) Kernel was called exactly once — for the Sphere — but never for the Extrude
+    {
+        let ops = ops_ref.lock().unwrap();
+        assert_eq!(
+            ops.len(),
+            1,
+            "kernel.execute() should be called only for the Sphere (not the Extrude), \
+             got {} kernel ops",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
+            "expected the only recorded kernel op to be Sphere, got: {:?}",
+            ops[0].op
+        );
+    }
+
+    // (2) No geometry output — Extrude failed to compile
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when Extrude distance is NaN"
+    );
+
+    // (3) Warning: 'extrude dropped' and 'degenerate'
+    let has_extrude_warning = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning
+            && d.message.contains("extrude dropped")
+            && d.message.contains("degenerate")
+    });
+    assert!(
+        has_extrude_warning,
+        "expected a Warning diagnostic containing 'extrude dropped' and 'degenerate', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (4) Error about failed compile
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (5) No 'geometry error' diagnostic — kernel was never called for the Extrude
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for Extrude), \
+         but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("geometry error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
