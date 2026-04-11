@@ -11116,7 +11116,7 @@
         "description": "Address performance suggestions from task #326 review:\n1. Cache prelude functions in Engine::new() instead of re-cloning on every eval() call (crates/reify-eval/src/lib.rs:847-852)\n2. Remove unnecessary prelude_trait_defs Vec — prelude is &'static, no lifetime anchor needed (crates/reify-compiler/src/lib.rs:2123-2128)\n3. Consider pre-built prelude_context for compile_with_prelude to avoid re-flattening enums (crates/reify-compiler/src/lib.rs:2096-2100)\n\nFiles: crates/reify-eval/src/lib.rs, crates/reify-compiler/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11131,7 +11131,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:21:10.370Z"
       },
       {
         "id": "514",
@@ -33654,7 +33654,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:09.656Z",
+      "lastModified": "2026-04-11T07:21:10.370Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
