@@ -33358,11 +33358,11 @@
         "description": "Address 4 review suggestions from esc-1619-59 on crates/reify-lsp/src/completion.rs test `stale_todo_positions_map_to_expected_contexts` (lines 1488-1538): (1) rename to `determine_context_at_sampled_positions` and rewrite docstring so it stands alone without reference to deleted TODOs; (2) extract a local closure `let check = |source, pos, label, matcher| { ... };` collapsing each of the four cases to one line; (3) promote case-(d)'s guarded-group source literal to a module-local `const GUARDED_GROUP_SOURCE: &str` and reuse it in `completions_include_guarded_group_members` (lines 1544-1549); (4) extend coverage with at least one case each for `CursorContext::DotAccess` (e.g., after `.`), `CursorContext::TypePosition` (e.g., after `:`), and `CursorContext::TopLevel`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T11:00:29.608Z",
+        "updatedAt": "2026-04-11T11:00:39.494Z",
         "metadata": {
           "files": [
             "crates/reify-lsp/src/completion.rs"
@@ -33457,7 +33457,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T11:00:38.922Z",
+      "lastModified": "2026-04-11T11:00:39.496Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
