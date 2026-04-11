@@ -639,6 +639,7 @@ fn run_dim_metadata_test(
 fn make_sample_point(domain: &Type) -> (Value, Type) {
     match domain {
         Type::Point { n, quantity } => {
+            assert!(*n <= 3, "make_sample_point: Point domain only supports up to 3 dimensions, got {n}");
             let coords = [1.0f64, 2.0, 3.0];
             let comps: Vec<Value> = coords[..*n]
                 .iter()
@@ -663,6 +664,13 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
         ),
         _ => (Value::Real(1.0), Type::Real),
     }
+}
+
+#[test]
+#[should_panic(expected = "make_sample_point: Point domain only supports")]
+fn make_sample_point_panics_when_point_arity_exceeds_three() {
+    let domain = Type::Point { n: 4, quantity: Box::new(Type::Real) };
+    let _ = make_sample_point(&domain);
 }
 
 /// Evaluate a calculus operator on a standard analytical test field.
