@@ -131,7 +131,8 @@ pub const SI_DERIVED_UNITS: &[SiDerivedUnit] = &[
         name: "S",
         dimension: "Conductance",
         factor: 1.0,
-        prefix_combos: &[],
+        // nS/uS/mS are common in electronics (sensor datasheets, PCB design).
+        prefix_combos: &["n", "u", "m"],
     },
     SiDerivedUnit {
         name: "F",
@@ -179,13 +180,15 @@ pub const SI_DERIVED_UNITS: &[SiDerivedUnit] = &[
         name: "Gy",
         dimension: "AbsorbedDose",
         factor: 1.0,
-        prefix_combos: &[],
+        // uGy/mGy are standard in radiation dosimetry (medical imaging).
+        prefix_combos: &["u", "m"],
     },
     SiDerivedUnit {
         name: "Sv",
         dimension: "AbsorbedDose",
         factor: 1.0,
-        prefix_combos: &[],
+        // uSv/mSv are the common units in health physics and occupational dose.
+        prefix_combos: &["u", "m"],
     },
     SiDerivedUnit {
         name: "C",
@@ -231,6 +234,12 @@ pub const SI_DERIVED_UNITS: &[SiDerivedUnit] = &[
         factor: 1.0,
         prefix_combos: &[],
     },
+    // NOTE (suggestion #1 from review): `sr` (steradian, SolidAngle) is absent
+    // here because the test in tests/si_units_tests.rs asserts exactly 24 entries
+    // and that file is outside the amendment-pass scope. Adding `sr` to either
+    // this table or to stdlib/units.ri requires touching out-of-scope files.
+    // Tracked as a follow-up: add `pub unit sr : SolidAngle = 1` to units.ri
+    // and update the count assertion in si_units_tests.rs.
 ];
 
 /// Build the `.ri` source text for all SI units.
@@ -442,6 +451,59 @@ mod tests {
                 s,
                 parsed
             );
+        }
+    }
+
+    /// Suggestion 5: extend round-trip coverage to the extreme SI prefix range
+    /// (quecto = 1e-30, exa = 1e18, quetta = 1e30). Exercises the high-precision
+    /// code path where `log >= 17` would clamp precision to 0 — these values
+    /// are powers of ten so their decimal representation is exact.
+    #[test]
+    fn format_f64_round_trips_extreme_si_range() {
+        let extreme_cases = [
+            1e-30_f64, // quecto prefix (qm etc.)
+            1e18_f64,  // exa prefix (Em etc.)
+            1e30_f64,  // quetta prefix (Qm etc.)
+        ];
+        for original in extreme_cases {
+            let s = format_f64_as_decimal(original);
+            assert!(
+                s.chars().all(|c| c.is_ascii_digit() || c == '.'),
+                "output `{}` contains chars outside \\d+(.\\d+)? for input {}",
+                s,
+                original
+            );
+            let parsed: f64 = s.parse().unwrap_or_else(|e| {
+                panic!("failed to re-parse `{}` (from {}): {}", s, original, e)
+            });
+            assert_eq!(
+                parsed.to_bits(),
+                original.to_bits(),
+                "round-trip failed for {}: got `{}` → {}",
+                original,
+                s,
+                parsed
+            );
+        }
+    }
+
+    /// Suggestion 4: defensive check that every `prefix_combos` entry in
+    /// `SI_DERIVED_UNITS` references a symbol that actually exists in
+    /// `SI_PREFIXES`. A typo here would only surface at `load_stdlib()` time
+    /// (inside `OnceLock::get_or_init`) crashing every downstream user.
+    #[test]
+    fn all_derived_unit_prefix_combos_are_valid_si_prefix_symbols() {
+        let known: std::collections::HashSet<&str> =
+            SI_PREFIXES.iter().map(|(sym, _)| *sym).collect();
+        for unit in SI_DERIVED_UNITS {
+            for prefix in unit.prefix_combos {
+                assert!(
+                    known.contains(prefix),
+                    "SI_DERIVED_UNITS entry `{}` has unknown prefix `{}` in prefix_combos",
+                    unit.name,
+                    prefix
+                );
+            }
         }
     }
 }
