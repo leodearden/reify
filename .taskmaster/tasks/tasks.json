@@ -29367,11 +29367,11 @@
         "description": "Four in-place refinements to `build_modify_missing_arg_no_kernel_error` in `crates/reify-eval/tests/geometry_error_handling.rs` (Task 1286 review):\n\n1. **Rename (S1)**: The function is named `build_modify_missing_arg_no_kernel_error`, but the kernel IS called once for the preceding Box. The intent is 'no kernel call for the Modify op specifically'. Rename to `build_modify_missing_arg_no_modify_kernel_call` (or `..._skips_modify_kernel`) so the name matches the assertion. See section header on line 1073 ('no Modify kernel call') for the correct phrasing.\n\n2. **Drop hardcoded line range in docstring (S2)**: Line 1096 references `compile_geometry_op_modify_missing_arg_returns_none` in `lib.rs:4955-5007`. Hardcoded line numbers go stale on every refactor. Reference by symbol only.\n\n3. **Add 'all geometry operations failed' assertion (S3)**: The docstring item (2) says 'compile failure short-circuits the realization', but `geometry_output=None` actually arises from TWO causes: Fillet compile failure truncates realization handles (lib.rs:2929-2931), then the post-loop check at lib.rs:3015 fires the 'all geometry operations failed; no geometry output produced' diagnostic. A future regression that produced `geometry_output=None` for a different reason (e.g. accidental early return) would still pass. Add an assertion that diagnostics contain 'all geometry operations failed', mirroring the primitive test lines 950-958, to pin both halves of the contract.\n\n4. **Tighten kernel-op assertion (S5)**: Line 1153-1157 only checks `matches!(ops[0].op, GeometryOp::Box { .. })` — it does not pin dimensions. A regression that recorded zeros or wrong arg order would still pass. Tighten to `assert!(matches!(&ops[0].op, GeometryOp::Box { width, height, depth } if *width == mm(80.0) && *height == mm(100.0) && *depth == mm(5.0)))`, or extract the dimensions into a shared constant so they don't drift between Box and Fillet setup.\n\n**Source:** Review suggestions S1, S2, S3, S5 from Task 1286 (esc-1286-133).\n\nmemory_hints: search \"build_modify_missing_arg_no_kernel_error\" entity \"compile_geometry_op\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:16:54.705Z",
+        "updatedAt": "2026-04-11T07:20:00.465Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -33215,7 +33215,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:00.171Z",
+      "lastModified": "2026-04-11T07:20:00.465Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
