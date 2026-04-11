@@ -153,6 +153,53 @@ assert 'braced ${PATTERN} form is caught by _CHECK regex' \
 assert 'plain $PATTERN form is still caught by _CHECK regex (regression)' \
     _test_plain_form_still_caught
 
+# -- S2: regression guards for the Section 2/3 hardening self-check regex ------
+_test_sect23_plain_sync_test_caught() {
+    local frag1='bash'
+    local frag2=' -c "echo $SYNC_TEST"'
+    local tmp rc=0
+    tmp=$(mktemp)
+    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
+    local saved="$THIS_SCRIPT"
+    THIS_SCRIPT="$tmp"
+    _no_unhardened_section23_interp 3>/dev/null 2>/dev/null || rc=$?
+    THIS_SCRIPT="$saved"
+    rm -f "$tmp"
+    [ "$rc" -ne 0 ]
+}
+_test_sect23_braced_sync_ref_helpers_caught() {
+    local frag1='bash'
+    local frag2=' -c "echo ${SYNC_REF_HELPERS}"'
+    local tmp rc=0
+    tmp=$(mktemp)
+    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
+    local saved="$THIS_SCRIPT"
+    THIS_SCRIPT="$tmp"
+    _no_unhardened_section23_interp 3>/dev/null 2>/dev/null || rc=$?
+    THIS_SCRIPT="$saved"
+    rm -f "$tmp"
+    [ "$rc" -ne 0 ]
+}
+_test_sect23_plain_sect3_helper_caught() {
+    local frag1='bash'
+    local frag2=' -c "echo $_SECT3_HELPER"'
+    local tmp rc=0
+    tmp=$(mktemp)
+    printf '%s%s\n' "$frag1" "$frag2" > "$tmp"
+    local saved="$THIS_SCRIPT"
+    THIS_SCRIPT="$tmp"
+    _no_unhardened_section23_interp 3>/dev/null 2>/dev/null || rc=$?
+    THIS_SCRIPT="$saved"
+    rm -f "$tmp"
+    [ "$rc" -ne 0 ]
+}
+assert 'plain $SYNC_TEST form is caught by _S23_CHECK regex' \
+    _test_sect23_plain_sync_test_caught
+assert 'braced ${SYNC_REF_HELPERS} form is caught by _S23_CHECK regex' \
+    _test_sect23_braced_sync_ref_helpers_caught
+assert 'plain $_SECT3_HELPER form is caught by _S23_CHECK regex' \
+    _test_sect23_plain_sect3_helper_caught
+
 # -- S6: loud diagnostic header on _no_unhardened_pattern_interp failure -------
 _test_loud_header_on_failure() {
     local frag1='bash'
