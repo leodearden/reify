@@ -10945,7 +10945,7 @@
         "description": "The pattern .diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() appears ~125 times across ~25 test files. Add a collect_errors() helper to reduce boilerplate.",
         "details": "Add to crates/reify-test-support/src/lib.rs:\npub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> { diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() }\n\nMigrate the two new stdlib test files first; existing files can be migrated incrementally.\n\nFiles: crates/reify-test-support/src/lib.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs",
         "testStrategy": "",
-        "status": "cancelled",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10966,7 +10966,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-11T07:27:27.888Z"
+        "updatedAt": "2026-04-11T07:21:01.774Z"
       },
       {
         "id": "508",
@@ -12193,7 +12193,7 @@
         "description": "DRY improvements for stdlib test infrastructure.",
         "details": "1. Extract shared compile_with_stdlib(source) -> CompiledModule helper used by 5+ conformance tests.\n2. Replace hardcoded 'std/structural/physical' path string in load_stdlib_module with ModulePath::new constructor.\n3. Use .any() fast path in stdlib_loader error check instead of collecting into Vec.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs, crates/reify-compiler/src/stdlib_loader.rs",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12216,7 +12216,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-11T07:21:30.806Z"
+        "updatedAt": "2026-04-11T07:27:29.271Z"
       },
       {
         "id": "558",
@@ -21411,7 +21411,7 @@
         "description": "Review suggestions S9-S17 from task 362 review.\n\nS9 (recursive_detection_tests.rs): Extract cycle_warnings() helper — filter copy-pasted 7 times across test file.\nS10 (scc.rs:285-298): sub_ref helper could drift — consider Default derive or shared fixtures module.\nS11 (scc.rs:349-370): duplicate_template_names test should assert Severity::Error.\nS12 (scc.rs:349-370): duplicate_template_names test should assert !is_recursive on both templates.\nS13 (tests:476-515): three_node_cycle test should check all 3 names (A, B, C) present.\nS14 (scc.rs:320-348): duplicate_sub_refs_deduped should assert label count == 2.\nS15 (tests:440-474): mutual_recursion_cycle_path_format duplicates indirect_two_node_cycle_both_recursive — remove or repurpose.\nS16 (tests:517-551): Add multi-member SCC label test (A<->B with 2 labels).\nS17: sub_ref builder could use Default or shared module.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -21430,7 +21430,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-11T07:23:43.643Z"
+        "updatedAt": "2026-04-11T07:27:28.818Z"
       },
       {
         "id": "989",
@@ -33899,7 +33899,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:27:27.889Z",
+      "lastModified": "2026-04-11T07:27:29.272Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
