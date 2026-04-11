@@ -130,11 +130,11 @@ impl DimensionVector {
     pub const AREA: DimensionVector = DimensionVector::basis_n(0, 2);
     pub const VOLUME: DimensionVector = DimensionVector::basis_n(0, 3);
 
-    /// Derived SI dimensions — built at const-eval time via direct exponent arrays.
-    ///
-    /// Index layout reminder (see struct doc):
-    ///   0:Length  1:Mass  2:Time  3:Current  4:Temperature
-    ///   5:AmountOfSubstance  6:LuminousIntensity  7:Angle  8:SolidAngle
+    // Derived SI dimensions — built at const-eval time via direct exponent arrays.
+    //
+    // Index layout reminder (see struct doc):
+    //   0:Length  1:Mass  2:Time  3:Current  4:Temperature
+    //   5:AmountOfSubstance  6:LuminousIntensity  7:Angle  8:SolidAngle
 
     /// Frequency: s⁻¹
     pub const FREQUENCY: DimensionVector = DimensionVector::from_exps(&[(2, -1)]);

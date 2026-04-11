@@ -572,6 +572,7 @@ fn unknown_unit_still_produces_parse_error() {
 // ─── step-21: existing hand-written units.ri entries still resolve ──────────
 
 #[test]
+#[allow(non_snake_case)]
 fn existing_units_ri_still_has_m_kg_s_rad_deg_degC_degF_imperial() {
     // Guard: trimming units.ri to remove SI-generator duplicates must not
     // accidentally drop any non-SI / affine / SI-base entry. Values below
