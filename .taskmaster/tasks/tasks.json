@@ -9315,7 +9315,13 @@
             "crates/reify-types",
             "crates/reify-syntax",
             "crates/reify-compiler"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Introduce TypeExprKind enum to distinguish named types from dimensional operators"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:20:31.608Z"
       },
@@ -30429,7 +30435,13 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add test for non-collection sub instance qualified access"
+            ]
+          }
         }
       },
       {
@@ -30825,11 +30837,11 @@
         "description": "The `build_isolated_module_preserves_shared_infrastructure` test in `crates/reify-eval/src/tests_runner.rs` verifies constraint_defs, functions, fields, type_aliases, enum_defs, and trait_defs — but the doc comment on `build_isolated_module` (line 43-44) also lists units, imports, pragmas, and module_path as shared infrastructure that should be preserved. Add assertions for these fields, enriching the inline source with appropriate syntax (unit declarations, import statements, pragmas, and a module path) so the test fully covers the documented contract.\n\nmemory_hints: search for \"CompiledModule fields units imports pragmas\", get_entity \"build_isolated_module\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T16:05:28.337Z",
+        "updatedAt": "2026-04-11T07:20:33.538Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -33412,7 +33424,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:31.608Z",
+      "lastModified": "2026-04-11T07:20:33.538Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
