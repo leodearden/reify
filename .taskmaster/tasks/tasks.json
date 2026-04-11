@@ -5383,7 +5383,7 @@
         "dependencies": [
           "275"
         ],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -5400,10 +5400,16 @@
           "files": [
             "crates/reify-eval/src/lib.rs",
             "crates/reify-constraints/src/solver.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: @solver_hint: solver integration"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T16:19:58.112Z"
+        "updatedAt": "2026-04-11T16:20:24.012Z"
       },
       {
         "id": "277",
@@ -33556,9 +33562,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T16:19:58.112Z",
+      "lastModified": "2026-04-11T16:20:24.013Z",
       "taskCount": 1632,
-      "completedCount": 1286,
+      "completedCount": 1287,
       "tags": [
         "master"
       ]
