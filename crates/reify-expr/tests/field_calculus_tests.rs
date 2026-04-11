@@ -1882,12 +1882,19 @@ fn laplacian_sample_dimensionless_returns_real() {
     let domain = Type::point3(Type::Real);
     let lap_result = eval_field_op("laplacian", domain.clone(), Type::Real);
     let sampled = sample_field(lap_result, domain);
-    match &sampled {
-        Value::Real(_) => {} // ← correct: dimensionless fallback returns Real
+    match sampled {
+        Value::Real(v) => {
+            // The linear body `x + y + z` has Laplacian ∂²(linear)/∂x² + ... = 0.
+            assert!(
+                v.abs() < 1e-4,
+                "laplacian_sample_dimensionless_returns_real: si_value should be ≈0.0 \
+                 (∇²(x+y+z) = 0 for linear body), got {}",
+                v
+            );
+        }
         Value::Scalar { .. } => panic!(
             "laplacian_sample_dimensionless_returns_real: expected Value::Real but got \
-             Value::Scalar — the dimensionless fallback path is broken: {:?}",
-            sampled
+             Value::Scalar — the dimensionless fallback path is broken"
         ),
         other => panic!(
             "laplacian_sample_dimensionless_returns_real: expected Value::Real, got {:?}",
