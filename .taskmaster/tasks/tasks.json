@@ -8398,7 +8398,13 @@
             "crates/reify-test-support",
             "crates/reify-eval/tests",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Consolidate test helpers (compile_source, eval_source) into reify-test-support"
+            ]
+          }
         }
       },
       {
@@ -23006,11 +23012,11 @@
         "description": "The prelude-collection block in module_dag.rs:239-257 (compile_project) is a copy of lines 168-178 (compile_module). Both call sites use identical logic to filter Declaration::Import and clone matching CompiledModules.\n\nExtract a helper function, e.g. `fn collect_preludes(parsed: &ParsedModule, modules: &HashMap<String, CompiledModule>) -> Vec<CompiledModule>`, and call it from both compile_module and compile_project. This localizes the import filter and cloning policy, preventing drift if prelude collection ever needs to handle qualified/glob/aliased imports.\n\nmemory_hints: search \"compile_module compile_project prelude collection\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:59:09.019Z",
+        "updatedAt": "2026-04-11T07:19:59.449Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -33203,7 +33209,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:58.197Z",
+      "lastModified": "2026-04-11T07:19:59.449Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
