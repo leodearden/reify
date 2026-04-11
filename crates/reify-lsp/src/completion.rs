@@ -1493,84 +1493,25 @@ mod tests {
     /// that silently breaks these mappings will be caught here.
     #[test]
     fn stale_todo_positions_map_to_expected_contexts() {
+        let check = |source: &str, pos: Position, label: &str, matcher: fn(&CursorContext) -> bool| {
+            let ctx = AnalysisContext::new(source, &test_uri());
+            let result = determine_context(source, pos, &ctx);
+            assert!(matcher(&result), "expected {} @ {:?}, got {:?}", label, pos, result);
+        };
         // (a) bracket_source() @ Position(1,0) → StructureBody
-        {
-            let source = reify_test_support::bracket_source();
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, Position::new(1, 0), &ctx);
-            assert!(
-                matches!(result, CursorContext::StructureBody { .. }),
-                "expected StructureBody for bracket_source @ Position(1,0), got {:?}",
-                result
-            );
-        }
+        check(reify_test_support::bracket_source(), Position::new(1, 0), "bracket_source/StructureBody", |r| matches!(r, CursorContext::StructureBody { .. }));
         // (b) bracket_source() @ Position(7,17) → Expression
-        {
-            let source = reify_test_support::bracket_source();
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, Position::new(7, 17), &ctx);
-            assert!(
-                matches!(result, CursorContext::Expression { .. }),
-                "expected Expression for bracket_source @ Position(7,17), got {:?}",
-                result
-            );
-        }
+        check(reify_test_support::bracket_source(), Position::new(7, 17), "bracket_source/Expression", |r| matches!(r, CursorContext::Expression { .. }));
         // (c) occurrence def Joint source @ Position(1,0) → StructureBody
-        {
-            let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, Position::new(1, 0), &ctx);
-            assert!(
-                matches!(result, CursorContext::StructureBody { .. }),
-                "expected StructureBody for Joint occurrence @ Position(1,0), got {:?}",
-                result
-            );
-        }
+        check("occurrence def Joint {\n    param diameter: Scalar = 10mm\n}", Position::new(1, 0), "Joint occurrence/StructureBody", |r| matches!(r, CursorContext::StructureBody { .. }));
         // (d) guarded-group source @ Position(1,0) → StructureBody
-        {
-            let source = GUARDED_GROUP_SOURCE;
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, Position::new(1, 0), &ctx);
-            assert!(
-                matches!(result, CursorContext::StructureBody { .. }),
-                "expected StructureBody for guarded-group source @ Position(1,0), got {:?}",
-                result
-            );
-        }
+        check(GUARDED_GROUP_SOURCE, Position::new(1, 0), "guarded-group/StructureBody", |r| matches!(r, CursorContext::StructureBody { .. }));
         // (e) dot-access source @ Position(3,18) → DotAccess
-        {
-            let source =
-                "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}";
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, Position::new(3, 18), &ctx);
-            assert!(
-                matches!(result, CursorContext::DotAccess),
-                "expected DotAccess for dot-access source @ Position(3,18), got {:?}",
-                result
-            );
-        }
+        check("structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}", Position::new(3, 18), "dot-access/DotAccess", |r| matches!(r, CursorContext::DotAccess));
         // (f) type-position source @ Position(1,13) → TypePosition
-        {
-            let source = "structure Foo {\n    param x: \n}";
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, Position::new(1, 13), &ctx);
-            assert!(
-                matches!(result, CursorContext::TypePosition),
-                "expected TypePosition for type-position source @ Position(1,13), got {:?}",
-                result
-            );
-        }
+        check("structure Foo {\n    param x: \n}", Position::new(1, 13), "type-position/TypePosition", |r| matches!(r, CursorContext::TypePosition));
         // (g) top-level source @ Position(3,0) → TopLevel
-        {
-            let source = "structure Foo {\n    param x: Scalar = 1mm\n}\n";
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, Position::new(3, 0), &ctx);
-            assert!(
-                matches!(result, CursorContext::TopLevel),
-                "expected TopLevel for top-level source @ Position(3,0), got {:?}",
-                result
-            );
-        }
+        check("structure Foo {\n    param x: Scalar = 1mm\n}\n", Position::new(3, 0), "top-level/TopLevel", |r| matches!(r, CursorContext::TopLevel));
     }
 
     // --- guarded-group completion tests ---
