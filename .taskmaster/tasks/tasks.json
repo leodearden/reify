@@ -9183,7 +9183,13 @@
           "modules": [
             "crates/reify-test-support",
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract parse_and_compile into reify-test-support and use CARGO_MANIFEST_DIR paths"
+            ]
+          }
         }
       },
       {
@@ -25233,11 +25239,11 @@
         "description": "In crates/reify-eval/src/lib.rs (lines ~3365-3368, 3425-3428), the new \"missing required geometry argument\" diagnostic uses `{:?}` (Debug) on `kind`, producing user-visible strings like `for Box` or `for Fillet` that depend on the Rust enum's `Debug` derive. This couples user-visible diagnostics to a `Debug` impl that can change without notice and doesn't degrade gracefully for compound variants. The codebase otherwise prefers Display formatting for user-facing messages (e.g. `Diagnostic::error(format!(\"geometry error: {}\", e))`).\n\n**Fix:** Either:\n- Add a small helper `fn primitive_kind_name(kind: &PrimitiveKind) -> &'static str` and `fn modify_kind_name(kind: &ModifyKind) -> &'static str` returning lowercase op names (`\"box\"`, `\"cylinder\"`, `\"sphere\"`, `\"fillet\"`, `\"chamfer\"`, `\"shell\"`, `\"draft\"`, `\"thicken\"`), and format the message as `format!(\"missing required argument '{}' for {}\", name, primitive_kind_name(kind))`.\n- Or implement `Display` on `PrimitiveKind` and `ModifyKind` in the `reify_compiler` crate, then use `{kind}` in the format string.\n\nUpdate the existing `compile_geometry_op_*_missing_arg_emits_diagnostic` tests to assert against the new lowercase wording.\n\n**Source review suggestion:** S3 (user_facing_format) from Task 1167 review.\n\nmemory_hints: search \"Display Debug formatting diagnostic user-facing\" entity \"PrimitiveKind\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:43:42.006Z",
+        "updatedAt": "2026-04-11T07:20:27.473Z",
         "metadata": {
           "modules": [
             "crates/reify-eval",
@@ -30237,7 +30243,13 @@
           "modules": [
             "crates/reify-eval/tests",
             "examples/m9_combined.ri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: m9_combined tests: extract helpers, add violation test, fix label docs"
+            ]
+          }
         }
       },
       {
@@ -33376,7 +33388,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:26.346Z",
+      "lastModified": "2026-04-11T07:20:27.473Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
