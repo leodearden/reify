@@ -3131,7 +3131,7 @@
         "dependencies": [
           "179"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -3143,7 +3143,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:36.329Z"
+        "updatedAt": "2026-03-24T06:01:46.000Z"
       },
       {
         "id": "181",
@@ -3163,7 +3163,7 @@
           "173",
           "177"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -3175,7 +3175,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:36.387Z"
+        "updatedAt": "2026-03-24T06:01:46.000Z"
       },
       {
         "id": "182",
@@ -4710,7 +4710,7 @@
         "id": "249",
         "title": "Ad-hoc port selectors: compiler",
         "description": "Compile ad-hoc selectors to CompiledAdHocPort { base_entity, selector_kind, args, memory_hints }. Selector kinds: Face, Point, Edge, Region, Body. Generate a synthetic port with a frame derived from the geometry query result. The synthetic port is created in the parent scope. Incorporate memory_hints to optimize knowledge context during execution.",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [
           "248"
         ],
@@ -4739,7 +4739,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-11T07:19:36.432Z"
+        "updatedAt": "2026-04-11T06:51:55.148Z"
       },
       {
         "id": "250",
@@ -4751,7 +4751,7 @@
         "dependencies": [
           "249"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -4769,7 +4769,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:36.475Z"
+        "updatedAt": "2026-04-11T06:51:55.750Z"
       },
       {
         "id": "251",
@@ -4781,7 +4781,7 @@
         "dependencies": [
           "250"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests",
@@ -4795,7 +4795,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:36.637Z"
+        "updatedAt": "2026-04-11T06:51:56.268Z"
       },
       {
         "id": "252",
@@ -4975,7 +4975,7 @@
         "dependencies": [
           "258"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -4989,7 +4989,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:36.681Z"
+        "updatedAt": "2026-04-10T16:24:37.001Z"
       },
       {
         "id": "260",
@@ -5001,7 +5001,7 @@
         "dependencies": [
           "259"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests",
@@ -5015,7 +5015,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:36.724Z"
+        "updatedAt": "2026-03-24T06:01:46.000Z"
       },
       {
         "id": "261",
@@ -5048,7 +5048,7 @@
           "256",
           "260"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
             "examples"
@@ -5060,7 +5060,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:36.871Z"
+        "updatedAt": "2026-03-24T06:01:46.000Z"
       },
       {
         "id": "263",
@@ -5072,7 +5072,7 @@
         "dependencies": [
           "262"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -5084,7 +5084,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:36.916Z"
+        "updatedAt": "2026-03-24T06:01:46.000Z"
       },
       {
         "id": "264",
@@ -5299,7 +5299,7 @@
         "dependencies": [
           "265"
         ],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -5316,7 +5316,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:36.957Z"
+        "updatedAt": "2026-04-07T16:03:56.708Z"
       },
       {
         "id": "274",
@@ -14022,7 +14022,7 @@
         "description": "The `node_budget` exhaustion path in `unfold_recursive_sub` (lib.rs:3523-3530) is never exercised by any test. When `set_max_unfold_nodes(N)` is called with a small N on a template with multiple recursive subs (e.g., binary tree), the budget can exhaust independently of the depth limit. Add a test that: (1) calls `engine.set_max_unfold_nodes(3)` on a binary-tree template, (2) asserts the diagnostic \"total node budget exhausted\" is present, (3) verifies some levels that would exist under unlimited budget are absent.\n\nmemory_hints: search \"max_unfold_nodes\" and \"node_budget\" in lib.rs; look at existing depth-limit tests in recursive_unfold.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14034,7 +14034,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:36.133Z"
       },
       {
         "id": "645",
@@ -14042,7 +14042,7 @@
         "description": "The branch in `unfold_recursive_sub` handling a guard expression that evaluates to a non-Bool type (the `other` arm, lib.rs ~3572-3577) emits an error diagnostic \"guard for recursive sub ... expected Bool\" and terminates recursion. No test exercises this path. Add a test that: (1) builds a template whose guard expression produces `Value::Int(1)` instead of `Value::Bool(true)`, (2) evaluates it, (3) asserts no child entity is created, (4) asserts an error diagnostic containing \"expected Bool\" is present.\n\nmemory_hints: search \"expected Bool\" and \"guard\" in unfold_recursive_sub; look at existing guard tests in recursive_unfold.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14054,7 +14054,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:36.347Z"
       },
       {
         "id": "646",
@@ -15499,7 +15499,7 @@
         "description": "The `is_auto` predicate `graph.value_cells.get(id).is_some_and(|n| n.kind == ValueCellKind::Auto)` is inlined 4 times across two guard handling phases in edit_param (lib.rs ~1693, ~1724, ~1956, ~1991). Extract an `is_auto_cell(&self, id)` method on the graph type and a `deactivate_if_not_auto` helper to consolidate the guard-skip + Undef-insert pattern into one place.\n\nMemory hints: search \"guard re-elaboration\", \"Auto param deactivation\", entity: edit_param",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15512,7 +15512,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:36.516Z"
       },
       {
         "id": "714",
@@ -15898,7 +15898,7 @@
         "description": "The type_param hash in compute_trait_content_hash (trait_def.rs) only hashes `b.trait_ref.name`, ignoring `type_args`. Two TypeParams with the same bound trait name but different type arguments (e.g., `Rigid<Real>` vs `Rigid<Int>`) produce identical hashes — the exact class of bug task 628 was created to fix.\n\nFix: Include type_args in the bound string in compute_trait_content_hash, e.g.:\n```rust\ns.push_str(&format!(\":bound:{}:{}\", b.trait_ref.name, \n    b.trait_ref.type_args.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(\",\")));\n```\n\nAlso add edge-case tests:\n1. TypeParam `T` with empty bounds vs TypeParam `T` with one bound — assert hashes differ (already covered by existing test, verify)\n2. TypeParam `T` with `default: None` vs TypeParam `T` with `default: Some(Type::Real)` — assert hashes differ\n3. TypeParam with bound `Rigid<Real>` vs `Rigid<Int>` — assert hashes differ (the main fix)\n\nmemory_hints: search \"content_hash type_param bound test builder\", get_entity \"TypeParam\", get_entity \"TraitRef\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [
           "727"
         ],
@@ -15915,7 +15915,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:36.579Z"
       },
       {
         "id": "734",
@@ -16274,7 +16274,7 @@
         "description": "Review suggestions deferred from task 492 (edit_param guard re-elaboration fix). All in reify-eval module.\n\n**Code quality (S3):** Fix stale \"BUG:\" comment in guard_eval.rs:519-520 — should be past-tense regression documentation, not present-tense bug description.\n\n**Test coverage (S4-S6):**\n- Add test for Block-A-only path: structure_controlling cell fires Block A but guard value unchanged (Block B doesn't fire). Verifies Auto-skip in Block A works independently.\n- Add else_members regular Param regression test: symmetric to existing edit_param_guard_false_still_deactivates_regular_params but for else branch (guard false→true).\n- Add round-trip toggle test (true→false→true): verify Auto param values survive multiple edit_param guard transitions and solver re-resolves on re-activation.\n\n**Robustness (S7):** Add comment in guard_is_true/is_false activation branches documenting that Auto params (no default_expr) rely on solver dirty-tracking for re-activation. Consider test for deactivation→constraint change→re-activation path.\n\n**DRY (S8-S9):** Extract make_auto_decl() test helper (analogous to make_param_decl). Parameterize the two nearly-identical solver-auto-param tests to reduce ~80 lines of duplicated setup.\n\nNote: S1-S2 (extract is_auto_cell helper in lib.rs) already tracked as task #713.\n\nFiles: crates/reify-eval/src/lib.rs, crates/reify-eval/tests/guard_eval.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16287,7 +16287,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:37.342Z"
       },
       {
         "id": "751",
@@ -16376,7 +16376,7 @@
         "description": "Task 491 added 5 tests for per-template resolution but left several coverage gaps identified by review:\n\n**Failure-mode isolation (high):**\n- Add test `eval_infeasible_in_one_template_does_not_suppress_other`: provide Infeasible result for Bracket and Solved for Bolt, assert Bolt's auto param is resolved correctly, diagnostics contain only Bracket's infeasibility info, Bolt's value is present\n\n**Cross-template wave2 propagation (medium):**\n- Add test with a derived value node whose default_expr references auto params from both Bracket and Bolt templates. After eval(), assert the derived node is re-evaluated to the correct combined value, confirming the unified wave2 propagation works\n\n**Missing output assertions (medium):**\n- concurrent_edit_resolves_per_template_not_cross_template (line 1287-1320): add assertions on result.values and result.resolved_params to verify bracket_thickness=mm(6.0) was actually written back\n\n**Missing call count assertion (low):**\n- edit_param_matches_eval_for_multi_template_module (line 1324-1456): uses SequencedMockConstraintSolver directly without asserting call count. Switch to MultiCallSpyConstraintSolver or add call_count check to detect spurious extra solver calls\n\n**Memory hints:** search for \"per-template resolution tests\", \"MultiCallSpyConstraintSolver\"; entity names: resolve_concurrent_edit, edit_param, SolveResult::Infeasible",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16389,7 +16389,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:37.385Z"
       },
       {
         "id": "756",
@@ -16535,7 +16535,7 @@
         "description": "The prelude-unit seeding loop in compile_with_prelude constructs UnitEntry field-by-field from CompiledUnit. This is fragile: if UnitEntry gains a new field, the manual copy will silently compile with a default rather than carrying the field through.\n\nFix: Implement `From<&CompiledUnit> for UnitEntry` (using `SourceSpan::empty(0)` for span) and use it in the seeding loop. This makes the conversion canonical and ensures new fields are automatically carried through.\n\nLocations: crates/reify-compiler/src/lib.rs:2805-2813 (seeding loop), UnitEntry/CompiledUnit struct definitions.\n\nmemory_hints: search \"UnitEntry CompiledUnit struct fields\" for current struct shapes.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16548,7 +16548,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:37.427Z"
       },
       {
         "id": "764",
@@ -16577,11 +16577,11 @@
         "description": "Two related issues with prelude unit handling:\n\n1. **Misleading error spans**: Prelude units are seeded with `SourceSpan::empty(0)`. When a module-local unit duplicates a prelude name, the \"first declared here\" label points to byte 0 of the user's file — misleading. Fix: introduce a `SourceSpan::prelude()` sentinel that the diagnostic renderer shows as \"defined in stdlib prelude\" instead of a raw offset.\n\n2. **Silent cross-module collision**: `seed_prelude_unit` uses last-wins overwrite with no diagnostic when two prelude modules define a unit with the same name. Fix: in compile_with_prelude's seeding loop, detect when `unit_registry.lookup(&cu.name)` already returns Some before calling seed_prelude_unit, and emit a Severity::Warning naming both conflicting prelude modules.\n\nLocations: crates/reify-compiler/src/lib.rs:543-552 (seed_prelude_unit), lib.rs:2800-2816 (seeding loop), SourceSpan definition.\n\nmemory_hints: search \"SourceSpan definition\" and \"UnitRegistry seed_prelude_unit\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T03:08:52.529Z",
+        "updatedAt": "2026-04-11T07:19:37.471Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -16600,7 +16600,7 @@
         "description": "The public API now has three entry points: compile() (no prelude), compile_with_prelude() (caller-supplied), and compile_with_stdlib() (full stdlib). The bare compile() silently fails to resolve any standard units — including the nine that were previously hard-coded — making it a trap for callers.\n\nFix: Either mark compile() with #[deprecated] pointing to compile_with_stdlib, or add a prominent doc warning that compile() is intended only for prelude-module bootstrapping and will not resolve standard units.\n\nLocation: crates/reify-compiler/src/lib.rs:2636-2641.\n\nmemory_hints: search \"compile entry point API\" for context on the three-function API.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16612,7 +16612,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:37.514Z"
       },
       {
         "id": "767",
@@ -16620,11 +16620,11 @@
         "description": "Four test coverage gaps identified in the unit registry tests:\n\n1. **degF offset unit**: `degF` has a non-trivial offset (5/9, offset 255.3722...) but zero test coverage. Add test: `32degF → 273.15K`, `212degF → 373.15K`.\n\n2. **Private prelude units excluded**: The `if cu.is_pub` guard ensures private units aren't seeded, but no test verifies it. Add test: compile prelude with one pub + one private unit, verify private is inaccessible.\n\n3. **Bare compile() negative test**: No test verifies that bare `compile()` does NOT resolve `1mm`. Add test: compile with bare compile(), assert unknown-unit error for mm.\n\n4. **thou via stdlib**: `thou` is a chain unit (references mm), but no integration test verifies it resolves via stdlib prelude. Add test: `10thou → 0.000254`.\n\nLocation: crates/reify-compiler/tests/unit_registry_tests.rs.\n\nmemory_hints: search \"unit registry tests\" for current test patterns.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T03:10:24.677Z",
+        "updatedAt": "2026-04-11T07:19:37.554Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -28936,11 +28936,11 @@
         "description": "Three small hygiene improvements to the negative_extrude_distance_is_valid and negative_revolve_angle_is_valid tests added by Task 1181 in crates/reify-eval/tests/stress_sweep_degenerate.rs:\n\n1. Step numbering: the new tests are tagged 'step-1'/'step-2' (lines 221-222, 309-311) while the surrounding tests use 'step-13' through 'step-24'. Readers will assume the numbering is monotonic. Renumber as 'step-25'/'step-26' to continue the file's sequence, or use a namespaced tag like 'task-1181-step-1' so provenance is obvious.\n\n2. Unused 'profile' placeholder arg: both tests pass a 'profile' named arg (lines 255, 347) that is never read by the Extrude/Revolve compile paths (lib.rs:3633-3652 and 3653-3677 only read 'distance' / 'ox..angle'). This mirrors the existing zero_extrude_distance / revolve_zero_angle pattern, but the inline comment 'placeholder expr' under-explains why an unused arg is present. Add a one-line comment at the top of each args vec, e.g. `// 'profile' is an ignored placeholder — Extrude/Revolve compile paths only read 'distance'/'angle'.`\n\n3. Hardcoded SI constant: line 300 compares dist_si against the literal `-0.01` next to the literal `mm(-10.0)`. A refactor of the `mm` helper (unit-factor change) would silently desync literal and assertion. Replace with `let expected_si = mm(-10.0).as_f64().unwrap();` then `(dist_si - expected_si).abs() < 1e-9`.\n\nAll three are non-blocking review suggestions from Task 1181's reviewer_comprehensive pass (esc-1181-108).\n\nmemory_hints: search \"Task 1181 negative extrude revolve test coverage\" for task context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:22:07.422Z",
+        "updatedAt": "2026-04-11T07:19:37.654Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -33137,7 +33137,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:36.958Z",
+      "lastModified": "2026-04-11T07:19:37.654Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
