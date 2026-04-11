@@ -41,9 +41,9 @@ fn warnings_only(module: &CompiledModule) -> Vec<&Diagnostic> {
 #[test]
 fn compiled_type_alias_fields_exist() {
     let dummy_span = SourceSpan::new(0, 0);
-    let hash = ContentHash::of_str("Pressure");
+    let hash = ContentHash::of_str("Stress");
     let alias = CompiledTypeAlias {
-        name: "Pressure".to_string(),
+        name: "Stress".to_string(),
         resolved_type: Some(Type::Scalar {
             dimension: reify_types::DimensionVector::LENGTH,
         }),
@@ -52,7 +52,7 @@ fn compiled_type_alias_fields_exist() {
         span: dummy_span,
         content_hash: hash,
     };
-    assert_eq!(alias.name, "Pressure");
+    assert_eq!(alias.name, "Stress");
     assert!(alias.resolved_type.is_some());
     assert!(alias.type_params.is_empty());
     assert!(alias.is_pub);
@@ -62,7 +62,7 @@ fn compiled_type_alias_fields_exist() {
 fn compiled_alias_appears_in_module_output() {
     // A simple alias should appear in module.type_aliases after compilation.
     let source = r#"
-        type Pressure = Force
+        type Stress = Force
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
@@ -71,12 +71,12 @@ fn compiled_alias_appears_in_module_output() {
         "alias should compile cleanly; got: {:?}",
         errs
     );
-    let alias = module.type_aliases.iter().find(|a| a.name == "Pressure");
+    let alias = module.type_aliases.iter().find(|a| a.name == "Stress");
     assert!(
         alias.is_some(),
-        "Pressure alias should appear in module.type_aliases"
+        "Stress alias should appear in module.type_aliases"
     );
-    assert_eq!(alias.unwrap().name, "Pressure");
+    assert_eq!(alias.unwrap().name, "Stress");
 }
 
 #[test]
@@ -101,9 +101,9 @@ fn compiled_alias_duplicate_produces_diagnostic() {
 #[test]
 fn simple_alias_compiles_without_errors() {
     let source = r#"
-        type Pressure = Force
+        type Stress = Force
         structure S {
-            param p : Pressure = 1mm
+            param p : Stress = 1mm
         }
     "#;
     let module = parse_and_compile(source);
@@ -120,9 +120,9 @@ fn simple_alias_compiles_without_errors() {
 #[test]
 fn dimensional_alias_force_div_area() {
     let source = r#"
-        type Pressure = Force / Area
+        type Stress = Force / Area
         structure S {
-            param p : Pressure = 1mm
+            param p : Stress = 1mm
         }
     "#;
     let module = parse_and_compile(source);
@@ -149,7 +149,7 @@ fn dimensional_alias_force_div_area() {
         Type::Scalar {
             dimension: expected_dim,
         },
-        "Pressure alias should resolve to Scalar{{FORCE/AREA}}"
+        "Stress alias should resolve to Scalar{{FORCE/AREA}}"
     );
 }
 
@@ -406,8 +406,8 @@ fn multi_param_alias_with_partial_defaults() {
 #[test]
 fn alias_as_function_param_type() {
     let source = r#"
-        type Pressure = Force
-        fn measure(p: Pressure) -> Real { p }
+        type Stress = Force
+        fn measure(p: Stress) -> Real { p }
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
@@ -427,15 +427,15 @@ fn alias_as_function_param_type() {
         Type::Scalar {
             dimension: reify_types::dimension::FORCE,
         },
-        "function param typed as Pressure alias should resolve to Scalar{{FORCE}}"
+        "function param typed as Stress alias should resolve to Scalar{{FORCE}}"
     );
 }
 
 #[test]
 fn alias_as_function_return_type() {
     let source = r#"
-        type Pressure = Force
-        fn compute(x: Real) -> Pressure { x }
+        type Stress = Force
+        fn compute(x: Real) -> Stress { x }
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
@@ -454,15 +454,15 @@ fn alias_as_function_return_type() {
         Type::Scalar {
             dimension: reify_types::dimension::FORCE,
         },
-        "function return type Pressure alias should resolve to Scalar{{FORCE}}"
+        "function return type Stress alias should resolve to Scalar{{FORCE}}"
     );
 }
 
 #[test]
 fn alias_as_field_domain_codomain_type() {
     let source = r#"
-        type Pressure = Force
-        field def f : Point3 -> Pressure { source = analytical { |p| p } }
+        type Stress = Force
+        field def f : Point3 -> Stress { source = analytical { |p| p } }
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
@@ -482,16 +482,16 @@ fn alias_as_field_domain_codomain_type() {
         Type::Scalar {
             dimension: reify_types::dimension::FORCE,
         },
-        "field codomain typed as Pressure alias should resolve to Scalar{{FORCE}}"
+        "field codomain typed as Stress alias should resolve to Scalar{{FORCE}}"
     );
 }
 
 #[test]
 fn alias_as_trait_member_type() {
     let source = r#"
-        type Pressure = Force
-        trait HasPressure {
-            param p : Pressure
+        type Stress = Force
+        trait HasStress {
+            param p : Stress
         }
     "#;
     let module = parse_and_compile(source);
@@ -508,7 +508,7 @@ fn alias_as_trait_member_type() {
 #[test]
 fn pub_alias_has_is_pub_true() {
     let source = r#"
-        pub type Pressure = Force
+        pub type Stress = Force
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
@@ -521,8 +521,8 @@ fn pub_alias_has_is_pub_true() {
     let alias = module
         .type_aliases
         .iter()
-        .find(|a| a.name == "Pressure")
-        .expect("Pressure alias not found in compiled module type_aliases");
+        .find(|a| a.name == "Stress")
+        .expect("Stress alias not found in compiled module type_aliases");
     assert!(alias.is_pub, "pub type alias should have is_pub=true");
 }
 
@@ -616,12 +616,12 @@ fn alias_interop_mixed_declarations() {
     // Type alias coexists with structure, function, and enum declarations.
     // Alias is used as param type in structure and function params.
     let source = r#"
-        type Pressure = Force
+        type Stress = Force
         enum Mode { Active Passive }
         structure Tank {
-            param pressure : Pressure = 1mm
+            param pressure : Stress = 1mm
         }
-        fn measure(p: Pressure) -> Real { p }
+        fn measure(p: Stress) -> Real { p }
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
@@ -659,7 +659,7 @@ fn alias_interop_mixed_declarations() {
         Type::Scalar {
             dimension: reify_types::dimension::FORCE,
         },
-        "function param typed as Pressure should resolve to Scalar{{FORCE}}"
+        "function param typed as Stress should resolve to Scalar{{FORCE}}"
     );
 }
 
@@ -669,9 +669,9 @@ fn alias_declared_after_use_forward_reference() {
     // Since aliases are collected in pre-pass, declaration order shouldn't matter.
     let source = r#"
         structure S {
-            param p : Pressure = 1mm
+            param p : Stress = 1mm
         }
-        type Pressure = Force
+        type Stress = Force
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
@@ -695,7 +695,7 @@ fn alias_declared_after_use_forward_reference() {
         Type::Scalar {
             dimension: reify_types::dimension::FORCE,
         },
-        "forward-referenced Pressure alias should resolve to Scalar{{FORCE}}"
+        "forward-referenced Stress alias should resolve to Scalar{{FORCE}}"
     );
 }
 
@@ -1063,7 +1063,7 @@ fn compiled_type_alias_in_module_output() {
     // fields (no type_expr from reify_syntax). Verify a pub alias compiles and
     // the CompiledTypeAlias has the correct fields.
     let source = r#"
-        pub type Pressure = Force
+        pub type Stress = Force
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
@@ -1076,11 +1076,11 @@ fn compiled_type_alias_in_module_output() {
     let alias: &CompiledTypeAlias = module
         .type_aliases
         .iter()
-        .find(|a| a.name == "Pressure")
-        .expect("Pressure alias not found in compiled module type_aliases");
+        .find(|a| a.name == "Stress")
+        .expect("Stress alias not found in compiled module type_aliases");
 
     // Verify semantic fields
-    assert_eq!(alias.name, "Pressure");
+    assert_eq!(alias.name, "Stress");
     assert!(alias.is_pub, "pub type alias should have is_pub=true");
     assert!(
         alias.type_params.is_empty(),
@@ -1088,7 +1088,7 @@ fn compiled_type_alias_in_module_output() {
     );
     assert!(
         matches!(alias.resolved_type, Some(Type::Scalar { .. })),
-        "Pressure should resolve to a Scalar type; got: {:?}",
+        "Stress should resolve to a Scalar type; got: {:?}",
         alias.resolved_type
     );
 

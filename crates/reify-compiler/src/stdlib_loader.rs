@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use reify_types::{ModulePath, Severity};
 
 use crate::CompiledModule;
+use crate::si_units;
 
 /// Embedded source for stdlib/units.ri.
 const UNITS_SRC: &str = include_str!("../stdlib/units.ri");
@@ -35,15 +36,28 @@ static STDLIB_CACHE: OnceLock<Vec<CompiledModule>> = OnceLock::new();
 /// Subsequent calls return the cached result with zero overhead.
 pub fn load_stdlib() -> &'static [CompiledModule] {
     STDLIB_CACHE.get_or_init(|| {
-        let sources: &[(&str, &str)] = &[
+        // Generate the SI prefix + derived-units source programmatically.
+        // The synthetic `std.si_units` module sits between `std.units` (the
+        // hand-written SI base + imperial + temperature units) and the
+        // downstream stdlib modules, so materials/structural/tolerancing
+        // see all SI prefixed and derived units via the prelude-seeding path.
+        //
+        // Order matters: `std.units` must come first so `std_units_is_first_module`
+        // and dependent tests hold. `std.si_units` has no compile-time dependency
+        // on `std.units` — its declarations use only dimension names + numeric
+        // literals — so it compiles cleanly in second position.
+        let si_units_source = si_units::build_si_units_source();
+
+        let sources: Vec<(&str, &str)> = vec![
             ("std.units", UNITS_SRC),
+            ("std.si_units", si_units_source.as_str()),
             ("std.materials.mechanical", MATERIALS_MECHANICAL_SRC),
             ("std.structural.physical", STRUCTURAL_PHYSICAL_SRC),
             ("std.tolerancing", TOLERANCING_SRC),
         ];
 
         let mut modules = Vec::with_capacity(sources.len());
-        for (module_name, source) in sources {
+        for (module_name, source) in &sources {
             let segments: Vec<String> = module_name.split('.').map(String::from).collect();
             let parsed = reify_syntax::parse(source, ModulePath::new(segments));
 
