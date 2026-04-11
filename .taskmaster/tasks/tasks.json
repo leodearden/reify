@@ -23720,7 +23720,13 @@
           ],
           "files": [
             "crates/reify-compiler/tests/qualified_access_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add edge-case tests for let-binding OptionNone fixup guard conditions"
+            ]
+          }
         }
       },
       {
@@ -29720,7 +29726,7 @@
         "description": "In crates/reify-eval/tests/geometry_error_handling.rs (lines 146-175), FailingExportMockGeometryKernel is now nearly identical to FailingMockGeometryKernel after the latter's export was changed to also return Err. Delete FailingExportMockGeometryKernel (~30 lines) and update build_no_export_error_when_all_ops_fail to use FailingMockGeometryKernel directly.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -29731,7 +29737,8 @@
           "modules": [
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-11T07:20:10.137Z"
       },
       {
         "id": "1424",
@@ -33281,7 +33288,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:09.479Z",
+      "lastModified": "2026-04-11T07:20:10.137Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
