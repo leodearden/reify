@@ -33443,7 +33443,16 @@
           "1213"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/geometry_error_handling.rs",
+            "crates/reify-eval/tests/stress_sweep_degenerate.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       }
     ],
     "metadata": {
