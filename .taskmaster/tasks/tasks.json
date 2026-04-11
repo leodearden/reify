@@ -33640,11 +33640,11 @@
         "description": "Check 4 in scripts/test_pm_standardization.sh (lines 101-103) enforces `(^\\*\\*/|^gui/)pnpm-lock\\.yaml$`, which rejects the canonical leading-slash gitignore form `/gui/pnpm-lock.yaml`. A future editor who writes that form in .gitignore would hit an unexpected lint failure even though it's valid syntax.\n\nFix: either widen the regex to `(^/?\\*\\*/|^/?gui/)pnpm-lock\\.yaml/?$` (also accepts trailing slash), or explicitly document the two strict accepted forms in the Check 4 comment so the constraint is predictable for future editors. Preferred: widen the regex for robustness, and update the comment to enumerate accepted forms.\n\nSource: review suggestion from reviewer_comprehensive on task 976 escalation esc-976-17.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T21:12:30.739Z"
+        "updatedAt": "2026-04-11T21:28:57.162Z"
       },
       {
         "id": "1635",
@@ -33666,9 +33666,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T21:24:44.712Z",
+      "lastModified": "2026-04-11T21:28:57.164Z",
       "taskCount": 1635,
-      "completedCount": 1293,
+      "completedCount": 1294,
       "tags": [
         "master"
       ]
