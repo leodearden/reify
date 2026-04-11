@@ -11170,7 +11170,7 @@
         "description": "Address robustness suggestions from task #326 review:\n1. Add debug_assert in load_stdlib() that no module has error-level diagnostics — silent cache of broken modules is dangerous (stdlib_loader.rs:23-38)\n2. Compile stdlib modules sequentially with compile_with_prelude so cross-module deps work when second .ri file is added (stdlib_loader.rs:33-36)\n3. Document function shadowing semantics in eval() — user functions shadow prelude by insertion order with iter().find() first-match (lib.rs:847-854)\n4. Investigate _distance_f64 rename — confirm whether is_finite() guard was intentional validation or dead code (lib.rs:3244)\n\nFiles: crates/reify-compiler/src/stdlib_loader.rs, crates/reify-eval/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11185,7 +11185,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:21:14.782Z"
       },
       {
         "id": "516",
@@ -33684,7 +33684,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:14.083Z",
+      "lastModified": "2026-04-11T07:21:14.782Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
