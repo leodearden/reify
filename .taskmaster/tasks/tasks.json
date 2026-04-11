@@ -3124,8 +3124,8 @@
       {
         "id": 180,
         "title": "M8 pipeline integration tests",
-        "description": "Create `reify-eval/tests/m8_integration.rs` with cross-feature pipeline tests: type aliases combined with range constraints, fn overloading with collection methods, chained comparisons with implies, auto(free) with minimize, temperature offsets in engineering calculations. Each test loads a .ri source string, parses, compiles, evaluates, and asserts on final values. [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:27:38.867Z>\nThis task has been subsumed by task 179 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:27:38.867Z>",
+        "description": "Create `reify-eval/tests/m8_integration.rs` with cross-feature pipeline tests: type aliases combined with range constraints, fn overloading with collection methods, chained comparisons with implies, auto(free) with minimize, temperature offsets in engineering calculations. Each test loads a .ri source string, parses, compiles, evaluates, and asserts on final values.",
+        "details": "",
         "testStrategy": ">=10 cross-feature pipeline tests.",
         "priority": "high",
         "dependencies": [
@@ -3148,8 +3148,8 @@
       {
         "id": 181,
         "title": "M8 error case coverage",
-        "description": "Create `reify-compiler/tests/m8_error_cases.rs` covering every M8 error path as a compiler diagnostic test: circular type alias, alias to nonexistent type, range dimension mismatch, self outside entity, implies with non-Bool, chained comparison dimension mismatch, auto(free) parse errors, some() type mismatch, filter non-Bool predicate, fold type mismatch, fn overload ambiguity, entity name collision, T+T temperature error. [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:27:44.705Z>\nThis task has been subsumed by task 179 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:27:44.705Z>",
+        "description": "Create `reify-compiler/tests/m8_error_cases.rs` covering every M8 error path as a compiler diagnostic test: circular type alias, alias to nonexistent type, range dimension mismatch, self outside entity, implies with non-Bool, chained comparison dimension mismatch, auto(free) parse errors, some() type mismatch, filter non-Bool predicate, fold type mismatch, fn overload ambiguity, entity name collision, T+T temperature error.",
+        "details": "",
         "testStrategy": ">=15 error diagnostic tests, one per error path.",
         "priority": "high",
         "dependencies": [
@@ -7697,8 +7697,8 @@
       {
         "id": 371,
         "title": "Test support: deduplicate compile_module/parse_decls helpers across 10+ files",
-        "description": "compile_module helper is copy-pasted across 10+ test files in reify-compiler/tests/. parse_decls helper is similarly duplicated across 10+ test files in reify-syntax/tests/. Create shared test helpers — either tests/common.rs modules or add to reify-test-support crate — and update all test files to use the shared versions.\n\nMemory hints: search \"compile_module parse_decls test helper\", entities: reify-test-support, reify-compiler tests",
-        "details": "",
+        "description": "compile_module helper is copy-pasted across 10+ test files in reify-compiler/tests/. parse_decls helper is similarly duplicated across 10+ test files in reify-syntax/tests/. Create shared test helpers — either tests/common.rs modules or add to reify-test-support crate — and update all test files to use the shared versions.\n\nMemory hints: search \"compile_module parse_decls test helper\", entities: reify-test-support, reify-compiler tests [Updated: 4/11/2026]",
+        "details": "<info added on 2026-04-11T07:27:45.713Z>\nThis task has been subsumed by task 401 (bundle consolidation 2026-04-11). No further action is required on this task.\n</info added on 2026-04-11T07:27:45.713Z>",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -19434,8 +19434,8 @@
       {
         "id": 893,
         "title": "Fill missing Complex guard-clause coverage (im.is_nan and re.is_infinite branches)",
-        "description": "In crates/reify-expr/src/lib.rs, add two new Complex sanitize tests to exercise the two unverified guard sub-clauses: (1) sanitize_complex_nan_im_returns_undef: Value::Complex { re: 1.0, im: f64::NAN, dimension: DimensionVector::DIMENSIONLESS } → is_undef(); (2) sanitize_complex_inf_re_returns_undef: Value::Complex { re: f64::INFINITY, im: 1.0, dimension: DimensionVector::DIMENSIONLESS } → is_undef(). All four clauses in `re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite()` will then be independently exercised.",
-        "details": "",
+        "description": "In crates/reify-expr/src/lib.rs, add two new Complex sanitize tests to exercise the two unverified guard sub-clauses: (1) sanitize_complex_nan_im_returns_undef: Value::Complex { re: 1.0, im: f64::NAN, dimension: DimensionVector::DIMENSIONLESS } → is_undef(); (2) sanitize_complex_inf_re_returns_undef: Value::Complex { re: f64::INFINITY, im: 1.0, dimension: DimensionVector::DIMENSIONLESS } → is_undef(). All four clauses in `re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite()` will then be independently exercised. [Updated: 4/11/2026]",
+        "details": "<info added on 2026-04-11T07:27:33.360Z>\nThis task has been subsumed by task 892 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:27:33.360Z>",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -26608,13 +26608,12 @@
         "id": 1251,
         "title": "Return iterators and slim API surface of CompiledModule filter helpers",
         "description": "In `crates/reify-compiler/src/lib.rs` lines 178-199, change `test_templates`, `non_test_templates`, `test_constraint_defs`, and `non_test_constraint_defs` to return `impl Iterator<Item = &TopologyTemplate>` / `&ConstraintDef` instead of `Vec`. While doing so, evaluate whether the four methods can be replaced by two (`test_templates_iter`, `test_constraint_defs_iter`) and let callers negate with `.filter(|t| !t.is_test)` — eliminating the API-surface doubling identified in suggestion [1].",
-        "details": "",
-        "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
         "priority": "medium",
+        "details": "",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:20:38.571Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -33185,11 +33184,11 @@
         "description": "Two local copies of `fn parse_and_compile` remain after task 1332's consolidation:\n- crates/reify-compiler/tests/unit_registry_tests.rs:14 — uses `ModulePath::single(\"unit_test\")`\n- crates/reify-compiler/tests/type_alias_compile_tests.rs:12 — uses `ModulePath::single(\"alias_test\")`\n\nreify-compiler already has `reify-test-support` as a dev-dependency (Cargo.toml:13), so the migration is just a use-site swap.\n\n**Important behavior difference:** The shared `reify_test_support::parse_and_compile` asserts zero error-severity diagnostics, but the local copies in these two files return the raw `CompiledModule` without filtering. The existing callers use a separate `errors_only(module)` helper to inspect diagnostics, and some tests intentionally compile source that produces errors (e.g., cycle detection, unknown aliases). Those tests must NOT use the asserting shared helper.\n\nRecommended approach:\n1. Find all call sites in each file.\n2. For tests that expect success, migrate to `reify_test_support::parse_and_compile`.\n3. For tests that expect errors, use `reify_test_support::parse_compile_expect_err(source, needle)` or keep a local `parse_no_assert` helper that just calls `reify_syntax::parse` + `compile` without the assert.\n4. Remove the local `parse_and_compile` fn once all call sites are migrated.\n5. Verify no test depends on the `\"unit_test\"` or `\"alias_test\"` module-path strings (grep those literals).\n\n**Priority:** low. Code-reuse / drift-prevention.\n\n**Source:** review of task 1332 (esc-1332-348, reviewer_comprehensive suggestion 4, code_reuse).",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:20:59.128Z",
+        "updatedAt": "2026-04-11T07:27:33.488Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -33294,11 +33293,11 @@
         "description": "Follow-up quality improvements from task 1332 review:\\n\\n1. **parse_or_panic DRY** (S2): Extract private `fn parse_or_panic(source) -> ParsedModule` from the three pipeline helpers in helpers.rs to remove the triplicated parse+assert prologue.\\n2. **Remaining copies** (S3): Two more copies of `parse_and_compile` remain in reify-compiler tests (type_alias_compile_tests.rs, unit_registry_tests.rs). Migrate them to reify_test_support::parse_and_compile. Verify no test relies on the custom ModulePath names.\\n3. **Test quality** (S4-S7): Strengthen helper unit tests — use non-geometry source in test_make_engine, use controlled needle in test_parse_compile_expect_err_needle_match, reduce stdlib-shape coupling in test_parse_and_compile_with_stdlib.\\n\\nSource: reviewer suggestions S2-S7 from task 1332 unblock.\\nFiles: crates/reify-test-support/src/helpers.rs, crates/reify-compiler/tests/type_alias_compile_tests.rs, crates/reify-compiler/tests/unit_registry_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:21:01.367Z",
+        "updatedAt": "2026-04-11T07:27:35.594Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests",
@@ -33899,13 +33898,13 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:27:30.128Z",
+      "lastModified": "2026-04-11T07:27:35.594Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
         "master"
       ],
-      "created": "2026-04-11T07:27:30.654Z",
+      "created": "2026-04-11T07:27:36.644Z",
       "description": "Tasks for master context"
     }
   }
