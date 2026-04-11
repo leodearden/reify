@@ -482,4 +482,28 @@ assert "setup_fixture_dir: guard fires before _TMPDIRS mutation" \
 assert "setup_fixture_dir: error message mentions function name" \
     bash -c 'printf "%s\n" "$1" | grep -qi setup_fixture_dir' _ "$guard_err_t27"
 
+# -- Test 28: Check 3 refactor structural assertions (task 976) ---------------
+echo ""
+echo "--- Test 28: Check 3 refactor structural assertions (task 976) ---"
+
+# Extracts the Check 3 block using awk range '/Check 3:/,/Check 4:/' — the same
+# idiom used by Tests 18, 20, 22 for the Check 2 block. All five assertions FAIL
+# against the original bash-c / >/dev/null 2>&1 implementation and PASS only
+# after the step-2 refactor lands (task 976).
+
+assert "28a: Check 3 block does NOT use 'bash -c' to invoke 'git check-ignore'" \
+    bash -c "! awk '/Check 3:/,/Check 4:/' '$SCRIPT' | grep -q 'bash -c'"
+
+assert "28b: no 'git check-ignore' call in Check 3 block silences errors via /dev/null" \
+    bash -c "! awk '/Check 3:/,/Check 4:/' '$SCRIPT' | grep 'git check-ignore' | grep -qE '>/dev/null|2>/dev/null'"
+
+assert "28c: Check 3 block pre-computes a 'check_ignore_status' variable" \
+    bash -c "awk '/Check 3:/,/Check 4:/' '$SCRIPT' | grep -q 'check_ignore_status='"
+
+assert "28d: Check 3 block has explicit '-ge 128' branch for git error exit codes" \
+    bash -c "awk '/Check 3:/,/Check 4:/' '$SCRIPT' | grep -q -- '-ge 128'"
+
+assert "28e: Check 3 block references 'check_ignore_status' at least twice (cached value reused)" \
+    bash -c "[ \"\$(awk '/Check 3:/,/Check 4:/' '$SCRIPT' | grep -c 'check_ignore_status')\" -ge 2 ]"
+
 test_summary
