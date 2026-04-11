@@ -1,14 +1,16 @@
 //! Acceptance tests for user-defined unit declarations (task 210).
 //!
-//! Each of the 14 tests maps directly onto one of the 7 acceptance categories:
+//! Focused acceptance suite covering behaviors NOT already exercised by
+//! `unit_registry_tests.rs` (granular registry internals, 60+ tests) or
+//! `user_defined_unit_tests.rs` (cross-module integration, ModuleDag,
+//! compile_project). Duplicate coverage was consolidated in task 1420.
 //!
-//!   1. Custom unit declaration            (tests 1–2)
-//!   2. Offset unit / degC                 (tests 3–4)
-//!   3. Conversion factor correctness      (tests 5–6)
-//!   4. Cross-module unit                  (tests 7–8)
-//!   5. Duplicate name error               (tests 9–10)
-//!   6. User unit in quantity literal → SI (tests 11–12)
-//!   7. Unit with compound dimension       (tests 13–14)
+//! Categories covered:
+//!   1. Basic declaration                    (test 1)
+//!   2. Offset unit / degC                   (test 1)
+//!   3. Conversion factor arithmetic         (tests 2)
+//!   4. User unit in quantity literal → SI   (test 1, multi-unit)
+//!   5. Unit with compound dimension         (tests 2)
 
 use reify_compiler::{CompiledModule, compile, compile_with_prelude};
 use reify_types::{DimensionVector, ModulePath, Severity};
@@ -43,7 +45,7 @@ fn errors_only(module: &CompiledModule) -> Vec<&reify_types::Diagnostic> {
         .collect()
 }
 
-// ─── category 1: custom unit declaration ──────────────────────────────────────
+// ─── category 1: basic unit declaration ───────────────────────────────────────
 
 #[test]
 fn custom_unit_declaration_registers_name_dimension_factor() {
@@ -65,41 +67,6 @@ fn custom_unit_declaration_registers_name_dimension_factor() {
         unit.factor
     );
     assert!(unit.offset.is_none(), "simple unit should have no offset");
-}
-
-#[test]
-fn custom_unit_declaration_via_cross_ref_quantity_literal() {
-    // Declare `mm`, then declare `thou` using a QuantityLiteral cross-reference.
-    // Both units must appear in module.units, and `thou`'s factor must equal
-    // 0.0254 * 0.001 = 0.0000254 (resolved via evaluate_const_expr).
-    let module = parse_and_compile(
-        "unit mm : Length = 0.001\n\
-         unit thou : Length = 0.0254mm",
-    );
-    let errors = errors_only(&module);
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let mm = module
-        .units
-        .iter()
-        .find(|u| u.name == "mm")
-        .expect("unit 'mm' not found");
-    let thou = module
-        .units
-        .iter()
-        .find(|u| u.name == "thou")
-        .expect("unit 'thou' not found");
-    assert!(
-        (mm.factor - 0.001).abs() < 1e-12,
-        "mm factor should be 0.001, got {}",
-        mm.factor
-    );
-    let expected = 0.0254 * 0.001;
-    assert!(
-        (thou.factor - expected).abs() < 1e-12,
-        "thou factor should be ≈{} (0.0254mm), got {}",
-        expected,
-        thou.factor
-    );
 }
 
 // ─── category 2: offset unit (degC) ───────────────────────────────────────────
@@ -135,45 +102,7 @@ fn offset_unit_degc_compiles_with_factor_and_offset() {
     );
 }
 
-#[test]
-fn offset_unit_degc_in_quantity_literal_converts_to_kelvin() {
-    // 25degC → si_value = 25 * 1 + 273.15 = 298.15 K.
-    // Verifies the affine-unit path in the quantity-literal evaluator.
-    let module = parse_and_compile(
-        "unit degC : Temperature = 1 offset 273.15\n\
-         structure S { param t : Temperature = 25degC }",
-    );
-    let errors = errors_only(&module);
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("template 'S' not found");
-    let t_cell = template
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "t")
-        .expect("value cell 't' not found");
-    if let Some(expr) = &t_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            assert!(
-                (si_value - 298.15).abs() < 1e-9,
-                "25degC should convert to 298.15 K, got {}",
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal for 't', got {:?}", expr.kind);
-        }
-    } else {
-        panic!("value cell 't' has no default_expr");
-    }
-}
-
-// ─── category 3: conversion factor correctness ────────────────────────────────
+// ─── category 3: conversion factor arithmetic ─────────────────────────────────
 
 #[test]
 fn conversion_factor_arithmetic_multiplication_correct() {
@@ -211,171 +140,7 @@ fn conversion_factor_division_correct() {
     );
 }
 
-// ─── category 4: cross-module unit ────────────────────────────────────────────
-
-#[test]
-fn cross_module_pub_unit_visible_via_prelude() {
-    // A `pub unit` in a prelude module must be seeded into the importing module's
-    // registry and resolve correctly in quantity literals.
-    let prelude = parse_and_compile("pub unit mil : Length = 0.0000254");
-    assert!(
-        errors_only(&prelude).is_empty(),
-        "prelude errors: {:?}",
-        errors_only(&prelude)
-    );
-    let module = compile_with_prelude_helper(
-        "structure S { param w : Length = 5mil }",
-        &[prelude],
-    );
-    let errors = errors_only(&module);
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("template 'S' not found");
-    let w_cell = template
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "w")
-        .expect("value cell 'w' not found");
-    if let Some(expr) = &w_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            let expected = 5.0 * 0.0000254;
-            assert!(
-                (si_value - expected).abs() < 1e-10,
-                "5mil should be ≈{} m, got {}",
-                expected,
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal for 'w', got {:?}", expr.kind);
-        }
-    } else {
-        panic!("value cell 'w' has no default_expr");
-    }
-}
-
-#[test]
-fn cross_module_private_unit_not_visible_via_prelude() {
-    // A private unit (no `pub`) must NOT be seeded into importing modules;
-    // any reference to it from another module should produce an error.
-    let prelude = parse_and_compile("unit hidden_mil : Length = 0.0000254");
-    assert!(
-        errors_only(&prelude).is_empty(),
-        "prelude errors: {:?}",
-        errors_only(&prelude)
-    );
-    let module = compile_with_prelude_helper(
-        "structure S { param w : Length = 5hidden_mil }",
-        &[prelude],
-    );
-    let errors = errors_only(&module);
-    assert!(
-        !errors.is_empty(),
-        "expected error for private unit 'hidden_mil' used across module boundary"
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("unknown") || d.message.contains("hidden_mil")),
-        "error should mention 'unknown' or 'hidden_mil'; got: {:?}",
-        errors
-    );
-}
-
-// ─── category 5: duplicate name error ─────────────────────────────────────────
-
-#[test]
-fn duplicate_unit_name_in_same_module_is_error() {
-    // Two unit declarations with the same name must produce an error mentioning
-    // 'duplicate' and the unit name.
-    let module = parse_and_compile(
-        "unit foo : Length = 0.001\n\
-         unit foo : Length = 0.002",
-    );
-    let errors = errors_only(&module);
-    assert!(
-        !errors.is_empty(),
-        "expected error for duplicate unit 'foo', got none"
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("duplicate") && d.message.contains("foo")),
-        "error should mention 'duplicate' and 'foo'; got: {:?}",
-        errors
-    );
-}
-
-#[test]
-fn duplicate_unit_name_shadowing_prelude_is_error() {
-    // Re-declaring a unit whose name is already seeded from a prelude must fail
-    // with a duplicate error (exercises the prelude-shadow Err path).
-    let prelude = parse_and_compile("pub unit mil : Length = 0.0000254");
-    assert!(
-        errors_only(&prelude).is_empty(),
-        "prelude errors: {:?}",
-        errors_only(&prelude)
-    );
-    let module = compile_with_prelude_helper("unit mil : Length = 0.0000001", &[prelude]);
-    let errors = errors_only(&module);
-    assert!(
-        !errors.is_empty(),
-        "expected duplicate unit error when shadowing a prelude unit"
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("duplicate") && d.message.contains("mil")),
-        "error should mention 'duplicate' and 'mil'; got: {:?}",
-        errors
-    );
-}
-
-// ─── category 6: user unit in quantity literal → SI value ─────────────────────
-
-#[test]
-fn user_unit_in_quantity_literal_evaluates_to_si_value_length() {
-    // 10thou → si_value = 10 * 0.0000254 = 0.000254 m.
-    let module = parse_and_compile(
-        "unit thou : Length = 0.0000254\n\
-         structure Bracket { param w : Length = 10thou }",
-    );
-    let errors = errors_only(&module);
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Bracket")
-        .expect("template 'Bracket' not found");
-    let w_cell = template
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "w")
-        .expect("value cell 'w' not found");
-    if let Some(expr) = &w_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            let expected = 10.0 * 0.0000254;
-            assert!(
-                (si_value - expected).abs() < 1e-12,
-                "10thou should be ≈{} m, got {}",
-                expected,
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal for 'w', got {:?}", expr.kind);
-        }
-    } else {
-        panic!("value cell 'w' has no default_expr");
-    }
-}
+// ─── category 4: user unit in quantity literal → SI (multi-unit) ──────────────
 
 #[test]
 fn user_unit_in_quantity_literal_evaluates_to_si_value_multiple_units() {
@@ -442,7 +207,7 @@ fn user_unit_in_quantity_literal_evaluates_to_si_value_multiple_units() {
     }
 }
 
-// ─── category 7: unit with compound dimension ─────────────────────────────────
+// ─── category 5: unit with compound dimension ─────────────────────────────────
 
 #[test]
 fn custom_unit_with_compound_dimension_force() {
