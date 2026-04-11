@@ -69,6 +69,20 @@ _no_unhardened_pattern_interp() {
     printf 'UNHARDENED PATTERN INTERPOLATION FOUND:\n%s\n' "$m" >&3
     return 1
 }
+# Parallel guard for Section 2/3 variables (SYNC_TEST, SYNC_REF_HELPERS,
+# _SECT3_HELPER). Not anchored to start-of-line so it also catches inlined
+# usages (e.g. `... && bash -c "..."`) that _no_double_quoted_bash_c misses.
+# Split to prevent self-match — see _CHECK comment above.
+_S23_CHECK='bash'; _S23_CHECK+=' -c ".*\$\{?(SYNC_TEST|SYNC_REF_HELPERS|_SECT3_HELPER)'
+_no_unhardened_section23_interp() {
+    local m
+    m=$(grep -nE "$_S23_CHECK" "$THIS_SCRIPT" 2>/dev/null) || true
+    if [ -z "$m" ]; then
+        return 0
+    fi
+    printf 'UNHARDENED SECTION 2/3 INTERPOLATION FOUND:\n%s\n' "$m" >&3
+    return 1
+}
 _no_double_quoted_bash_c() {
     local m
     m=$(grep -nE '^[[:space:]]*bash -c "' "$THIS_SCRIPT" 2>/dev/null) || true
