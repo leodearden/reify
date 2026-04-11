@@ -527,8 +527,8 @@ assert "29a: Check 4 block has at least 2 assert calls (broad + specific)" \
 assert "29b: Check 4 block has a broad pnpm-lock.yaml grep (no gui/ path prefix)" \
     bash -c "awk '/Check 4:/,/test_summary/' '$SCRIPT' | grep -q 'is mentioned in .gitignore'"
 
-assert "29c: Check 4 block has a specific-form grep with '^gui/' anchor or '**/' glob" \
-    bash -c "awk '/Check 4:/,/test_summary/' '$SCRIPT' | grep -qF '^gui/'"
+assert "29c: Check 4 block has a specific-form grep with '^/?gui/' anchor or '**/' glob" \
+    bash -c "awk '/Check 4:/,/test_summary/' '$SCRIPT' | grep -qF '^/?gui/'"
 
 # 29d: behavioral fixture — bare 'pnpm-lock.yaml' in .gitignore satisfies the broad
 # step (pnpm-lock.yaml IS mentioned) but fails the specific step (no gui/ or **/ prefix).
@@ -542,5 +542,47 @@ out29d=$(cd "$FIXTURE_T29" && bash scripts/test_pm_standardization.sh 2>&1 || tr
 
 assert "29d: broad step PASSES when pnpm-lock.yaml is mentioned (bare form, no gui/ prefix)" \
     bash -c 'printf "%s\n" "$1" | grep -q "PASS:.*pnpm-lock.yaml is mentioned"' _ "$out29d"
+
+# 29e: behavioral fixture — /gui/pnpm-lock.yaml (leading-slash exact path) should
+# satisfy both Check 4 steps after the regex is widened (task 1634).
+setup_fixture_dir FIXTURE_T29E
+printf '/gui/pnpm-lock.yaml\n' > "$FIXTURE_T29E/.gitignore"
+for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+    printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_T29E/$pkg"
+done
+out29e=$(cd "$FIXTURE_T29E" && bash scripts/test_pm_standardization.sh 2>&1 || true)
+
+assert "29e: /gui/pnpm-lock.yaml form passes the specific-form step (no FAIL line for pnpm-lock.yaml)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "FAIL:.*pnpm-lock"' _ "$out29e"
+
+# 29f: behavioral fixture — /**/pnpm-lock.yaml (leading-slash glob prefix) should
+# satisfy both Check 4 steps after the regex is widened (task 1634).
+setup_fixture_dir FIXTURE_T29F
+printf '/**/pnpm-lock.yaml\n' > "$FIXTURE_T29F/.gitignore"
+for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+    printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_T29F/$pkg"
+done
+out29f=$(cd "$FIXTURE_T29F" && bash scripts/test_pm_standardization.sh 2>&1 || true)
+
+assert "29f: /**/pnpm-lock.yaml form passes the specific-form step (no FAIL line for pnpm-lock.yaml)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "FAIL:.*pnpm-lock"' _ "$out29f"
+
+# 29g: behavioral fixture — gui/pnpm-lock.yaml/ (trailing-slash directory form) should
+# satisfy both Check 4 steps after the regex is widened (task 1634).
+setup_fixture_dir FIXTURE_T29G
+printf 'gui/pnpm-lock.yaml/\n' > "$FIXTURE_T29G/.gitignore"
+for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+    printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_T29G/$pkg"
+done
+out29g=$(cd "$FIXTURE_T29G" && bash scripts/test_pm_standardization.sh 2>&1 || true)
+
+assert "29g: gui/pnpm-lock.yaml/ trailing-slash form passes the specific-form step (no FAIL line for pnpm-lock.yaml)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "FAIL:.*pnpm-lock"' _ "$out29g"
+
+# 29h: regression guard — reuse out29d (bare 'pnpm-lock.yaml' in .gitignore). Even
+# after widening the regex (task 1634), the specific step must still reject the bare
+# form, emitting a FAIL line, so the two-step check remains meaningful.
+assert "29h: bare pnpm-lock.yaml still FAILS the specific-form step (FAIL line present)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "FAIL:.*pnpm-lock"' _ "$out29d"
 
 test_summary
