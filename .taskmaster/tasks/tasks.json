@@ -2756,7 +2756,7 @@
         "dependencies": [
           "163"
         ],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -2779,10 +2779,16 @@
             "crates/reify-eval/src/lib.rs",
             "crates/reify-compiler/tests/option_compile_tests.rs",
             "crates/reify-compiler/tests/match_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: some/none: match patterns"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T21:10:09.871Z"
+        "updatedAt": "2026-04-11T21:11:53.451Z"
       },
       {
         "id": "165",
@@ -33615,9 +33621,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T21:10:09.885Z",
+      "lastModified": "2026-04-11T21:11:53.451Z",
       "taskCount": 1633,
-      "completedCount": 1289,
+      "completedCount": 1290,
       "tags": [
         "master"
       ]
