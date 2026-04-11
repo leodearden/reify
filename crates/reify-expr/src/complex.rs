@@ -253,6 +253,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn im_neg_inf_dimensionless_returns_undef() {
+        // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.im → Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "im".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.im with NEG_INFINITY imaginary part should return Undef"
+        );
+    }
+
     // ── method: magnitude ─────────────────────────────────────────────────────
 
     #[test]
