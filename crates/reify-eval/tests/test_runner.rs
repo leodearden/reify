@@ -138,6 +138,7 @@ fn run_tests_propagates_violation_diagnostics() {
     let compiled = parse_and_compile(source);
     let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
     assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "TestA");
     assert_eq!(results[0].status, reify_eval::TestStatus::Fail);
     assert!(
         results[0]
