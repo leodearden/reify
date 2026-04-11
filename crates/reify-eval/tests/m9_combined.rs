@@ -18,14 +18,21 @@ const EXAMPLE_PATH: &str = concat!(
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Read and return the contents of the m9_combined.ri example file.
+/// The file is read only once per test process (cached in a `OnceLock`);
+/// each caller receives an owned clone.
 fn source() -> String {
-    std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_combined.ri should exist")
+    static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    S.get_or_init(|| {
+        std::fs::read_to_string(EXAMPLE_PATH)
+            .expect("examples/m9_combined.ri should exist")
+    })
+    .clone()
 }
 
 /// Parse, compile, eval with SimpleConstraintChecker, return EvalResult.
 /// Use when asserting on values (SI scalars, strings, booleans).
-fn eval_source(source: &str) -> reify_eval::EvalResult {
-    let compiled = parse_and_compile(source);
+fn eval_source(src: &str) -> reify_eval::EvalResult {
+    let compiled = parse_and_compile(src);
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     engine.eval(&compiled)
@@ -33,8 +40,8 @@ fn eval_source(source: &str) -> reify_eval::EvalResult {
 
 /// Parse, compile, check with SimpleConstraintChecker, return CheckResult.
 /// Use when asserting on constraint satisfaction, labels, and counts.
-fn check_source(source: &str) -> reify_eval::CheckResult {
-    let compiled = parse_and_compile(source);
+fn check_source(src: &str) -> reify_eval::CheckResult {
+    let compiled = parse_and_compile(src);
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     engine.check(&compiled)
@@ -71,8 +78,8 @@ fn m9_combined_compiles_no_errors() {
 
 // ── Test 3: all constraints satisfied ────────────────────────────────────────
 
-/// Smoke test: file produces constraint results and none are Violated.
-/// The strict all-Satisfied invariant is covered by `total_constraint_count`.
+/// Smoke test: file produces constraint results and all are Satisfied.
+/// Complements `total_constraint_count`, which additionally asserts count >= 15.
 #[test]
 fn all_constraints_satisfied() {
     let check_result = check_source(&source());
@@ -83,12 +90,12 @@ fn all_constraints_satisfied() {
         "expected at least one constraint result"
     );
 
-    // No constraint should be Violated
+    // Every entry must be exactly Satisfied (Violated and Indeterminate both fail)
     for entry in &check_result.constraint_results {
-        assert_ne!(
+        assert_eq!(
             entry.satisfaction,
-            Satisfaction::Violated,
-            "constraint {} should not be Violated, got {:?}",
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied, got {:?}",
             entry.id,
             entry.satisfaction
         );
@@ -388,6 +395,14 @@ fn violated_constraint_detected() {
     let violating = source().replace(
         "param clearance : Length = 500mil",
         "param clearance : Length = 100mm",
+    );
+
+    // Guard: confirm the substitution actually happened.
+    // If this fires the target substring drifted; update the test to match.
+    assert_ne!(
+        violating,
+        source(),
+        "replace target drifted — 'param clearance : Length = 500mil' not found; update the test"
     );
 
     let check_result = check_source(&violating);
