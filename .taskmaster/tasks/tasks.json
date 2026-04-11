@@ -18460,11 +18460,11 @@
         "description": "In crates/reify-compiler/src/lib.rs:5200-5208, the label format `format!(\"{}[{}]\", ci.name, pred_idx)` produces identical labels when the same constraint def is instantiated more than once in a single structure. Add a per-def instantiation counter (inst_idx) so labels become `\"Name#inst[pred]\"`. Then add a test in crates/reify-eval/tests/constraint_def_eval.rs that instantiates the same constraint def twice with different arguments and asserts the two resulting ConstraintCheckEntry labels are distinct.\n\nMemory hints: search for \"constraint def label format\", get_entity \"CompiledConstraint\", search for \"ConstraintCheckEntry label\"",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:38.209Z",
+        "updatedAt": "2026-04-11T07:26:08.505Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -33901,7 +33901,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:26:08.012Z",
+      "lastModified": "2026-04-11T07:26:08.505Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
