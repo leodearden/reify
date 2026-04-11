@@ -1481,3 +1481,139 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression guard: degenerate revolve axis → compile-time rejection, specific Warning
+// ---------------------------------------------------------------------------
+
+/// When a Sweep::Revolve op has a zero-length axis (ax=ay=az=0.0), build() should:
+/// 1. Call kernel exactly once — for the preceding Sphere that provides the
+///    profile handle — but never call kernel for the Revolve op itself.
+/// 2. Return geometry_output=None (the realization as a whole fails).
+/// 3. Emit a Warning whose message contains both 'revolve dropped' and 'axis'
+///    (the site-specific diagnostic from lib.rs:3699).
+/// 4. Emit an Error containing 'failed to compile geometry operation'.
+/// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
+///    called for the Revolve op).
+///
+/// This specifically exercises the axis-magnitude check at lib.rs:3698, which
+/// is distinct from the angle check tested in build_revolve_zero_angle_emits_diagnostic.
+#[test]
+fn build_revolve_degenerate_axis_emits_diagnostic() {
+    use reify_compiler::SweepKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+
+    // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(50.0))],
+    };
+
+    // Op 1: Revolve with ax=ay=az=0.0 (zero-length axis) — rejected before angle is evaluated
+    let revolve_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(0.0)),
+            ("angle".into(), real_literal(std::f64::consts::PI)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "radius", Type::length(), Some(mm_literal(50.0)))
+        .realization(e, 0, vec![sphere_op, revolve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(
+        "test_revolve_degenerate_axis",
+    ))
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (1) Kernel was called exactly once — for the Sphere — but never for the Revolve
+    {
+        let ops = ops_ref.lock().unwrap();
+        assert_eq!(
+            ops.len(),
+            1,
+            "kernel.execute() should be called only for the Sphere (not the Revolve), \
+             got {} kernel ops",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
+            "expected the only recorded kernel op to be Sphere, got: {:?}",
+            ops[0].op
+        );
+    }
+
+    // (2) No geometry output — Revolve failed to compile
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when Revolve axis is degenerate (zero-length)"
+    );
+
+    // (3) Warning: 'revolve dropped' and 'axis'
+    let has_revolve_warning = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning
+            && d.message.contains("revolve dropped")
+            && d.message.contains("axis")
+    });
+    assert!(
+        has_revolve_warning,
+        "expected a Warning diagnostic containing 'revolve dropped' and 'axis', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (4) Error about failed compile
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (5) No 'geometry error' diagnostic — kernel was never called for the Revolve
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for Revolve), \
+         but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("geometry error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
