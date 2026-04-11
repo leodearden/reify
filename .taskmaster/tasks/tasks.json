@@ -10045,7 +10045,13 @@
           ],
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add missing MetaAccess test coverage for guard branches and concurrent path"
+            ]
+          }
         }
       },
       {
@@ -26564,7 +26570,13 @@
           "files": [
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-syntax/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Encapsulate is_test on TopologyTemplate and document is_test asymmetry"
+            ]
+          }
         }
       },
       {
@@ -32519,11 +32531,11 @@
         "description": "Add a test that exercises the stdlib collision detection path at the compile_project level. Currently there is no integration test that verifies behavior when user-defined units collide with stdlib units. Source: review of task 1074 (S3).",
         "details": "Files: crates/reify-eval/src/units.rs, tests involving compile_project.\\n\\nmemory_hints:\\n- search: \"stdlib unit collision\"\\n- search: \"unit registry compile_project test\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T07:11:43.165Z",
+        "updatedAt": "2026-04-11T07:20:44.688Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -33477,7 +33489,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:42.898Z",
+      "lastModified": "2026-04-11T07:20:44.689Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
