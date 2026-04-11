@@ -8427,7 +8427,13 @@
           ],
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Migrate remaining test files to common test helpers"
+            ]
+          }
         }
       },
       {
@@ -23023,7 +23029,13 @@
           ],
           "files": [
             "crates/reify-compiler/src/module_dag.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract collect_preludes helper to deduplicate prelude collection logic"
+            ]
+          }
         }
       },
       {
@@ -23367,7 +23379,7 @@
         "description": "Enhance the robustness and coverage of the `nan_payload_canonicalized_in_content_hash` test in `crates/reify-types/src/value.rs`.",
         "details": "Address the weaknesses identified in Task 1078 review by implementing the following changes:\n\n1. **Fix S2 - Test Robustness:**\n   - Replace `debug_assert!` with `assert!` to ensure the test remains valid in release builds.\n   - Add an assertion to verify that the sentinel bits are distinct from the canonical NaN bits:\n     ```rust\n     let non_canon_nan = f64::from_bits(f64::NAN.to_bits() ^ 1);\n     assert!(non_canon_nan.is_nan(), \"sentinel must be NaN\");\n     assert_ne!(\n         non_canon_nan.to_bits(),\n         f64::NAN.to_bits(),\n         \"sentinel must be a non-canonical NaN bit pattern\"\n     );\n     ```\n\n2. **Fix S4 - Test Coverage Gap:**\n   - Add negative assertions to ensure NaN hashes differ from finite-value hashes:\n     ```rust\n     assert_ne!(Value::Real(f64::NAN).content_hash(), Value::Real(0.0).content_hash());\n     assert_ne!(Value::Scalar { si_value: f64::NAN, ... }.content_hash(), Value::Scalar { si_value: 0.0, ... }.content_hash());\n     ```\n   - Extend similar assertions for complex numbers and orientations.",
         "testStrategy": "Run the test suite with `cargo test -p reify-types nan_payload_canonicalized_in_content_hash` to verify the changes. Additionally, execute the tests in release mode using `cargo test -p reify-types --release nan_payload_canonicalized_in_content_hash` to ensure robustness in optimized builds.",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [
           "979"
         ],
@@ -23382,7 +23394,7 @@
             "crates/reify-types"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:20:01.845Z"
       },
       {
         "id": "1094",
@@ -29375,7 +29387,13 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Refine build_modify_missing_arg_no_kernel_error test (naming, docstring, assertions)"
+            ]
+          }
         }
       },
       {
@@ -33215,7 +33233,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:00.465Z",
+      "lastModified": "2026-04-11T07:20:01.845Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
