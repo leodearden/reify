@@ -332,6 +332,17 @@ assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC ma
 assert "extract_fn comment describes allowed prefixes for broad awk pattern" \
     bash -c 'grep "^#" "$SYNC_TEST" | grep -qF "Allowed prefixes"'
 
+# S2: regression guard — extract_fn docstring must not claim modifiers are
+# accepted "in any valid subset" (order-enforcing reframe applied by task 1581).
+# Fragments split across two variables prevent self-match.
+_S2_FRAG1='in any valid subset'
+_S2_FRAG2=" before 'fn'"
+_no_ambiguous_modifier_subset_claim() {
+    ! grep -qF "${_S2_FRAG1}${_S2_FRAG2}" "$SYNC_TEST"
+}
+assert 'extract_fn comment states modifier order is enforced, not any-subset (S2)' \
+    _no_ambiguous_modifier_subset_claim
+
 assert "sync_ref_helpers.sh documents extern fn limitation" \
     grep -qF 'extern "C" fn' "$SYNC_REF_HELPERS"
 
