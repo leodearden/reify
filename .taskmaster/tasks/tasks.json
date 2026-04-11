@@ -3124,14 +3124,14 @@
       {
         "id": 180,
         "title": "M8 pipeline integration tests",
-        "description": "Create `reify-eval/tests/m8_integration.rs` with cross-feature pipeline tests: type aliases combined with range constraints, fn overloading with collection methods, chained comparisons with implies, auto(free) with minimize, temperature offsets in engineering calculations. Each test loads a .ri source string, parses, compiles, evaluates, and asserts on final values. [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:28:04.762Z>\nThis task has been subsumed by task 179 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:28:04.762Z>",
+        "description": "Create `reify-eval/tests/m8_integration.rs` with cross-feature pipeline tests: type aliases combined with range constraints, fn overloading with collection methods, chained comparisons with implies, auto(free) with minimize, temperature offsets in engineering calculations. Each test loads a .ri source string, parses, compiles, evaluates, and asserts on final values.",
+        "details": "",
         "testStrategy": ">=10 cross-feature pipeline tests.",
         "priority": "high",
         "dependencies": [
           "179"
         ],
-        "status": "cancelled",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -3143,7 +3143,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:27:54.487Z"
+        "updatedAt": "2026-04-11T07:23:41.693Z"
       },
       {
         "id": 181,
@@ -3163,7 +3163,7 @@
           "173",
           "177"
         ],
-        "status": "cancelled",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -3175,7 +3175,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:27:54.533Z"
+        "updatedAt": "2026-04-11T07:23:41.746Z"
       },
       {
         "id": 182,
@@ -7697,8 +7697,8 @@
       {
         "id": 371,
         "title": "Test support: deduplicate compile_module/parse_decls helpers across 10+ files",
-        "description": "compile_module helper is copy-pasted across 10+ test files in reify-compiler/tests/. parse_decls helper is similarly duplicated across 10+ test files in reify-syntax/tests/. Create shared test helpers — either tests/common.rs modules or add to reify-test-support crate — and update all test files to use the shared versions.\n\nMemory hints: search \"compile_module parse_decls test helper\", entities: reify-test-support, reify-compiler tests [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:27:45.713Z>\nThis task has been subsumed by task 401 (bundle consolidation 2026-04-11). No further action is required on this task.\n</info added on 2026-04-11T07:27:45.713Z>",
+        "description": "compile_module helper is copy-pasted across 10+ test files in reify-compiler/tests/. parse_decls helper is similarly duplicated across 10+ test files in reify-syntax/tests/. Create shared test helpers — either tests/common.rs modules or add to reify-test-support crate — and update all test files to use the shared versions.\n\nMemory hints: search \"compile_module parse_decls test helper\", entities: reify-test-support, reify-compiler tests",
+        "details": "",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -8415,8 +8415,8 @@
       {
         "id": 402,
         "title": "Migrate remaining test files to common test helpers",
-        "description": "Migrate guard_compilation.rs and collection_sub_tests.rs to use `mod common;` shared helpers, eliminating duplicate inline helper functions.\n\n1. guard_compilation.rs: Add `mod common; use common::compile_first_template;` and remove the inline `compile_first_template` definition (identical to common/mod.rs version).\n\n2. collection_sub_tests.rs: Add `mod common;` and refactor the inline `compile_no_errors` to wrap `common::compile_module` with an error assertion (same pattern as purpose_compile_tests.rs).\n\n3. Consider adding a `compile_no_errors` helper to common/mod.rs that wraps `compile_module` + asserts no error diagnostics, since this pattern appears in collection_sub_tests.rs, collection_compile_tests.rs, and let_scope_tests.rs.\n\nmemory_hints: search \"compile_module test helper common\" in reify project; entity \"common/mod.rs\" [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:27:53.684Z>\nThis task has been subsumed by Task 401 (bundle consolidation 2026-04-11). No further action is required on this task as it is now part of a larger consolidation effort.\n</info added on 2026-04-11T07:27:53.684Z>",
+        "description": "Migrate guard_compilation.rs and collection_sub_tests.rs to use `mod common;` shared helpers, eliminating duplicate inline helper functions.\n\n1. guard_compilation.rs: Add `mod common; use common::compile_first_template;` and remove the inline `compile_first_template` definition (identical to common/mod.rs version).\n\n2. collection_sub_tests.rs: Add `mod common;` and refactor the inline `compile_no_errors` to wrap `common::compile_module` with an error assertion (same pattern as purpose_compile_tests.rs).\n\n3. Consider adding a `compile_no_errors` helper to common/mod.rs that wraps `compile_module` + asserts no error diagnostics, since this pattern appears in collection_sub_tests.rs, collection_compile_tests.rs, and let_scope_tests.rs.\n\nmemory_hints: search \"compile_module test helper common\" in reify project; entity \"common/mod.rs\"",
+        "details": "",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -18456,8 +18456,8 @@
       {
         "id": 845,
         "title": "Fix label uniqueness for multiple constraint-def instantiations",
-        "description": "In crates/reify-compiler/src/lib.rs:5200-5208, the label format `format!(\"{}[{}]\", ci.name, pred_idx)` produces identical labels when the same constraint def is instantiated more than once in a single structure. Add a per-def instantiation counter (inst_idx) so labels become `\"Name#inst[pred]\"`. Then add a test in crates/reify-eval/tests/constraint_def_eval.rs that instantiates the same constraint def twice with different arguments and asserts the two resulting ConstraintCheckEntry labels are distinct.\n\nMemory hints: search for \"constraint def label format\", get_entity \"CompiledConstraint\", search for \"ConstraintCheckEntry label\"",
-        "details": "",
+        "description": "In crates/reify-compiler/src/lib.rs:5200-5208, the label format `format!(\"{}[{}]\", ci.name, pred_idx)` produces identical labels when the same constraint def is instantiated more than once in a single structure. Add a per-def instantiation counter (inst_idx) so labels become `\"Name#inst[pred]\"`. Then add a test in crates/reify-eval/tests/constraint_def_eval.rs that instantiates the same constraint def twice with different arguments and asserts the two resulting ConstraintCheckEntry labels are distinct.\n\nMemory hints: search for \"constraint def label format\", get_entity \"CompiledConstraint\", search for \"ConstraintCheckEntry label\" [Updated: 4/11/2026]",
+        "details": "<info added on 2026-04-11T07:28:11.518Z>\nThis task has been subsumed by Task 842 (bundle consolidation 2026-04-11). Please refer to Task 842 for further details and updates.\n</info added on 2026-04-11T07:28:11.518Z>",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -19088,11 +19088,11 @@
         "description": "Add compile_module, compile_template, error_diags, and parse_and_compile to crates/reify-test-support/src/. Remove per-file duplicates in: constraint_def_compile_tests.rs (lines 12-36), constraint_inst_tests.rs, and ~12 other compiler test files; and m9_constraint_def.rs (lines 20-34) plus m9_trait_conformance.rs, m5_integration.rs, m10_geometric_types.rs, purpose_eval.rs, determinacy_predicates.rs.\n\nNote: Prior consolidation tasks (2, 81, 614, 769) moved compile_source, eval_source, test_uri, and solver helpers. This task covers the remaining compile_module/compile_template/error_diags/parse_and_compile helpers that are still duplicated.\n\nmemory_hints: search \"reify-test-support helpers consolidate\" for prior consolidation work",
         "details": "",
         "testStrategy": "",
-        "status": "cancelled",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:27:30.128Z",
+        "updatedAt": "2026-04-11T07:23:42.683Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support",
@@ -19434,8 +19434,8 @@
       {
         "id": 893,
         "title": "Fill missing Complex guard-clause coverage (im.is_nan and re.is_infinite branches)",
-        "description": "In crates/reify-expr/src/lib.rs, add two new Complex sanitize tests to exercise the two unverified guard sub-clauses: (1) sanitize_complex_nan_im_returns_undef: Value::Complex { re: 1.0, im: f64::NAN, dimension: DimensionVector::DIMENSIONLESS } → is_undef(); (2) sanitize_complex_inf_re_returns_undef: Value::Complex { re: f64::INFINITY, im: 1.0, dimension: DimensionVector::DIMENSIONLESS } → is_undef(). All four clauses in `re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite()` will then be independently exercised. [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:27:33.360Z>\nThis task has been subsumed by task 892 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:27:33.360Z>",
+        "description": "In crates/reify-expr/src/lib.rs, add two new Complex sanitize tests to exercise the two unverified guard sub-clauses: (1) sanitize_complex_nan_im_returns_undef: Value::Complex { re: 1.0, im: f64::NAN, dimension: DimensionVector::DIMENSIONLESS } → is_undef(); (2) sanitize_complex_inf_re_returns_undef: Value::Complex { re: f64::INFINITY, im: 1.0, dimension: DimensionVector::DIMENSIONLESS } → is_undef(). All four clauses in `re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite()` will then be independently exercised.",
+        "details": "",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -21201,11 +21201,11 @@
         "description": "The duplicate_template_names_emits_diagnostic test in crates/reify-compiler/src/scc.rs (lines 351-367) has two gaps: (1) It filters by message substring 'duplicate' without asserting Severity::Error — a regression to warning would go undetected. (2) It doesn't verify that is_recursive is still computed correctly for the non-duplicate entries. Both assertions should be added.",
         "details": "",
         "testStrategy": "",
-        "status": "cancelled",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:27:18.565Z",
+        "updatedAt": "2026-04-11T07:23:43.517Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -26608,12 +26608,13 @@
         "id": 1251,
         "title": "Return iterators and slim API surface of CompiledModule filter helpers",
         "description": "In `crates/reify-compiler/src/lib.rs` lines 178-199, change `test_templates`, `non_test_templates`, `test_constraint_defs`, and `non_test_constraint_defs` to return `impl Iterator<Item = &TopologyTemplate>` / `&ConstraintDef` instead of `Vec`. While doing so, evaluate whether the four methods can be replaced by two (`test_templates_iter`, `test_constraint_defs_iter`) and let callers negate with `.filter(|t| !t.is_test)` — eliminating the API-surface doubling identified in suggestion [1].",
+        "details": "",
+        "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
         "priority": "medium",
-        "details": "",
-        "testStrategy": "",
         "subtasks": [],
+        "updatedAt": "2026-04-11T07:20:38.571Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -26666,8 +26667,8 @@
       {
         "id": 1253,
         "title": "Encapsulate is_test on TopologyTemplate and document is_test asymmetry",
-        "description": "In `crates/reify-compiler/src/lib.rs` around line 248: (a) make `is_test` a private field and expose it via a `pub fn is_test(&self) -> bool` getter, with a doc note that mutating `annotations` post-construction is unsupported. This is symmetric with `ConstraintDef::is_test()`. (b) Add TODO comments on `test_constraint_defs`/`non_test_constraint_defs` (lib.rs ~192-199) and on `ConstraintDef::is_test()` in `crates/reify-syntax/src/lib.rs:465` noting that the method will move to a `CompiledConstraintDef::is_test` field once constraint-def lowering lands. [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:27:27.451Z>\nThis task has been subsumed by task 1251 (bundle consolidation 2026-04-11). No further action is required on this task as it will be addressed within the scope of task 1251.\n</info added on 2026-04-11T07:27:27.451Z>",
+        "description": "In `crates/reify-compiler/src/lib.rs` around line 248: (a) make `is_test` a private field and expose it via a `pub fn is_test(&self) -> bool` getter, with a doc note that mutating `annotations` post-construction is unsupported. This is symmetric with `ConstraintDef::is_test()`. (b) Add TODO comments on `test_constraint_defs`/`non_test_constraint_defs` (lib.rs ~192-199) and on `ConstraintDef::is_test()` in `crates/reify-syntax/src/lib.rs:465` noting that the method will move to a `CompiledConstraintDef::is_test` field once constraint-def lowering lands.",
+        "details": "",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -26697,8 +26698,8 @@
       {
         "id": 1254,
         "title": "Resolve @test-on-function half-support",
-        "description": "In `crates/reify-compiler/src/lib.rs:4728`, `function` is listed as a valid context for `@test`, but `CompiledFunction` (re-exported from `reify_types`) has no `is_test` field and `CompiledModule` has no `test_functions()` helper. Either (a) remove `function` from the valid context match arm if test-functions are out of scope for Task 267, or (b) add `CompiledFunction::is_test()` in `reify_types` and `CompiledModule::test_functions()` / `non_test_functions()` in `crates/reify-compiler/src/lib.rs` to make the API coherent. [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:27:29.592Z>\nThis task has been subsumed by Task 1251 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:27:29.592Z>",
+        "description": "In `crates/reify-compiler/src/lib.rs:4728`, `function` is listed as a valid context for `@test`, but `CompiledFunction` (re-exported from `reify_types`) has no `is_test` field and `CompiledModule` has no `test_functions()` helper. Either (a) remove `function` from the valid context match arm if test-functions are out of scope for Task 267, or (b) add `CompiledFunction::is_test()` in `reify_types` and `CompiledModule::test_functions()` / `non_test_functions()` in `crates/reify-compiler/src/lib.rs` to make the API coherent.",
+        "details": "",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -33184,11 +33185,11 @@
         "description": "Two local copies of `fn parse_and_compile` remain after task 1332's consolidation:\n- crates/reify-compiler/tests/unit_registry_tests.rs:14 — uses `ModulePath::single(\"unit_test\")`\n- crates/reify-compiler/tests/type_alias_compile_tests.rs:12 — uses `ModulePath::single(\"alias_test\")`\n\nreify-compiler already has `reify-test-support` as a dev-dependency (Cargo.toml:13), so the migration is just a use-site swap.\n\n**Important behavior difference:** The shared `reify_test_support::parse_and_compile` asserts zero error-severity diagnostics, but the local copies in these two files return the raw `CompiledModule` without filtering. The existing callers use a separate `errors_only(module)` helper to inspect diagnostics, and some tests intentionally compile source that produces errors (e.g., cycle detection, unknown aliases). Those tests must NOT use the asserting shared helper.\n\nRecommended approach:\n1. Find all call sites in each file.\n2. For tests that expect success, migrate to `reify_test_support::parse_and_compile`.\n3. For tests that expect errors, use `reify_test_support::parse_compile_expect_err(source, needle)` or keep a local `parse_no_assert` helper that just calls `reify_syntax::parse` + `compile` without the assert.\n4. Remove the local `parse_and_compile` fn once all call sites are migrated.\n5. Verify no test depends on the `\"unit_test\"` or `\"alias_test\"` module-path strings (grep those literals).\n\n**Priority:** low. Code-reuse / drift-prevention.\n\n**Source:** review of task 1332 (esc-1332-348, reviewer_comprehensive suggestion 4, code_reuse).",
         "details": "",
         "testStrategy": "",
-        "status": "cancelled",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:27:33.488Z",
+        "updatedAt": "2026-04-11T07:20:59.128Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -33293,11 +33294,11 @@
         "description": "Follow-up quality improvements from task 1332 review:\\n\\n1. **parse_or_panic DRY** (S2): Extract private `fn parse_or_panic(source) -> ParsedModule` from the three pipeline helpers in helpers.rs to remove the triplicated parse+assert prologue.\\n2. **Remaining copies** (S3): Two more copies of `parse_and_compile` remain in reify-compiler tests (type_alias_compile_tests.rs, unit_registry_tests.rs). Migrate them to reify_test_support::parse_and_compile. Verify no test relies on the custom ModulePath names.\\n3. **Test quality** (S4-S7): Strengthen helper unit tests — use non-geometry source in test_make_engine, use controlled needle in test_parse_compile_expect_err_needle_match, reduce stdlib-shape coupling in test_parse_and_compile_with_stdlib.\\n\\nSource: reviewer suggestions S2-S7 from task 1332 unblock.\\nFiles: crates/reify-test-support/src/helpers.rs, crates/reify-compiler/tests/type_alias_compile_tests.rs, crates/reify-compiler/tests/unit_registry_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "cancelled",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:27:35.594Z",
+        "updatedAt": "2026-04-11T07:21:01.367Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests",
@@ -33898,13 +33899,13 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:27:54.533Z",
+      "lastModified": "2026-04-11T07:26:14.958Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
         "master"
       ],
-      "created": "2026-04-11T07:27:58.175Z",
+      "created": "2026-04-11T07:26:51.652Z",
       "description": "Tasks for master context"
     }
   }
