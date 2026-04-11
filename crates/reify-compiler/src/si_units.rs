@@ -53,6 +53,186 @@ pub const SI_PREFIX_BASES: &[(&str, &str)] = &[
     ("rad", "Angle"),
 ];
 
+/// One SI (or SI-factor-derived) derived-unit entry.
+///
+/// - `name` — unit symbol as written in Reify source (e.g. `"Pa"`, `"ohm"`, `"eV"`).
+/// - `dimension` — PascalCase dimension name resolved via `type_resolution::resolve_dimension_type`.
+/// - `factor` — multiplicative conversion to SI (e.g. `1.0` for Pa, `1.602176634e-19` for eV).
+/// - `prefix_combos` — which SI prefixes to auto-generate for this unit. The
+///   conventional engineering subset — not every prefix × every unit, since
+///   `RQ`-scale kelvin or `y`-scale siemens would only bloat the generated source.
+///   Empty means the unit is emitted unprefixed only.
+pub struct SiDerivedUnit {
+    pub name: &'static str,
+    pub dimension: &'static str,
+    pub factor: f64,
+    pub prefix_combos: &'static [&'static str],
+}
+
+/// The 24 standard SI derived units plus non-SI accepted engineering units
+/// (`eV`, `bar`, `mbar`, `rpm`, `rad_per_s`, `Pa_s`).
+///
+/// Ordering matches the task spec. `prefix_combos` holds only the
+/// commonly-used engineering prefixes per unit; the generator expands each
+/// into `<prefix><name>` declarations with `prefix_factor * base_factor`.
+///
+/// Design notes:
+/// - `Bq` is dimensionally `s⁻¹` (same as `Hz`) — distinct symbol, same dim.
+/// - `Sv` and `Gy` both share the absorbed-dose dimension (`m²·s⁻²`).
+/// - `rpm = 2π/60 rad/s` — computed literally as `PI / 30` (see test).
+/// - `bar = 100000 Pa`, `mbar = 100 Pa` — non-SI but widely used.
+/// - `Pa_s`, `rad_per_s` use underscore names to avoid the `Pas` / `rads`
+///   prefix-ambiguity (`Pas` could parse as peta-second).
+pub const SI_DERIVED_UNITS: &[SiDerivedUnit] = &[
+    // Core SI derived units (factor = 1.0 in SI).
+    SiDerivedUnit {
+        name: "N",
+        dimension: "Force",
+        factor: 1.0,
+        prefix_combos: &["k", "M", "G"],
+    },
+    SiDerivedUnit {
+        name: "Pa",
+        dimension: "Pressure",
+        factor: 1.0,
+        prefix_combos: &["k", "M", "G"],
+    },
+    SiDerivedUnit {
+        name: "J",
+        dimension: "Energy",
+        factor: 1.0,
+        prefix_combos: &["m", "k", "M", "G"],
+    },
+    SiDerivedUnit {
+        name: "W",
+        dimension: "Power",
+        factor: 1.0,
+        prefix_combos: &["u", "m", "k", "M", "G"],
+    },
+    SiDerivedUnit {
+        name: "V",
+        dimension: "Voltage",
+        factor: 1.0,
+        prefix_combos: &["u", "m", "k"],
+    },
+    SiDerivedUnit {
+        name: "Hz",
+        dimension: "Frequency",
+        factor: 1.0,
+        prefix_combos: &["k", "M", "G", "T"],
+    },
+    SiDerivedUnit {
+        name: "ohm",
+        dimension: "Resistance",
+        factor: 1.0,
+        prefix_combos: &["m", "k", "M", "G"],
+    },
+    SiDerivedUnit {
+        name: "S",
+        dimension: "Conductance",
+        factor: 1.0,
+        prefix_combos: &[],
+    },
+    SiDerivedUnit {
+        name: "F",
+        dimension: "Capacitance",
+        factor: 1.0,
+        prefix_combos: &["p", "n", "u", "m"],
+    },
+    SiDerivedUnit {
+        name: "H",
+        dimension: "Inductance",
+        factor: 1.0,
+        prefix_combos: &["u", "m"],
+    },
+    SiDerivedUnit {
+        name: "Wb",
+        dimension: "MagneticFlux",
+        factor: 1.0,
+        prefix_combos: &["u", "m"],
+    },
+    SiDerivedUnit {
+        name: "T",
+        dimension: "MagneticFluxDensity",
+        factor: 1.0,
+        prefix_combos: &["u", "m"],
+    },
+    SiDerivedUnit {
+        name: "lm",
+        dimension: "LuminousFlux",
+        factor: 1.0,
+        prefix_combos: &[],
+    },
+    SiDerivedUnit {
+        name: "lx",
+        dimension: "Illuminance",
+        factor: 1.0,
+        prefix_combos: &[],
+    },
+    SiDerivedUnit {
+        name: "Bq",
+        dimension: "Frequency",
+        factor: 1.0,
+        prefix_combos: &[],
+    },
+    SiDerivedUnit {
+        name: "Gy",
+        dimension: "AbsorbedDose",
+        factor: 1.0,
+        prefix_combos: &[],
+    },
+    SiDerivedUnit {
+        name: "Sv",
+        dimension: "AbsorbedDose",
+        factor: 1.0,
+        prefix_combos: &[],
+    },
+    SiDerivedUnit {
+        name: "C",
+        dimension: "Charge",
+        factor: 1.0,
+        prefix_combos: &["p", "n", "u", "m"],
+    },
+    // Non-SI factor conversions.
+    SiDerivedUnit {
+        name: "eV",
+        dimension: "Energy",
+        factor: 1.602176634e-19,
+        prefix_combos: &["k", "M", "G", "T"],
+    },
+    SiDerivedUnit {
+        name: "bar",
+        dimension: "Pressure",
+        factor: 100000.0,
+        prefix_combos: &[],
+    },
+    SiDerivedUnit {
+        name: "mbar",
+        dimension: "Pressure",
+        factor: 100.0,
+        prefix_combos: &[],
+    },
+    // rpm = 2π/60 rad·s⁻¹ = π/30.
+    SiDerivedUnit {
+        name: "rpm",
+        dimension: "AngularVelocity",
+        factor: std::f64::consts::PI / 30.0,
+        prefix_combos: &[],
+    },
+    SiDerivedUnit {
+        name: "rad_per_s",
+        dimension: "AngularVelocity",
+        factor: 1.0,
+        prefix_combos: &[],
+    },
+    SiDerivedUnit {
+        name: "Pa_s",
+        dimension: "DynamicViscosity",
+        factor: 1.0,
+        prefix_combos: &[],
+    },
+];
+
 /// Build the `.ri` source text for all SI units.
 ///
 /// The generated source is compiled at `load_stdlib()` time as a synthetic

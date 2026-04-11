@@ -333,3 +333,73 @@ fn task_test_prefixed_bases_resolve_via_stdlib() {
     );
     assert_eq!(d, DimensionVector::MASS);
 }
+
+// ─── step-13: SI_DERIVED_UNITS table ─────────────────────────────────────────
+
+#[test]
+fn si_derived_units_table_defines_newtons_pascals_joules() {
+    let table = si_units::SI_DERIVED_UNITS;
+
+    // Helper: look up a derived unit by name.
+    let find = |name: &str| -> &si_units::SiDerivedUnit {
+        table
+            .iter()
+            .find(|u| u.name == name)
+            .unwrap_or_else(|| panic!("derived unit `{}` missing from SI_DERIVED_UNITS", name))
+    };
+
+    // Expected: (name, dimension, factor). Factor 1.0 means the SI unit itself.
+    let cases: &[(&str, &str, f64)] = &[
+        // Core SI derived units (factor 1 in SI).
+        ("N", "Force", 1.0),
+        ("Pa", "Pressure", 1.0),
+        ("J", "Energy", 1.0),
+        ("W", "Power", 1.0),
+        ("V", "Voltage", 1.0),
+        ("Hz", "Frequency", 1.0),
+        ("ohm", "Resistance", 1.0),
+        ("S", "Conductance", 1.0),
+        ("F", "Capacitance", 1.0),
+        ("H", "Inductance", 1.0),
+        ("Wb", "MagneticFlux", 1.0),
+        ("T", "MagneticFluxDensity", 1.0),
+        ("lm", "LuminousFlux", 1.0),
+        ("lx", "Illuminance", 1.0),
+        // Bq shares s⁻¹ with Frequency (dimensionally).
+        ("Bq", "Frequency", 1.0),
+        ("Gy", "AbsorbedDose", 1.0),
+        ("Sv", "AbsorbedDose", 1.0),
+        ("C", "Charge", 1.0),
+        // Non-SI factor conversions.
+        ("eV", "Energy", 1.602176634e-19),
+        ("bar", "Pressure", 100000.0),
+        ("mbar", "Pressure", 100.0),
+        ("rpm", "AngularVelocity", std::f64::consts::PI / 30.0),
+        ("rad_per_s", "AngularVelocity", 1.0),
+        ("Pa_s", "DynamicViscosity", 1.0),
+    ];
+
+    assert_eq!(
+        table.len(),
+        cases.len(),
+        "SI_DERIVED_UNITS must contain exactly {} entries, found {}",
+        cases.len(),
+        table.len()
+    );
+
+    for (name, dim, factor) in cases {
+        let entry = find(name);
+        assert_eq!(
+            entry.dimension, *dim,
+            "derived unit `{}` has wrong dimension: expected {}, got {}",
+            name, dim, entry.dimension
+        );
+        assert!(
+            (entry.factor - factor).abs() < factor.abs().max(1.0) * 1e-12,
+            "derived unit `{}` has wrong factor: expected {}, got {}",
+            name,
+            factor,
+            entry.factor
+        );
+    }
+}
