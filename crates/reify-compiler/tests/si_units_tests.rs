@@ -1,6 +1,6 @@
 //! Tests for SI prefix and derived-unit stdlib expansion (task 334).
 
-use reify_compiler::{CompiledModule, compile, compile_with_stdlib, si_units};
+use reify_compiler::{CompiledModule, CompiledUnit, compile, compile_with_stdlib, si_units};
 use reify_types::{DimensionVector, ModulePath, Severity};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -208,4 +208,56 @@ fn build_si_units_source_contains_base_prefixed_units() {
             line
         );
     }
+}
+
+// ─── step-9: generator output parses and compiles cleanly ────────────────────
+
+#[test]
+fn generated_source_parses_and_compiles_cleanly() {
+    let src = si_units::build_si_units_source();
+    let parsed = reify_syntax::parse(&src, ModulePath::new(vec!["std".into(), "si_units".into()]));
+    assert!(
+        parsed.errors.is_empty(),
+        "generated source has parse errors: {:?}\n\nsource:\n{}",
+        parsed.errors,
+        src
+    );
+    let module = compile(&parsed);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "generated source produced compile errors: {:?}",
+        errs
+    );
+
+    // Spot-check some prefixed units.
+    let find_unit = |name: &str| -> &CompiledUnit {
+        module
+            .units
+            .iter()
+            .find(|u| u.name == name)
+            .unwrap_or_else(|| panic!("unit `{}` not present in compiled module", name))
+    };
+
+    let km = find_unit("km");
+    assert_eq!(km.dimension, DimensionVector::LENGTH);
+    assert!((km.factor - 1000.0).abs() < 1e-6);
+
+    let nm = find_unit("nm");
+    assert_eq!(nm.dimension, DimensionVector::LENGTH);
+    assert!((nm.factor - 1e-9).abs() < 1e-14);
+
+    let pg = find_unit("pg");
+    assert_eq!(pg.dimension, DimensionVector::MASS);
+    // pg = 1e-12 * 1e-3 = 1e-15 kg
+    assert!((pg.factor - 1e-15).abs() < 1e-20);
+
+    let gg = find_unit("Gg");
+    assert_eq!(gg.dimension, DimensionVector::MASS);
+    // Gg = 1e9 * 1e-3 = 1e6 kg
+    assert!((gg.factor - 1e6).abs() < 1e-3);
+
+    let ks = find_unit("ks");
+    assert_eq!(ks.dimension, DimensionVector::TIME);
+    assert!((ks.factor - 1000.0).abs() < 1e-6);
 }
