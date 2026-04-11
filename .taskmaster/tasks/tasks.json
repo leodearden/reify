@@ -33382,7 +33382,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-11T06:56:18.625Z"
+        "updatedAt": "2026-04-11T06:56:18.625Z",
+        "metadata": {
+          "files": [
+            "tests/infra/test_portable_timeout.sh"
+          ],
+          "modules": [
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": 1626,
