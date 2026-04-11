@@ -32953,6 +32953,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1621,
+        "title": "Cleanup: remove redundant reify-types dev-dep and split pub use in reify-types lib.rs",
+        "description": "Two minor cleanups from review of task 883 (DiagnosticInfo/SourceLocationInfo move to reify-types):\n\n1. `crates/reify-mcp/Cargo.toml:18` — `reify-types = { workspace = true, features = [\"serde\"] }` appears in BOTH `[dependencies]` and `[dev-dependencies]` with identical feature flags. Cargo makes `[dependencies]` available to integration tests, so the dev-dep entry is redundant. Delete the line from `[dev-dependencies]`. `tests/registry_tests.rs` will continue to reference `reify_types::DiagnosticInfo` via the regular dependency. Reduces drift risk if feature flags ever diverge.\n\n2. `crates/reify-types/src/lib.rs:22` — the `pub use diagnostics::{Diagnostic, DiagnosticInfo, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan};` line now exceeds the historical wrapping width and mixes the structural `Diagnostic*` types with the presentation `DiagnosticInfo` type. Optionally split into two `pub use` lines so the presentation type's separate role is visible at the crate root:\n   - `pub use diagnostics::{Diagnostic, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan};`\n   - `pub use diagnostics::DiagnosticInfo;`\n\nVerify: `cargo check -p reify-mcp --all-targets` and `cargo test -p reify-mcp`.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -32965,7 +32976,7 @@
       ],
       "created": "2026-04-11T01:09:19.555Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-11T01:09:29.318Z"
+      "updated": "2026-04-11T01:09:58.234Z"
     }
   }
 }
