@@ -93,13 +93,20 @@ fi
 # ── Check 4: pnpm-lock.yaml IS in .gitignore ────────────────────────
 # Two-step assertion (task 976): distinguishes two failure modes.
 #   Step 1 fail → pnpm-lock.yaml is absent from .gitignore entirely.
-#   Step 1 pass + step 2 fail → mentioned but not in the canonical form
-#     (gui/ exact path or **/ glob prefix). The grep -qE accepts both forms
-#     so neither .gitignore style forces a migration.
+#   Step 1 pass + step 2 fail → mentioned but not in an accepted form.
+#
+# Accepted forms (task 1634 — leading slash and trailing slash are optional
+# per gitignore(5) semantics; all eight spellings are equivalent):
+#   gui/pnpm-lock.yaml       /gui/pnpm-lock.yaml
+#   gui/pnpm-lock.yaml/      /gui/pnpm-lock.yaml/
+#   **/pnpm-lock.yaml        /**/pnpm-lock.yaml
+#   **/pnpm-lock.yaml/       /**/pnpm-lock.yaml/
+# The grep -qE pattern uses ^/? (optional leading slash) and /?$ (optional
+# trailing slash) to accept all eight forms without enumerating each separately.
 echo ""
 echo "Check 4: pnpm-lock.yaml gitignored"
 assert "pnpm-lock.yaml is mentioned in .gitignore" grep -q 'pnpm-lock\.yaml' "$ROOT/.gitignore"
-assert "pnpm-lock.yaml uses **/ glob or exact gui/ path in .gitignore" \
-    grep -qE '(^\*\*/|^gui/)pnpm-lock\.yaml$' "$ROOT/.gitignore"
+assert "pnpm-lock.yaml uses an accepted gui/ or **/ form (leading/trailing slash optional) in .gitignore" \
+    grep -qE '(^/?\*\*/|^/?gui/)pnpm-lock\.yaml/?$' "$ROOT/.gitignore"
 
 test_summary
