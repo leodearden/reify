@@ -500,3 +500,159 @@ fn task_test_derived_units_and_prefixed_resolve_via_stdlib() {
         );
     }
 }
+
+// ─── step-17: every derived unit has the correct DimensionVector ─────────────
+
+#[test]
+fn all_derived_units_have_correct_dimension_vectors() {
+    // Targeted per-unit check: cover every name in the task's derived list.
+    // This duplicates some coverage from step-15, but isolates any wrong
+    // dimension assignment in `SI_DERIVED_UNITS` or `type_resolution.rs`.
+    let cases: &[(&str, &str, DimensionVector)] = &[
+        ("Force", "1N", DimensionVector::FORCE),
+        ("Energy", "1J", DimensionVector::ENERGY),
+        ("Power", "1W", DimensionVector::POWER),
+        ("Pressure", "1Pa", DimensionVector::PRESSURE),
+        ("Voltage", "1V", DimensionVector::VOLTAGE),
+        ("Resistance", "1ohm", DimensionVector::RESISTANCE),
+        ("Conductance", "1S", DimensionVector::CONDUCTANCE),
+        ("Capacitance", "1F", DimensionVector::CAPACITANCE),
+        ("Inductance", "1H", DimensionVector::INDUCTANCE),
+        ("MagneticFlux", "1Wb", DimensionVector::MAGNETIC_FLUX),
+        ("MagneticFluxDensity", "1T", DimensionVector::MAGNETIC_FLUX_DENSITY),
+        ("Frequency", "1Hz", DimensionVector::FREQUENCY),
+        ("AngularVelocity", "1rpm", DimensionVector::ANGULAR_VELOCITY),
+        ("AngularVelocity", "1rad_per_s", DimensionVector::ANGULAR_VELOCITY),
+        ("DynamicViscosity", "1Pa_s", DimensionVector::DYNAMIC_VISCOSITY),
+        ("LuminousFlux", "1lm", DimensionVector::LUMINOUS_FLUX),
+        ("Illuminance", "1lx", DimensionVector::ILLUMINANCE),
+        ("Frequency", "1Bq", DimensionVector::FREQUENCY),
+        ("AbsorbedDose", "1Gy", DimensionVector::ABSORBED_DOSE),
+        ("AbsorbedDose", "1Sv", DimensionVector::ABSORBED_DOSE),
+        ("Energy", "1eV", DimensionVector::ENERGY),
+        ("Pressure", "1bar", DimensionVector::PRESSURE),
+        ("Pressure", "1mbar", DimensionVector::PRESSURE),
+        ("Charge", "1C", DimensionVector::CHARGE),
+    ];
+
+    for (ptype, literal, expected_dim) in cases {
+        let (_, d) = stdlib_param_si_value(ptype, literal);
+        assert_eq!(
+            d, *expected_dim,
+            "derived unit `{}` has wrong dimension (param type {})",
+            literal, ptype
+        );
+    }
+}
+
+// ─── step-19: unknown unit names still yield a parse / resolve error ─────────
+
+#[test]
+fn unknown_unit_still_produces_parse_error() {
+    // Regression: expanding the SI-unit surface must not silently accept
+    // arbitrary identifiers. An unknown unit after a number literal should
+    // yield an Error-severity diagnostic mentioning the unit name.
+    let source = "structure def S { param x : Length = 5xyz123 }";
+    let module = compile_with_stdlib_helper(source);
+    let errs = errors_only(&module);
+    assert!(
+        !errs.is_empty(),
+        "expected at least one Error diagnostic for unknown unit `xyz123`, got none"
+    );
+    let has_unknown_unit_msg = errs
+        .iter()
+        .any(|d| d.message.contains("unknown unit") && d.message.contains("xyz123"));
+    assert!(
+        has_unknown_unit_msg,
+        "expected error mentioning `unknown unit` and `xyz123`, got diagnostics: {:?}",
+        errs
+    );
+}
+
+// ─── step-21: existing hand-written units.ri entries still resolve ──────────
+
+#[test]
+fn existing_units_ri_still_has_m_kg_s_rad_deg_degC_degF_imperial() {
+    // Guard: trimming units.ri to remove SI-generator duplicates must not
+    // accidentally drop any non-SI / affine / SI-base entry. Values below
+    // are the canonical SI conversions from the hand-written stdlib.
+
+    // Pure SI bases (factor 1.0).
+    let cases_si_base: &[(&str, &str, f64, DimensionVector)] = &[
+        ("Length", "1m", 1.0, DimensionVector::LENGTH),
+        ("Mass", "1kg", 1.0, DimensionVector::MASS),
+        ("Time", "1s", 1.0, DimensionVector::TIME),
+        ("Angle", "1rad", 1.0, DimensionVector::ANGLE),
+    ];
+    for (ptype, literal, expected, expected_dim) in cases_si_base {
+        let (v, d) = stdlib_param_si_value(ptype, literal);
+        assert!(
+            (v - expected).abs() < 1e-12,
+            "{} : {} expected {}, got {}",
+            ptype,
+            literal,
+            expected,
+            v
+        );
+        assert_eq!(d, *expected_dim);
+    }
+
+    // Angle — deg = π/180 rad.
+    let (v, d) = stdlib_param_si_value("Angle", "1deg");
+    assert!(
+        (v - std::f64::consts::PI / 180.0).abs() < 1e-12,
+        "1deg should be π/180, got {}",
+        v
+    );
+    assert_eq!(d, DimensionVector::ANGLE);
+
+    // Temperature affine path — 32degF is still the freezing point of water.
+    let (v, _) = stdlib_param_si_value("Temperature", "32degF");
+    assert!(
+        (v - 273.15).abs() < 1e-6,
+        "32degF should be 273.15 K, got {}",
+        v
+    );
+
+    // cm is NOT auto-generated (centi is not in the power-of-1000 set), so
+    // it must still live in the hand-written units.ri.
+    let (v, d) = stdlib_param_si_value("Length", "1cm");
+    assert!((v - 0.01).abs() < 1e-12, "1cm should be 0.01, got {}", v);
+    assert_eq!(d, DimensionVector::LENGTH);
+
+    // Imperial length.
+    let imperial_lengths: &[(&str, f64)] = &[
+        ("1in", 0.0254),
+        ("1ft", 0.3048),
+        ("1thou", 0.0000254),
+    ];
+    for (literal, expected) in imperial_lengths {
+        let (v, d) = stdlib_param_si_value("Length", literal);
+        assert!(
+            (v - expected).abs() < 1e-12,
+            "{} expected {}, got {}",
+            literal,
+            expected,
+            v
+        );
+        assert_eq!(d, DimensionVector::LENGTH);
+    }
+
+    // Imperial mass.
+    let (v, _) = stdlib_param_si_value("Mass", "1lb");
+    assert!((v - 0.45359237).abs() < 1e-12, "1lb wrong: {}", v);
+    let (v, _) = stdlib_param_si_value("Mass", "1oz");
+    assert!((v - 0.028349523125).abs() < 1e-12, "1oz wrong: {}", v);
+
+    // Non-SI time.
+    let (v, _) = stdlib_param_si_value("Time", "1min");
+    assert!((v - 60.0).abs() < 1e-12, "1min wrong: {}", v);
+    let (v, _) = stdlib_param_si_value("Time", "1h");
+    assert!((v - 3600.0).abs() < 1e-12, "1h wrong: {}", v);
+
+    // g must still be available as a standalone mass unit (gram) — the
+    // generator uses it only as a prefix base, never as standalone, so
+    // units.ri carries it.
+    let (v, _) = stdlib_param_si_value("Mass", "1g");
+    assert!((v - 0.001).abs() < 1e-12, "1g wrong: {}", v);
+}
