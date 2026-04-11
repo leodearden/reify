@@ -1525,7 +1525,6 @@ mod tests {
 
         // (iii) Structured fields lock=values and access=read are present.
         capture.assert_any_event_has_fields(&[("lock", "values"), ("access", "read")]);
-
     }
 
     /// `assert_any_event_has_fields` panics with "no WARN event had all expected

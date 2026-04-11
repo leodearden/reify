@@ -215,7 +215,7 @@ fn elementary_rotation_quat(axis: usize, angle: f64) -> (f64, f64, f64, f64) {
         0 => (c, s, 0.0, 0.0),
         1 => (c, 0.0, s, 0.0),
         2 => (c, 0.0, 0.0, s),
-        _ => (1.0, 0.0, 0.0, 0.0),
+        _ => unreachable!("elementary_rotation_quat called with axis > 2 — axes always come from orient_euler match"),
     }
 }
 
@@ -250,7 +250,7 @@ fn vec3_norm(x: f64, y: f64, z: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_quaternion;
+    use super::{elementary_rotation_quat, normalize_quaternion};
     use crate::eval_builtin;
     use reify_types::{DimensionVector, Value};
 
@@ -1328,6 +1328,27 @@ mod tests {
         assert!(
             normalize_quaternion(1e-18, 1e-18, 1e-18, 1e-18).is_none(),
             "all near-zero components should return None"
+        );
+    }
+
+    // ── elementary_rotation_quat invalid-axis test ──────────────────────────
+
+    /// Calling elementary_rotation_quat with axis > 2 must panic loudly.
+    /// This ensures the previously-silent catch-all is now an unreachable!() guard.
+    #[test]
+    fn elementary_rotation_quat_invalid_axis_panics_loudly() {
+        let result = std::panic::catch_unwind(|| {
+            elementary_rotation_quat(3, 0.0);
+        });
+        let err = result.expect_err("expected elementary_rotation_quat(3, ...) to panic");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("elementary_rotation_quat called with axis > 2"),
+            "expected panic message to contain 'elementary_rotation_quat called with axis > 2', got: {msg:?}"
         );
     }
 }

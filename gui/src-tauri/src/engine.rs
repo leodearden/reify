@@ -300,8 +300,8 @@ impl EngineSession {
         // break_source_map_for_test), eliminating duplicated fallible lookup.
         let (file, source) = self.resolve_source()?;
 
-        let (line, col) = byte_offset_to_line_col(source, span.start as usize);
-        let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
+        let (line, col) = reify_types::byte_offset_to_line_col(source, span.start as usize);
+        let (end_line, end_col) = reify_types::byte_offset_to_line_col(source, span.end as usize);
 
         Some(SourceLocationInfo {
             file_path: file.to_owned(),
@@ -829,7 +829,7 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
 ///
 /// Returns a sorted `Vec<usize>` of the byte offset of each newline.
 /// Pass this to [`offset_to_line_col_fast`] to binary-search for line/col
-/// in O(log M) instead of the O(M) scan done by [`byte_offset_to_line_col`].
+/// in O(log M) instead of the O(M) scan done by [`reify_types::byte_offset_to_line_col`].
 pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
     source
         .bytes()
@@ -842,7 +842,7 @@ pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
 ///
 /// `source` is the original source string; `line_offsets` must be the result of
 /// [`build_line_offsets`] for the same `source`.  Both line and column are 1-based
-/// and count **Unicode codepoints**, matching the semantics of [`byte_offset_to_line_col`].
+/// and count **Unicode codepoints**, matching the semantics of [`reify_types::byte_offset_to_line_col`].
 ///
 /// Line lookup is O(log M).  Column computation is O(line_length) for codepoint
 /// counting — far cheaper than the O(M) full-source scan of the naive implementation.
@@ -877,38 +877,3 @@ pub(crate) fn offset_to_line_col_fast(
     (line, col)
 }
 
-/// Convert a byte offset in `source` to a 1-based `(line, column)` pair.
-///
-/// The function iterates over Unicode scalar values and increments the column
-/// counter for each character, resetting to column 1 and advancing the line
-/// counter whenever a `'\n'` is encountered.
-///
-/// # Edge cases
-///
-/// - **Empty source**: returns `(1, 1)` — the initial position, since the loop
-///   body never executes.
-/// - **Offset beyond `source.len()`**: panics in debug builds via
-///   `debug_assert!(offset <= source.len())`; in release builds the
-///   `debug_assert` is a no-op, so the loop exhausts all characters without
-///   reaching the break condition and returns the position *after* the last
-///   character (silent clamping).
-/// - **Empty spans** (`start == end`): calling this function twice with the
-///   same offset produces identical `(line, col)` coordinates, as expected for
-///   zero-length diagnostic spans.
-pub(crate) fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
-    debug_assert!(offset <= source.len());
-    let mut line = 1;
-    let mut col = 1;
-    for (i, ch) in source.char_indices() {
-        if i >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
-}

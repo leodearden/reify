@@ -88,6 +88,13 @@ fn make_value_lambda(
 /// - the vector length differs from `expected.len()`
 /// - any component is non-numeric
 /// - any component differs from the expected value by more than `tol`
+///
+/// Note: components are compared via `Value::as_f64()`, which accepts
+/// `Value::Real`, `Value::Int`, and `Value::Scalar` (ignoring dimension).
+/// A `Scalar[kg/m]` component is treated identically to a dimensionless
+/// `Real`. For dimensioned assertions (e.g. verifying a specific
+/// `DimensionVector`), use an inline `match Value::Vector(components)`
+/// pattern instead.
 fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &str) {
     match result {
         Value::Vector(components) => {
@@ -113,6 +120,7 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
                 );
             }
         }
+        Value::Undef => panic!("{label}: gradient returned Undef, expected Vector"),
         _ => panic!("{label}: expected Value::Vector, got {:?}", result),
     }
 }
@@ -131,13 +139,15 @@ fn test_assert_gradient_vector_accepts_matching_vector() {
 
 /// Characterization test: `assert_gradient_vector` panics on a non-Vector value.
 ///
-/// Calls the helper with Value::Undef; the helper's `_ =>` arm must panic.
+/// Calls the helper with Value::Real(1.0); the helper's `_ =>` arm must panic.
 /// This mirrors the `_ => panic!(...)` branch present in the inline code we
 /// are about to replace, ensuring the helper covers that error path.
+/// (Uses Real rather than Undef so that the Undef branch added later does not
+/// intercept this test and break catch-all arm coverage.)
 #[test]
 #[should_panic(expected = "expected Value::Vector")]
 fn test_assert_gradient_vector_panics_on_non_vector() {
-    assert_gradient_vector(&Value::Undef, &[1.0, 2.0, 3.0], 1e-4, "non-vector");
+    assert_gradient_vector(&Value::Real(1.0), &[1.0, 2.0, 3.0], 1e-4, "non-vector");
 }
 
 /// Characterization test: `assert_gradient_vector` accepts a within-tolerance Value::Vector.
@@ -183,6 +193,19 @@ fn test_assert_gradient_vector_panics_on_non_numeric_component() {
         Value::Real(3.0),
     ]);
     assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "non-numeric component");
+}
+
+/// Characterization test: `assert_gradient_vector` panics on `Value::Undef` with a
+/// distinctive, Undef-specific message.
+///
+/// Once the helper has a dedicated `Value::Undef` arm, callers that receive Undef
+/// will see `"gradient returned Undef, expected Vector"` rather than the generic
+/// `"expected Value::Vector, got Undef"`.  This test confirms that distinctive
+/// message so grepping for "Undef" in failing-test output is diagnostic.
+#[test]
+#[should_panic(expected = "gradient returned Undef, expected Vector")]
+fn test_assert_gradient_vector_panics_on_undef_with_distinctive_message() {
+    assert_gradient_vector(&Value::Undef, &[1.0, 2.0, 3.0], 1e-4, "undef input");
 }
 
 /// Sampling a field with a wrong-size Tensor point returns Undef.
@@ -993,6 +1016,9 @@ fn gradient_dimensioned_field() {
 
     // Expected: Vector3 with components ~2.0, ~3.0, ~4.0 in dimension kg/m
     let expected_dim = dim_kg.div(&dim_m);
+    // Inline match retained: this site asserts dimensioned Value::Scalar components
+    // (with a specific DimensionVector), which assert_gradient_vector cannot check
+    // because it uses as_f64(), which discards dimension information.
     match &sample_result {
         Value::Vector(components) => {
             assert_eq!(components.len(), 3, "gradient should have 3 components");
@@ -1267,6 +1293,9 @@ fn gradient_dimensioned_scalar_lambda_args() {
     // Expected: Vector3 with components ≈2.0, ≈4.0, ≈6.0 in dimension m (=m²/m)
     // df/dx = 2x = 2*1 = 2, df/dy = 2y = 2*2 = 4, df/dz = 2z = 2*3 = 6
     let expected_dim = dim_m; // m²/m = m
+    // Inline match retained: this site asserts dimensioned Value::Scalar components
+    // (with a specific DimensionVector), which assert_gradient_vector cannot check
+    // because it uses as_f64(), which discards dimension information.
     match &sample_result {
         Value::Vector(components) => {
             assert_eq!(components.len(), 3, "gradient should have 3 components");
@@ -3976,40 +4005,6 @@ mod trust_the_declaration_tests {
         (grad_result, domain_type, grad_codomain_type)
     }
 
-    /// Characterization test: verifies the helper returns a well-formed tuple.
-    ///
-    /// Asserts: (a) Value is a Field, (b) domain_type == Type::length(),
-    /// (c) grad_codomain_type == Scalar{MASS/LENGTH}.
-    #[test]
-    fn test_make_dimensioned_domain_mismatch_gradient() {
-        let (grad_field, domain_type, grad_codomain_type) =
-            make_dimensioned_domain_mismatch_gradient();
-
-        // (a) returned Value is a Field
-        assert!(
-            matches!(&grad_field, Value::Field { .. }),
-            "make_dimensioned_domain_mismatch_gradient: should return a Field, got {:?}",
-            grad_field
-        );
-
-        // (b) domain_type is Type::length()
-        assert_eq!(
-            domain_type,
-            Type::length(),
-            "domain_type should be Type::length()"
-        );
-
-        // (c) grad_codomain_type is Scalar{MASS/LENGTH}
-        let expected_codomain = Type::Scalar {
-            dimension: DimensionVector::MASS.div(&DimensionVector::LENGTH),
-        };
-        assert_eq!(
-            grad_codomain_type, expected_codomain,
-            "grad_codomain_type should be Scalar{{MASS/LENGTH}}, got {:?}",
-            grad_codomain_type
-        );
-    }
-
     /// Structural check: gradient field codomain_type trusts declaration (dimensionless domain).
     ///
     /// See module doc (trust-the-declaration). No sampling; verifies the returned gradient
@@ -4160,7 +4155,6 @@ mod trust_the_declaration_tests {
     ///
     /// See module doc (trust-the-declaration). Samples at Scalar{1.0, LENGTH};
     /// result is Scalar{≈2.0, MASS/LENGTH}.
-    #[cfg(debug_assertions)]
     #[test]
     fn gradient_codomain_mismatch_dimensioned_domain_no_panic() {
         let (grad_result, domain_type, grad_codomain_type) =

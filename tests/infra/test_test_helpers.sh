@@ -357,8 +357,7 @@ fi
 # ==============================================================================
 # sync_ref_helpers.sh structural checks
 # Verify: helper file exists, defines assert_sync_ref_exists, sources
-# test_helpers.sh, has source guard, head -1 documented, early-fail guard,
-# display_fn fallback.
+# test_helpers.sh, has source guard, head -1 documented, early-fail guard.
 # ==============================================================================
 
 echo ""
@@ -387,10 +386,6 @@ check "sync_ref_helpers.sh head -1 pipeline has single-reference documentation c
 # (f) assert_sync_ref_exists has an early-fail guard when ref_fn is empty
 if grep -Fq '[ -z "$ref_fn" ]' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
 check "sync_ref_helpers.sh has early-fail guard for empty ref_fn" "$ok"
-
-# (g) assert_sync_ref_exists uses a display_fn fallback variable
-if grep -Fq 'display_fn' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then ok=true; else ok=false; fi
-check "sync_ref_helpers.sh uses display_fn fallback variable" "$ok"
 
 # ==============================================================================
 # assert_sync_ref_exists behavioral test (sourceable helper)
@@ -482,6 +477,33 @@ else
     check "mismatch-path FAIL message names the missing fn (fn-existence path, not guard path) (got: $_src_beh_mismatch_out)" "false"
 fi
 
+# ==============================================================================
+# sync_ref_helpers.sh sourceable-failure test (S5)
+# Verify: sourcing the helper when test_helpers.sh is absent does NOT kill the
+# caller's shell (i.e., uses return 1 rather than exit 1 on failure).
+# ==============================================================================
+
+echo ""
+echo "--- sync_ref_helpers.sh sourceable-failure test (S5) ---"
+
+_s5_tmp_dir=$(mktemp -d)
+cp "$SYNC_REF_HELPERS_FILE" "$_s5_tmp_dir/sync_ref_helpers.sh"
+# Deliberately do NOT copy test_helpers.sh — we want the helper to hit the
+# "ERROR: test_helpers.sh not found" branch.
+_s5_out=$(bash -c "source '$_s5_tmp_dir/sync_ref_helpers.sh' 2>&1; echo CALLER_SURVIVED" 2>&1) || true
+rm -rf "$_s5_tmp_dir"
+
+if echo "$_s5_out" | grep -q 'CALLER_SURVIVED'; then
+    check "S5: caller shell survives source-time failure (return 1 not exit 1)" "true"
+else
+    check "S5: caller shell survives source-time failure (return 1 not exit 1) (got: $_s5_out)" "false"
+fi
+
+if echo "$_s5_out" | grep -q 'ERROR: test_helpers.sh not found'; then
+    check "S5: error diagnostic still emitted when test_helpers.sh is absent" "true"
+else
+    check "S5: error diagnostic still emitted when test_helpers.sh is absent (got: $_s5_out)" "false"
+fi
 
 # ==============================================================================
 # Robustness tests for sync_comments_test.sh structural checks
@@ -489,9 +511,11 @@ fi
 
 _robust_tmpdir=$(mktemp -d)
 cleanup_robust() { rm -rf "$_robust_tmpdir"; }
-# only main-shell EXIT trap in this file — earlier EXIT traps (lines ~363, ~419)
-# are inside `bash -c` subshells and do not affect this scope.  If you need a
-# second main-shell trap, use `trap -p EXIT` stacking instead of replacing this.
+# only main-shell EXIT trap in this file — earlier EXIT traps are inside
+# `bash -c` subshells of the "extract_fn non-empty guard short-circuit
+# behavioral test" and "assert_sync_ref_exists behavioral test (sourceable
+# helper)" sections, and do not affect this scope.  If you need a second
+# main-shell trap, use `trap -p EXIT` stacking instead of replacing this.
 trap cleanup_robust EXIT
 mk_fixture() { mktemp -p "$_robust_tmpdir"; }
 
@@ -575,13 +599,53 @@ check "_has_expr_body_empty_guard_short_circuit accepts guard with test_summary"
 # `-n` (and `! -z`) guards.  Without this pin a future change like `\[ -[nz]`
 # would ban legitimate production guards silently while the negative-pin tests
 # above all passed.
-# Protected production sites:
-#   - tests/infra/sync_ref_helpers.sh:31   `[ -z "$ref_fn" ]`
-#   - tests/sync_comments_test.sh:63-64    `[ -z "$expr_body" ]`
+# Protected production sites — two independent mechanisms:
+#   Protected by -z alternation (trigger keyword present, bare -z tolerated):
+#     - tests/infra/sync_ref_helpers.sh:31  `if [ -z "$ref_fn" ]; then ...; fi`
+#       Has `if` trigger, so regex fires; only the (-n|! -z) alternation saves it.
+#   Protected by trigger-keyword constraint (no trigger before `[`):
+#     - tests/sync_comments_test.sh:75-76   `[ -z "$expr_body" ] && { ...; }`
+#       Starts with `[`, no preceding if/&&/||, so regex never matches regardless
+#       of -z vs -n.  (Line 63 in that file is an unrelated body comment.)
 fixture_z=$(mk_fixture)
 printf 'if [ -z "$ref_fn" ]; then echo fail; fi\n' > "$fixture_z"
 if ! _has_if_n_guard "$fixture_z" 2>/dev/null; then ok=true; else ok=false; fi
 check "if-guard pattern tolerates legitimate -z early-fail guard (\$ref_fn)" "$ok"
+
+# Positive-direction -z pin: double-bracket form `if [[ -z "$var" ]]`.
+# If the regex were tightened to `\[\[?[[:space:]]+-[nz]`, it would ban this
+# legitimate guard too.  This pin ensures double-bracket -z stays tolerated.
+fixture_z_double=$(mk_fixture)
+printf 'if [[ -z "$var" ]]; then echo fail; fi\n' > "$fixture_z_double"
+if ! _has_if_n_guard "$fixture_z_double" 2>/dev/null; then ok=true; else ok=false; fi
+check "if-guard pattern tolerates -z in double-bracket form: if [[ -z" "$ok"
+
+# Positive-direction -z pin: test-keyword form `if test -z "$var"`.
+# If the regex were tightened to `test[[:space:]]+-[nz]`, it would ban this
+# legitimate guard.  This pin ensures test-keyword -z stays tolerated.
+fixture_z_test=$(mk_fixture)
+printf 'if test -z "$var"; then echo fail; fi\n' > "$fixture_z_test"
+if ! _has_if_n_guard "$fixture_z_test" 2>/dev/null; then ok=true; else ok=false; fi
+check "if-guard pattern tolerates -z in test-keyword form: if test -z" "$ok"
+
+# Positive-direction -z pin: compound && single-bracket form
+# `something && [ -z "$var" ] && do_work`.
+# The (if|&&|\|\|) trigger comes BEFORE the bracket here, but the -z
+# alternation still protects this guard.  Pin ensures compound-&& -z
+# stays tolerated.
+fixture_z_and=$(mk_fixture)
+printf 'something && [ -z "$var" ] && do_work\n' > "$fixture_z_and"
+if ! _has_if_n_guard "$fixture_z_and" 2>/dev/null; then ok=true; else ok=false; fi
+check "if-guard pattern tolerates compound && -z: && [ -z" "$ok"
+
+# Positive-direction -z pin: compound || single-bracket form
+# `something || [ -z "$var" ] && do_work`.
+# Mirrors the && pin above but with || trigger, covering the third
+# trigger-keyword variant in the (if|&&|\|\|) alternation.
+fixture_z_or=$(mk_fixture)
+printf 'something || [ -z "$var" ] && do_work\n' > "$fixture_z_or"
+if ! _has_if_n_guard "$fixture_z_or" 2>/dev/null; then ok=true; else ok=false; fi
+check "if-guard pattern tolerates compound || -z: || [ -z" "$ok"
 
 # Double-bracket form: `if [[ -n "$var" ]]`
 # Requires regex to match `[[` as well as `[`.
@@ -700,7 +764,7 @@ fi
 check "all 3 behavioral subshells use bash -eu -c (S3 hardening, got $_beh_eu_count)" "$ok"
 
 # Self-check: _ws_label uses a comprehensive case statement with readable labels.
-# Grep for the literal case-arm assignment; this string is absent until step-2 adds it.
+# Grep for the literal case-arm assignment to verify the readable-label mapping exists.
 if grep -q "_ws_label='(1 space)'" "${BASH_SOURCE[0]}"; then
     ok=true
 else
@@ -709,13 +773,29 @@ fi
 check "_ws_label case statement maps single-space to readable label" "$ok"
 
 # Self-check: defensive trap comment warns about the single main-shell EXIT trap.
-# Grep for the comment marker; this string is absent until step-3 adds it.
+# Grep for the comment marker to verify the defensive trap comment exists.
 if grep -q '# only main-shell EXIT trap' "${BASH_SOURCE[0]}"; then
     ok=true
 else
     ok=false
 fi
 check "trap line has defensive comment about single main-shell EXIT trap invariant" "$ok"
+
+# Self-check: no self-check comment contains stale 'absent until step-N adds it' phrasing.
+if ! grep -qE 'absent until step-[23] adds it' "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "self-check comments contain no stale 'absent until step-N adds it' phrasing" "$ok"
+
+# Self-check: defensive trap comment has no drifting 'lines ~NNN' references.
+if ! grep -qE 'lines [~][34][0-9]{2}' "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "defensive trap comment has no drifting 'lines ~NNN' references" "$ok"
 
 echo ""
 echo "--- Robustness: EXPR_FILE guard fires when reify-expr source file absent ---"

@@ -95,10 +95,24 @@ fn dimensionless_fallback(ty: &Type) -> Type {
 /// - `Type::Scalar { dimension }` → `Value::Scalar { si_value: value, dimension }`
 /// - Any other type (typically `Type::Real`) → `Value::Real(value)`
 ///
-/// The helper wraps blindly — callers are responsible for pre-normalising dimensionless
-/// Scalar codomains to `Type::Real` if they want `Value::Real` output in the dimensionless
-/// case.  Divergence and laplacian codomains are stamped by `compute_divergence` /
-/// `compute_laplacian` and are already normalised.
+/// The helper wraps blindly — it does **not** collapse a dimensionless `Type::Scalar`
+/// to `Type::Real`.  This is intentional: all three callers (`compute_divergence`,
+/// `compute_curl`, `compute_laplacian`) pre-normalise the codomain upstream via
+/// [`dimensionless_fallback`] before stamping the `Field`, so by the time
+/// `wrap_scalar_result` sees the codomain any dimensionless `Scalar` has already been
+/// collapsed to `Type::Real`.  Re-normalising here would be redundant work and, worse,
+/// would hide genuinely mis-stamped codomains from the `debug_assert` guards in
+/// `compute_numerical_divergence_at_point`, `compute_numerical_curl_at_point`, and
+/// `compute_numerical_laplacian_at_point`.
+///
+/// At the curl callsite, `component_codomain` is the unwrapped inner quantity of the
+/// already-stamped `Type::vec3(result_component)` (extracted in
+/// `compute_numerical_curl_at_point`), so it is already a scalar-compatible type.
+///
+/// See also: `Value::from_component` in `reify-types` — the *normalising* counterpart
+/// that collapses `DIMENSIONLESS` → `Value::Real` at the call site.  That helper is used
+/// for complex-component extraction and magnitude; `wrap_scalar_result` is the
+/// non-normalising variant used by the differential operators.
 fn wrap_scalar_result(value: f64, codomain_type: &Type) -> Value {
     match codomain_type {
         Type::Scalar { dimension } => Value::Scalar {
@@ -873,8 +887,9 @@ pub(crate) fn compute_numerical_gradient_at_point(
 ///
 /// `point` may be either `Value::Point` or `Value::Vector` — both share the same
 /// structural representation and are extracted identically by `extract_point_coords`.
-/// `eval_perturbed_point` always re-wraps perturbed coordinates as `Value::Point`, so
-/// the lambda always receives a `Point` regardless of the caller's input variant.
+/// `eval_perturbed_point` re-wraps perturbed coordinates as `Value::Point` (in the
+/// single-point-param path), so the caller's `Point`-vs-`Vector` choice does not leak
+/// through to the lambda.
 ///
 /// `codomain_type` is the divergence field's already-divided codomain (stamped by
 /// `compute_divergence`). Follows the trust-the-declaration pattern established in
@@ -1003,8 +1018,9 @@ pub(crate) fn compute_numerical_divergence_at_point(
 ///
 /// `point` may be either `Value::Point` or `Value::Vector` — both share the same
 /// structural representation and are extracted identically by `extract_point_coords`.
-/// `eval_perturbed_point` always re-wraps perturbed coordinates as `Value::Point`, so
-/// the lambda always receives a `Point` regardless of the caller's input variant.
+/// `eval_perturbed_point` re-wraps perturbed coordinates as `Value::Point` (in the
+/// single-point-param path), so the caller's `Point`-vs-`Vector` choice does not leak
+/// through to the lambda.
 ///
 /// `codomain_type` is the curl field's already-divided codomain (stamped by
 /// `compute_curl`). Follows the trust-the-declaration pattern established in
@@ -1020,6 +1036,11 @@ pub(crate) fn compute_numerical_curl_at_point(
     codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
+    debug_assert!(
+        matches!(codomain_type, Type::Vector { .. }),
+        "curl codomain must be vector, got {:?}",
+        codomain_type
+    );
     // Accept both Point and Vector — they share structural representation.
     // Only defined for 3D domains, so enforce len == 3 after extraction.
     // eval_perturbed_point re-wraps as Value::Point, so the lambda always sees a Point.
@@ -1039,8 +1060,8 @@ pub(crate) fn compute_numerical_curl_at_point(
         _ => codomain_type,
     };
 
-    // n is constant 3 here, so the n > 1 branch in detect_single_point_param is always
-    // true; kept for consistency with divergence/laplacian, which derive n from coords.len().
+    // n is constant 3 here, so the n > 1 condition in detect_single_point_param is
+    // always satisfied; the result depends solely on params.len() == 1.
     let single_point_param = detect_single_point_param(lambda, n);
 
     let make_arg = |val: f64| make_domain_arg(val, domain_dim);
@@ -1152,8 +1173,9 @@ pub(crate) fn compute_numerical_curl_at_point(
 ///
 /// `point` may be `Value::Point`, `Value::Vector`, `Value::Real`, `Value::Int`, or
 /// `Value::Scalar` — the wide `extract_coords` helper accepts all of these.
-/// `eval_perturbed_point` always re-wraps perturbed coordinates as `Value::Point`, so
-/// the lambda always receives a `Point` regardless of the caller's input variant.
+/// `eval_perturbed_point` re-wraps perturbed coordinates as `Value::Point` (in the
+/// single-point-param path), so the caller's `Point`-vs-`Vector` choice does not leak
+/// through to the lambda.
 ///
 /// `codomain_type` is the Laplacian field's already-divided codomain (stamped by
 /// `compute_laplacian`). Follows the trust-the-declaration pattern established in
@@ -1593,6 +1615,43 @@ mod tests {
         );
     }
 
+    /// Verify that `compute_numerical_divergence_at_point` panics (in debug mode) when
+    /// `codomain_type` is `Type::vec3(Type::Real)` — a non-scalar Vector type.
+    ///
+    /// `Type::vec3(Type::Real)` is a `Vector` type: it is neither `Type::Real` nor
+    /// `Type::Scalar`, so it trips the same `debug_assert` as `Type::Bool` but via the
+    /// Vector shape of the non-scalar branch.  This complements the existing `Type::Bool`
+    /// test by covering a structurally distinct kind of invalid codomain (a non-scalar
+    /// wrapper type), guarding against future narrowing of the guard condition.
+    ///
+    /// The debug_assert fires before any coordinate extraction, so the
+    /// lambda/point/domain_type need not be functionally correct.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "divergence/laplacian codomain must be scalar")]
+    fn divergence_unexpected_vector_codomain_panics_in_debug() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        let x_id = ValueCellId::new("$lambda0.S", "x");
+        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("x".to_string(), x_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let _result = compute_numerical_divergence_at_point(
+            &lambda,
+            &Value::Real(1.0),
+            &Type::Real,
+            &Type::vec3(Type::Real),
+            &ctx,
+        );
+    }
+
     /// Verify that `compute_numerical_laplacian_at_point` panics (in debug mode) when
     /// `codomain_type` is not `Type::Real` or `Type::Scalar`.
     ///
@@ -1616,6 +1675,37 @@ mod tests {
         let ctx = EvalContext::simple(&values);
 
         let _result = compute_numerical_laplacian_at_point(
+            &lambda,
+            &Value::Real(1.0),
+            &Type::Real,
+            &Type::Bool,
+            &ctx,
+        );
+    }
+
+    /// Verify that `compute_numerical_curl_at_point` panics (in debug mode) when
+    /// `codomain_type` is not `Type::Vector`.
+    ///
+    /// `Type::Bool` is not a valid curl codomain. The debug_assert fires before any
+    /// coordinate extraction, so the lambda/point/domain_type need not be functionally correct.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "curl codomain must be vector")]
+    fn curl_unexpected_codomain_panics_in_debug() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        let x_id = ValueCellId::new("$lambda0.S", "x");
+        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("x".to_string(), x_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let _result = compute_numerical_curl_at_point(
             &lambda,
             &Value::Real(1.0),
             &Type::Real,

@@ -1941,6 +1941,7 @@ impl ValueMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
 
     // Boundary float values used by IEEE 754 totalOrder ordering tests.
     // All 7 values are bit-distinct; insertion order is intentionally scrambled
@@ -2589,7 +2590,6 @@ mod tests {
     fn value_btreeset_negative_real_iteration_order() {
         // End-to-end validation: inserting negative reals into a BTreeSet and
         // iterating must yield mathematical order [-2.0, -1.0, -0.5, 0.5, 1.0, 2.0].
-        use std::collections::BTreeSet;
         let mut set = BTreeSet::new();
         for v in &[-2.0_f64, 1.0, -0.5, 0.5, -1.0, 2.0] {
             set.insert(Value::Real(*v));
@@ -2612,7 +2612,6 @@ mod tests {
         //
         // This subsumes value_ord_real_negative_vs_positive and
         // value_ord_real_negative_magnitude which test a subset of these pairings.
-        use std::collections::BTreeSet;
         let mut set = BTreeSet::new();
         for &v in BOUNDARY_REALS {
             set.insert(Value::Real(v));
@@ -2745,6 +2744,25 @@ mod tests {
         assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
     }
 
+    /// Parameterized sibling of [`assert_ieee754_total_order_real`] for boundary-Set
+    /// iteration-order checks.  Builds a `BTreeSet<Value>` by inserting `build(v)` for
+    /// each value in `BOUNDARY_REALS`, wraps it in `Value::Set`, iterates it, extracts
+    /// the discriminating `f64` field via `extract`, and delegates to
+    /// `assert_ieee754_total_order_real` to assert the IEEE 754 totalOrder sequence.
+    fn assert_boundary_set_iteration_order(build: fn(f64) -> Value, extract: fn(&Value) -> f64) {
+        let mut inner = BTreeSet::new();
+        for &v in BOUNDARY_REALS {
+            inner.insert(build(v));
+        }
+        let set_val = Value::Set(inner);
+        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
+            s.iter().map(|v| extract(v)).collect()
+        } else {
+            panic!("expected Set");
+        };
+        assert_ieee754_total_order_real(&sorted);
+    }
+
     #[test]
     fn test_assert_ord_consistent_equal() {
         // Meta-test: verify assert_ord_consistent works for an equal pair.
@@ -2852,6 +2870,35 @@ mod tests {
             f64::INFINITY,
             // NaN intentionally omitted → 6 elements instead of 7
         ]);
+    }
+
+    #[test]
+    fn test_assert_boundary_set_iteration_order_using_real() {
+        // Meta-test: assert_boundary_set_iteration_order must not panic when given
+        // Value::Real as the build function and the corresponding Real extractor.
+        // This documents the helper's contract using the simplest Value variant.
+        assert_boundary_set_iteration_order(
+            Value::Real,
+            |v| match v {
+                Value::Real(f) => *f,
+                _ => panic!("unexpected value"),
+            },
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "unexpected value")]
+    fn test_assert_boundary_set_iteration_order_variant_mismatch() {
+        // Meta-test: mirrors test_assert_ieee754_total_order_real_wrong_order and
+        // _wrong_count for assert_boundary_set_iteration_order, proving that the
+        // helper propagates panics from the extract closure.
+        //
+        // build produces Value::Real entries, but extract only matches Value::Complex;
+        // every element falls through to the `_` arm and panics with "unexpected value".
+        assert_boundary_set_iteration_order(Value::Real, |v| match v {
+            Value::Complex { im, .. } => *im,
+            _ => panic!("unexpected value"),
+        });
     }
 
     #[test]
@@ -3001,7 +3048,6 @@ mod tests {
 
     #[test]
     fn value_map_basic() {
-        use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
         m.insert(Value::String("a".into()), Value::Int(1));
         m.insert(Value::String("b".into()), Value::Int(2));
@@ -3016,7 +3062,6 @@ mod tests {
 
     #[test]
     fn value_map_equality() {
-        use std::collections::BTreeMap;
         let mut m1 = BTreeMap::new();
         m1.insert(Value::String("a".into()), Value::Int(1));
         let mut m2 = BTreeMap::new();
@@ -3029,7 +3074,6 @@ mod tests {
 
     #[test]
     fn value_map_ordering() {
-        use std::collections::BTreeMap;
         // Map sorts after Set
         let s = Value::Set(std::collections::BTreeSet::new());
         let m = Value::Map(BTreeMap::new());
@@ -3038,7 +3082,6 @@ mod tests {
 
     #[test]
     fn value_map_content_hash() {
-        use std::collections::BTreeMap;
         let mut m1 = BTreeMap::new();
         m1.insert(Value::String("a".into()), Value::Int(1));
         let mut m2 = BTreeMap::new();
@@ -3056,7 +3099,6 @@ mod tests {
 
     #[test]
     fn value_set_basic() {
-        use std::collections::BTreeSet;
         let mut s = BTreeSet::new();
         s.insert(Value::Int(3));
         s.insert(Value::Int(1));
@@ -3075,7 +3117,6 @@ mod tests {
 
     #[test]
     fn value_set_equality() {
-        use std::collections::BTreeSet;
         let mut s1 = BTreeSet::new();
         s1.insert(Value::Int(1));
         s1.insert(Value::Int(2));
@@ -3087,7 +3128,6 @@ mod tests {
 
     #[test]
     fn value_set_ordering() {
-        use std::collections::BTreeSet;
         let mut s1 = BTreeSet::new();
         s1.insert(Value::Int(1));
         let mut s2 = BTreeSet::new();
@@ -3100,7 +3140,6 @@ mod tests {
 
     #[test]
     fn value_set_content_hash() {
-        use std::collections::BTreeSet;
         let mut s1 = BTreeSet::new();
         s1.insert(Value::Int(1));
         s1.insert(Value::Int(2));
@@ -3117,7 +3156,6 @@ mod tests {
         // Mirrors value_btreeset_boundary_real_iteration_order but exercises the
         // Value::Set wrapper rather than a bare BTreeSet<Value>.
         // Expected IEEE 754 totalOrder: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeSet;
         let mut inner = BTreeSet::new();
         for &v in BOUNDARY_REALS {
             inner.insert(Value::Real(v));
@@ -3144,7 +3182,6 @@ mod tests {
         // Value::Map: boundary floats are used as keys, each mapped to a distinct
         // sentinel Value::Int so we can verify key-iteration order.
         // Expected IEEE 754 totalOrder: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeMap;
         let mut inner = BTreeMap::new();
         for (i, &v) in BOUNDARY_REALS.iter().enumerate() {
             inner.insert(Value::Real(v), Value::Int(i as i64));
@@ -3175,7 +3212,6 @@ mod tests {
         // determines iteration order, not insertion order, so rebuilding from any
         // sequence produces the same BTreeSet. The real regression value is the golden
         // ordering assertion below.
-        use std::collections::BTreeSet;
         let mut original_inner = BTreeSet::new();
         for &v in BOUNDARY_REALS {
             original_inner.insert(Value::Real(v));
@@ -3208,7 +3244,6 @@ mod tests {
         // determines key iteration order, not insertion order, so rebuilding from any
         // sequence produces the same BTreeMap. The real regression value is the golden
         // ordering assertion below.
-        use std::collections::BTreeMap;
         let mut original_inner = BTreeMap::new();
         for (i, &v) in BOUNDARY_REALS.iter().enumerate() {
             original_inner.insert(Value::Real(v), Value::Int(i as i64));
@@ -3240,28 +3275,13 @@ mod tests {
         // values as Value::Scalar entries (all with dimension=LENGTH), then asserts
         // the IEEE 754 totalOrder sequence matches BTreeSet iteration order.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeSet;
-        let mut inner = BTreeSet::new();
-        for &v in BOUNDARY_REALS {
-            inner.insert(Value::Scalar {
-                si_value: v,
-                dimension: DimensionVector::LENGTH,
-            });
-        }
-        let set_val = Value::Set(inner);
-
-        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
-            s.iter()
-                .map(|v| match v {
-                    Value::Scalar { si_value, .. } => *si_value,
-                    _ => panic!("unexpected value"),
-                })
-                .collect()
-        } else {
-            panic!("expected Set");
-        };
-
-        assert_ieee754_total_order_real(&sorted);
+        assert_boundary_set_iteration_order(
+            |v| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH },
+            |v| match v {
+                Value::Scalar { si_value, .. } => *si_value,
+                _ => panic!("unexpected value"),
+            },
+        );
     }
 
     #[test]
@@ -3271,29 +3291,13 @@ mod tests {
         // falls through to im.total_cmp. Asserts the IEEE 754 totalOrder sequence
         // from BTreeSet iteration over the im components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeSet;
-        let mut inner = BTreeSet::new();
-        for &v in BOUNDARY_REALS {
-            inner.insert(Value::Complex {
-                re: 0.0,
-                im: v,
-                dimension: DimensionVector::DIMENSIONLESS,
-            });
-        }
-        let set_val = Value::Set(inner);
-
-        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
-            s.iter()
-                .map(|v| match v {
-                    Value::Complex { im, .. } => *im,
-                    _ => panic!("unexpected value"),
-                })
-                .collect()
-        } else {
-            panic!("expected Set");
-        };
-
-        assert_ieee754_total_order_real(&sorted);
+        assert_boundary_set_iteration_order(
+            |v| Value::Complex { re: 0.0, im: v, dimension: DimensionVector::DIMENSIONLESS },
+            |v| match v {
+                Value::Complex { im, .. } => *im,
+                _ => panic!("unexpected value"),
+            },
+        );
     }
 
     #[test]
@@ -3303,25 +3307,13 @@ mod tests {
         // for all entries, ordering falls through to z.total_cmp. Asserts the IEEE
         // 754 totalOrder sequence from BTreeSet iteration over the z components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeSet;
-        let mut inner = BTreeSet::new();
-        for &v in BOUNDARY_REALS {
-            inner.insert(orient(0.0, 0.0, 0.0, v));
-        }
-        let set_val = Value::Set(inner);
-
-        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
-            s.iter()
-                .map(|v| match v {
-                    Value::Orientation { z, .. } => *z,
-                    _ => panic!("unexpected value"),
-                })
-                .collect()
-        } else {
-            panic!("expected Set");
-        };
-
-        assert_ieee754_total_order_real(&sorted);
+        assert_boundary_set_iteration_order(
+            |v| orient(0.0, 0.0, 0.0, v),
+            |v| match v {
+                Value::Orientation { z, .. } => *z,
+                _ => panic!("unexpected value"),
+            },
+        );
     }
 
     #[test]
@@ -3332,29 +3324,13 @@ mod tests {
         // through to re.total_cmp. Asserts the IEEE 754 totalOrder sequence from
         // BTreeSet iteration over the re components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeSet;
-        let mut inner = BTreeSet::new();
-        for &v in BOUNDARY_REALS {
-            inner.insert(Value::Complex {
-                re: v,
-                im: 0.0,
-                dimension: DimensionVector::DIMENSIONLESS,
-            });
-        }
-        let set_val = Value::Set(inner);
-
-        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
-            s.iter()
-                .map(|v| match v {
-                    Value::Complex { re, .. } => *re,
-                    _ => panic!("unexpected value"),
-                })
-                .collect()
-        } else {
-            panic!("expected Set");
-        };
-
-        assert_ieee754_total_order_real(&sorted);
+        assert_boundary_set_iteration_order(
+            |v| Value::Complex { re: v, im: 0.0, dimension: DimensionVector::DIMENSIONLESS },
+            |v| match v {
+                Value::Complex { re, .. } => *re,
+                _ => panic!("unexpected value"),
+            },
+        );
     }
 
     #[test]
@@ -3365,25 +3341,13 @@ mod tests {
         // Asserts the IEEE 754 totalOrder sequence from BTreeSet iteration over
         // the w components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeSet;
-        let mut inner = BTreeSet::new();
-        for &v in BOUNDARY_REALS {
-            inner.insert(orient(v, 0.0, 0.0, 0.0));
-        }
-        let set_val = Value::Set(inner);
-
-        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
-            s.iter()
-                .map(|v| match v {
-                    Value::Orientation { w, .. } => *w,
-                    _ => panic!("unexpected value"),
-                })
-                .collect()
-        } else {
-            panic!("expected Set");
-        };
-
-        assert_ieee754_total_order_real(&sorted);
+        assert_boundary_set_iteration_order(
+            |v| orient(v, 0.0, 0.0, 0.0),
+            |v| match v {
+                Value::Orientation { w, .. } => *w,
+                _ => panic!("unexpected value"),
+            },
+        );
     }
 
     #[test]
@@ -3394,25 +3358,13 @@ mod tests {
         // the IEEE 754 totalOrder sequence from BTreeSet iteration over the x
         // components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeSet;
-        let mut inner = BTreeSet::new();
-        for &v in BOUNDARY_REALS {
-            inner.insert(orient(0.0, v, 0.0, 0.0));
-        }
-        let set_val = Value::Set(inner);
-
-        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
-            s.iter()
-                .map(|v| match v {
-                    Value::Orientation { x, .. } => *x,
-                    _ => panic!("unexpected value"),
-                })
-                .collect()
-        } else {
-            panic!("expected Set");
-        };
-
-        assert_ieee754_total_order_real(&sorted);
+        assert_boundary_set_iteration_order(
+            |v| orient(0.0, v, 0.0, 0.0),
+            |v| match v {
+                Value::Orientation { x, .. } => *x,
+                _ => panic!("unexpected value"),
+            },
+        );
     }
 
     #[test]
@@ -3423,25 +3375,13 @@ mod tests {
         // the IEEE 754 totalOrder sequence from BTreeSet iteration over the y
         // components.
         // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
-        use std::collections::BTreeSet;
-        let mut inner = BTreeSet::new();
-        for &v in BOUNDARY_REALS {
-            inner.insert(orient(0.0, 0.0, v, 0.0));
-        }
-        let set_val = Value::Set(inner);
-
-        let sorted: Vec<f64> = if let Value::Set(ref s) = set_val {
-            s.iter()
-                .map(|v| match v {
-                    Value::Orientation { y, .. } => *y,
-                    _ => panic!("unexpected value"),
-                })
-                .collect()
-        } else {
-            panic!("expected Set");
-        };
-
-        assert_ieee754_total_order_real(&sorted);
+        assert_boundary_set_iteration_order(
+            |v| orient(0.0, 0.0, v, 0.0),
+            |v| match v {
+                Value::Orientation { y, .. } => *y,
+                _ => panic!("unexpected value"),
+            },
+        );
     }
 
     // --- List tests (step-5) ---
@@ -3654,7 +3594,6 @@ mod tests {
 
     #[test]
     fn value_display_set() {
-        use std::collections::BTreeSet;
         let mut s = BTreeSet::new();
         s.insert(Value::Int(1));
         s.insert(Value::Int(2));
@@ -3664,7 +3603,6 @@ mod tests {
 
     #[test]
     fn value_display_map() {
-        use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
         m.insert(Value::String("a".into()), Value::Int(1));
         assert_eq!(format!("{}", Value::Map(m)), "{\"a\": 1}");
@@ -3733,7 +3671,6 @@ mod tests {
     #[test]
     fn value_and_satisfaction_content_hash_tags_no_cross_domain_collisions() {
         // Build representative Value for each variant
-        use std::collections::{BTreeMap, BTreeSet};
         let values: Vec<(&str, Value)> = vec![
             ("Bool(false)", Value::Bool(false)),
             ("Bool(true)", Value::Bool(true)),
@@ -4561,6 +4498,49 @@ mod tests {
         let greater_z = orient(0.5, 0.5, 0.5, 1.0);
         let lesser_z = orient(0.5, 0.5, 0.5, 0.5);
         assert!(greater_z > lesser_z);
+    }
+
+    #[test]
+    fn value_orientation_ord_w_dominates_xyz() {
+        // Pins w's precedence over x, y, AND z in the Orientation Ord chain.
+        // Lower-priority components carry contradictory extreme totalOrder values:
+        // NaN (totalOrder-largest) on the "smaller" side and NEG_INFINITY
+        // (totalOrder-smallest) on the "larger" side. If any of x/y/z were
+        // compared before w (e.g. a bogus `x.total_cmp().then(w)...` chain),
+        // the NaN vs NEG_INFINITY signal would flip the ordering and this test
+        // would fail. Under the correct w-first chain, w=1.0 < w=2.0 determines
+        // the order regardless of the contradicting lower-priority values.
+        let smaller = orient(1.0, f64::NAN, f64::NAN, f64::NAN);
+        let larger = orient(2.0, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        assert_ord_consistent(&smaller, &larger, false);
+    }
+
+    #[test]
+    fn value_orientation_ord_x_dominates_yz() {
+        // With w held equal, pins x's precedence over y AND z in the Orientation
+        // Ord chain. Lower-priority components (y, z) carry contradicting extreme
+        // totalOrder values: NaN on the "smaller" side, NEG_INFINITY on the
+        // "larger" side. If y or z were compared before x after w ties (e.g. a
+        // bogus `w.then(y).then(x)...` chain), the NaN vs NEG_INFINITY signal
+        // would flip the ordering and this test would fail. Under the correct
+        // w → x chain, w ties at 0.0 and x=1.0 < x=2.0 determines the order.
+        let smaller = orient(0.0, 1.0, f64::NAN, f64::NAN);
+        let larger = orient(0.0, 2.0, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        assert_ord_consistent(&smaller, &larger, false);
+    }
+
+    #[test]
+    fn value_orientation_ord_y_dominates_z() {
+        // With w and x held equal, pins y's precedence over z in the Orientation
+        // Ord chain. The lower-priority component (z) carries a contradicting
+        // extreme totalOrder value: NaN on the "smaller" side, NEG_INFINITY on the
+        // "larger" side. If z were compared before y after w/x tie (e.g. a bogus
+        // `w.then(x).then(z).then(y)` chain), the NaN vs NEG_INFINITY signal
+        // would flip the ordering and this test would fail. Under the correct
+        // w → x → y chain, w and x tie at 0.0 and y=1.0 < y=2.0 determines the order.
+        let smaller = orient(0.0, 0.0, 1.0, f64::NAN);
+        let larger = orient(0.0, 0.0, 2.0, f64::NEG_INFINITY);
+        assert_ord_consistent(&smaller, &larger, false);
     }
 
     #[test]

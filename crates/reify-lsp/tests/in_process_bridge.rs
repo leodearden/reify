@@ -7,15 +7,6 @@ use reify_test_support::warn_counting_guard;
 use serde_json::json;
 use std::time::Duration;
 
-/// Mirror of `reify_lsp::bridge::error_prefix::INITIALIZE_PARAMS`, which is
-/// `pub(crate)` and therefore not accessible from integration tests.
-///
-/// This constant must stay in sync with the source-of-truth in `bridge.rs`.
-/// The `error_prefix_constants_match_actual_errors` test below detects drift
-/// at runtime: it sends a malformed `initialize` request and asserts the
-/// returned error contains this prefix — so if the bridge constant's value
-/// changes, that test will fail loudly, prompting an update here.
-const INITIALIZE_PARAMS_ERR_PREFIX: &str = "initialize params error";
 
 /// Assert that calling `handle_request` with `method` and `json!(42)` (a canonical
 /// malformed payload) returns an `Err` whose message contains `fragment`.
@@ -460,12 +451,12 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
 }
 
 /// Malformed (non-object) params should return an Err containing
-/// [`INITIALIZE_PARAMS_ERR_PREFIX`].
+/// [`error_prefix::INITIALIZE_PARAMS`].
 #[tokio::test]
 async fn initialize_with_malformed_params_returns_error() {
     hang_guard!(async {
         let lsp = InProcessLsp::new();
-        assert_malformed_params_returns_error(&lsp, "initialize", INITIALIZE_PARAMS_ERR_PREFIX)
+        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
             .await;
     });
 }
@@ -532,15 +523,15 @@ async fn initialize_with_invalid_field_type_returns_error() {
         );
         let err = result.unwrap_err();
         assert!(
-            err.contains(INITIALIZE_PARAMS_ERR_PREFIX),
+            err.contains(error_prefix::INITIALIZE_PARAMS),
             "error message should contain '{}', got: {err}",
-            INITIALIZE_PARAMS_ERR_PREFIX
+            error_prefix::INITIALIZE_PARAMS
         );
     });
 }
 
 /// Missing required `capabilities` field should return Err containing
-/// [`INITIALIZE_PARAMS_ERR_PREFIX`].
+/// [`error_prefix::INITIALIZE_PARAMS`].
 ///
 /// `json!({})` is a valid JSON object, but `InitializeParams` requires a `capabilities`
 /// field. This tests that strict serde deserialization surfaces the missing-field error
@@ -558,9 +549,9 @@ async fn initialize_with_missing_capabilities_returns_error() {
         );
         let err = result.unwrap_err();
         assert!(
-            err.contains(INITIALIZE_PARAMS_ERR_PREFIX),
+            err.contains(error_prefix::INITIALIZE_PARAMS),
             "error message should contain '{}', got: {err}",
-            INITIALIZE_PARAMS_ERR_PREFIX
+            error_prefix::INITIALIZE_PARAMS
         );
     });
 }
@@ -1059,7 +1050,7 @@ async fn error_prefix_constants_match_actual_errors() {
         let lsp = InProcessLsp::new();
 
         // Verify each constant is contained in the error for its matching method.
-        assert_malformed_params_returns_error(&lsp, "initialize", INITIALIZE_PARAMS_ERR_PREFIX)
+        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
             .await;
         assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
             .await;
@@ -1142,7 +1133,7 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
         // Uses json!(42) — the canonical malformed payload in this file — to guarantee
         // serde rejects it before server.initialize() is ever called, so workspace_root
         // and stdlib_path remain at their defaults.
-        assert_malformed_params_returns_error(&lsp, "initialize", INITIALIZE_PARAMS_ERR_PREFIX).await;
+        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS).await;
 
         // Step 2: intentionally skip the `initialized` notification.
         // The `initialized()` handler is a no-op, so skipping it produces no server-side

@@ -4751,6 +4751,12 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(result.is_none(), "negative scale factor should return None (inside-out geometry)");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for negative scale factor, got: {:?}",
+            diagnostics
+        );
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
@@ -4795,6 +4801,12 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(result.is_none(), "NaN scale factor should return None");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for NaN scale factor, got: {:?}",
+            diagnostics
+        );
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
@@ -5705,13 +5717,7 @@ mod tests {
         let val = Value::Bool(true);
         let mut values = ValueMap::new();
         values.insert(cell.clone(), val.clone());
-        let groups = vec![GuardedGroupInfo {
-            guard_cell: cell.clone(),
-            members: vec![],
-            constraints: vec![],
-            else_members: vec![],
-            else_constraints: vec![],
-        }];
+        let groups = vec![make_guard_group("E", "g")];
         let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
         let expected = ContentHash::combine_all(std::iter::once(
             ContentHash::of_str(&format!("guard:{}={:?}", cell, val)),
@@ -5749,5 +5755,42 @@ mod tests {
         let values = ValueMap::new(); // cell absent
         let groups = vec![make_guard_group("E", "g")];
         guard_state_fingerprint(&groups, &values, GuardLookup::Strict);
+    }
+
+    #[test]
+    fn guard_state_fingerprint_distinct_cells_same_value_produce_distinct_hashes() {
+        // Two distinct cells ("A.g" and "B.g") both mapped to Value::Bool(true).
+        // Each cell must contribute its identity to the hash, so the two groups
+        // produce different per-entry hashes and different combined fingerprints.
+        let cell_a = ValueCellId::new("A", "g");
+        let cell_b = ValueCellId::new("B", "g");
+        let mut values = ValueMap::new();
+        values.insert(cell_a, Value::Bool(true));
+        values.insert(cell_b, Value::Bool(true));
+
+        let fp_ab = guard_state_fingerprint(
+            &[make_guard_group("A", "g"), make_guard_group("B", "g")],
+            &values,
+            GuardLookup::Lenient,
+        );
+        let fp_a = guard_state_fingerprint(
+            &[make_guard_group("A", "g")],
+            &values,
+            GuardLookup::Lenient,
+        );
+        let fp_ba = guard_state_fingerprint(
+            &[make_guard_group("B", "g"), make_guard_group("A", "g")],
+            &values,
+            GuardLookup::Lenient,
+        );
+
+        assert_ne!(
+            fp_ab, fp_a,
+            "two-group fingerprint must differ from single-group fingerprint"
+        );
+        assert_ne!(
+            fp_ab, fp_ba,
+            "cell ordering must affect the fingerprint (cell identity contributes to the hash)"
+        );
     }
 }

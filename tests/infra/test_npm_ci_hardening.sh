@@ -22,7 +22,12 @@ trap cleanup EXIT
 # Initialises a git repo so 'git check-ignore' works inside Check 3.
 # Appends the dir to _TMPDIRS so cleanup() removes it at script exit.
 # Writes the path back to the caller via printf -v (bash 3.1+; no subshell).
+# Requires a non-empty VARNAME argument; returns 1 with a message to stderr otherwise.
 setup_fixture_dir() {
+    if [ -z "${1:-}" ]; then
+        echo "setup_fixture_dir: requires a non-empty varname argument" >&2
+        return 1
+    fi
     local _varname="$1"
     local dir
     dir="$(mktemp -d)"
@@ -357,7 +362,7 @@ done
 out23a=$(cd "$FIXTURE_DIR" && bash scripts/check-pm-standardization.sh 2>&1); status23a=$?
 
 assert "23a: consistent packageManager versions -> exit 0" \
-    bash -c "[ '$status23a' = '0' ]"
+    bash -c '[ "$1" = "0" ]' _ "$status23a"
 
 assert "23a: no DIAGNOSTIC: emitted when no npm lockfiles are gitignored" \
     bash -c '! printf "%s\n" "$1" | grep -q DIAGNOSTIC:' _ "$out23a"
@@ -428,7 +433,7 @@ printf 'gui/package-lock.json\n' > "$FIXTURE24/.gitignore"
 
 # The || true makes the capture tolerant of the script's non-zero exit: Check 3's
 # assert fails when a lockfile is gitignored, and because check-pm-standardization.sh
-# has set -e, it short-circuits before test_summary. The explicit echo | grep avoids
+# has set -e, it short-circuits before test_summary. The explicit printf | grep avoids
 # depending on the outer bash -c to not enable pipefail, or on assert()'s internal
 # >/dev/null 2>&1 redirection swallowing the output before grep can see it.
 out24=$(bash "$FIXTURE24/scripts/check-pm-standardization.sh" 2>&1 || true)
@@ -459,6 +464,22 @@ assert "setup_fixture_dir: test_helpers.sh copied" \
 assert "setup_fixture_dir: fixture is a git work tree" \
     bash -c "cd '$FIXTURE_T26' && git rev-parse --is-inside-work-tree"
 assert "setup_fixture_dir: appended to _TMPDIRS cleanup array" \
-    bash -c "[ '${#_TMPDIRS[@]}' -gt '$tmpdirs_before' ]"
+    test "${#_TMPDIRS[@]}" -gt "$tmpdirs_before"
+
+# -- Test 27: setup_fixture_dir rejects empty/missing varname argument ----------
+echo ""
+echo "--- Test 27: setup_fixture_dir argument validation guard ---"
+
+tmpdirs_baseline_t27=${#_TMPDIRS[@]}
+guard_err_t27=$(setup_fixture_dir "" 2>&1 || true)
+guard_rc_t27=0
+setup_fixture_dir "" 2>/dev/null || guard_rc_t27=$?
+
+assert "setup_fixture_dir: rejects empty varname with non-zero return" \
+    test "$guard_rc_t27" -ne 0
+assert "setup_fixture_dir: guard fires before _TMPDIRS mutation" \
+    test "${#_TMPDIRS[@]}" -eq "$tmpdirs_baseline_t27"
+assert "setup_fixture_dir: error message mentions function name" \
+    bash -c 'printf "%s\n" "$1" | grep -qi setup_fixture_dir' _ "$guard_err_t27"
 
 test_summary

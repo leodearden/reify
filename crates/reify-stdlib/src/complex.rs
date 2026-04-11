@@ -1169,6 +1169,20 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_orientation_z_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: f64::NAN,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN z should become Undef"
+        );
+    }
+
+    #[test]
     fn sanitize_orientation_all_components_nonfinite_returns_undef() {
         let v = Value::Orientation {
             w: f64::NAN,

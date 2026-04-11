@@ -8,6 +8,7 @@ pub mod hash;
 pub mod identity;
 pub mod persistent;
 pub mod provenance;
+pub mod source_location;
 pub mod traits;
 pub mod ty;
 pub mod value;
@@ -37,4 +38,5 @@ pub use ty::Type;
 pub use value::{
     DeterminacyState, EvalError, FieldSourceKind, Freshness, Satisfaction, Value, ValueMap,
 };
+pub use source_location::byte_offset_to_line_col;
 pub use warm::{OpaqueState, WarmStartable};

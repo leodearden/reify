@@ -229,8 +229,7 @@ impl Default for InProcessLsp {
 /// in the implementation.
 pub mod error_prefix {
     /// Prefix for deserialization failures on `initialize` params.
-    /// `pub(crate)` to avoid semver commitment on the error string — not part of the public API.
-    pub(crate) const INITIALIZE_PARAMS: &str = "initialize params error";
+    pub const INITIALIZE_PARAMS: &str = "initialize params error";
 
     /// Prefix for deserialization failures on `initialized` params.
     pub const INITIALIZED_PARAMS: &str = "initialized params error";

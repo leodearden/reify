@@ -68,15 +68,34 @@ _no_unhardened_pattern_interp() {
     printf 'UNHARDENED PATTERN INTERPOLATION FOUND:\n%s\n' "$m" >&3
     return 1
 }
+_no_double_quoted_bash_c() {
+    local m
+    m=$(grep -nE '^[[:space:]]*bash -c "' "$THIS_SCRIPT" 2>/dev/null) || true
+    if [ -z "$m" ]; then
+        return 0
+    fi
+    printf 'DOUBLE-QUOTED bash -c FOUND (use single-outer quotes + exported vars):\n%s\n' "$m" >&3
+    return 1
+}
 
-assert "this script exports PATTERN for bash -c subshells" \
-    grep -qE '^[[:space:]]*export[[:space:]]+PATTERN' "$THIS_SCRIPT"
 assert 'no Section 1 bash -c $PATTERN interpolation in this script' \
     _no_unhardened_pattern_interp
+assert 'no double-quoted bash -c in this script (all bash -c must be single-outer-quoted)' \
+    _no_double_quoted_bash_c
 
 # -- S3: behavioral assertion that PATTERN is actually exported at runtime -----
 assert 'PATTERN is actually exported (behavioral)' \
     bash -c '[ -n "${PATTERN+x}" ] && env | grep -q "^PATTERN="'
+
+# -- S3: regression guard that the textual export-PATTERN grep is absent -------
+# Split to prevent self-match: the full string is never on one line here.
+_S3_CHECK='"this script exports PATTERN'
+_S3_CHECK+=' for bash -c subshells"'
+_no_textual_export_check() {
+    ! grep -qF "$_S3_CHECK" "$THIS_SCRIPT"
+}
+assert 'no textual export-PATTERN assertion (S3: behavioral check only)' \
+    _no_textual_export_check
 
 # -- S1: meta-assertion that _CHECK= has an explanatory comment above it -------
 _test_comment_above_check() {
@@ -202,8 +221,28 @@ assert "accepts: const unsafe fn sanitize_value( (const+unsafe combination — R
 assert "accepts: async unsafe fn sanitize_value( (async+unsafe combination — Rust grammar order)" \
     bash -c 'printf "%s\n" "async unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
+assert "accepts: pub const unsafe fn sanitize_value( (pub+const+unsafe triple combination)" \
+    bash -c 'printf "%s\n" "pub const unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
+assert "accepts: pub(crate) async unsafe fn sanitize_value( (pub(crate)+async+unsafe triple combination)" \
+    bash -c 'printf "%s\n" "pub(crate) async unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
+assert "accepts: pub(crate) const unsafe fn sanitize_value( (pub(crate)+const+unsafe triple combination)" \
+    bash -c 'printf "%s\n" "pub(crate) const unsafe fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
+# -- Grammar-order reject cases ------------------------------------------------
+# The two assertions below guard against qualifiers in the wrong ORDER.
+# Intentional gap: `const async fn` and `const async unsafe fn` are NOT asserted
+# as rejects. The regex validates grammar ORDER (const→async→unsafe→fn), not Rust
+# semantics. Both strings match the pattern in the correct positional order even
+# though Rust forbids `const async fn` semantically (const fn cannot be async).
+# Asserting them as rejects would be incorrect scope creep — this regex is not a
+# Rust semantic validator.
 assert "rejects: unsafe async fn sanitize_value( (invalid Rust grammar order — Rust requires async unsafe, not unsafe async)" \
     bash -c '! printf "%s\n" "unsafe async fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
+
+assert "rejects: unsafe const fn sanitize_value( (invalid Rust grammar order — Rust requires const unsafe, not unsafe const)" \
+    bash -c '! printf "%s\n" "unsafe const fn sanitize_value(v: Value) -> Value {" | grep -qE "$PATTERN"'
 
 # -- Reject cases: pattern must NOT match these strings ------------------------
 
@@ -247,6 +286,9 @@ unset PATTERN
 echo ""
 echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
 
+assert 'PATTERN is unset at start of Section 2 (S4: scoping regression guard)' \
+    bash -c '[ -z "${PATTERN+x}" ]'
+
 assert "sync_comments_test.sh exists" \
     test -f "$SYNC_TEST"
 
@@ -268,7 +310,13 @@ assert "stdlib assert description uses crate-name form 'reify-stdlib has SYNC ma
     grep -q '"reify-stdlib has SYNC marker referencing reify-expr::sanitize_value"' "$SYNC_TEST"
 
 assert "extract_fn comment describes allowed prefixes for broad awk pattern" \
-    bash -c "grep '^#' '$SYNC_TEST' | grep -qF 'Allowed prefixes'"
+    bash -c 'grep "^#" "$SYNC_TEST" | grep -qF "Allowed prefixes"'
+
+assert "sync_ref_helpers.sh documents extern fn limitation" \
+    grep -qF 'extern "C" fn' "$SYNC_REF_HELPERS"
+
+assert "sync_ref_helpers.sh documents default fn limitation" \
+    grep -qF 'default fn' "$SYNC_REF_HELPERS"
 
 echo ""
 echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
@@ -330,114 +378,128 @@ assert "extract_fn: fn foobar( NOT extracted when fn_name=foo (prefix collision)
 # fn line because "let y =" is not a fn declaration.  The structured-modifier anchoring
 # (const/async/unsafe) rejects it.
 assert "extract_fn: 'let y = fn foo(x);' NOT extracted for fn_name=foo (embedded-fn false-positive)" \
-    bash -c "
-        tmp=\$(mktemp)
-        printf 'let y = fn foo(x);\n}\n' > \"\$tmp\"
-        source '$_SECT3_HELPER'
+    bash -c '
+        tmp=$(mktemp)
+        printf "let y = fn foo(x);\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
         test_summary() { :; }
-        source '$SYNC_TEST'
+        source "$SYNC_TEST"
         PASS=0; FAIL=0
-        out=\$(extract_fn foo \"\$tmp\")
-        rm -f \"\$tmp\"
-        [ -z \"\$out\" ]
-    "
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -z "$out" ]
+    '
 
-# accept: const fn foo( — must be extracted when fn_name=foo
+# accept: const fn foo( — must be extracted when fn_name=foo; sed strips const prefix
 assert "extract_fn: const fn foo( extracted correctly for fn_name=foo" \
-    bash -c "
-        tmp=\$(mktemp)
-        printf 'const fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
-        source '$_SECT3_HELPER'
+    bash -c '
+        tmp=$(mktemp)
+        printf "const fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
         test_summary() { :; }
-        source '$SYNC_TEST'
+        source "$SYNC_TEST"
         PASS=0; FAIL=0
-        out=\$(extract_fn foo \"\$tmp\")
-        rm -f \"\$tmp\"
-        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'const fn foo('
-    "
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
+    '
 
-# accept: unsafe fn foo( — must be extracted when fn_name=foo
+# accept: unsafe fn foo( — must be extracted when fn_name=foo; sed strips unsafe prefix
 assert "extract_fn: unsafe fn foo( extracted correctly for fn_name=foo" \
-    bash -c "
-        tmp=\$(mktemp)
-        printf 'unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
-        source '$_SECT3_HELPER'
+    bash -c '
+        tmp=$(mktemp)
+        printf "unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
         test_summary() { :; }
-        source '$SYNC_TEST'
+        source "$SYNC_TEST"
         PASS=0; FAIL=0
-        out=\$(extract_fn foo \"\$tmp\")
-        rm -f \"\$tmp\"
-        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'unsafe fn foo('
-    "
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
+    '
 
-# accept: async fn foo( — must be extracted when fn_name=foo
+# accept: async fn foo( — must be extracted when fn_name=foo; sed strips async prefix
 assert "extract_fn: async fn foo( extracted correctly for fn_name=foo" \
-    bash -c "
-        tmp=\$(mktemp)
-        printf 'async fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
-        source '$_SECT3_HELPER'
+    bash -c '
+        tmp=$(mktemp)
+        printf "async fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
         test_summary() { :; }
-        source '$SYNC_TEST'
+        source "$SYNC_TEST"
         PASS=0; FAIL=0
-        out=\$(extract_fn foo \"\$tmp\")
-        rm -f \"\$tmp\"
-        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'async fn foo('
-    "
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
+    '
 
 # accept: pub fn foo( — must be extracted when fn_name=foo; sed strips the pub prefix
 assert "extract_fn: pub fn foo( extracted correctly for fn_name=foo" \
-    bash -c "
-        tmp=\$(mktemp)
-        printf 'pub fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
-        source '$_SECT3_HELPER'
+    bash -c '
+        tmp=$(mktemp)
+        printf "pub fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
         test_summary() { :; }
-        source '$SYNC_TEST'
+        source "$SYNC_TEST"
         PASS=0; FAIL=0
-        out=\$(extract_fn foo \"\$tmp\")
-        rm -f \"\$tmp\"
-        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'fn foo('
-    "
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -n "$out" ] && echo "$out" | grep -q "fn foo("
+    '
 
-# accept: pub(crate) const fn foo( — must be extracted when fn_name=foo; sed strips pub(crate) prefix
+# accept: pub(crate) const fn foo( — must be extracted when fn_name=foo; sed strips pub(crate) and const
 assert "extract_fn: pub(crate) const fn foo( extracted correctly for fn_name=foo" \
-    bash -c "
-        tmp=\$(mktemp)
-        printf 'pub(crate) const fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
-        source '$_SECT3_HELPER'
+    bash -c '
+        tmp=$(mktemp)
+        printf "pub(crate) const fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
         test_summary() { :; }
-        source '$SYNC_TEST'
+        source "$SYNC_TEST"
         PASS=0; FAIL=0
-        out=\$(extract_fn foo \"\$tmp\")
-        rm -f \"\$tmp\"
-        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'const fn foo('
-    "
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
+    '
 
-# accept: async unsafe fn foo( — multi-modifier combination (Rust grammar order) must be extracted
+# accept: async unsafe fn foo( — multi-modifier combination (Rust grammar order) must be extracted; sed strips async+unsafe
 assert "extract_fn: async unsafe fn foo( extracted correctly for fn_name=foo" \
-    bash -c "
-        tmp=\$(mktemp)
-        printf 'async unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
-        source '$_SECT3_HELPER'
+    bash -c '
+        tmp=$(mktemp)
+        printf "async unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
         test_summary() { :; }
-        source '$SYNC_TEST'
+        source "$SYNC_TEST"
         PASS=0; FAIL=0
-        out=\$(extract_fn foo \"\$tmp\")
-        rm -f \"\$tmp\"
-        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'async unsafe fn foo('
-    "
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
+    '
 
-# accept: pub(crate) const unsafe fn foo( — full modifier chain must be extracted
+# accept: pub(crate) const unsafe fn foo( — full modifier chain must be extracted; sed strips all modifiers
 assert "extract_fn: pub(crate) const unsafe fn foo( extracted correctly for fn_name=foo" \
-    bash -c "
-        tmp=\$(mktemp)
-        printf 'pub(crate) const unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
-        source '$_SECT3_HELPER'
+    bash -c '
+        tmp=$(mktemp)
+        printf "pub(crate) const unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
         test_summary() { :; }
-        source '$SYNC_TEST'
+        source "$SYNC_TEST"
         PASS=0; FAIL=0
-        out=\$(extract_fn foo \"\$tmp\")
-        rm -f \"\$tmp\"
-        [ -n \"\$out\" ] && echo \"\$out\" | grep -q 'const unsafe fn foo('
-    "
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
+    '
+
+# accept: const unsafe fn foo( — canonical-order const+unsafe combination; sed strips both modifiers
+assert "extract_fn: const unsafe fn foo( extracted correctly for fn_name=foo" \
+    bash -c '
+        tmp=$(mktemp)
+        printf "const unsafe fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n" > "$tmp"
+        source "$_SECT3_HELPER"
+        test_summary() { :; }
+        source "$SYNC_TEST"
+        PASS=0; FAIL=0
+        out=$(extract_fn foo "$tmp")
+        rm -f "$tmp"
+        [ -n "$out" ] && [ "$(printf "%s\n" "$out" | head -1)" = "fn foo(" ]
+    '
 
 test_summary

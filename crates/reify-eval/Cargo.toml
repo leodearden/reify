@@ -12,7 +12,7 @@ reify-syntax.workspace = true
 reify-compiler.workspace = true
 
 [dev-dependencies]
-reify-test-support.workspace = true
+reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-kernel-occt.workspace = true
 reify-constraints.workspace = true
 reify-geometry.workspace = true

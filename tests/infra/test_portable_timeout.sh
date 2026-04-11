@@ -641,9 +641,9 @@ echo "--- Test 22: post-wait orphan cleanup uses SIGKILL not SIGTERM ---"
 assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)" \
     grep -qF 'kill -9 -- -$cmd_pid 2>/dev/null || true' "$LIB_PORTABLE"
 
-# Regex covers the canonical 'kill -- -$cmd_pid' form (quoted or unquoted,
-# with optional trailing || true or redirection) but NOT 'kill -s TERM',
-# 'kill -TERM', or '--signal=TERM' variants — those are not used in the file.
+# Regex matches the canonical 'kill -- -$cmd_pid' form (quoted or unquoted).
+# 'kill -9 -- ...' is excluded because [[:space:]]+ between 'kill' and '--'
+# cannot match the intervening '-9' — no prefix anchor is needed.
 # Comment lines are excluded first to avoid false matches on inline documentation.
 assert "no line uses the canonical kill -- -\$cmd_pid form (quoted or unquoted)" \
     bash -c '! grep -v '"'"'^[[:space:]]*#'"'"' "$1" | grep -qE "kill[[:space:]]+--[[:space:]]+\"?-\\\$cmd_pid"' _ "$LIB_PORTABLE"
@@ -748,6 +748,45 @@ assert "grep -cF count == 1 for single occurrence of 'local _pt_kill_grace=2'" \
 _pt_double=$'portable_timeout ()\n{\n    local _pt_kill_grace=2\n    local _pt_kill_grace=2\n    echo done\n}'
 assert "grep -cF count == 2 for two occurrences of 'local _pt_kill_grace=2'" \
     bash -c '[ "$(grep -cF "local _pt_kill_grace=2" <<< "$1")" -eq 2 ]' _ "$_pt_double"
+
+# -- Test 24d (structural): all count-grep uses in this file include -cF ------
+echo ""
+echo "--- Test 24d (structural): count-grep uses include -cF flag ---"
+
+# Task 1605 origin: the review for task 1473 asked for consistency between
+# count-grep invocations; the merge resolution (commit 869964c9f) already
+# fixed all occurrences.  This guard locks that convention in.
+#
+# The pattern is assembled at runtime so no substring of this source file
+# can be an accidental self-match.  The guard rejects any line where the
+# count flag is not immediately followed by F for fixed-string safety.
+#
+# The regex is split across three printf arguments so no two adjacent args
+# produce the flagless count-grep pattern contiguously in source; the self-
+# referential scan cannot false-positive on this block.  Invocations with
+# -cE (extended-regex) are also caught — this file has none intentionally.
+printf -v _24d_regex '%s' 'grep' ' -c' '([^F]|$)'
+assert "count-grep uses include -cF flag (no bare count-grep)" \
+    bash -c '! grep -nE "$2" "$1"' _ "${BASH_SOURCE[0]}" "$_24d_regex"
+
+# -- Test 24e (meta): validate the Test 24d guard regex discrimination --------
+echo ""
+echo "--- Test 24e (meta): guard regex discriminates bare vs -cF correctly ---"
+
+# Verifies _24d_regex (assembled above) correctly matches a flagless count-grep
+# invocation and correctly rejects count-grep -cF.  Mirrors the Test 22b and
+# Test 24c meta-assertion shape: feed two synthetic inputs, assert discrimination.
+#
+# Synthetic strings are assembled via printf to avoid placing any source
+# substring that the guard regex would detect in this source file.
+#
+# positive: flagless count-grep should match
+assert "Test 24d regex matches flagless count-grep invocation" \
+    bash -c 'printf "%s%s\n" "grep" " -c pattern" | grep -qE "$1"' _ "$_24d_regex"
+
+# negative: count-grep -cF should NOT match
+assert "Test 24d regex does not match count-grep -cF invocation" \
+    bash -c '! printf "%s%s\n" "grep" " -cF pattern" | grep -qE "$1"' _ "$_24d_regex"
 
 # -- Test 25a: structural: SAFETY_NET_GREP_LINE marker present ---------------
 echo ""

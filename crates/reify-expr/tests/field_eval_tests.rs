@@ -42,6 +42,44 @@ fn make_value_lambda(
     }
 }
 
+/// Build the unevaluated `gradient(field)` expression shared by the three
+/// String-codomain gradient tests:
+/// - `gradient_of_field_with_non_numeric_lambda`
+/// - `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`
+/// - `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`
+///
+/// Returns the `gradient(field)` [`CompiledExpr`] ready to be passed to
+/// `eval_expr`. The caller is responsible for evaluation and any downstream
+/// assertions.
+fn build_string_codomain_grad_expr() -> CompiledExpr {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| "not_a_number"  (non-numeric return value)
+    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::String;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type,
+    )
+}
+
 // ── Durable: sample behavior tests ──────────────────────────────────────────
 
 /// Sampling a field with Undef lambda returns Undef.
@@ -465,34 +503,9 @@ fn gradient_temperature_over_length_returns_field() {
 /// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`).
 #[test]
 fn gradient_of_field_with_non_numeric_lambda() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-
-    // Lambda: |x| "not_a_number"  (non-numeric return value)
-    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    let domain_type = Type::Real;
-    let codomain_type = Type::String;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
     // gradient(field) succeeds at construction time — domain is scalar, source
     // is Analytical, lambda is a Lambda.
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
-    );
+    let grad_expr = build_string_codomain_grad_expr();
 
     let values = ValueMap::new();
     let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
@@ -508,44 +521,30 @@ fn gradient_of_field_with_non_numeric_lambda() {
 ///
 /// The debug-mode counterpart is
 /// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`.
+///
+/// NOTE: This test is gated on `#[cfg(not(debug_assertions))]` and is therefore
+/// **excluded from `cargo test`** (which compiles with debug_assertions enabled).
+/// It only runs under `cargo test --release`. The orchestrator (`orchestrator.yaml`)
+/// always runs both a debug pass and a release pass, so CI coverage for this test
+/// is preserved. The sibling debug-mode test is
+/// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`.
 #[cfg(not(debug_assertions))]
 #[test]
 fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    let domain_type = Type::Real;
-    let codomain_type = Type::String;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
-    );
+    let grad_expr = build_string_codomain_grad_expr();
     let values = ValueMap::new();
     let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
 
     let point = Value::Real(1.0);
     let grad_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::String),
     };
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, domain_type),
+            CompiledExpr::literal(point, Type::Real),
         ],
         Type::Real,
     );
@@ -563,45 +562,31 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
 ///
 /// `Type::String` is not a valid gradient codomain — the debug_assert in the
 /// result_dim match fires before any numeric work begins.
+///
+/// NOTE: This test is gated on `#[cfg(debug_assertions)]` and is therefore
+/// **excluded from `cargo test --release`**. It only runs under `cargo test`
+/// (debug mode). The orchestrator (`orchestrator.yaml`) always runs both a debug
+/// pass and a release pass, so CI coverage for this test is preserved. The sibling
+/// release-mode test is
+/// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`.
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "unexpected codomain_type")]
 fn gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    let domain_type = Type::Real;
-    let codomain_type = Type::String;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
-    );
+    let grad_expr = build_string_codomain_grad_expr();
     let values = ValueMap::new();
     let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
 
     let point = Value::Real(1.0);
     let grad_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::String),
     };
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, domain_type),
+            CompiledExpr::literal(point, Type::Real),
         ],
         Type::Real,
     );
