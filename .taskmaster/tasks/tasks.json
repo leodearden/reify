@@ -20663,11 +20663,11 @@
         "description": "In crates/reify-eval/src/lib.rs, replace the Value::Undef => 0 safety fallback in new_count match (dead code due to guard above) with unreachable!(\"Undef new_count guarded above\") per silent-defaults convention.",
         "details": "<info added on 2026-04-10T16:21:56.260Z>\nBefore replacing `Value::Undef => 0` with `unreachable!()`, the implementor MUST audit all call sites that flow into the `new_count` match expression to verify `Undef` is structurally impossible (not merely guarded by current callers). If any caller can produce an `Int→Undef` transition or otherwise leave `new_count` as `Value::Undef`, the `unreachable!()` will panic on a valid code path. This audit is a required pre-condition, not optional. The safety concern was flagged by memory reconciliation on 2026-04-10 — no branch for this task has ever been created.\n</info added on 2026-04-10T16:21:56.260Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-11T21:33:14.042Z",
+        "updatedAt": "2026-04-11T21:38:11.366Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -33690,7 +33690,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T21:36:45.768Z",
+      "lastModified": "2026-04-11T21:38:11.369Z",
       "taskCount": 1637,
       "completedCount": 1295,
       "tags": [
