@@ -16776,7 +16776,7 @@
         "description": "Add durable tests for sample() when lambda parameter count doesn't match point dimension count. apply_lambda explicitly checks evaluated_args.len() != params.len() and returns Value::Undef — this behavioral contract should be pinned.\n\nTests to add in crates/reify-expr/tests/field_eval_tests.rs:\n1. Build a field with 1-param lambda (|x|), call sample(field, point_3d) with 3-element point → assert Undef\n2. Build a field with 3-param lambda (|x,y,z|), call sample(field, scalar) with 1-element point → assert Undef\n\nmemory_hints: search \"apply_lambda arity check\" and \"sample field eval\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16788,7 +16788,7 @@
             "crates/reify-expr/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:37.614Z"
       },
       {
         "id": "775",
@@ -16796,7 +16796,7 @@
         "description": "Add a durable test for successful multi-param lambda invocation through sample(). Current tests only cover 1D domain (sample_temperature_over_length_field) and an Undef lambda case. No test exercises multi-param argument binding in apply_lambda.\n\nTest to add in crates/reify-expr/tests/field_eval_tests.rs:\n- Build a 3D field with lambda |x, y, z| x + y + z\n- Call sample(field, Point([1.0, 2.0, 3.0]))\n- Assert result is Value::Real(6.0)\n\nThis pins the multi-param binding contract so regressions in apply_lambda are detected.\n\nmemory_hints: search \"apply_lambda multi param\" and \"sample field 3D\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16808,7 +16808,7 @@
             "crates/reify-expr/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:37.672Z"
       },
       {
         "id": "776",
@@ -17047,7 +17047,7 @@
         "description": "Add assert_no_eval_errors helper to test module or reify-test-support; use it in all 5 test functions (including refinement_chain_values and diamond_merging_values which currently lack it). Rename shadowed `result` to `eval_result`. Consider reusing field_eval_tests.rs eval_source helper pattern.",
         "details": "Source: escalation esc-434-29 (task 434 review). File: crates/reify-eval/tests/m9_trait_conformance.rs. Eval-error assertion block copy-pasted 3 times at lines 69-85, 448-464, 488-504.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17061,7 +17061,7 @@
             "crates/reify-test-support"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:37.718Z"
       },
       {
         "id": "788",
@@ -17069,7 +17069,7 @@
         "description": "Add explanatory comment on merged_constraints.len()==2 identifying which 2 constraints are expected. Add Component.half_size assertion in refinement_chain_values. Either use check_result.diagnostics for error assertion or restructure to avoid double eval.",
         "details": "Source: escalation esc-434-29 (task 434 review). File: crates/reify-eval/tests/m9_trait_conformance.rs:245,421.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17081,7 +17081,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:37.759Z"
       },
       {
         "id": "789",
@@ -17109,7 +17109,7 @@
         "description": "Fold cyclic_let_binding_diagnostic_includes_template_name into cyclic_let_bindings_emit_diagnostic. Rename has_only_warning to has_any_warning_about_unknown_structure. Replace redundant negative assertion with count==1 check. Add assert!(result.diagnostics.is_empty()) to bfs_traverses_through_wrapper test.",
         "details": "Source: escalation esc-550-13 (task 550 review). File: crates/reify-eval/tests/recursive_unfold.rs:1390-1609.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17121,7 +17121,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:37.906Z"
       },
       {
         "id": "791",
@@ -17811,7 +17811,7 @@
         "description": "Convention violation + cross-module inconsistency. Value::infer_type() in reify-types/src/value.rs defaults empty List/Set to Type::Int (lines 504, 512) and empty Map keys to Type::String (line 520). The compiler in reify-compiler/src/lib.rs defaults empty List/Set to Type::Real (lines 2705, 2727) and empty Map values to Type::Real (line 2763). This means compile-time and runtime type inference disagree for empty collections.\n\nFix: either make both consistent (both Type::Real or both Type::Int), or — better — emit a diagnostic / return Option<Type> for the ambiguous case rather than silently picking a default. Task #368 (done) fixed the builders.rs path but missed these value.rs sites.\n\nLocations:\n- crates/reify-types/src/value.rs:504, 512, 520\n- Also line 524: Value::Option(None) defaults to Type::Option(Box::new(Type::Bool))\n\nmemory_hints: search(\"infer_type empty collection type default convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -17825,7 +17825,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:37.950Z"
       },
       {
         "id": "826",
@@ -17904,7 +17904,7 @@
         "description": "Bundle of low-severity cleanup items from 2026-04-03 review:\n\n1. reify-mcp/src/jsonrpc.rs:232 — serde_json::to_string(&response).unwrap_or_default() should be .expect(\"JsonRpcResponse serialization\") since structural failure is a bug (F7)\n2. Stale \"stub\" comments on fully-implemented files (F8):\n   - crates/reify-runtime/src/lib.rs:1 — \"Stub — M1 implementation pending\"\n   - crates/reify-mcp/src/tools/write.rs:1 — \"Write tool stubs (5 tools)\"\n   - crates/reify-eval/src/deps.rs:5 — \"minimal stub for task 12\"\n3. Dead-code fields stored but never read (F9):\n   - EntityDefRef::content_hash (crates/reify-compiler/src/lib.rs:4108)\n   - ConcurrentEvalAdapter::version (crates/reify-runtime/src/concurrent_eval.rs:69)\n   Either document why retained or remove.\n4. Redundant #[allow(unused_imports)] on crates/reify-expr/tests/component_helper_tests.rs:6 (F10)\n\nPartially overlaps with task #383 (sweep/loft dead code, pending).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17926,7 +17926,7 @@
             "crates/reify-expr/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:37.991Z"
       },
       {
         "id": "830",
@@ -18004,11 +18004,11 @@
         "description": "SolveResult::NoProgress is documented as 'solver made no progress (e.g., iteration limit reached)' but is also returned for hard precondition failures (missing eval values). Consider adding SolveResult::PreconditionFailed { reason } or at minimum update the doc comment on NoProgress to state that precondition violations also use this variant so callers don't treat it as always-retryable.\n\nNOTE: Task 772 previously completed \"Add structured NoProgressKind enum to SolveResult::NoProgress\" — check if that already covers this concern before implementing. If NoProgressKind already has a variant for precondition failures, this task may be a no-op (just verify docs are clear).\n\nmemory_hints: search(\"SolveResult NoProgressKind enum precondition\", project_id=\"reify\"); get_entity(\"NoProgressKind\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T20:22:33.280Z",
+        "updatedAt": "2026-04-11T07:19:38.036Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints/src",
@@ -18176,11 +18176,11 @@
         "description": "The guard `if *re == 0.0 && *im == 0.0 { return Value::Undef; }` is copy-pasted verbatim into `crates/reify-expr/src/lib.rs` (method-call path) and `crates/reify-stdlib/src/lib.rs` (builtin path). Add a `Value::complex_phase(re: f64, im: f64, dimension: DimensionVector) -> Value` (or free function) in `crates/reify-types/src/value.rs` and have both call sites delegate to it, mirroring the pattern established by `Value::from_component` in the same diff.\n\nMemory hints: search \"from_component complex extraction pattern\", search \"phase zero-guard duplication\", entities: Value::from_component, phase, eval_builtin",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:29:51.820Z",
+        "updatedAt": "2026-04-11T07:19:38.079Z",
         "metadata": {
           "modules": [
             "crates/reify-types",
@@ -18201,11 +18201,11 @@
         "description": "In `crates/reify-types/src/value.rs:159`, rename `from_component` to `from_real_scalar` (or `dimensioned_real`) — the doc comment itself acknowledges the name is a semantic stretch for magnitude. Update all call sites in `reify-expr/src/lib.rs` and `reify-stdlib/src/lib.rs`.\n\nAlso add a doc note clarifying that the function does not sanitize NaN/Infinity and callers that may encounter domain errors must wrap the result in `sanitize_value`.\n\nMemory hints: search \"from_component naming\", search \"Value helper naming conventions\", entities: Value::from_component",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:29:49.017Z",
+        "updatedAt": "2026-04-11T07:19:38.121Z",
         "metadata": {
           "modules": [
             "crates/reify-types",
@@ -18225,11 +18225,11 @@
         "description": "Four distinct test gaps to address:\n\n1. Remove `complex_magnitude_zero_complex_returns_zero` in `crates/reify-stdlib/src/lib.rs` — it's redundant with `magnitude_zero_complex_returns_zero` as both route through `complex_abs` for a Complex input.\n2. Add `magnitude_zero_complex_dimensioned_returns_scalar_zero` testing `Complex{0.0, 0.0, LENGTH}` → `Scalar{0.0, LENGTH}` in both the stdlib test suite and the method-call test suite (`complex_eval_tests.rs`).\n3. Add `phase_zero_dimensioned_complex_returns_undef` testing `Complex{0.0, 0.0, LENGTH}` → Undef in `complex_tests.rs` and `complex_eval_tests.rs`.\n4. Add unit tests `from_component_dimensionless_returns_real` and `from_component_dimensioned_returns_scalar` in a `#[cfg(test)]` block in `crates/reify-types/src/value.rs`.\n5. Add a positive counterpart to `re_im_not_in_builtin_completions` in `crates/reify-lsp/src/completion.rs` that triggers method completion on a complex-typed receiver and asserts `re`, `im`, `magnitude`, `phase` appear as METHOD-kind items.\n\nMemory hints: search \"complex edge case tests\", search \"LSP completion method tests\", entities: complex_magnitude, phase, from_component",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:36:54.192Z",
+        "updatedAt": "2026-04-11T07:19:38.166Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib",
@@ -18251,11 +18251,11 @@
         "description": "In crates/reify-compiler/src/lib.rs:5200-5208, the label format `format!(\"{}[{}]\", ci.name, pred_idx)` produces identical labels when the same constraint def is instantiated more than once in a single structure. Add a per-def instantiation counter (inst_idx) so labels become `\"Name#inst[pred]\"`. Then add a test in crates/reify-eval/tests/constraint_def_eval.rs that instantiates the same constraint def twice with different arguments and asserts the two resulting ConstraintCheckEntry labels are distinct.\n\nMemory hints: search for \"constraint def label format\", get_entity \"CompiledConstraint\", search for \"ConstraintCheckEntry label\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:37:57.093Z",
+        "updatedAt": "2026-04-11T07:19:38.209Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -18273,11 +18273,11 @@
         "description": "Three correctness gaps in the labeled_diagnostics enrichment pipeline in crates/reify-eval/src/lib.rs:\n\n1. Extend the substitution loop (~line 2196) to also replace id_str in each `d.labels[i].message` field, not just `d.message`.\n2. Add a `debug_assert` or `tracing::warn` when a non-empty label is provided but the replacement produced no change in any message — catches Display format drift silently breaking enrichment.\n3. At each of the five `results.into_iter().zip(active_constraints.iter())` sites (lines 2249, 2639, 2735, 2799, 3113), add `debug_assert_eq!(result.id, compiled.id)` and a post-loop count assert to catch out-of-order or truncated checker results.\n\nMemory hints: search for \"labeled_diagnostics\", search for \"ConstraintNodeId Display format\", get_entity \"DiagnosticLabel\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T20:20:15.901Z",
+        "updatedAt": "2026-04-11T07:19:38.251Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/Cargo.toml",
@@ -18295,11 +18295,11 @@
         "description": "Four DRY violations introduced by the constraint-def path:\n\n1. Extract a private `push_constraint_result` method or helper closure from the identical three-line `labeled_diagnostics + push` block repeated at lines 2250-2254, 2640-2644, 2735-2740, 2799-2804, 3113-3118 in crates/reify-eval/src/lib.rs.\n2. In `labeled_diagnostics`, change the collect() to an in-place mutation loop and guard the replace with a `contains` check to avoid unnecessary allocations.\n3. Extract the `check_source` (and `eval_source`) helper shared across ≥5 test files into `crates/reify-eval/tests/common/mod.rs` and import it from each test file.\n4. Add an `error_diags` free function to `crates/reify-eval/tests/constraint_def_eval.rs` (or the common module) and replace the five inline filter-collect patterns.\n\nMemory hints: search for \"check_source helper eval tests\", search for \"labeled_diagnostics allocation\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:36:08.075Z",
+        "updatedAt": "2026-04-11T07:19:38.298Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -18317,11 +18317,11 @@
         "description": "Three missing test scenarios:\n\n1. In crates/reify-eval/tests/incremental.rs, extend `edit_check_preserves_constraint_labels` (or add a new test) to assert that when a labeled constraint is violated through `edit_check`, the returned Diagnostic messages contain the human-readable label string rather than the raw ConstraintNodeId.\n2. In crates/reify-compiler/tests/constraint_inst_tests.rs:368-379, replace positional `tmpl.constraints[0]`/`[1]` access with label-based `.find(|c| c.label == Some(\"Bounded[0]\".to_string()))` to make the test order-independent.\n3. In crates/reify-eval/tests/constraint_def_eval.rs, add a test for the guard=true active case of a guarded constraint def where the constraint is violated, verifying that the entry appears with the expected label and Violated satisfaction.\n\nMemory hints: search for \"edit_check_preserves_constraint_labels\", search for \"constraint_inst_tests label\", search for \"guarded constraint def test\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:34:35.500Z",
+        "updatedAt": "2026-04-11T07:19:38.343Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests",
@@ -18782,11 +18782,11 @@
         "description": "Replace `pub constraint_defs: Vec<reify_syntax::ConstraintDef>` with a new `CompiledConstraintDef` struct (in reify-compiler or reify-types) that captures name, is_pub, compiled param descriptors, and compiled predicates. Update compile_with_prelude to produce CompiledConstraintDef at definition-compile time rather than cloning raw AST nodes. This maintains the abstraction boundary where CompiledModule only contains compiler-crate or semantic types, not raw syntax AST nodes.\n\nmemory_hints: search \"CompiledConstraintDef constraint_defs CompiledModule\" for prior context; get_entity \"CompiledModule\" for field structure",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:21:11.691Z",
+        "updatedAt": "2026-04-11T07:19:38.412Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -28936,11 +28936,11 @@
         "description": "Three small hygiene improvements to the negative_extrude_distance_is_valid and negative_revolve_angle_is_valid tests added by Task 1181 in crates/reify-eval/tests/stress_sweep_degenerate.rs:\n\n1. Step numbering: the new tests are tagged 'step-1'/'step-2' (lines 221-222, 309-311) while the surrounding tests use 'step-13' through 'step-24'. Readers will assume the numbering is monotonic. Renumber as 'step-25'/'step-26' to continue the file's sequence, or use a namespaced tag like 'task-1181-step-1' so provenance is obvious.\n\n2. Unused 'profile' placeholder arg: both tests pass a 'profile' named arg (lines 255, 347) that is never read by the Extrude/Revolve compile paths (lib.rs:3633-3652 and 3653-3677 only read 'distance' / 'ox..angle'). This mirrors the existing zero_extrude_distance / revolve_zero_angle pattern, but the inline comment 'placeholder expr' under-explains why an unused arg is present. Add a one-line comment at the top of each args vec, e.g. `// 'profile' is an ignored placeholder — Extrude/Revolve compile paths only read 'distance'/'angle'.`\n\n3. Hardcoded SI constant: line 300 compares dist_si against the literal `-0.01` next to the literal `mm(-10.0)`. A refactor of the `mm` helper (unit-factor change) would silently desync literal and assertion. Replace with `let expected_si = mm(-10.0).as_f64().unwrap();` then `(dist_si - expected_si).abs() < 1e-9`.\n\nAll three are non-blocking review suggestions from Task 1181's reviewer_comprehensive pass (esc-1181-108).\n\nmemory_hints: search \"Task 1181 negative extrude revolve test coverage\" for task context.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:37.654Z",
+        "updatedAt": "2026-04-09T22:22:07.422Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -33137,7 +33137,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:37.654Z",
+      "lastModified": "2026-04-11T07:19:38.412Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
