@@ -11139,7 +11139,7 @@
         "description": "Address test quality suggestions from task #326 review:\n1. Add negative tests: compile without prelude should fail for Elastic/Strong (stdlib_loader_tests.rs)\n2. Strengthen weak assertions: eval_with_prelude_trait_conformance should check specific params not just !is_empty (stdlib_prelude_tests.rs:56-83)\n3. Verify constraint content, not just !is_empty (stdlib_loader_tests.rs:153-160)\n4. Add test: prelude definitions excluded from output CompiledModule\n5. Add HardnessScale enum coverage (stdlib_loader_tests.rs:44-72)\n6. Add test for prelude function-merging path (currently untested — no stdlib functions yet)\n7. Add collect_errors() helper to reify-test-support and use in new test files\n8. Extract shared test constants (trait name list, Steel source string)\n\nFiles: crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs, crates/reify-test-support/src/lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11156,7 +11156,7 @@
             "crates/reify-test-support"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:21:12.542Z"
       },
       {
         "id": "515",
@@ -33666,7 +33666,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:11.783Z",
+      "lastModified": "2026-04-11T07:21:12.543Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
