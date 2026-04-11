@@ -687,7 +687,10 @@ fn make_sample_point_panics_when_point_arity_exceeds_three() {
 /// Returns the operator-result `Value` (a `Value::Field` for valid inputs).
 fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
     let n: usize = match &domain {
-        Type::Point { n, .. } => *n,
+        Type::Point { n, .. } => {
+            assert!(*n <= 3, "eval_field_op: Point domain only supports up to 3 dimensions, got {n}");
+            *n
+        }
         _ => 1,
     };
 
@@ -735,6 +738,13 @@ fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
 
     let values = ValueMap::new();
     eval_expr(&op_expr, &EvalContext::simple(&values))
+}
+
+#[test]
+#[should_panic(expected = "eval_field_op: Point domain only supports")]
+fn eval_field_op_panics_when_point_arity_exceeds_three() {
+    let domain = Type::Point { n: 4, quantity: Box::new(Type::Real) };
+    let _ = eval_field_op("gradient", domain, Type::Real);
 }
 
 /// Sample a field value at the standard test point for its domain type.
