@@ -138,6 +138,7 @@ fn run_tests_propagates_violation_diagnostics() {
     let compiled = parse_and_compile(source);
     let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
     assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "TestA");
     assert_eq!(results[0].status, reify_eval::TestStatus::Fail);
     assert!(
         results[0]
@@ -151,8 +152,8 @@ fn run_tests_propagates_violation_diagnostics() {
         results[0]
             .diagnostics
             .iter()
-            .any(|d| d.severity == Severity::Error && d.message.contains("Positive[0]")),
-        "expected at least one Error diagnostic with message containing 'Positive[0]', got: {:?}",
+            .any(|d| d.severity == Severity::Error && d.message.contains("Positive[0]") && (d.message.contains("violated") && d.message.contains("constraint"))),
+        "expected at least one Error diagnostic with message containing 'Positive[0]', 'violated', and 'constraint', got: {:?}",
         results[0].diagnostics
     );
 }
