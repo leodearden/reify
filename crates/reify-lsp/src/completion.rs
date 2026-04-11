@@ -754,6 +754,8 @@ mod tests {
         Url::parse("file:///test.ri").unwrap()
     }
 
+    const GUARDED_GROUP_SOURCE: &str = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n}";
+
     // --- step-9: completion tests ---
 
     #[test]
@@ -1485,68 +1487,79 @@ mod tests {
         );
     }
 
-    /// Spot-check that the four (source, position) pairs referenced by the 8 stale
-    /// `TODO(task-2)` comments all resolve to the contexts those comments claimed.
-    /// This is a permanent regression guard: any future change to `determine_context`
-    /// that silently breaks these mappings will be caught here.
+    /// Spot-check that one representative (source, position) pair per `CursorContext`
+    /// variant resolves to the expected context. Intentionally covers every variant of
+    /// the enum — including `DotAccess`, `TypePosition`, and `TopLevel` which also have
+    /// dedicated per-variant `determine_context_*` tests — so that this table acts as a
+    /// single compact regression guard for all branches simultaneously. The overlap with
+    /// per-variant tests is deliberate: it ensures no future refactor silently breaks one
+    /// branch without this table catching it.
     #[test]
-    fn stale_todo_positions_map_to_expected_contexts() {
+    fn determine_context_at_sampled_positions() {
+        let check = |source: &str,
+                     pos: Position,
+                     label: &str,
+                     matcher: fn(&CursorContext) -> bool| {
+            let ctx = AnalysisContext::new(source, &test_uri());
+            let result = determine_context(source, pos, &ctx);
+            assert!(matcher(&result), "expected {} @ {:?}, got {:?}", label, pos, result);
+        };
         // (a) bracket_source() @ Position(1,0) → StructureBody
-        {
-            let source = reify_test_support::bracket_source();
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, Position::new(1, 0), &ctx);
-            assert!(
-                matches!(result, CursorContext::StructureBody { .. }),
-                "expected StructureBody for bracket_source @ Position(1,0), got {:?}",
-                result
-            );
-        }
+        check(
+            reify_test_support::bracket_source(),
+            Position::new(1, 0),
+            "bracket_source/StructureBody",
+            |r| matches!(r, CursorContext::StructureBody { .. }),
+        );
         // (b) bracket_source() @ Position(7,17) → Expression
-        {
-            let source = reify_test_support::bracket_source();
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, Position::new(7, 17), &ctx);
-            assert!(
-                matches!(result, CursorContext::Expression { .. }),
-                "expected Expression for bracket_source @ Position(7,17), got {:?}",
-                result
-            );
-        }
+        check(
+            reify_test_support::bracket_source(),
+            Position::new(7, 17),
+            "bracket_source/Expression",
+            |r| matches!(r, CursorContext::Expression { .. }),
+        );
         // (c) occurrence def Joint source @ Position(1,0) → StructureBody
-        {
-            let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, Position::new(1, 0), &ctx);
-            assert!(
-                matches!(result, CursorContext::StructureBody { .. }),
-                "expected StructureBody for Joint occurrence @ Position(1,0), got {:?}",
-                result
-            );
-        }
+        check(
+            "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}",
+            Position::new(1, 0),
+            "Joint occurrence/StructureBody",
+            |r| matches!(r, CursorContext::StructureBody { .. }),
+        );
         // (d) guarded-group source @ Position(1,0) → StructureBody
-        {
-            let source = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n}";
-            let ctx = AnalysisContext::new(source, &test_uri());
-            let result = determine_context(source, Position::new(1, 0), &ctx);
-            assert!(
-                matches!(result, CursorContext::StructureBody { .. }),
-                "expected StructureBody for guarded-group source @ Position(1,0), got {:?}",
-                result
-            );
-        }
+        check(
+            GUARDED_GROUP_SOURCE,
+            Position::new(1, 0),
+            "guarded-group/StructureBody",
+            |r| matches!(r, CursorContext::StructureBody { .. }),
+        );
+        // (e) dot-access source @ Position(3,18) → DotAccess
+        check(
+            "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}",
+            Position::new(3, 18),
+            "dot-access/DotAccess",
+            |r| matches!(r, CursorContext::DotAccess),
+        );
+        // (f) type-position source @ Position(1,13) → TypePosition
+        check(
+            "structure Foo {\n    param x: \n}",
+            Position::new(1, 13),
+            "type-position/TypePosition",
+            |r| matches!(r, CursorContext::TypePosition),
+        );
+        // (g) top-level source @ Position(3,0) → TopLevel
+        check(
+            "structure Foo {\n    param x: Scalar = 1mm\n}\n",
+            Position::new(3, 0),
+            "top-level/TopLevel",
+            |r| matches!(r, CursorContext::TopLevel),
+        );
     }
 
     // --- guarded-group completion tests ---
 
     #[test]
     fn completions_include_guarded_group_members() {
-        let source = r#"structure S {
-    param cond : Bool = true
-    where cond {
-        param guarded_x : Scalar = 5mm
-    }
-}"#;
+        let source = GUARDED_GROUP_SOURCE;
         let items = compute_completions(source, &test_uri(), Position::new(1, 0));
         let variables: Vec<_> = items
             .iter()
