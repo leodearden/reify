@@ -38,6 +38,9 @@ assert_sync_ref_exists() {
     # produce a misleading "fn does not exist" diagnostic from assert_sync_ref_exists
     # even though the function is present.  Upgrade this regex the first time a
     # concrete case arises (see task-1413 for rationale).
+    # Qualifier order in the regex below mirrors canonical Rust grammar:
+    #   const → async → unsafe → fn
+    # (Rust Reference FunctionQualifiers: `const? async? ItemSafety?`).
     assert \
         "fn ${ref_fn} exists in ${tgt_crate} (as referenced by SYNC in ${src_crate})" \
         grep -qE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?fn[[:space:]]+'"${ref_fn}"'[[:space:](<]' "$tgt_file"
