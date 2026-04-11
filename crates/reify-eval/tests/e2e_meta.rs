@@ -350,7 +350,22 @@ fn e2e_meta_access_missing_key() {
         }
     "#;
 
-    parse_compile_expect_err(source, "meta");
+    let compiled = parse_compile_expect_err(source, "meta block has no key");
+    // Mutual-exclusion guard: the missing-key path must NOT produce the
+    // no-meta-block error.  If both appear (or the wrong one appears), a future
+    // compiler regression would otherwise stay hidden.
+    let counter_phrase = "entity has no meta block";
+    let false_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains(counter_phrase))
+        .collect();
+    assert!(
+        false_errors.is_empty(),
+        "unexpected counter-path error ({:?}) in missing-key test: {:?}",
+        counter_phrase,
+        false_errors
+    );
 }
 
 /// Regression guard (suggestion 9): accessing `meta.description` on a structure
