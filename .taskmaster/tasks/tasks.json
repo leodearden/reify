@@ -18971,11 +18971,11 @@
         "description": "Two improvements: (1) lib.rs:3799-3803 — Before inserting a prelude def into constraint_def_registry, check if the name is already present from a different module; if so, emit a warning-level diagnostic (e.g. 'constraint def X from module b shadows import from module a') so the ambiguity is visible rather than silently discarding the first definition. (2) module_dag.rs:167 — Add a debug_assert or explanatory comment before the preludes collection pass making explicit that all imports were compiled successfully above (via early-return ?) and are therefore guaranteed to be present in self.modules.\n\nmemory_hints: search \"constraint def registry name collision shadow\" for context",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:22:43.633Z",
+        "updatedAt": "2026-04-11T07:19:43.873Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -19209,11 +19209,11 @@
         "description": "In crates/reify-expr/src/lib.rs, add sanitize_scalar_neg_inf_returns_undef (Value::Scalar { si_value: f64::NEG_INFINITY, dimension: DimensionVector::LENGTH }) and at least one sanitize_complex_neg_inf_* test (e.g. re: f64::NEG_INFINITY, im: 0.0), asserting each returns is_undef(). This matches the existing sanitize_real_neg_inf_returns_undef pattern and ensures is_infinite() sign-agnosticism is verified for all three numeric variants.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:23:29.901Z",
+        "updatedAt": "2026-04-11T07:19:43.917Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -19230,11 +19230,11 @@
         "description": "In crates/reify-expr/src/lib.rs, add two new Complex sanitize tests to exercise the two unverified guard sub-clauses: (1) sanitize_complex_nan_im_returns_undef: Value::Complex { re: 1.0, im: f64::NAN, dimension: DimensionVector::DIMENSIONLESS } → is_undef(); (2) sanitize_complex_inf_re_returns_undef: Value::Complex { re: f64::INFINITY, im: 1.0, dimension: DimensionVector::DIMENSIONLESS } → is_undef(). All four clauses in `re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite()` will then be independently exercised.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:22:05.149Z",
+        "updatedAt": "2026-04-11T07:19:43.960Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -19251,11 +19251,11 @@
         "description": "In crates/reify-expr/src/lib.rs, extend the passthrough tests to cover: (1) sanitize_value(Value::Undef) → is_undef() (idempotency invariant — Undef is what the function produces for bad inputs and should survive a second call); (2) sanitize_value(Value::Bool(true)) → Value::Bool(true) (second representative for the catch-all arm). These can be added to the existing sanitize_non_numeric_passthrough test or as separate named tests.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:21:09.399Z",
+        "updatedAt": "2026-04-11T07:19:44.000Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -19272,11 +19272,11 @@
         "description": "Two related quality fixes in crates/reify-expr/src/lib.rs: (1) Replace (v - 42.0).abs() < f64::EPSILON comparisons in passthrough tests with assert_eq!(v, 42.0) — the values are bit-identical to inputs so epsilon tolerance is misleading and obscures the identity invariant. (2) Extend the SYNC comment at line 830 to read: `// SYNC: mirror of reify-stdlib::sanitize_value — keep function AND tests in sync` so future contributors know test parity is also required when changing the function.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:25:02.583Z",
+        "updatedAt": "2026-04-11T07:19:44.044Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -19363,11 +19363,11 @@
         "description": "The doc comment on reify-expr's `sanitize_value` (line ~827) still says \"mirrors the private `sanitize_value` in `reify-stdlib`\" and the SYNC marker (line ~830) says \"keep in sync\" without qualification. After task 860 removed the `Value::Complex` arm, the two copies intentionally diverge. Update:\n\n1. Doc comment: Change to say this is a *narrower* variant that omits the Complex arm because all callers pass `Value::from_component` results (Real/Scalar only).\n2. SYNC marker in reify-expr: Change to \"intentional partial mirror — Complex arm omitted; if Real/Scalar arms change, mirror those changes.\"\n3. SYNC marker in reify-stdlib: Add reciprocal note that reify-expr's copy intentionally omits the Complex arm.\n\nMemory hints: search \"task 859 SYNC sanitize_value\", search \"sanitize_value divergence reify-expr reify-stdlib\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:30:39.835Z",
+        "updatedAt": "2026-04-11T07:19:44.087Z",
         "metadata": {
           "modules": [
             "crates/reify-expr",
@@ -19386,11 +19386,11 @@
         "description": "After task 860 removed the `Value::Complex` arm from reify-expr's `sanitize_value`, the `_ => v` catchall now silently passes Complex values through (including ones with NaN/Inf components). The test suite covers Real and Scalar arms but has no test for the catchall. Per the project's 'silent defaults are bad' convention, add test(s) to pin this intentional behavior:\n\n1. A test that `sanitize_value(Value::Complex { re: NaN, im: 0.0, ... })` returns the Complex unchanged (documenting the passthrough is intentional, not forgotten).\n2. Optionally a test with a finite Complex to confirm general passthrough.\n\nThis documents the semantic change from the removed arm (previously NaN Complex → Undef, now NaN Complex → passthrough).\n\nMemory hints: search \"sanitize_value tests reify-expr task 860\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:31:04.664Z",
+        "updatedAt": "2026-04-11T07:19:44.129Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -20031,11 +20031,11 @@
         "description": "In crates/reify-compiler/src/lib.rs: (1) Extract resolve_enum_type(name, enum_defs) helper to replace 4+ inline occurrences. (2) Build HashSet of enum names before filter_map loop in check_trait_conformance. (3) Extract local closure for duplicated 22-line Param/Let blocks. (4) Add assertion when type_args is non-empty on enum match.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:05:46.993Z",
+        "updatedAt": "2026-04-11T07:19:44.173Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -20053,11 +20053,11 @@
         "description": "In tolerancing_tests.rs: assert material_condition resolved to Type::Enum not Type::Real in gdt_structure_conforms test. In boundary1_consumer.rs: add focused test for compile_entity enum param resolution. Add test with wrong enum name to confirm error diagnostic.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:03:35.911Z",
+        "updatedAt": "2026-04-11T07:19:44.218Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -33137,7 +33137,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:43.831Z",
+      "lastModified": "2026-04-11T07:19:44.218Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
