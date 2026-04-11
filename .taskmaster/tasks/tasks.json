@@ -33061,10 +33061,11 @@
         "description": "Two meta-assertions added to tests/infra/test_portable_timeout.sh on task 1597 silently pass under partial regression or on macOS BSD grep. (1) Assertion at ~line 764 uses `grep -c 'exit 2' -ge 2`, but the grep command line self-matches giving a baseline of 3. Reverting one of the two sanity-check `exit 2` lines to `exit 1` leaves count=2 and the assertion still passes. Fix: replace with two independent `grep -qF` assertions, one per sanity-check line (structural, not count-based). (2) Negative assertion at ~line 755 uses `grep -qE '^\\s+# Uses the grep -cF <<< idiom'`. `\\s` is a GNU grep / PCRE extension; BSD ERE (macOS default) does not interpret it as whitespace class, so on macOS the pattern never matches and the negative assertion trivially passes even if the stale cross-reference is reintroduced. Fix: replace `^\\s+` with `^[[:space:]]+` to match the convention used elsewhere in the file.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-11T06:56:18.625Z"
       },
       {
         "id": "1626",
@@ -33080,7 +33081,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T06:56:17.892Z",
+      "lastModified": "2026-04-11T06:56:18.625Z",
       "taskCount": 1626,
       "completedCount": 1273,
       "tags": [
