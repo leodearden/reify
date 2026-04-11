@@ -21776,7 +21776,7 @@
         "description": "Code quality improvements in crates/reify-expr/src/lib.rs around the compute_numerical_gradient_at_point hot loop (lines ~786-848 from task 1006 diff):\n\n1. Rename point_scratch → work_point throughout to match the work_ prefix convention (work_coords, work_args).\n2. Extract the 4-step take/push/apply/recover idiom shared by the f_plus and f_minus blocks into a local closure.\n3. Add a comment beside the take/recover block noting that apply_lambda still clones each arg internally (O(n) residual allocation).\n4. Add debug_assert_eq!(work_point.len(), n, ...) immediately after each recovery block.\n5. Add an inline comment that recovery must precede work_args.clear().\n6. Add a comment near each early-return Undef path noting that work_coords is owned and perturbed state is dropped.\n\nMemory hints: search for \"compute_numerical_gradient_at_point\" and \"task 1006 gradient hot loop\" for prior context. Source: task 1006 review suggestions [1], [2], [3], [5], [13], [14].",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1006"
         ],
@@ -21791,7 +21791,7 @@
             "crates/reify-expr/tests"
           ]
         },
-        "updatedAt": "2026-04-10T16:26:03.577Z"
+        "updatedAt": "2026-04-11T01:10:55.834Z"
       },
       {
         "id": "1016",
@@ -33010,7 +33010,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T01:10:55.154Z",
+      "lastModified": "2026-04-11T01:10:55.834Z",
       "taskCount": 1621,
       "completedCount": 1267,
       "tags": [
