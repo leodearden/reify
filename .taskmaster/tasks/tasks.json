@@ -7697,8 +7697,8 @@
       {
         "id": 371,
         "title": "Test support: deduplicate compile_module/parse_decls helpers across 10+ files",
-        "description": "compile_module helper is copy-pasted across 10+ test files in reify-compiler/tests/. parse_decls helper is similarly duplicated across 10+ test files in reify-syntax/tests/. Create shared test helpers — either tests/common.rs modules or add to reify-test-support crate — and update all test files to use the shared versions.\n\nMemory hints: search \"compile_module parse_decls test helper\", entities: reify-test-support, reify-compiler tests [Updated: 4/11/2026]",
-        "details": "<info added on 2026-04-11T07:27:45.713Z>\nThis task has been subsumed by task 401 (bundle consolidation 2026-04-11). No further action is required on this task.\n</info added on 2026-04-11T07:27:45.713Z>",
+        "description": "compile_module helper is copy-pasted across 10+ test files in reify-compiler/tests/. parse_decls helper is similarly duplicated across 10+ test files in reify-syntax/tests/. Create shared test helpers — either tests/common.rs modules or add to reify-test-support crate — and update all test files to use the shared versions.\n\nMemory hints: search \"compile_module parse_decls test helper\", entities: reify-test-support, reify-compiler tests",
+        "details": "",
         "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
@@ -21198,8 +21198,8 @@
       {
         "id": 979,
         "title": "Strengthen duplicate-template-name test assertions",
-        "description": "The duplicate_template_names_emits_diagnostic test in crates/reify-compiler/src/scc.rs (lines 351-367) has two gaps: (1) It filters by message substring 'duplicate' without asserting Severity::Error — a regression to warning would go undetected. (2) It doesn't verify that is_recursive is still computed correctly for the non-duplicate entries. Both assertions should be added.",
-        "details": "",
+        "description": "The duplicate_template_names_emits_diagnostic test in crates/reify-compiler/src/scc.rs (lines 351-367) has two gaps: (1) It filters by message substring 'duplicate' without asserting Severity::Error — a regression to warning would go undetected. (2) It doesn't verify that is_recursive is still computed correctly for the non-duplicate entries. Both assertions should be added. [Updated: 4/11/2026]",
+        "details": "<info added on 2026-04-11T07:27:52.567Z>\nThis task has been subsumed by Task 978 (bundle consolidation 2026-04-11).\n</info added on 2026-04-11T07:27:52.567Z>",
         "testStrategy": "",
         "status": "cancelled",
         "dependencies": [],
@@ -26608,12 +26608,13 @@
         "id": 1251,
         "title": "Return iterators and slim API surface of CompiledModule filter helpers",
         "description": "In `crates/reify-compiler/src/lib.rs` lines 178-199, change `test_templates`, `non_test_templates`, `test_constraint_defs`, and `non_test_constraint_defs` to return `impl Iterator<Item = &TopologyTemplate>` / `&ConstraintDef` instead of `Vec`. While doing so, evaluate whether the four methods can be replaced by two (`test_templates_iter`, `test_constraint_defs_iter`) and let callers negate with `.filter(|t| !t.is_test)` — eliminating the API-surface doubling identified in suggestion [1].",
+        "details": "",
+        "testStrategy": "",
         "status": "deferred",
         "dependencies": [],
         "priority": "medium",
-        "details": "",
-        "testStrategy": "",
         "subtasks": [],
+        "updatedAt": "2026-04-11T07:20:38.571Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -33184,11 +33185,11 @@
         "description": "Two local copies of `fn parse_and_compile` remain after task 1332's consolidation:\n- crates/reify-compiler/tests/unit_registry_tests.rs:14 — uses `ModulePath::single(\"unit_test\")`\n- crates/reify-compiler/tests/type_alias_compile_tests.rs:12 — uses `ModulePath::single(\"alias_test\")`\n\nreify-compiler already has `reify-test-support` as a dev-dependency (Cargo.toml:13), so the migration is just a use-site swap.\n\n**Important behavior difference:** The shared `reify_test_support::parse_and_compile` asserts zero error-severity diagnostics, but the local copies in these two files return the raw `CompiledModule` without filtering. The existing callers use a separate `errors_only(module)` helper to inspect diagnostics, and some tests intentionally compile source that produces errors (e.g., cycle detection, unknown aliases). Those tests must NOT use the asserting shared helper.\n\nRecommended approach:\n1. Find all call sites in each file.\n2. For tests that expect success, migrate to `reify_test_support::parse_and_compile`.\n3. For tests that expect errors, use `reify_test_support::parse_compile_expect_err(source, needle)` or keep a local `parse_no_assert` helper that just calls `reify_syntax::parse` + `compile` without the assert.\n4. Remove the local `parse_and_compile` fn once all call sites are migrated.\n5. Verify no test depends on the `\"unit_test\"` or `\"alias_test\"` module-path strings (grep those literals).\n\n**Priority:** low. Code-reuse / drift-prevention.\n\n**Source:** review of task 1332 (esc-1332-348, reviewer_comprehensive suggestion 4, code_reuse).",
         "details": "",
         "testStrategy": "",
-        "status": "cancelled",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:27:33.488Z",
+        "updatedAt": "2026-04-11T07:20:59.128Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -33293,11 +33294,11 @@
         "description": "Follow-up quality improvements from task 1332 review:\\n\\n1. **parse_or_panic DRY** (S2): Extract private `fn parse_or_panic(source) -> ParsedModule` from the three pipeline helpers in helpers.rs to remove the triplicated parse+assert prologue.\\n2. **Remaining copies** (S3): Two more copies of `parse_and_compile` remain in reify-compiler tests (type_alias_compile_tests.rs, unit_registry_tests.rs). Migrate them to reify_test_support::parse_and_compile. Verify no test relies on the custom ModulePath names.\\n3. **Test quality** (S4-S7): Strengthen helper unit tests — use non-geometry source in test_make_engine, use controlled needle in test_parse_compile_expect_err_needle_match, reduce stdlib-shape coupling in test_parse_and_compile_with_stdlib.\\n\\nSource: reviewer suggestions S2-S7 from task 1332 unblock.\\nFiles: crates/reify-test-support/src/helpers.rs, crates/reify-compiler/tests/type_alias_compile_tests.rs, crates/reify-compiler/tests/unit_registry_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "cancelled",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:27:35.594Z",
+        "updatedAt": "2026-04-11T07:21:01.367Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests",
@@ -33898,13 +33899,13 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:27:35.594Z",
+      "lastModified": "2026-04-11T07:27:30.128Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
         "master"
       ],
-      "created": "2026-04-11T07:27:36.644Z",
+      "created": "2026-04-11T07:27:31.363Z",
       "description": "Tasks for master context"
     }
   }
