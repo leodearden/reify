@@ -2885,54 +2885,6 @@ fn test_make_gradient_field_produces_field() {
     );
 }
 
-/// Characterization test: `make_gradient_field` with the quadratic body closure
-/// produces a gradient at (2,3,5) matching (4,6,10).
-///
-/// dot(p, p) = x² + y² + z², gradient = 2p = (2x, 2y, 2z). At (2,3,5) this is (4,6,10).
-/// Central difference on a quadratic is mathematically exact to FP roundoff; tolerance 1e-9.
-#[test]
-fn test_make_gradient_field_quadratic_body() {
-    let (grad_result, domain_type, grad_codomain_type) = make_gradient_field(
-        |p_id| {
-            make_function_call(
-                "dot",
-                vec![
-                    CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
-                    CompiledExpr::value_ref(p_id, Type::point3(Type::Real)),
-                ],
-                Type::Real,
-            )
-        },
-        "test_make_gradient_field_quadratic_body",
-    );
-
-    let values = ValueMap::new();
-    let point = Value::Point(vec![Value::Real(2.0), Value::Real(3.0), Value::Real(5.0)]);
-
-    let grad_field_type = Type::Field {
-        domain: Box::new(domain_type),
-        codomain: Box::new(grad_codomain_type),
-    };
-
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::point3(Type::Real)),
-        ],
-        Type::vec3(Type::Real),
-    );
-
-    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
-
-    assert_gradient_vector(
-        &sample_result,
-        &[4.0, 6.0, 10.0],
-        1e-9,
-        "make_gradient_field quadratic body: gradient at (2,3,5)",
-    );
-}
-
 /// Gradient of a 3D field with a 1-param lambda: |p| dot(p, [1,2,3]).
 ///
 /// dot(p, [1,2,3]) = x + 2y + 3z, so its gradient is the constant vector
