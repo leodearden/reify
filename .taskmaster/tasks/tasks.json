@@ -7972,11 +7972,11 @@
         "description": "Review findings from task 189 (diamond trait hierarchy) that need follow-up:\n\nTESTS:\n1. Add diamond_type_conflict_produces_error test — two traits declare same param name with different types merged via diamond, assert exactly 1 conflicting-trait-requirements diagnostic. Exercises seen_names conflict path in collect_all_requirements (lib.rs:4321-4330).\n2. Add dedup count assertions to diamond_members_at_every_level — verify param d appears exactly once in template.value_cells.\n3. Add dedup count assertions to diamond_deep_five_level — verify x and y appear once each in value_cells.\n4. Add cell count assertion to diamond_single_bound_satisfied — verify x appears exactly once.\n5. Use errors[0].message instead of format!(\"{:?}\", errors[0]) in diamond_missing_member_single_error — Debug format is not stable API.\n6. Use more specific error message match than contains(\"x\") — match on \"missing required member 'x'\" or similar.\n\nCODE QUALITY:\n7. Add comment above unnamed defaults branch (lib.rs:4341) explaining dedup is via visited set, not seen_defaults.\n\nMemory hints: search \"diamond trait conformance collect_all_requirements seen_names\", entities: collect_all_requirements, diamond_missing_member_single_error",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:32:09.950Z",
+        "updatedAt": "2026-04-11T07:19:55.881Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -7993,11 +7993,11 @@
         "description": "Review findings from task 190 (trait merge let-binding dedup):\n\nCORRECTNESS:\n1. After seen_let_hashes insert, use continue to skip seen_defaults path for Let bindings (lib.rs:4370-4376) — currently Let defaults fall through to seen_defaults with Type::Real sentinel, causing misleading error messages if a param default with the same name exists later.\n2. Guard seen_let_hashes insert on !structure_members.contains_key (lib.rs:4367) — align hash-recording with error-suppression semantics.\n3. Track seen_let_conflict_names to emit only 1 diagnostic per conflicting name instead of N-1 (lib.rs:4351-4365).\n\nCODE QUALITY:\n4. Introduce MergeContext struct to bundle the 4 mutable tracking maps (visited, seen_names, seen_defaults, seen_let_hashes) — collect_all_requirements has 12 parameters.\n5. Rename parse_compile_check to parse_and_compile in trait_merge_eval.rs — name implies Engine::check is called but it only parses+compiles.\n6. Fix stale \"FAIL\" comment in let_conflict_different_expr (trait_merge_tests.rs:361).\n\nTESTS:\n7. Add multi_trait_constraints_partial_violation eval test — x=150mm satisfies one bound but violates another.\n8. Use errors[0].message instead of format!(\"{:?}\", errors) across 5 test functions.\n9. Assert no eval diagnostics before accessing result.values in let_from_trait_evaluated.\n10. Add comment on implicit hash assumption in let_merge_same_expr.\n\nMemory hints: search \"collect_all_requirements seen_let_hashes trait merge\", entities: collect_all_requirements, seen_defaults",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T13:55:40.289Z",
+        "updatedAt": "2026-04-11T07:19:55.983Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/lib.rs",
@@ -8017,11 +8017,11 @@
         "description": "Harden determinacy predicate tests in crates/reify-compiler/tests/determinacy_compile_tests.rs and crates/reify-expr with the following improvements:\n\n1. **Weak assertions → expect()**: In error_wrong_arity_zero_args, error_non_identifier_argument, and error_unresolved_name, replace nested `if let` chains with `.expect()` calls so cell/expr existence is asserted unconditionally (not silently skipped).\n\n2. **Missing fallback assertion**: error_wrong_arity_two_args should assert fallback cell 'd' is NOT a DeterminacyPredicate (like the zero-args test does).\n\n3. **Incomplete hash coverage**: content_hash_stability_and_uniqueness only checks Determined vs Undetermined. Add assertions for Constrained and PartiallyDetermined to verify all 4 kinds produce distinct hashes (pairwise).\n\n4. **Untested remap_entity**: Add test: construct DeterminacyPredicate with entity 'A', call remap_entity('A', 'B'), assert cell.entity is 'B'. Also verify entity 'other' is NOT remapped.\n\n5. **Untested eval_expr branch**: Add test in crates/reify-expr that calls eval_expr with a DeterminacyPredicate node and asserts Value::Undef.\n\n6. **Fragile error indexing**: Replace `errors[0].message` assertions with `errors.iter().any(|e| e.message.contains(...))` to tolerate cascading diagnostics.\n\n7. **Missing let-bound cell test**: Add test with `let y : Scalar = x * 2` then `determined(y)` to cover non-param cells.\n\n8. **Missing compound expression test**: Add test with DeterminacyPredicate in a compound expression (e.g., `determined(x) && undetermined(y)`) to verify correct tree structure.\n\nMemory hints: search \"DeterminacyPredicateKind\" and \"determinacy_compile_tests\", entity \"determinacy_predicate\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:34:56.285Z",
+        "updatedAt": "2026-04-11T07:19:56.181Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8043,7 +8043,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "pending",
+        "status": "deferred",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -8056,7 +8056,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:56.240Z"
       },
       {
         "id": "388",
@@ -29132,11 +29132,11 @@
         "description": "No test covers transitive propagation of pub units: if module A declares 'pub unit mil', and module B has 'pub import a', does module C (which imports B) see 'mil'? Under the current implementation it does NOT — B's compiled_units only stores locally-declared units, so the prelude-seeding loop in lib.rs:237-251 finds nothing in B and mil is not re-exported. This matches the current treatment of constraint_defs (one-hop only), but it's undocumented and untested for units — a cross-module integration gap for task 209's scope. Prefer option (a): add a test that pins the current one-hop limitation (A→B→C where C cannot see mil) so any future fix is deliberate. Option (b) would extend scope: propagate pub-seeded prelude units into the current module's compiled_units when is_pub so they re-export transitively, plus a positive A→B→C test. Go with option (a) for this task; option (b) is a separate design decision. Files: crates/reify-compiler/tests/user_defined_unit_tests.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:55.923Z",
+        "updatedAt": "2026-04-09T22:26:43.121Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -33191,7 +33191,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:55.927Z",
+      "lastModified": "2026-04-11T07:19:56.240Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
