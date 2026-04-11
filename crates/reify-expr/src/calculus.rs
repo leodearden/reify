@@ -859,6 +859,17 @@ pub(crate) fn compute_numerical_gradient_at_point(
         // Guard with is_finite() — as_f64() returns Some(NaN) for
         // Value::Real(NaN) and Some(Inf) for Value::Real(Inf), so
         // the None check alone doesn't catch degenerate values.
+        //
+        // Ownership note: the three early returns below (fp non-finite, fm
+        // non-finite, deriv non-finite) are all safe to issue mid-loop.
+        // `work_coords` is a locally-owned Vec<f64> (taken from `coords` at
+        // the top of this function) and `work_point` is a locally-owned
+        // Vec<Value> (allocated by `init_work_buffers`). Both are dropped
+        // with the function frame on any early return, so no perturbed state
+        // can leak to the caller regardless of how far into the axis loop we
+        // are when the non-finite value is detected. The coord[i] restore
+        // above this block has already executed, but that only matters for
+        // the happy path; early return discards everything cleanly.
         let fp = match f_plus.as_f64() {
             Some(v) if v.is_finite() => v,
             _ => return Value::Undef,
