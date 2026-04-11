@@ -584,6 +584,16 @@ fn init_work_buffers(
 ///
 /// After the call (when `single_point_param` is true), `work_point.len() == n`.
 /// A `debug_assert_eq!` enforces this in debug builds.
+///
+/// # Performance
+///
+/// `std::mem::take` transfers ownership of `work_point`'s inner Vec into
+/// `work_args` without any allocation, avoiding the per-axis `.collect()`
+/// that would otherwise rebuild the inner Vec from scratch each call.
+/// However, `apply_lambda` still clones the Vec once per evaluation when
+/// populating its `eval_map` via `eval_map.insert(id.clone(), arg.clone())`,
+/// so the savings are roughly halving inner-Vec allocations rather than
+/// reducing to O(1) overall.
 #[allow(clippy::too_many_arguments)]
 fn eval_perturbed_point<F: Fn(f64) -> Value>(
     lambda: &Value,
@@ -605,6 +615,9 @@ fn eval_perturbed_point<F: Fn(f64) -> Value>(
     work_args.clear();
     if single_point_param {
         // Update only the perturbed element; transfer ownership via take.
+        // Note: apply_lambda still clones the Vec once per eval when populating
+        // its eval_map, so the savings are roughly halving inner-Vec allocations,
+        // not reducing to O(1) overall.
         work_point[i] = make_arg(work_coords[i]);
         work_args.push(Value::Point(std::mem::take(work_point)));
     } else {
@@ -614,6 +627,15 @@ fn eval_perturbed_point<F: Fn(f64) -> Value>(
     // Recover work_point from work_args (single_point_param only).
     // apply_lambda borrows &[Value] and cannot mutate work_args, so pop() returns
     // exactly the Value::Point we pushed; any other outcome is a programming error.
+    //
+    // Structural precondition: this recovery MUST complete before the next
+    // `work_args.clear()` executes (i.e., at the top of the next call to this
+    // function). If a future refactor ever called `work_args.clear()` after the
+    // `std::mem::take` push but before this pop, the `Value::Point` (and the
+    // inner Vec it holds) would be dropped by `clear()`, destroying `work_point`
+    // state and causing the next axis iteration to panic on `work_point[i] = …`
+    // (empty index). The current layout — clear at the top, push/take, apply,
+    // pop/restore — preserves this invariant.
     if single_point_param {
         match work_args.pop() {
             Some(Value::Point(inner)) => *work_point = inner,
@@ -837,6 +859,17 @@ pub(crate) fn compute_numerical_gradient_at_point(
         // Guard with is_finite() — as_f64() returns Some(NaN) for
         // Value::Real(NaN) and Some(Inf) for Value::Real(Inf), so
         // the None check alone doesn't catch degenerate values.
+        //
+        // Ownership note: the three early returns below (fp non-finite, fm
+        // non-finite, deriv non-finite) are all safe to issue mid-loop.
+        // `work_coords` is a locally-owned Vec<f64> (taken from `coords` at
+        // the top of this function) and `work_point` is a locally-owned
+        // Vec<Value> (allocated by `init_work_buffers`). Both are dropped
+        // with the function frame on any early return, so no perturbed state
+        // can leak to the caller regardless of how far into the axis loop we
+        // are when the non-finite value is detected. The coord[i] restore
+        // above this block has already executed, but that only matters for
+        // the happy path; early return discards everything cleanly.
         let fp = match f_plus.as_f64() {
             Some(v) if v.is_finite() => v,
             _ => return Value::Undef,
