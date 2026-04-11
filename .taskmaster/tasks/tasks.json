@@ -29752,7 +29752,7 @@
         "description": "Two test precision fixes in crates/reify-eval/tests/test_runner.rs: (1) Line 166: re-add a weak wording anchor to the violation diagnostic check (e.g. message contains \"violated\" or \"constraint\") so the test remains specific to constraint-violation diagnostics. (2) Line 158: restore entity identity assertion (e.id.entity == \"TestA\" or assert_eq!(results[0].name, \"TestA\")) to match the stricter style used by sibling tests in the same file.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -29763,7 +29763,8 @@
           "modules": [
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-11T07:20:12.350Z"
       },
       {
         "id": "1425",
@@ -33294,7 +33295,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:20:11.780Z",
+      "lastModified": "2026-04-11T07:20:12.350Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
