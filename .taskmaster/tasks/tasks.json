@@ -8017,11 +8017,11 @@
         "description": "Harden determinacy predicate tests in crates/reify-compiler/tests/determinacy_compile_tests.rs and crates/reify-expr with the following improvements:\n\n1. **Weak assertions → expect()**: In error_wrong_arity_zero_args, error_non_identifier_argument, and error_unresolved_name, replace nested `if let` chains with `.expect()` calls so cell/expr existence is asserted unconditionally (not silently skipped).\n\n2. **Missing fallback assertion**: error_wrong_arity_two_args should assert fallback cell 'd' is NOT a DeterminacyPredicate (like the zero-args test does).\n\n3. **Incomplete hash coverage**: content_hash_stability_and_uniqueness only checks Determined vs Undetermined. Add assertions for Constrained and PartiallyDetermined to verify all 4 kinds produce distinct hashes (pairwise).\n\n4. **Untested remap_entity**: Add test: construct DeterminacyPredicate with entity 'A', call remap_entity('A', 'B'), assert cell.entity is 'B'. Also verify entity 'other' is NOT remapped.\n\n5. **Untested eval_expr branch**: Add test in crates/reify-expr that calls eval_expr with a DeterminacyPredicate node and asserts Value::Undef.\n\n6. **Fragile error indexing**: Replace `errors[0].message` assertions with `errors.iter().any(|e| e.message.contains(...))` to tolerate cascading diagnostics.\n\n7. **Missing let-bound cell test**: Add test with `let y : Scalar = x * 2` then `determined(y)` to cover non-param cells.\n\n8. **Missing compound expression test**: Add test with DeterminacyPredicate in a compound expression (e.g., `determined(x) && undetermined(y)`) to verify correct tree structure.\n\nMemory hints: search \"DeterminacyPredicateKind\" and \"determinacy_compile_tests\", entity \"determinacy_predicate\"",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:56.181Z",
+        "updatedAt": "2026-03-26T02:34:56.285Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8043,7 +8043,7 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "deferred",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -8056,7 +8056,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:19:56.240Z"
+        "updatedAt": "2026-04-10T00:00:00.000Z"
       },
       {
         "id": "388",
@@ -22767,7 +22767,7 @@
         "description": "Improve test coverage and eliminate duplication in assert_orientation_approx! tests in crates/reify-stdlib/src/lib.rs.",
         "details": "1. **Consolidate Diagnostic Tests:** Replace the duplicated tests `orient_identity_per_component_diagnostic`, `orient_per_component_diagnostic_x`, `_y`, `_z` with a single table-driven test or a helper closure. This should iterate over components `[('w:', factory_w), ('x:', factory_x), ...]` and use `catch_unwind` to handle each case. Aim for a concise implementation of about 20-30 lines.\n\n2. **Explicit-Tolerance Coverage:** Add tests for the explicit-tolerance arm of `assert_orientation_approx!`. Include a positive test case that fails at the default tolerance but passes with a looser tolerance (e.g., `tol = 1e-2`), and a negative test case that panics with a tighter tolerance (e.g., `tol = 1e-6`).\n\n3. **Robustness with Non-Trivial Quaternion:** Introduce a test using a fully-populated quaternion `(0.5, 0.5, 0.5, 0.5)` and its negation, ensuring they pass with `sign_insensitive = 1e-10`. This ensures comprehensive coverage of all comparison lines.",
         "testStrategy": "Run `cargo test -p reify-stdlib --lib orient` to ensure all existing tests pass and new tests fail if the explicit-tolerance arm or any sign_insensitive comparisons are broken. Verify that the consolidated diagnostic tests execute correctly and cover all components.",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [
           "955"
         ],
@@ -22782,7 +22782,7 @@
             "crates/reify-stdlib"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-11T07:19:56.203Z"
       },
       {
         "id": "1063",
@@ -33191,7 +33191,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:19:56.240Z",
+      "lastModified": "2026-04-11T07:19:56.220Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
