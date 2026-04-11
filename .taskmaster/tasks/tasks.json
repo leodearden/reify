@@ -12204,7 +12204,13 @@
             "crates/reify-compiler/tests",
             "crates/reify-eval/tests",
             "crates/reify-test-support"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract compile_with_stdlib test helper and fix fragile couplings"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:21:30.806Z"
       },
@@ -28869,13 +28875,13 @@
         "description": "Follow-up polish for `crates/reify-eval/tests/e2e_meta.rs` from review of task 1084. Four small, related improvements — do them together to minimize churn on the file.\n\n1. **Add cardinality guard to `e2e_meta_access_on_occurrence`** (~lines 192-205). The `compiled.templates.iter().find(|t| t.name == \"Welding\")` lookup is robust to extra templates being emitted, but the previous code's implicit `templates[0]` check caught duplicate emissions. Add an explicit `assert_eq!(compiled.templates.len(), 1, \"expected exactly one template for single occurrence def\")` before the find to restore that coverage. Source: reviewer_comprehensive suggestion on esc-1084-44.\n\n2. **Add matching cardinality guard to `e2e_meta_access_let_binding`** (~lines 88-101). Same pattern as #1 but for the Widget Structure sanity check. `assert_eq!(compiled.templates.len(), 1)` before the `find(|t| t.name == \"Widget\")`. Source: same review.\n\n3. **Drop vestigial `_part` binding in `e2e_meta_sub_structure_child_meta`** (~lines 248-252). The `let _part = compiled.templates.iter().find(...).expect(...)` binds a value that is never read; the sole purpose is the `.expect()` side effect. Drop the binding entirely: `compiled.templates.iter().find(|t| t.name == \"Part\").expect(\"Part template should be present in compiled output\");`. Source: same review (code_style).\n\n4. **Extract `find_template` helper**. The `compiled.templates.iter().find(|t| t.name == X).expect(Y)` pattern is repeated four times in the file (Widget, Welding, Part, Assembly). Add a helper alongside the existing `parse_and_compile`, `make_engine`, `parse_compile_expect_err` helpers:\n\n   ```rust\n   /// Look up a compiled template by name, panicking with a helpful message if absent.\n   fn find_template<'a>(\n       compiled: &'a reify_compiler::CompiledModule,\n       name: &str,\n   ) -> &'a reify_compiler::CompiledTemplate {\n       compiled\n           .templates\n           .iter()\n           .find(|t| t.name == name)\n           .unwrap_or_else(|| panic!(\"{} template should be present in compiled output\", name))\n   }\n   ```\n\n   Use it in all four call sites. Source: same review (code_reuse).\n\nVerification: run `cargo test -p reify-eval --test e2e_meta` from the worktree root after the changes; all meta tests should continue to pass.\n\nNote: the cross-crate duplication concern on sub-component wiring assertions (S3 in the review) was intentionally NOT included — the reviewer explicitly said \"no change required if the intent is e2e-boundary early failure\", and that is the intent.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "deferred",
         "dependencies": [
           "1084"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T20:01:24.915Z",
+        "updatedAt": "2026-04-11T07:21:32.761Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -33705,7 +33711,13 @@
           "modules": [
             "crates/reify-mcp",
             "crates/reify-types/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Cleanup: remove redundant reify-types dev-dep and split pub use in reify-types lib.rs"
+            ]
+          }
         },
         "updatedAt": "2026-04-11T07:21:30.905Z"
       },
@@ -33801,7 +33813,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-11T07:21:30.905Z",
+      "lastModified": "2026-04-11T07:21:32.761Z",
       "taskCount": 1628,
       "completedCount": 1274,
       "tags": [
