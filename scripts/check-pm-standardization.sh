@@ -60,11 +60,28 @@ assert "all package.json files agree on packageManager version" bash -c "
 "
 
 # ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
+# Refactored in task 976 for three reasons:
+#   1. No subshell: eliminates the embedded bash subprocess wrapper (items 1+5).
+#   2. Pre-computed: git check-ignore runs exactly once; both the assert and the
+#      diagnostic guard reuse the cached exit code (item 3).
+#   3. Exit-code disambiguation: exit codes >=128 indicate a broken git invocation
+#      (corrupt repo, missing binary) and are surfaced as an explicit ERROR rather
+#      than masquerading as 'not ignored' (item 6). Stderr passes through naturally;
+#      no 2>/dev/null suppression.
 echo ""
 echo "Check 3: npm lockfiles not gitignored"
-assert "no npm lockfiles are gitignored" \
-    bash -c "! (cd '$ROOT' && git check-ignore $LOCK_FILES)"
-if (cd "$ROOT" && git check-ignore $LOCK_FILES >/dev/null 2>&1); then
+check_ignore_status=0
+# shellcheck disable=SC2086
+# SC2086: word-splitting on $LOCK_FILES is intentional — passes multiple
+# filenames as separate arguments to git check-ignore, consistent with
+# how the rest of this script expands $LOCK_FILES and $PKG_FILES.
+check_ignore_output=$(cd "$ROOT" && git check-ignore $LOCK_FILES) || check_ignore_status=$?
+if [ "$check_ignore_status" -ge 128 ]; then
+    echo "  ERROR: git check-ignore failed with exit status $check_ignore_status" >&2
+    exit 1
+fi
+assert "no npm lockfiles are gitignored" test "$check_ignore_status" -eq 1
+if [ "$check_ignore_status" -eq 0 ]; then
     echo "  DIAGNOSTIC: re-running 'git check-ignore -v' per file to identify offender(s):"
     for f in $LOCK_FILES; do
         (cd "$ROOT" && git check-ignore -v "$f") || true
