@@ -121,6 +121,19 @@ _test_comment_above_check() {
 assert "_CHECK= definition has an explanatory comment directly above it" \
     _test_comment_above_check
 
+# -- S4: regression guard — Section 3 intro comment documents source side-effect
+# Fragments split across two variables prevent self-match on these definition
+# lines. Grep is scoped to comment lines ('^#') so the assert description below
+# does not self-match even when it contains the contiguous phrases.
+_DOC_SE_FRAG1='side'; _DOC_SE_FRAG2=' effect'
+_DOC_NF_FRAG1='non'; _DOC_NF_FRAG2='-fatal'
+_section3_comment_documents_source_side_effect() {
+    grep '^#' "$THIS_SCRIPT" | grep -qF "${_DOC_SE_FRAG1}${_DOC_SE_FRAG2}" && \
+    grep '^#' "$THIS_SCRIPT" | grep -qF "${_DOC_NF_FRAG1}${_DOC_NF_FRAG2}"
+}
+assert 'Section 3 intro comment documents SYNC_TEST source side-effect (side effect + non-fatal phrases)' \
+    _section3_comment_documents_source_side_effect
+
 # -- S2: regression guards for the hardening self-check regex ------------------
 _test_braced_form_caught() {
     local frag1='bash'
