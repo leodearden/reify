@@ -20,6 +20,22 @@ fn assert_no_error_diagnostics(diagnostics: &[reify_types::Diagnostic], phase: &
     assert!(errors.is_empty(), "{} errors: {:?}", phase, errors);
 }
 
+/// Mutual-exclusion guard: assert that no Error-severity diagnostic has a message
+/// containing `phrase`.  Used in regression-guard tests to confirm the compiler
+/// took exactly one error path and not the other.
+fn assert_no_error_containing(diagnostics: &[reify_types::Diagnostic], phrase: &str) {
+    let false_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains(phrase))
+        .collect();
+    assert!(
+        false_errors.is_empty(),
+        "unexpected error containing {:?}: {:?}",
+        phrase,
+        false_errors
+    );
+}
+
 // ---------------------------------------------------------------------------
 // --- let binding uses meta.key ---
 // ---------------------------------------------------------------------------
@@ -350,7 +366,11 @@ fn e2e_meta_access_missing_key() {
         }
     "#;
 
-    parse_compile_expect_err(source, "meta");
+    let compiled = parse_compile_expect_err(source, "meta block has no key");
+    // Mutual-exclusion guard: the missing-key path must NOT produce the
+    // no-meta-block error.  If both appear (or the wrong one appears), a future
+    // compiler regression would otherwise stay hidden.
+    assert_no_error_containing(&compiled.diagnostics, "entity has no meta block");
 }
 
 /// Regression guard (suggestion 9): accessing `meta.description` on a structure
@@ -368,7 +388,11 @@ fn e2e_meta_access_no_meta_block() {
         }
     "#;
 
-    parse_compile_expect_err(source, "meta");
+    let compiled = parse_compile_expect_err(source, "entity has no meta block");
+    // Mutual-exclusion guard: the no-meta-block path must NOT produce the
+    // missing-key error.  If both appear (or the wrong one appears), a future
+    // compiler regression would otherwise stay hidden.
+    assert_no_error_containing(&compiled.diagnostics, "meta block has no key");
 }
 
 // ---------------------------------------------------------------------------
