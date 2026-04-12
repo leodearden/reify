@@ -4738,7 +4738,7 @@
         "updatedAt": "2026-04-12T07:35:05.132Z"
       },
       {
-        "id": "250",
+        "id": 250,
         "title": "Ad-hoc port selectors: evaluator",
         "description": "At evaluation time, resolve ad-hoc selectors against the geometry kernel: @face(name) -> query named face, compute centroid + normal -> frame. @point(coords) -> frame at coords without using the kernel. @edge(name) -> query named edge, compute midpoint + tangent -> frame. If selector fails (topology changed), port frame becomes undef, diagnostic emitted.",
         "status": "blocked",
@@ -4770,8 +4770,8 @@
       {
         "id": 251,
         "title": "Ad-hoc port selectors: tests",
-        "description": ">=15 tests: @face with named face, @point with coordinates, @edge, connect with ad-hoc ports generates frame constraints, selector failure -> undef, unknown selector error, @face on entity without geometry, ad-hoc port in forall quantifier.",
-        "details": "<info added on 2026-04-11T21:08:33.510Z>\nDESIGN DECISION REQUIRED — DO NOT ASSIGN TO ORCHESTRATOR: CompiledAdHocPort does not exist in the codebase; assignment must await user design decision on struct shape and geometry query mapping.\n</info added on 2026-04-11T21:08:33.510Z>",
+        "description": ">=15 tests: @face with named face, @point with coordinates, @edge, connect with ad-hoc ports generates frame constraints, selector failure -> undef, unknown selector error, @face on entity without geometry, ad-hoc port in forall quantifier. [Updated: 4/12/2026]",
+        "details": "<info added on 2026-04-11T21:08:33.510Z>\nDESIGN DECISION REQUIRED — DO NOT ASSIGN TO ORCHESTRATOR: CompiledAdHocPort does not exist in the codebase; assignment must await user design decision on struct shape and geometry query mapping.\n</info added on 2026-04-11T21:08:33.510Z>\n<info added on 2026-04-12T07:39:18.758Z>\nDesign decision resolved. IR types exist now. Ready for orchestrator assignment.\n</info added on 2026-04-12T07:39:18.758Z>",
         "testStrategy": ">=15 tests.",
         "priority": "high",
         "dependencies": [
