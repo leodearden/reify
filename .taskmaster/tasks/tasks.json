@@ -4759,12 +4759,19 @@
             "crates/reify-eval/src/lib.rs"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "CompiledExprKind::AdHocSelector",
+              "SelectorKind",
+              "GeometryQuery"
+            ],
             "queries": [
-              "resolution for: Ad-hoc port selectors: evaluator"
+              "CompiledExprKind::AdHocSelector SelectorKind evaluator implementation reify-types",
+              "@face @edge @point selector evaluation geometry kernel FaceFrame EdgeFrame",
+              "GeometryQuery::FaceFrame GeometryQuery::EdgeFrame reify-types geometry.rs variants",
+              "@face @edge has_geometry=true CompilationScope geometry check deferred to eval time"
             ]
           },
-          "_causation_id": "283e1c40-9b29-4c7b-aec9-d9c466f74095"
+          "_causation_id": "87cb5b2d-821c-457c-b886-1c25c2b7fc97"
         },
         "updatedAt": "2026-04-12T07:39:24.042Z"
       },
@@ -33644,7 +33651,7 @@
         "updatedAt": "2026-04-11T21:28:57.162Z"
       },
       {
-        "id": "1635",
+        "id": 1635,
         "title": "Add dimensioned mirror tests for magnitude NaN/Inf on im branch",
         "description": "Review suggestion from esc-861-20 (reviewer_comprehensive): the new `magnitude_nan_im_returns_undef` and `magnitude_inf_im_returns_undef` tests in `crates/reify-expr/src/complex.rs` only exercise the dimensionless path. The dimensioned magnitude branch has coverage for NaN on `re` (see ~line 266) but no symmetric NaN/Inf-on-im case — a regression isolated to the dimensioned im branch of sanitize_value could slip through.\n\nAdd dimensioned mirrors, e.g.:\n- `magnitude_nan_im_dimensioned_returns_undef` — `call_complex_method(1.0, f64::NAN, DimensionVector::LENGTH, Type::length(), \"magnitude\", Type::length())`\n- `magnitude_inf_im_dimensioned_returns_undef` — `call_complex_method(1.0, f64::INFINITY, DimensionVector::LENGTH, Type::length(), \"magnitude\", Type::length())`\n\nto lock the dimensioned branch symmetrically.\n\nAdd memory hints pointing to the existing magnitude test patterns in `reify-expr/src/complex.rs` to guide the implementation and ensure consistency with existing tests.",
         "status": "pending",
