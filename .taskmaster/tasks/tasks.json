@@ -4797,11 +4797,16 @@
             "crates/reify-eval/tests/connect_eval.rs",
             "crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs"
           ],
-          "_causation_id": "283e1c40-9b29-4c7b-aec9-d9c466f74095",
+          "_causation_id": "87cb5b2d-821c-457c-b886-1c25c2b7fc97",
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "CompiledExprKind::AdHocSelector",
+              "SelectorKind"
+            ],
             "queries": [
-              "resolution for: Ad-hoc port selectors: tests"
+              "ad-hoc port selector tests @face @point @edge connect frame constraints evaluator",
+              "selector failure undef diagnostic geometry check sub-component eval time",
+              "GeometryQuery::FaceFrame GeometryQuery::EdgeFrame reify-types"
             ]
           }
         },
