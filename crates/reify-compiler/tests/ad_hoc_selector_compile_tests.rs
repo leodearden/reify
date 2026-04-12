@@ -1,7 +1,4 @@
 //! Compiler behavior for ad-hoc selector (@) expressions.
-//!
-//! Verifies that the compiler emits a Diagnostic::error instead of panicking
-//! when it encounters an AdHocSelector expression.
 
 use reify_compiler::*;
 use reify_types::*;
@@ -19,16 +16,14 @@ fn compile_module_with_diagnostics(source: &str) -> CompiledModule {
 }
 
 #[test]
-fn compile_ad_hoc_selector_emits_diagnostic() {
-    // The compiler does not yet implement ad-hoc selector (@) support.
-    // It should emit a Severity::Error diagnostic rather than panicking.
+fn compile_ad_hoc_selector_on_undefined_name_emits_error() {
+    // `port` is not a declared port — should produce an unresolved-name error,
+    // NOT the old "ad-hoc selector (@) is not yet supported" stub message.
     let source = r#"
 structure S {
     let x = port @ face("top")
 }
 "#;
-
-    // This should NOT panic — it should return with a diagnostic.
     let module = compile_module_with_diagnostics(source);
     let errors: Vec<_> = module
         .diagnostics
@@ -37,36 +32,28 @@ structure S {
         .collect();
     assert!(
         !errors.is_empty(),
-        "expected compile error for ad-hoc selector, but got none"
+        "expected compile error for unresolved 'port', but got none"
     );
-    let has_selector_error = errors.iter().any(|d| {
-        d.message
-            .contains("ad-hoc selector (@) is not yet supported")
-    });
+    // The old stub message should no longer appear
+    let has_old_stub = errors
+        .iter()
+        .any(|d| d.message.contains("ad-hoc selector (@) is not yet supported"));
     assert!(
-        has_selector_error,
-        "expected diagnostic about unsupported ad-hoc selector, got: {:?}",
-        errors
+        !has_old_stub,
+        "old stub error 'not yet supported' should no longer be emitted"
     );
 }
 
-// ── task-251 ad-hoc port selectors ─────────────────────────────────────────────
-//
-// All tests below are TDD-red specs: they describe the DESIRED behavior once
-// Tasks 249/250 are re-implemented. They intentionally fail against the current
-// stub (which emits "ad-hoc selector (@) is not yet supported" for all
-// AdHocSelector nodes). Tracked via escalation esc-251-20.
+// ── ad-hoc port selector compilation ──────────────────────────────────────────
 
-/// Compile a structure with `port p : out T` and `let resolved = p @ face("top")`.
-/// After implementation, the compiler should accept @face with a string-literal
-/// argument and emit ZERO Severity::Error diagnostics.
-/// Behavior covered: @face with named face (compile path).
+/// Compile a structure with geometry and `let resolved = p @ face("top")`.
+/// @face with a string-literal argument should compile with ZERO errors.
 #[test]
-#[ignore = "blocked on Task 249/250 re-implementation; see esc-251-20"]
 fn compile_face_with_named_string_arg_no_error() {
     let source = r#"
 trait T { param d : Length }
 structure S {
+    let shape = box(10mm, 10mm, 10mm)
     port p : out T { param d : Length = 5mm }
     let resolved = p @ face("top")
 }
@@ -85,11 +72,9 @@ structure S {
 }
 
 /// Compile a structure with `let resolved = p @ point(10mm, 20mm, 0mm)`.
-/// After implementation, the compiler should accept @point with three
-/// numeric-with-unit coordinate arguments and emit ZERO Severity::Error diagnostics.
-/// Behavior covered: @point with coordinates (compile path).
+/// @point with three numeric coordinates should compile with ZERO errors.
+/// No geometry declaration required for @point.
 #[test]
-#[ignore = "blocked on Task 249/250 re-implementation; see esc-251-20"]
 fn compile_point_with_three_coordinate_args_no_error() {
     let source = r#"
 trait T { param d : Length }
@@ -111,16 +96,14 @@ structure S {
     );
 }
 
-/// Compile a structure with `let e = p @ edge("left")`.
-/// After implementation, @edge with a string-literal argument should be
-/// accepted at compile time with ZERO Severity::Error diagnostics.
-/// Behavior covered: @edge (compile path).
+/// Compile a structure with geometry and `let e = p @ edge("left")`.
+/// @edge with a string-literal argument should compile with ZERO errors.
 #[test]
-#[ignore = "blocked on Task 249/250 re-implementation; see esc-251-20"]
 fn compile_edge_with_named_string_arg_no_error() {
     let source = r#"
 trait T { param d : Length }
 structure S {
+    let shape = box(10mm, 10mm, 10mm)
     port p : out T { param d : Length = 5mm }
     let e = p @ edge("left")
 }
@@ -139,11 +122,8 @@ structure S {
 }
 
 /// Compile a structure with an unknown selector name `@ bogus("arg")`.
-/// After implementation, the compiler should emit at least one Severity::Error
-/// diagnostic with a message mentioning the unknown selector kind.
-/// Behavior covered: unknown selector error (compile path).
+/// Should emit at least one error mentioning the unknown selector kind.
 #[test]
-#[ignore = "blocked on Task 249/250 re-implementation; see esc-251-20"]
 fn compile_unknown_selector_kind_emits_error_diagnostic() {
     let source = r#"
 trait T { param d : Length }
@@ -182,13 +162,12 @@ structure S {
 ///   (b) template.connections should contain exactly one entry.
 ///   (c) That connection's `frame_constraint` field should be `Some(_)`.
 ///   (d) The referenced frame_constraint id should exist in template.constraints.
-/// Behavior covered: connect with ad-hoc ports generates frame constraints.
 #[test]
-#[ignore = "blocked on Task 249/250 re-implementation; see esc-251-20"]
 fn compile_connect_with_ad_hoc_ports_both_sides_creates_connection_and_frame_constraint() {
     let source = r#"
 trait T { param d : Length }
 structure def S {
+    let shape = box(10mm, 10mm, 10mm)
     port a : out T { param d : Length = 5mm }
     port b : in T { param d : Length = 5mm }
     connect a @ face("top") -> b @ face("bottom")
@@ -220,13 +199,9 @@ structure def S {
     );
 }
 
-/// Compile a plain logical structure (no geometry let-binding) with @face.
-/// After implementation, the compiler should detect the absence of a geometry
-/// expression and emit at least one Severity::Error diagnostic mentioning
-/// missing/unavailable geometry.
-/// Behavior covered: @face on entity without geometry (compile path).
+/// Compile a plain logical structure (no geometry let-binding) with @face on a
+/// direct port. The compiler should detect the absence of geometry and emit an error.
 #[test]
-#[ignore = "blocked on Task 249/250 re-implementation; see esc-251-20"]
 fn compile_face_on_entity_without_geometry_emits_error() {
     let source = r#"
 trait T { param d : Length }
@@ -247,11 +222,7 @@ structure S {
     );
     let has_geometry_error = errors.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        msg.contains("no geometry")
-            || msg.contains("without geometry")
-            || msg.contains("geometry kernel")
-            || msg.contains("geometry")
-            || msg.contains("realize")
+        msg.contains("geometry")
     });
     assert!(
         has_geometry_error,
@@ -261,12 +232,9 @@ structure S {
 }
 
 /// Compile a structure with a forall quantifier whose predicate uses @face
-/// on each element of a collection sub-component.
-/// After implementation, the compiler should accept ad-hoc selectors inside
-/// forall predicates with ZERO Severity::Error diagnostics.
-/// Behavior covered: ad-hoc port in forall quantifier (compile path).
+/// on each element of a collection sub-component. The base is a member-access
+/// (p.p), not a direct port — geometry check is deferred to eval time.
 #[test]
-#[ignore = "blocked on Task 249/250 re-implementation; see esc-251-20"]
 fn compile_ad_hoc_port_inside_forall_predicate_no_error() {
     let source = r#"
 trait T { param d : Length }
@@ -292,11 +260,8 @@ structure def S {
 }
 
 /// Compile `p @ face(42)` — integer literal instead of string for the face name.
-/// After implementation, the compiler should emit at least one Severity::Error
-/// diagnostic indicating a type mismatch (expected string, got integer).
-/// Behavior covered: selector argument type checking.
+/// Should emit at least one error about the argument type.
 #[test]
-#[ignore = "blocked on Task 249/250 re-implementation; see esc-251-20"]
 fn compile_face_arg_non_string_type_emits_error() {
     let source = r#"
 trait T { param d : Length }
@@ -317,10 +282,7 @@ structure S {
     );
     let has_type_error = errors.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        msg.contains("type")
-            || msg.contains("string")
-            || msg.contains("expected")
-            || msg.contains("face")
+        msg.contains("string") || msg.contains("expected") || msg.contains("face")
     });
     assert!(
         has_type_error,
@@ -330,15 +292,13 @@ structure S {
 }
 
 /// Compile `p @ edge(width * 2)` — expression argument (not a literal).
-/// After implementation, expression arguments should compile through without
-/// error, just like the parser test `parse_ad_hoc_selector_with_expr_args`.
-/// Behavior covered: selector argument compilation (expression form).
+/// Expression arguments should compile through without error.
 #[test]
-#[ignore = "blocked on Task 249/250 re-implementation; see esc-251-20"]
 fn compile_ad_hoc_selector_accepts_expression_args_no_error() {
     let source = r#"
 trait T { param d : Length }
 structure S {
+    let shape = box(10mm, 10mm, 10mm)
     param width : Length = 10mm
     port p : out T { param d : Length = 5mm }
     let e = p @ edge(width * 2)

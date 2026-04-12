@@ -1342,13 +1342,155 @@ pub(crate) fn compile_expr_guarded(
                 compiled_predicate,
             )
         }
-        // AdHocSelector compiler support is implemented in a separate task.
-        reify_syntax::ExprKind::AdHocSelector { .. } => {
-            diagnostics.push(
-                Diagnostic::error("ad-hoc selector (@) is not yet supported in the compiler")
-                    .with_label(DiagnosticLabel::new(expr.span, "not yet supported")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+        reify_syntax::ExprKind::AdHocSelector {
+            base,
+            selector,
+            args,
+        } => {
+            // Resolve selector kind
+            let selector_kind = match selector.as_str() {
+                "face" => Some(SelectorKind::Face),
+                "point" => Some(SelectorKind::Point),
+                "edge" => Some(SelectorKind::Edge),
+                unknown => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unknown selector kind '@{}'; expected face, point, or edge",
+                            unknown
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "unknown selector")),
+                    );
+                    None
+                }
+            };
+
+            let Some(selector_kind) = selector_kind else {
+                return CompiledExpr::literal(Value::Undef, Type::Real);
+            };
+
+            // Validate argument count and types per selector kind
+            match selector_kind {
+                SelectorKind::Face | SelectorKind::Edge => {
+                    if args.len() != 1 {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "@{} expects exactly 1 argument (a string name), got {}",
+                                selector, args.len()
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "wrong argument count")),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                    }
+                    // Check that the argument is a string literal (type check)
+                    if let reify_syntax::ExprKind::NumberLiteral(_) = &args[0].kind
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "@{} expects a string argument for the face/edge name, got a numeric type",
+                                selector
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                args[0].span,
+                                "expected string",
+                            )),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                    }
+                }
+                SelectorKind::Point => {
+                    if args.len() != 3 {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "@point expects exactly 3 coordinate arguments, got {}",
+                                args.len()
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "wrong argument count")),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                    }
+                }
+            }
+
+            // Geometry availability check: @face/@edge on a direct port in the current
+            // scope requires the structure to have geometry declarations.
+            if matches!(selector_kind, SelectorKind::Face | SelectorKind::Edge) {
+                let is_direct_port = matches!(&base.kind, reify_syntax::ExprKind::Ident(name) if scope.port_names.contains(name.as_str()));
+                if is_direct_port && !scope.has_geometry {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "@{} requires the structure to have geometry, but no geometry declarations found",
+                            selector
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "no geometry in this structure",
+                        )),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+            }
+
+            // Resolve the base expression as a port reference. Ports are not
+            // regular value cells so we compile the base to a string literal
+            // containing the port path. The evaluator (task 250) interprets
+            // this to find the geometry context.
+            let compiled_base = match &base.kind {
+                reify_syntax::ExprKind::Ident(name) => {
+                    // Validate: must be a known port or a scope variable (e.g. forall var)
+                    if !scope.port_names.contains(name.as_str())
+                        && scope.resolve(name).is_none()
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unresolved port or variable '{}' in ad-hoc selector",
+                                name
+                            ))
+                            .with_label(DiagnosticLabel::new(base.span, "unknown name")),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                    }
+                    CompiledExpr::literal(Value::String(name.clone()), Type::String)
+                }
+                reify_syntax::ExprKind::MemberAccess { object, member } => {
+                    // Sub-component or variable member: "sub.port" or "var.port"
+                    if let reify_syntax::ExprKind::Ident(obj_name) = &object.kind {
+                        CompiledExpr::literal(
+                            Value::String(format!("{}.{}", obj_name, member)),
+                            Type::String,
+                        )
+                    } else {
+                        // Complex base expression — compile normally
+                        compile_expr_guarded(
+                            base, scope, enum_defs, functions, diagnostics,
+                            current_guard, lambda_counter,
+                        )
+                    }
+                }
+                _ => {
+                    // Anything else — compile normally
+                    compile_expr_guarded(
+                        base, scope, enum_defs, functions, diagnostics,
+                        current_guard, lambda_counter,
+                    )
+                }
+            };
+
+            let compiled_args: Vec<CompiledExpr> = args
+                .iter()
+                .map(|arg| {
+                    compile_expr_guarded(
+                        arg,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                    )
+                })
+                .collect();
+
+            CompiledExpr::ad_hoc_selector(compiled_base, selector_kind, compiled_args)
         }
         reify_syntax::ExprKind::QualifiedAccess { qualifier, member } => {
             // Resolve `TraitName::member` to the member's ValueCellId in the current scope.

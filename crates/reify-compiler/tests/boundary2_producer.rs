@@ -143,6 +143,12 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
                 assert_no_unresolved(hi);
             }
         }
+        CompiledExprKind::AdHocSelector { base, args, .. } => {
+            assert_no_unresolved(base);
+            for arg in args {
+                assert_no_unresolved(arg);
+            }
+        }
     }
 }
 

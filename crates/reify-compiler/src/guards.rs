@@ -104,6 +104,12 @@ pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueC
                 collect_body_refs_inner(hi, refs);
             }
         }
+        CompiledExprKind::AdHocSelector { base, args, .. } => {
+            collect_body_refs_inner(base, refs);
+            for arg in args {
+                collect_body_refs_inner(arg, refs);
+            }
+        }
     }
 }
 

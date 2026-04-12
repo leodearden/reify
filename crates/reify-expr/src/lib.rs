@@ -504,6 +504,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 }
             }
         }
+
+        // Ad-hoc selector evaluation is handled by the engine (Task 250),
+        // which has access to the geometry kernel. The pure expression
+        // evaluator returns Undef as a placeholder.
+        CompiledExprKind::AdHocSelector { .. } => Value::Undef,
     }
 }
 

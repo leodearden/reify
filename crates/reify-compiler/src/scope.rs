@@ -36,6 +36,9 @@ pub(crate) struct CompilationScope<'u> {
     /// Member types for non-collection sub-components: sub_name → { member_name → Type }.
     /// Used to resolve self.sub.member chains for non-collection subs.
     pub(crate) sub_member_types: HashMap<String, HashMap<String, Type>>,
+    /// Whether the current structure has at least one geometry declaration (realize block).
+    /// Used to gate @face/@edge selectors at compile time.
+    pub(crate) has_geometry: bool,
 }
 
 impl<'u> CompilationScope<'u> {
@@ -53,6 +56,7 @@ impl<'u> CompilationScope<'u> {
             unit_registry: None,
             is_entity_scope: false,
             sub_member_types: HashMap::new(),
+            has_geometry: false,
         }
     }
 

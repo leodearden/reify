@@ -7,8 +7,15 @@ pub(crate) fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
             reify_syntax::ExprKind::Ident(obj_name) => Some(format!("{}.{}", obj_name, member)),
             _ => None,
         },
+        // Ad-hoc selector: `port @ face("top")` — extract the base port name.
+        reify_syntax::ExprKind::AdHocSelector { base, .. } => resolve_port_name(base),
         _ => None,
     }
+}
+
+/// Check if an expression is an ad-hoc selector.
+fn is_ad_hoc_selector(expr: &reify_syntax::Expr) -> bool {
+    matches!(&expr.kind, reify_syntax::ExprKind::AdHocSelector { .. })
 }
 
 /// Auto-match port members between two bare port names when no explicit port_mappings given.
@@ -321,6 +328,38 @@ pub(crate) fn compile_connection(
         port_mappings.to_vec()
     };
 
+    // Generate frame constraint when both sides use ad-hoc selectors.
+    // Each side's ad-hoc expression compiles to a Frame(3); the constraint
+    // records the pair so the evaluator can align them.
+    let frame_constraint =
+        if is_ad_hoc_selector(input.left_expr) && is_ad_hoc_selector(input.right_expr) {
+            let left_frame =
+                compile_expr(input.left_expr, ctx.scope, ctx.enum_defs, ctx.functions, diagnostics);
+            let right_frame =
+                compile_expr(input.right_expr, ctx.scope, ctx.enum_defs, ctx.functions, diagnostics);
+
+            // Frame alignment constraint: the two frames should coincide.
+            let frame_eq = CompiledExpr::binop(
+                reify_types::BinOp::Eq,
+                left_frame,
+                right_frame,
+                Type::Bool,
+            );
+
+            let fc_id = ConstraintNodeId::new(ctx.entity_name, *acc.constraint_index);
+            acc.constraints.push(CompiledConstraint {
+                id: fc_id.clone(),
+                label: Some(format!("frame_align_{}_{}", left_port, right_port)),
+                expr: frame_eq,
+                domain: None,
+                span,
+            });
+            *acc.constraint_index += 1;
+            Some(fc_id)
+        } else {
+            None
+        };
+
     acc.connections.push(CompiledConnection {
         left_port,
         operator,
@@ -328,7 +367,7 @@ pub(crate) fn compile_connection(
         connector_sub,
         compatibility_constraint: compat_id,
         port_mappings: effective_mappings,
-        frame_constraint: None,
+        frame_constraint,
         span,
     });
 }

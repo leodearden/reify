@@ -44,8 +44,8 @@ use std::collections::{HashMap, HashSet};
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash,
     DeterminacyPredicateKind, Diagnostic, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX,
-    OptimizationObjective, RealizationNodeId, ResolvedFunction, SourceSpan, Type, UnOp, Value,
-    ValueCellId,
+    OptimizationObjective, RealizationNodeId, ResolvedFunction, SelectorKind, SourceSpan, Type,
+    UnOp, Value, ValueCellId,
 };
 
 /// Compile a parsed module into a compiled module.

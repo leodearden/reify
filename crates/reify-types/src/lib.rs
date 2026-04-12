@@ -23,7 +23,7 @@ pub use diagnostics::{Diagnostic, DiagnosticInfo, DiagnosticLabel, DiagnosticRef
 pub use dimension::{DimensionVector, Rational};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
-    DeterminacyPredicateKind, QuantifierKind, ResolvedFunction, UnOp,
+    DeterminacyPredicateKind, QuantifierKind, ResolvedFunction, SelectorKind, UnOp,
 };
 pub use geometry::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,

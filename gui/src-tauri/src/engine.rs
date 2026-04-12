@@ -810,6 +810,24 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             }
             (None, None) => "..".to_string(),
         },
+        CompiledExprKind::AdHocSelector {
+            base,
+            selector_kind,
+            args,
+        } => {
+            let kind_str = match selector_kind {
+                reify_types::SelectorKind::Face => "face",
+                reify_types::SelectorKind::Point => "point",
+                reify_types::SelectorKind::Edge => "edge",
+            };
+            let args_str: Vec<String> = args.iter().map(format_expr).collect();
+            format!(
+                "{} @ {}({})",
+                format_expr(base),
+                kind_str,
+                args_str.join(", ")
+            )
+        }
     }
 }
 

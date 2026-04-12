@@ -329,6 +329,7 @@ pub(crate) fn compile_entity(
                 // Geometry lets produce realizations (not value cells) but still
                 // need to be registered in scope so subsequent lets can reference them.
                 if is_geometry_let(&let_decl.value, functions) {
+                    scope.has_geometry = true;
                     scope.register(&let_decl.name, Type::Geometry);
                 } else {
                     // We'll register with a placeholder type; the actual type will
