@@ -13,8 +13,9 @@
 pub unit m   : Length
 pub unit cm  : Length = 0.01
 pub unit in  : Length = 0.0254
-pub unit ft  : Length = 0.3048
+pub unit ft   : Length = 0.3048
 pub unit thou : Length = 0.0000254
+pub unit yd   : Length = 0.9144
 
 // ── Angle (SI base: radian) ─────────────────────────────────────────────────
 
