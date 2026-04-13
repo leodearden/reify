@@ -92,22 +92,14 @@ fn laplacian_result_type(domain: Type) -> Type {
     }
 }
 
-/// Result `Type::Field` for a `gradient` operator: domain → Vec_n(Real).
-///
-/// Dispatches on `n`: uses `Type::vec2`/`Type::vec3` for n=2/3 and the
-/// generic `Type::Vector { n, quantity }` struct literal for other values.
+/// Result `Type::Field` for a `gradient` operator: `domain → Vector_n(Real)`.
 fn gradient_result_type(domain: Type, n: usize) -> Type {
-    let codomain = match n {
-        2 => Type::vec2(Type::Real),
-        3 => Type::vec3(Type::Real),
-        _ => Type::Vector {
-            n,
-            quantity: Box::new(Type::Real),
-        },
-    };
     Type::Field {
         domain: Box::new(domain),
-        codomain: Box::new(codomain),
+        codomain: Box::new(Type::Vector {
+            n,
+            quantity: Box::new(Type::Real),
+        }),
     }
 }
 
