@@ -33981,7 +33981,13 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-13T23:54:43.625Z"
+        "updatedAt": "2026-04-13T23:54:43.625Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src",
+            "crates/reify-stdlib/src"
+          ]
+        }
       },
       {
         "id": 1645,
