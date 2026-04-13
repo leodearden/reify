@@ -1339,6 +1339,23 @@ pub(crate) fn compute_numerical_laplacian_at_point(
 mod tests {
     use super::*;
 
+    // --- make_scalar_lambda helper tests ---
+
+    #[test]
+    fn make_scalar_lambda_x_builds_one_param_lambda_with_expected_shape() {
+        use reify_types::ValueCellId;
+        let lambda = make_scalar_lambda("x");
+        match lambda {
+            Value::Lambda { params, captures, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].0, "x");
+                assert_eq!(params[0].1, ValueCellId::new("$lambda0.S", "x"));
+                assert!(captures.is_empty());
+            }
+            other => panic!("expected Value::Lambda, got {:?}", other),
+        }
+    }
+
     // --- scalar_dimension unit tests ---
 
     #[test]
