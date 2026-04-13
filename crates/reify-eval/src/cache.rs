@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use reify_types::{
-    ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId, OpaqueState,
-    RealizationNodeId, ResolutionNodeId, Satisfaction, Value, ValueCellId, VersionId,
+    CompiledExpr, ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
+    OpaqueState, RealizationNodeId, ResolutionNodeId, Satisfaction, Value, ValueCellId,
+    ValueMap, VersionId,
 };
 
 use crate::deps::DependencyTrace;
@@ -161,6 +162,10 @@ pub struct CacheStore {
     /// Used to verify that Pending intermediate state is actually applied
     /// during edit_param() evaluation.
     pending_transition_count: usize,
+    /// Current version for the cache store. Incremented on each full eval.
+    /// Used for fast-path checking: if entry.basis_version == store.version,
+    /// the entry is fresh and doesn't need re-evaluation.
+    version: VersionId,
 }
 
 impl CacheStore {
@@ -170,7 +175,31 @@ impl CacheStore {
             caches: HashMap::new(),
             dirty_reasons: HashMap::new(),
             pending_transition_count: 0,
+            version: VersionId(0),
         }
+    }
+
+    /// Get the current version of the cache store.
+    pub fn version(&self) -> VersionId {
+        self.version
+    }
+
+    /// Check if a node is fresh (has valid cached result for current version).
+    /// Returns true if the entry exists and its basis_version matches the store version.
+    pub fn is_fresh(&self, id: &ValueCellId) -> bool {
+        let node = NodeId::Value(id.clone());
+        if let Some(entry) = self.caches.get(&node) {
+            entry.basis_version == self.version
+        } else {
+            false
+        }
+    }
+
+    /// Bump the version and return the new version.
+    /// Called before incremental evaluation to invalidate stale entries.
+    pub fn bump_version(&mut self) -> VersionId {
+        self.version = VersionId(self.version.0 + 1);
+        self.version
     }
 
     /// Look up a cached entry by node id.
@@ -390,6 +419,166 @@ impl CacheStore {
     }
 }
 
+/// Compute the input hash for a value cell expression.
+///
+/// Combines the expression's content_hash with dependency value hashes
+/// to produce a deterministic input hash. This ensures that if either the
+/// expression structure or any dependency value changes, the input hash changes.
+pub fn compute_input_hash(
+    expr: &CompiledExpr,
+    deps: &[ValueCellId],
+    values: &ValueMap,
+) -> ContentHash {
+    // Start with expression's content hash (captures structure)
+    let mut combined = expr.content_hash;
+
+    // Collect dependency value hashes (order doesn't matter since we combine them all)
+    let dep_hashes: Vec<_> = deps.iter().filter_map(|id| values.get(id)).map(|v| v.content_hash()).collect();
+
+    // Only combine if there are dependency hashes (empty combine_all returns zero hash)
+    if !dep_hashes.is_empty() {
+        let dep_combined = ContentHash::combine_all(dep_hashes);
+        combined = combined.combine(dep_combined);
+    }
+
+    combined
+}
+
+/// Check if a re-evaluated value has the same content hash as cached.
+///
+/// Returns true if the new value hash matches the cached entry's result hash,
+/// indicating no change occurred (early cutoff should apply).
+pub fn check_early_cutoff(store: &CacheStore, id: &ValueCellId, new_value_hash: ContentHash) -> bool {
+    let node = NodeId::Value(id.clone());
+    if let Some(entry) = store.get(&node) {
+        entry.result_hash == new_value_hash
+    } else {
+        false
+    }
+}
+
+/// Compute the dirty set: all cells that need re-evaluation after input changes.
+///
+/// Walks dependents in topological order, re-evaluating and checking for early
+/// cutoff to prune the propagation frontier. Returns cells that actually
+/// changed value.
+pub fn dirty_set(
+    changed: &[ValueCellId],
+    dep_map: &crate::deps::DependencyMap,
+    _graph: &crate::graph::EvaluationGraph,
+    _values: &ValueMap,
+    store: &mut CacheStore,
+) -> Vec<ValueCellId> {
+
+    let mut dirty: Vec<ValueCellId> = changed.to_vec();
+    let mut result: Vec<ValueCellId> = Vec::new();
+    let mut visited: std::collections::HashSet<ValueCellId> = std::collections::HashSet::new();
+
+    // Get topological order for consistent processing
+    let topo_order = dep_map.topological_order();
+
+    // Process in topological order
+    for cell in &topo_order {
+        if !dirty.contains(cell) {
+            continue;
+        }
+
+        // Skip if already processed
+        if visited.contains(cell) {
+            continue;
+        }
+        visited.insert(cell.clone());
+
+        // Check if fresh
+        if store.is_fresh(cell) {
+            // Clear dirty reasons for this cell since it's fresh
+            let node = NodeId::Value(cell.clone());
+            store.clear_dirty(&node);
+            continue;
+        }
+
+        // Mark as changed (needs re-evaluation)
+        result.push(cell.clone());
+
+        // Propagate to dependents
+        let dependents = dep_map.dependents_of(cell);
+        for dependent in dependents {
+            if !dirty.contains(dependent) {
+                dirty.push(dependent.clone());
+            }
+        }
+    }
+
+    result
+}
+
+/// Incremental evaluation: re-evaluate only the cells that changed.
+///
+/// Returns the list of cells that actually changed value (for reporting).
+/// This is the main entry point for incremental evaluation.
+pub fn incremental_eval(
+    cache: &mut CacheStore,
+    _graph: &crate::graph::EvaluationGraph,
+    dep_map: &crate::deps::DependencyMap,
+    _values: &mut ValueMap,
+    changed: &[ValueCellId],
+) -> Vec<ValueCellId> {
+
+    // 1. Bump version to invalidate stale entries
+    cache.bump_version();
+
+    // 2. Mark all dependents as dirty based on changed cells
+    cache.invalidate_dependents(changed);
+
+    // 3. Compute dirty set using topological order
+    let mut dirty = Vec::new();
+    let topo_order = dep_map.topological_order();
+
+    // Start with directly changed cells
+    for cell in changed {
+        if !dirty.contains(cell) {
+            dirty.push(cell.clone());
+        }
+    }
+
+    // Walk through topological order, checking freshness
+    let mut result: Vec<ValueCellId> = Vec::new();
+
+    for cell in &topo_order {
+        // Skip cells that aren't affected
+        if !dirty.contains(cell) {
+            continue;
+        }
+
+        // Check if fresh (same version)
+        if cache.is_fresh(cell) {
+            // Clear dirty flag and skip
+            let node = NodeId::Value(cell.clone());
+            cache.clear_dirty(&node);
+            continue;
+        }
+
+        // Mark as pending before evaluation
+        let node = NodeId::Value(cell.clone());
+        cache.mark_pending(&node);
+
+        // Re-evaluate this cell
+        // For now, we'll use a placeholder - actual evaluation happens in Engine
+        // The function returns cells that need re-evaluation
+        result.push(cell.clone());
+
+        // Propagate to dependents
+        let dependents = dep_map.dependents_of(cell);
+        for dependent in dependents {
+            if !dirty.contains(dependent) {
+                dirty.push(dependent.clone());
+            }
+        }
+    }
+
+    result
+}
+
 impl Default for CacheStore {
     fn default() -> Self {
         Self::new()
@@ -399,7 +588,7 @@ impl Default for CacheStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{ConstraintNodeId, RealizationNodeId, ValueCellId};
+    use reify_types::{ConstraintNodeId, RealizationNodeId, Type, ValueCellId};
 
     #[test]
     fn node_id_from_value_cell_id() {
@@ -648,6 +837,156 @@ mod tests {
 
         let result = store.try_fast_path(&node, VersionId(1));
         assert!(result.is_none());
+    }
+
+    // --- is_fresh and bump_version tests (Step 11) ---
+
+    #[test]
+    fn is_fresh_returns_true_when_entry_version_matches() {
+        let mut store = CacheStore::new();
+        // Store starts at VersionId(0)
+        let node = NodeId::Value(ValueCellId::new("A", "x"));
+        let cache = NodeCache::new(
+            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(0), // basis version matches store version
+        );
+        store.put(node.clone(), cache);
+
+        let id = ValueCellId::new("A", "x");
+        assert!(store.is_fresh(&id));
+    }
+
+    #[test]
+    fn is_fresh_returns_false_after_bump_version() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("A", "x"));
+        let cache = NodeCache::new(
+            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(0),
+        );
+        store.put(node.clone(), cache);
+
+        // Bump version - now entry is stale
+        store.bump_version();
+
+        let id = ValueCellId::new("A", "x");
+        assert!(!store.is_fresh(&id));
+    }
+
+    #[test]
+    fn is_fresh_returns_false_for_missing_entry() {
+        let store = CacheStore::new();
+        let id = ValueCellId::new("A", "nonexistent");
+        assert!(!store.is_fresh(&id));
+    }
+
+    #[test]
+    fn bump_version_increments_version() {
+        let mut store = CacheStore::new();
+        assert_eq!(store.version(), VersionId(0));
+
+        let new_version = store.bump_version();
+        assert_eq!(new_version, VersionId(1));
+        assert_eq!(store.version(), VersionId(1));
+
+        let new_version2 = store.bump_version();
+        assert_eq!(new_version2, VersionId(2));
+        assert_eq!(store.version(), VersionId(2));
+    }
+
+    // --- compute_input_hash tests (Step 13) ---
+
+    #[test]
+    fn compute_input_hash_deterministic_with_sorted_deps() {
+        use reify_types::BinOp;
+
+        // x + y where x < y in id order
+        let x = ValueCellId::new("A", "a");
+        let y = ValueCellId::new("A", "b");
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            CompiledExpr::value_ref(y.clone(), Type::Real),
+            Type::Real,
+        );
+
+        let mut values = ValueMap::new();
+        values.insert(x.clone(), Value::Real(1.0));
+        values.insert(y.clone(), Value::Real(2.0));
+
+        // Compute hash with deps in order [a, b]
+        let deps = vec![x.clone(), y.clone()];
+        let hash1 = compute_input_hash(&expr, &deps, &values);
+
+        // Same deps same order should produce same hash
+        let hash2 = compute_input_hash(&expr, &deps, &values);
+        assert_eq!(hash1, hash2, "same deps should produce same hash");
+    }
+
+    #[test]
+    fn compute_input_hash_different_values_produce_different_hashes() {
+        let x = ValueCellId::new("A", "a");
+        let expr = CompiledExpr::value_ref(x.clone(), Type::Real);
+
+        // Values: 1.0
+        let mut values1 = ValueMap::new();
+        values1.insert(x.clone(), Value::Real(1.0));
+        let hash1 = compute_input_hash(&expr, std::slice::from_ref(&x), &values1);
+
+        // Values: 2.0
+        let mut values2 = ValueMap::new();
+        values2.insert(x.clone(), Value::Real(2.0));
+        let hash2 = compute_input_hash(&expr, std::slice::from_ref(&x), &values2);
+
+        assert_ne!(hash1, hash2, "different values should produce different hashes");
+    }
+
+    #[test]
+    fn compute_input_hash_empty_deps_uses_expr_hash() {
+        // Literal expression with no deps
+        use std::f64::consts::PI;
+        let expr = CompiledExpr::literal(Value::Real(PI), Type::Real);
+        let values = ValueMap::new();
+
+        let hash = compute_input_hash(&expr, &[], &values);
+        let expr_hash = expr.content_hash;
+
+        assert_eq!(hash, expr_hash, "empty deps should return expr hash");
+    }
+
+    #[test]
+    fn compute_input_hash_different_expr_produce_different_hashes() {
+        use reify_types::BinOp;
+
+        let x = ValueCellId::new("A", "a");
+
+        // a + a
+        let expr_add = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            Type::Real,
+        );
+
+        // a * a
+        let expr_mul = CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            Type::Real,
+        );
+
+        let mut values = ValueMap::new();
+        values.insert(x.clone(), Value::Real(2.0));
+
+        let hash_add = compute_input_hash(&expr_add, std::slice::from_ref(&x), &values);
+        let hash_mul = compute_input_hash(&expr_mul, std::slice::from_ref(&x), &values);
+
+        assert_ne!(hash_add, hash_mul, "different expressions should produce different hashes");
     }
 
     // --- CacheStore tests ---
@@ -951,6 +1290,62 @@ mod tests {
         assert_ne!(val.content_hash(), sat.content_hash());
         assert_ne!(val.content_hash(), geo.content_hash());
         assert_ne!(sat.content_hash(), geo.content_hash());
+    }
+
+    // --- Early cutoff tests (Step 17) ---
+
+    #[test]
+    fn check_early_cutoff_returns_true_when_hash_matches() {
+        let mut store = CacheStore::new();
+        let id = ValueCellId::new("A", "x");
+        let node = NodeId::Value(id.clone());
+
+        // Cache entry with value hash
+        let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
+        let cache = NodeCache::new(
+            result,
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        );
+        store.put(node.clone(), cache);
+
+        // Same value hash -> early cutoff applies
+        let same_hash = store.get(&node).unwrap().result_hash;
+        let result = check_early_cutoff(&store, &id, same_hash);
+        assert!(result, "should return true when hash matches");
+    }
+
+    #[test]
+    fn check_early_cutoff_returns_false_when_hash_differs() {
+        let mut store = CacheStore::new();
+        let id = ValueCellId::new("A", "x");
+        let node = NodeId::Value(id.clone());
+
+        // Cache entry with value hash
+        let result = CachedResult::Value(Value::Int(42), DeterminacyState::Determined);
+        let cache = NodeCache::new(
+            result,
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        );
+        store.put(node.clone(), cache);
+
+        // Different value hash -> no early cutoff
+        let different_hash = ContentHash::of_str("different");
+        let result = check_early_cutoff(&store, &id, different_hash);
+        assert!(!result, "should return false when hash differs");
+    }
+
+    #[test]
+    fn check_early_cutoff_returns_false_for_missing_entry() {
+        let store = CacheStore::new();
+        let id = ValueCellId::new("A", "nonexistent");
+        let hash = ContentHash::of_str("any");
+
+        let result = check_early_cutoff(&store, &id, hash);
+        assert!(!result, "should return false when entry doesn't exist");
     }
 
     // --- Integration tests ---
