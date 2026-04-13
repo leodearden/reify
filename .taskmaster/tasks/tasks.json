@@ -33476,6 +33476,16 @@
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
+          ],
+          "memory_hints": [
+            {
+              "type": "search",
+              "value": "field_calculus placeholder tests divergence laplacian ignore reason"
+            },
+            {
+              "type": "search",
+              "value": "plan step stale pointer field_calculus_tests.rs"
+            }
           ]
         }
       },
