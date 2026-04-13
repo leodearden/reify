@@ -360,3 +360,65 @@ fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
         other => panic!("expected BinOp{{Mul, _, _}}, got {:?}", other),
     }
 }
+
+// ─── step-10: regression guard for pre-existing imperial units ────────────────
+
+#[test]
+fn existing_imperial_units_ft_thou_lb_oz_unchanged_post_task_335() {
+    // Verify the four pre-existing imperial unit factors and dimensions
+    // are unchanged by this task's edits to units.ri.
+
+    // Length units (SI base: metre)
+    let length_cases: &[(&str, f64)] = &[
+        ("1ft",   0.3048),
+        ("1thou", 0.0000254),
+    ];
+    for (literal, expected) in length_cases {
+        let (v, d) = stdlib_param_si_value("Length", literal);
+        assert!(
+            (v - expected).abs() < 1e-12,
+            "{} should be {} m, got {}",
+            literal,
+            expected,
+            v
+        );
+        assert_eq!(d, DimensionVector::LENGTH, "{} dimension wrong", literal);
+    }
+
+    // Mass units (SI base: kilogram)
+    let mass_cases: &[(&str, f64)] = &[
+        ("1lb",  0.45359237),
+        ("1oz",  0.028349523125),
+    ];
+    for (literal, expected) in mass_cases {
+        let (v, d) = stdlib_param_si_value("Mass", literal);
+        assert!(
+            (v - expected).abs() < 1e-12,
+            "{} should be {} kg, got {}",
+            literal,
+            expected,
+            v
+        );
+        assert_eq!(d, DimensionVector::MASS, "{} dimension wrong", literal);
+    }
+
+    // Verify offset=None for all four via the stdlib module units list.
+    let modules = stdlib_loader::load_stdlib();
+    let units_module = modules
+        .iter()
+        .find(|m| format!("{}", m.path) == "std/units")
+        .expect("std/units module not found");
+
+    for name in &["ft", "thou", "lb", "oz"] {
+        let u = units_module
+            .units
+            .iter()
+            .find(|u| u.name == *name)
+            .unwrap_or_else(|| panic!("unit '{}' not found in std/units", name));
+        assert!(
+            u.offset.is_none(),
+            "unit '{}' should have no offset",
+            name
+        );
+    }
+}
