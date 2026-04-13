@@ -307,6 +307,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn magnitude_inf_im_dimensioned_returns_undef() {
+        // Complex{re:1.0, im:+Inf, LENGTH}.magnitude → Undef (dimensioned im path)
+        // hypot(1.0, +Inf) = +Inf; sanitize_value Scalar arm catches non-finite si_value
+        assert!(
+            call_complex_method(1.0, f64::INFINITY, DimensionVector::LENGTH, Type::length(), "magnitude", Type::length()).is_undef(),
+            "z.magnitude with +Inf imaginary part (dimensioned) should return Undef"
+        );
+    }
+
     // ── method regressions: finite values still work ──────────────────────────
 
     #[test]
