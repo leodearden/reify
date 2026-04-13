@@ -691,6 +691,19 @@ fn make_sample_point_panics_when_point_arity_exceeds_three() {
     let _ = make_sample_point(&domain);
 }
 
+/// Returns the component type for a field codomain.
+///
+/// For a `Type::Vector { quantity, .. }` codomain, returns the inner `*quantity`
+/// (e.g., `Vec3(Scalar<Velocity>)` → `Scalar<Velocity>`).  For all other types
+/// (scalar, Real, etc.) the codomain itself is returned unchanged, since non-vector
+/// codomains are already their own component type.
+fn codomain_component_type(codomain: &Type) -> Type {
+    match codomain {
+        Type::Vector { quantity, .. } => (**quantity).clone(),
+        other => other.clone(),
+    }
+}
+
 /// Evaluate a calculus operator on a standard analytical test field.
 ///
 /// Builds a `Value::Field` with the given `domain` and `codomain` types, using a
@@ -763,6 +776,61 @@ fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
 fn eval_field_op_panics_when_point_arity_exceeds_three() {
     let domain = Type::Point { n: 4, quantity: Box::new(Type::Real) };
     let _ = eval_field_op("gradient", domain, Type::Real);
+}
+
+/// `codomain_component_type` returns the inner quantity for Vector codomains
+/// and the codomain itself for all non-Vector shapes.
+///
+/// Cases:
+///   (a) Vec3(Scalar<Velocity>) → Scalar<Velocity>
+///   (b) Vec3(Real)             → Real
+///   (c) Vec2(Scalar<Length>)   → Scalar<Length>
+///   (d) Scalar<Temperature>    → Scalar<Temperature>
+///   (e) Real                   → Real
+#[test]
+fn codomain_component_type_returns_vector_quantity_or_codomain_itself() {
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+
+    // (a) Vec3(Scalar<Velocity>) → Scalar<Velocity>
+    let vel_scalar = Type::Scalar { dimension: velocity_dim };
+    let vec3_velocity = Type::vec3(vel_scalar.clone());
+    assert_eq!(
+        codomain_component_type(&vec3_velocity),
+        vel_scalar,
+        "Vec3(Scalar<Velocity>) should yield Scalar<Velocity>"
+    );
+
+    // (b) Vec3(Real) → Real
+    let vec3_real = Type::vec3(Type::Real);
+    assert_eq!(
+        codomain_component_type(&vec3_real),
+        Type::Real,
+        "Vec3(Real) should yield Real"
+    );
+
+    // (c) Vec2(Scalar<Length>) → Scalar<Length>
+    let length_scalar = Type::Scalar { dimension: DimensionVector::LENGTH };
+    let vec2_length = Type::vec2(length_scalar.clone());
+    assert_eq!(
+        codomain_component_type(&vec2_length),
+        length_scalar,
+        "Vec2(Scalar<Length>) should yield Scalar<Length>"
+    );
+
+    // (d) Scalar<Temperature> → Scalar<Temperature>
+    let temp_scalar = Type::Scalar { dimension: DimensionVector::TEMPERATURE };
+    assert_eq!(
+        codomain_component_type(&temp_scalar),
+        temp_scalar.clone(),
+        "Scalar<Temperature> should yield itself"
+    );
+
+    // (e) Real → Real
+    assert_eq!(
+        codomain_component_type(&Type::Real),
+        Type::Real,
+        "Real should yield itself"
+    );
 }
 
 /// Sample a field value at the standard test point for its domain type.
