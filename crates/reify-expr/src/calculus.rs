@@ -1338,12 +1338,27 @@ pub(crate) fn compute_numerical_laplacian_at_point(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+    /// Helper: build a minimal 1-param identity lambda `|param_name| param_name : Real`.
+    ///
+    /// Used by tests that need a syntactically valid Lambda without caring about its body
+    /// semantics.  Replaces the zero-arg `make_test_lambda()` helper — all former callers
+    /// pass `"x"`, two tests pass `"pt"`.
+    fn make_scalar_lambda(param_name: &str) -> Value {
+        let id = ValueCellId::new("$lambda0.S", param_name);
+        let body = CompiledExpr::value_ref(id.clone(), Type::Real);
+        Value::Lambda {
+            params: vec![(param_name.to_string(), id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        }
+    }
 
     // --- make_scalar_lambda helper tests ---
 
     #[test]
     fn make_scalar_lambda_x_builds_one_param_lambda_with_expected_shape() {
-        use reify_types::ValueCellId;
         let lambda = make_scalar_lambda("x");
         match lambda {
             Value::Lambda { params, captures, .. } => {
