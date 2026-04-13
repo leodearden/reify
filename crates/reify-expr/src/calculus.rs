@@ -1599,16 +1599,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "unexpected codomain_type")]
     fn gradient_result_dim_unexpected_codomain_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1633,16 +1624,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "unexpected Vector quantity")]
     fn gradient_result_dim_unexpected_vector_quantity_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
         // Single-parameter lambda: |pt| pt (body irrelevant — panic fires before evaluation)
-        let pt_id = ValueCellId::new("$lambda0.S", "pt");
-        let body = CompiledExpr::value_ref(pt_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("pt".to_string(), pt_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
+        let lambda = make_scalar_lambda("pt");
 
         // 3D point input — lambda has 1 param and n=3 so single_point_param=true
         let point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
@@ -1674,16 +1657,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "divergence/laplacian codomain must be scalar")]
     fn divergence_unexpected_codomain_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1711,16 +1685,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "divergence/laplacian codomain must be scalar")]
     fn divergence_unexpected_vector_codomain_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1742,16 +1707,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "divergence/laplacian codomain must be scalar")]
     fn laplacian_unexpected_codomain_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1773,16 +1729,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "curl codomain must be vector")]
     fn curl_unexpected_codomain_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
