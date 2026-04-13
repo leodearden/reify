@@ -427,6 +427,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sanitize_orientation_non_identity_passthrough() {
+        // Unit quaternion (0.5, 0.5, 0.5, 0.5) — 120° rotation about (1,1,1)/√3.
+        // All components are exact f64 (0.5 = 2^-1), so assert_eq! is safe.
+        let v = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        assert_eq!(
+            sanitize_value(v),
+            Value::Orientation {
+                w: 0.5,
+                x: 0.5,
+                y: 0.5,
+                z: 0.5
+            },
+            "Finite non-identity orientation must pass through unchanged"
+        );
+    }
+
     // ── sanitize_value wildcard arm (`_ => v`) characterization tests ─────────
 
     #[test]
