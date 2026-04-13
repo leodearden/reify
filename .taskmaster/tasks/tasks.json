@@ -33191,11 +33191,11 @@
         "description": "In crates/reify-expr/tests/field_calculus_tests.rs: (1) Collapse gradient_result_type (~line 99) from a 3-arm match to a single Type::Vector { n, quantity } expression since all arms produce identical values (Type::vec2/vec3 are just aliases). (2) Consolidate divergence_result_type (~line 72) and laplacian_result_type (~line 88) into a single scalar_field_result_type(domain) helper since they are byte-for-byte identical. (3) Fix the doc-comment on gradient_result_type (~line 95-98) which falsely claims meaningful dispatch between arms.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T17:18:19.457Z",
+        "updatedAt": "2026-04-13T18:57:00.793Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -33759,7 +33759,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T18:56:57.022Z",
+      "lastModified": "2026-04-13T18:57:00.793Z",
       "taskCount": 1637,
       "completedCount": 1305,
       "tags": [
