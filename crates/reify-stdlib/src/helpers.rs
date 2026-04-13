@@ -486,11 +486,11 @@ mod tests {
 
     #[test]
     fn sanitize_real_finite_passthrough() {
-        let v = Value::Real(2.72);
-        match sanitize_value(v) {
-            Value::Real(x) => assert!((x - 2.72).abs() < 1e-12),
-            other => panic!("expected Real(2.72), got {:?}", other),
-        }
+        assert_eq!(
+            sanitize_value(Value::Real(2.72)),
+            Value::Real(2.72),
+            "Real(2.72) must pass through bit-identical"
+        );
     }
 
     // ── sanitize_value Scalar arm characterization tests ─────────────────────
@@ -533,20 +533,17 @@ mod tests {
 
     #[test]
     fn sanitize_scalar_finite_passthrough() {
-        let v = Value::Scalar {
-            si_value: 0.001,
-            dimension: DimensionVector::LENGTH,
-        };
-        match sanitize_value(v) {
+        assert_eq!(
+            sanitize_value(Value::Scalar {
+                si_value: 0.001,
+                dimension: DimensionVector::LENGTH,
+            }),
             Value::Scalar {
-                si_value,
-                dimension,
-            } => {
-                assert!((si_value - 0.001).abs() < 1e-12);
-                assert_eq!(dimension, DimensionVector::LENGTH);
-            }
-            other => panic!("expected Scalar{{0.001, LENGTH}}, got {:?}", other),
-        }
+                si_value: 0.001,
+                dimension: DimensionVector::LENGTH,
+            },
+            "Scalar(0.001, LENGTH) must pass through bit-identical"
+        );
     }
 
     // ── sanitize_value Complex arm characterization tests ─────────────────────
@@ -631,18 +628,19 @@ mod tests {
 
     #[test]
     fn sanitize_complex_finite_passthrough() {
-        let v = Value::Complex {
-            re: 3.0,
-            im: -4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        match sanitize_value(v) {
-            Value::Complex { re, im, .. } => {
-                assert!((re - 3.0).abs() < f64::EPSILON);
-                assert!((im - (-4.0)).abs() < f64::EPSILON);
-            }
-            other => panic!("expected Complex{{re:3.0, im:-4.0}}, got {:?}", other),
-        }
+        assert_eq!(
+            sanitize_value(Value::Complex {
+                re: 3.0,
+                im: -4.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }),
+            Value::Complex {
+                re: 3.0,
+                im: -4.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            "Complex(3.0, -4.0) must pass through bit-identical"
+        );
     }
 
     // ── sanitize_value Orientation arm characterization tests ─────────────────
@@ -831,21 +829,21 @@ mod tests {
 
     #[test]
     fn sanitize_orientation_valid_passthrough() {
-        let v = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        match sanitize_value(v) {
-            Value::Orientation { w, x, y, z } => {
-                assert!((w - 1.0).abs() < f64::EPSILON);
-                assert!((x - 0.0).abs() < f64::EPSILON);
-                assert!((y - 0.0).abs() < f64::EPSILON);
-                assert!((z - 0.0).abs() < f64::EPSILON);
-            }
-            other => panic!("expected Orientation{{1,0,0,0}}, got {:?}", other),
-        }
+        assert_eq!(
+            sanitize_value(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            "Identity orientation must pass through bit-identical"
+        );
     }
 
     #[test]
