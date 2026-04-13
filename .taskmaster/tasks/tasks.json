@@ -10476,7 +10476,7 @@
         "description": "The arg-count error diagnostics for box(), cylinder(), sphere(), linear_pattern(), circular_pattern(), mirror(), union(), shell(), thicken(), draft() in reify-compiler/src/lib.rs (lines 5183-5287) use Diagnostic::error(format!(...)) which creates spanless diagnostics. Other diagnostics in the same file attach labels with source spans. These should follow the same pattern.\\n\\nMemory hints: search \"Diagnostic error labels spans\", entities: Diagnostic, compile_geometry_function",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10491,7 +10491,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-10T20:29:24.630Z"
+        "updatedAt": "2026-04-13T18:44:53.588Z"
       },
       {
         "id": "488",
@@ -33741,7 +33741,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T18:44:52.832Z",
+      "lastModified": "2026-04-13T18:44:53.588Z",
       "taskCount": 1637,
       "completedCount": 1302,
       "tags": [
