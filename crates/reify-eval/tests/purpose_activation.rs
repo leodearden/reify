@@ -326,3 +326,125 @@ purpose mfg_ready(subject : Structure) {
         snapshot.graph.constraints.keys().collect::<Vec<_>>()
     );
 }
+
+// ── Step 9: compiled purpose resolves params query ────────────────────────
+
+#[test]
+fn compiled_purpose_resolves_params_query() {
+    let source = r#"
+structure Widget {
+    param width : Length = 80mm
+    param height : Length = 60mm
+    let area = width * height
+    constraint width > 0mm
+}
+
+purpose check_params(subject : Widget) {
+    constraint 1 > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+    let purpose = &compiled.compiled_purposes[0];
+    assert_eq!(purpose.name, "check_params");
+    assert_eq!(purpose.params[0].entity_kind, "Widget");
+
+    // The reflective query must have produced 1 resolved entry for the "subject" param
+    assert_eq!(
+        purpose.resolved_queries.len(),
+        1,
+        "expected 1 resolved schema query"
+    );
+    let query = &purpose.resolved_queries[0];
+    assert_eq!(query.param_name, "subject");
+    assert_eq!(query.query_kind, "params");
+}
+
+// ── Step 10: resolved params excludes let bindings ────────────────────────
+
+#[test]
+fn resolved_params_excludes_lets() {
+    let source = r#"
+structure Widget {
+    param width : Length = 80mm
+    param height : Length = 60mm
+    let area = width * height
+    constraint width > 0mm
+}
+
+purpose check_params(subject : Widget) {
+    constraint 1 > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    let query = &compiled.compiled_purposes[0].resolved_queries[0];
+    // Should have exactly 2 ids: width and height (NOT area)
+    assert_eq!(
+        query.resolved_ids.len(),
+        2,
+        "resolved_ids should contain only params (width, height), not lets (area): {:?}",
+        query.resolved_ids
+    );
+
+    let id_members: Vec<&str> = query
+        .resolved_ids
+        .iter()
+        .map(|id| id.member.as_str())
+        .collect();
+    assert!(
+        id_members.contains(&"width"),
+        "resolved_ids should contain 'width'"
+    );
+    assert!(
+        id_members.contains(&"height"),
+        "resolved_ids should contain 'height'"
+    );
+    assert!(
+        !id_members.contains(&"area"),
+        "resolved_ids must NOT contain 'area' (a let binding)"
+    );
+}
+
+// ── Step 11: resolved params contains auto params ─────────────────────────
+
+#[test]
+fn resolved_params_contains_auto_params() {
+    let source = r#"
+structure Widget {
+    param x : Length = 10mm
+    param y : Scalar = auto
+}
+
+purpose check_params(subject : Widget) {
+    constraint 1 > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    assert_eq!(
+        compiled.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+    let query = &compiled.compiled_purposes[0].resolved_queries[0];
+    // Both Param and Auto value cells must be included (traits.rs:342)
+    assert_eq!(
+        query.resolved_ids.len(),
+        2,
+        "both explicit param and auto param should be included: {:?}",
+        query.resolved_ids
+    );
+    let id_members: Vec<&str> = query
+        .resolved_ids
+        .iter()
+        .map(|id| id.member.as_str())
+        .collect();
+    assert!(id_members.contains(&"x"), "should contain 'x'");
+    assert!(id_members.contains(&"y"), "should contain 'y'");
+}
