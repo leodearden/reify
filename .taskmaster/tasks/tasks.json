@@ -19452,7 +19452,17 @@
             "946"
           ],
           "bundled_at": "2026-04-11",
-          "bundle_key": "H"
+          "bundle_key": "H",
+          "memory_hints": [
+            {
+              "type": "search",
+              "value": "sanitize_value Complex orientation coverage reify-eval"
+            },
+            {
+              "type": "search",
+              "value": "sanitize_value SYNC marker intentional divergence doc comment"
+            }
+          ]
         }
       },
       {
