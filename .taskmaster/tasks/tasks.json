@@ -10921,6 +10921,16 @@
           "modules": [
             "crates/reify-eval/src",
             "crates/reify-eval/tests"
+          ],
+          "memory_hints": [
+            {
+              "type": "search",
+              "value": "Engine eval prelude function merging shadowing semantics caching"
+            },
+            {
+              "type": "search",
+              "value": "prelude cache Engine::eval function lookup implementation"
+            }
           ]
         },
         "updatedAt": "2026-04-13T23:11:15.569Z"
