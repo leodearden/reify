@@ -1899,8 +1899,8 @@ fn divergence_sample_dimensional_correctness_returns_scalar() {
 /// cause it to fail with `Value::Real`.  This is the early-warning signal: a naïve
 /// un-ignore serves as a concrete, executable spec for the required fix.
 #[test]
-#[ignore = "known bug: dim_quotient_type returns Type::Real when codomain is dimensionless, \
-            losing the 1/domain-unit result dimension — see analysis in plan step-3"]
+#[ignore = "known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
+            losing the 1/Length result dimension; expected Value::Scalar{1/Length}"]
 fn divergence_sample_mixed_length_to_real_placeholder() {
     let domain = Type::point3(Type::Scalar {
         dimension: DimensionVector::LENGTH,
@@ -2212,8 +2212,8 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
 /// cause it to fail with `Value::Real`.  This is the early-warning signal: a naïve
 /// un-ignore serves as a concrete, executable spec for the required fix.
 #[test]
-#[ignore = "known bug: dim_quotient_type returns Type::Real when codomain is dimensionless, \
-            losing the 1/domain-unit² result dimension — see analysis in plan step-5"]
+#[ignore = "known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
+            losing the 1/Length\u{00b2} result dimension; expected Value::Scalar{1/Length\u{00b2}}"]
 fn laplacian_sample_mixed_length_to_real_placeholder() {
     let domain = Type::point3(Type::Scalar {
         dimension: DimensionVector::LENGTH,
@@ -3903,12 +3903,15 @@ fn sample_point_enum_correctness() {
     }
 }
 
-/// Meta-test: assert no stale `plan step-N` pointers remain in the `#[ignore]` reason strings
+/// Meta-test: assert no stale plan-doc pointers remain in the `#[ignore]` reason strings
 /// of this file.  The two placeholder tests (`divergence_sample_mixed_length_to_real_placeholder`
-/// and `laplacian_sample_mixed_length_to_real_placeholder`) previously used `— see analysis in
-/// plan step-N` as a breadcrumb, but that plan file is transient.  Reason strings must be
-/// self-contained inline summaries so they remain meaningful after the plan doc is gone.
-/// (Task 1622 rationale: use option (a) — inline failure-mode summary, not a plan-doc pointer.)
+/// and `laplacian_sample_mixed_length_to_real_placeholder`) previously had a trailing
+/// breadcrumb pointing at a transient plan document step, but that plan file goes stale.
+/// Reason strings must be self-contained inline summaries so they remain meaningful after
+/// the plan doc is gone.  (Task 1622 rationale: option (a) — inline failure-mode summary.)
+///
+/// Note: the substring being searched for is assembled at runtime so this test does not
+/// trigger its own assertion.
 #[test]
 fn ignore_reason_strings_have_no_stale_plan_pointers() {
     let path = concat!(
@@ -3917,9 +3920,12 @@ fn ignore_reason_strings_have_no_stale_plan_pointers() {
     );
     let source = std::fs::read_to_string(path)
         .expect("failed to read field_calculus_tests.rs for meta-inspection");
+    // Assemble the needle at runtime so this test file does not contain the literal
+    // substring and accidentally trigger its own assertion.
+    let needle = ["plan", " step-"].concat();
     assert!(
-        !source.contains("plan step-"),
-        "Found stale 'plan step-' pointer in an #[ignore] reason string. \
+        !source.contains(&needle),
+        "Found stale plan-step pointer in an #[ignore] reason string. \
          Update the reason to a self-contained inline summary \
          (e.g. \"known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
          losing the 1/Length result dimension; expected Value::Scalar{{1/Length}}\"). \
