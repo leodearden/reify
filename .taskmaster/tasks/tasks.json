@@ -33758,18 +33758,19 @@
         "description": "Task 258 implemented only the 'params' reflective query for purpose parameters. The remaining filter member variants from the PRD remain unimplemented:\n\n- `.geometric_params` → filter Param/Auto cells by nonzero Length/Area/Angle dimension exponents\n- `.material_params` → filter by material type\n- `.sub_entities` → schema query for sub-entity references on the bound entity\n- `.ports` → schema query for port references\n- `.constraints` → schema query for constraint references\n\nBoth layers need updating:\n1. **Compiler** (`crates/reify-compiler/src/traits.rs`): Add filter logic in the `resolved_queries` loop for each query_kind. The `ResolvedSchemaQuery` struct already has a `query_kind: String` field — add branches for each new kind with appropriate filtering against the TopologyTemplate's value cells and schema.\n2. **Evaluator** (`crates/reify-eval/src/lib.rs`): Consume the `resolved_queries` from `CompiledPurpose` at runtime to evaluate each filter member access expression.\n\nmemory_hints: search \\\"ResolvedSchemaQuery query_kind params geometric_params compiler traits\\\", search \\\"Purpose reflective access compiler minimal slice params only\\\", get_entity \\\"Task 258\\\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "258",
           "259"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-13T23:02:23.993Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T23:02:23.299Z",
+      "lastModified": "2026-04-13T23:02:23.993Z",
       "taskCount": 1638,
       "completedCount": 1306,
       "tags": [
