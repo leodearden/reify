@@ -1054,18 +1054,19 @@ mod tests {
 
     #[test]
     fn sanitize_complex_finite_passthrough() {
-        let v = Value::Complex {
-            re: 3.0,
-            im: -4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        match sanitize_value(v) {
-            Value::Complex { re, im, .. } => {
-                assert!((re - 3.0).abs() < f64::EPSILON);
-                assert!((im - (-4.0)).abs() < f64::EPSILON);
-            }
-            other => panic!("expected Complex{{re:3.0, im:-4.0}}, got {:?}", other),
-        }
+        assert_eq!(
+            sanitize_value(Value::Complex {
+                re: 3.0,
+                im: -4.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }),
+            Value::Complex {
+                re: 3.0,
+                im: -4.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            "Complex(3.0, -4.0) must pass through bit-identical"
+        );
     }
 
     #[test]
@@ -1294,13 +1295,21 @@ mod tests {
 
     #[test]
     fn sanitize_orientation_valid_passthrough() {
-        let v = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert_orientation_approx!(sanitize_value(v), 1.0, 0.0, 0.0, 0.0);
+        assert_eq!(
+            sanitize_value(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            "Identity orientation must pass through bit-identical"
+        );
     }
 
     #[test]
