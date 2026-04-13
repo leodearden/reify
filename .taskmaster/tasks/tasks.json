@@ -6907,7 +6907,7 @@
         "updatedAt": "2026-04-11T11:49:30.653Z"
       },
       {
-        "id": "335",
+        "id": 335,
         "title": "Stdlib: imperial units — ft, thou, yd, lb, oz, lbf, psi, ksi, fl_oz, gal",
         "description": "Add imperial units to parser. ft=0.3048m, thou=0.0000254m, yd=0.9144m, lb=0.453592kg, oz=0.02835kg, lbf=4.44822N, psi=6894.76Pa, ksi=6894757Pa, fl_oz=2.957e-5m³, gal=3.785e-3m³. Temperature (degC/degF) already handled by tasks 174-177. Attach memory hints: search for 'UnitRegistry unit definitions stdlib imperial units' and 'CompiledUnit struct types.rs' when executing.",
         "status": "in-progress",
@@ -33825,7 +33825,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-13T23:18:37.729Z"
+        "updatedAt": "2026-04-13T23:18:37.729Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src",
+            "crates/reify-stdlib/src",
+            "crates/reify-types/src"
+          ]
+        }
       }
     ],
     "metadata": {
