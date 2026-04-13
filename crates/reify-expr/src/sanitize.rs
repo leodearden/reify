@@ -448,6 +448,8 @@ mod tests {
     }
 
     // ── sanitize_value wildcard arm (`_ => v`) characterization tests ─────────
+    // Note: *_finite_passthrough tests in the per-variant sections above also
+    // exercise this arm — finite values skip all guarded arms and reach `_ => v`.
 
     #[test]
     fn sanitize_undef_returns_undef() {
@@ -459,11 +461,23 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_bool_passthrough() {
-        assert_eq!(
-            sanitize_value(Value::Bool(true)),
+    fn sanitize_wildcard_variants_passthrough() {
+        // Smoke test: representative `_ => v` variants pass through bit-identical.
+        // Bool(true/false), Int, and String sample three of ~25 variants that all
+        // hit the wildcard arm; the *_finite_passthrough tests above cover the rest.
+        let cases = [
             Value::Bool(true),
-            "Bool(true) must pass through unchanged"
-        );
+            Value::Bool(false),
+            Value::Int(0),
+            Value::String("x".to_string()),
+        ];
+        for v in &cases {
+            assert_eq!(
+                sanitize_value(v.clone()),
+                *v,
+                "wildcard variant {:?} must pass through unchanged",
+                v
+            );
+        }
     }
 }
