@@ -248,6 +248,11 @@ impl CacheStore {
     ) -> EvalOutcome {
         let new_hash = new_result.content_hash();
 
+        // Hash-only cutoff is intentional. NaN payloads are canonicalized by
+        // Value::content_hash (every NaN bit-pattern collapses to f64::NAN.to_bits()),
+        // so two results differing only in NaN payload are treated as Unchanged here.
+        // See `Value::content_hash` doc — 'Known intentional exception — incremental
+        // cache' — in crates/reify-types/src/value.rs.
         if let Some(existing) = self.caches.get_mut(&node)
             && existing.result_hash == new_hash
         {
