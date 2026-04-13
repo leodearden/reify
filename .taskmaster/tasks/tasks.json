@@ -4790,7 +4790,7 @@
         "dependencies": [
           "250"
         ],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests",
@@ -4804,19 +4804,14 @@
           ],
           "_causation_id": "87cb5b2d-821c-457c-b886-1c25c2b7fc97",
           "memory_hints": {
-            "entities": [
-              "CompiledExprKind::AdHocSelector",
-              "SelectorKind"
-            ],
+            "entities": [],
             "queries": [
-              "ad-hoc port selector tests @face @point @edge connect frame constraints evaluator",
-              "selector failure undef diagnostic geometry check sub-component eval time",
-              "GeometryQuery::FaceFrame GeometryQuery::EdgeFrame reify-types"
+              "resolution for: Ad-hoc port selectors: tests"
             ]
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-13T19:01:13.051Z"
+        "updatedAt": "2026-04-13T19:03:11.022Z"
       },
       {
         "id": "252",
@@ -33759,9 +33754,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T19:01:13.052Z",
+      "lastModified": "2026-04-13T19:03:11.026Z",
       "taskCount": 1637,
-      "completedCount": 1305,
+      "completedCount": 1306,
       "tags": [
         "master"
       ]
