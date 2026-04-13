@@ -20349,6 +20349,16 @@
           "files": [
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/conformance.rs"
+          ],
+          "memory_hints": [
+            {
+              "type": "search",
+              "value": "Type::Error sentinel unresolved types cascading diagnostics reify"
+            },
+            {
+              "type": "search",
+              "value": "type inference error propagation diagnostic suppression"
+            }
           ]
         }
       },
