@@ -89,17 +89,7 @@ fn make_field_with_source(
 /// Call sites that need to retain `domain`/`codomain` after this call should
 /// `.clone()` before passing, matching the existing pattern throughout this file.
 fn make_analytical_field(domain: Type, codomain: Type, lambda: Value) -> (Value, Type) {
-    let field = Value::Field {
-        domain_type: domain.clone(),
-        codomain_type: codomain.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-    let field_type = Type::Field {
-        domain: Box::new(domain),
-        codomain: Box::new(codomain),
-    };
-    (field, field_type)
+    make_field_with_source(domain, codomain, FieldSourceKind::Analytical, lambda)
 }
 
 /// Unit test for `make_field_with_source`: verifies that the returned
