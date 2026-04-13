@@ -33887,6 +33887,16 @@
             "crates/reify-expr/src",
             "crates/reify-stdlib/src",
             "crates/reify-types/src"
+          ],
+          "memory_hints": [
+            {
+              "type": "search",
+              "value": "orientation_is_finite quaternion_is_finite rename normalization reify"
+            },
+            {
+              "type": "search",
+              "value": "orientation quaternion finiteness predicate import ordering"
+            }
           ]
         }
       },
