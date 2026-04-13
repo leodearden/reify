@@ -27105,16 +27105,16 @@
           "files": [
             "crates/reify-eval/src/tests_runner.rs"
           ],
-          "memory_hints": {
-            "entities": [
-              "CompiledModule",
-              "CompiledUnit"
-            ],
-            "queries": [
-              "CompiledModule structure fields units Vec CompiledUnit",
-              "run_tests test execution performance clone optimization"
-            ]
-          },
+          "memory_hints": [
+            {
+              "type": "search",
+              "value": "run_tests CompiledModule clone optimization per-test performance"
+            },
+            {
+              "type": "search",
+              "value": "CompiledModule clone reify-eval test runner memory overhead"
+            }
+          ],
           "_causation_id": "e9029562-837c-4b6e-8162-51e471faa708"
         }
       },
