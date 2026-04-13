@@ -905,3 +905,69 @@ fn m10_purpose_activation_example_activate_multi_constraint_purpose() {
         "deactivating mfg_ready must restore constraint count exactly"
     );
 }
+
+// ── Step 23: placeholder — .geometric_params NOT YET IMPLEMENTED ──────────
+//
+// This test is intentionally `#[ignore]`-annotated so it does not run under
+// normal `cargo test`. It documents the expected API shape for the
+// `.geometric_params` filtering feature that Task 259 did not ship.
+// A follow-up task should remove the `#[ignore]` and implement the feature.
+
+#[test]
+#[ignore = "pending Task 259 follow-up: .geometric_params filtering not implemented"]
+fn geometric_params_filtering_not_yet_implemented() {
+    // Expected API: a purpose whose body references subject.geometric_params
+    // should produce a resolved_queries entry with query_kind == "geometric_params"
+    // containing only Length/Area/Volume dimensioned params (filtering out
+    // dimensionless Scalars and non-dimensional params).
+    //
+    // Example source (does not compile cleanly today):
+    //   structure Widget {
+    //       param width : Length = 80mm
+    //       param height : Length = 60mm
+    //       param count : Scalar = 5
+    //   }
+    //   purpose check_geo(subject : Widget) {
+    //       constraint forall p in subject.geometric_params: determined(p)
+    //   }
+    //
+    // Expected assertion once implemented:
+    //   let query = &compiled.compiled_purposes[0].resolved_queries
+    //       .iter().find(|q| q.query_kind == "geometric_params").unwrap();
+    //   assert_eq!(query.resolved_ids.len(), 2); // width and height, not count
+    panic!("pending Task 259 follow-up: .geometric_params filtering not implemented");
+}
+
+// ── Step 24: placeholder — forall over reflective params NOT YET IMPLEMENTED
+//
+// This test is intentionally `#[ignore]`-annotated so it does not run under
+// normal `cargo test`. It documents the expected end-to-end behaviour for
+// `forall p in subject.params: determined(p)` evaluated through a purpose body.
+// A follow-up task should wire subject.params → Value::List in the evaluator
+// and remove the `#[ignore]`.
+
+#[test]
+#[ignore = "pending Task 259 follow-up: forall over reflective queries not wired in evaluator"]
+fn forall_over_reflective_params_not_yet_implemented() {
+    // Expected API: a purpose constraint `forall p in subject.params: determined(p)`
+    // should evaluate at activation time — iterating over the Value::List of
+    // param ValueCellIds and checking each is determined in the eval snapshot.
+    //
+    // Example source (currently produces Undef or compile error):
+    //   structure Bracket {
+    //       param width : Length = 80mm
+    //       param height : Length = 60mm
+    //   }
+    //   purpose all_params_determined(subject : Structure) {
+    //       constraint forall p in subject.params: determined(p)
+    //   }
+    //
+    // Expected assertion once implemented:
+    //   engine.activate_purpose("all_params_determined", "Bracket");
+    //   let check = engine.check(&compiled);
+    //   let purpose_constraint = check.constraint_results.iter()
+    //       .find(|r| r.id.entity.starts_with("purpose:all_params_determined@Bracket"))
+    //       .expect("purpose constraint result should exist");
+    //   assert_eq!(purpose_constraint.satisfaction, Satisfaction::Satisfied);
+    panic!("pending Task 259 follow-up: forall over reflective queries not wired in evaluator");
+}
