@@ -611,3 +611,97 @@ purpose strong(subject : Structure) {
         "after deactivating both: should have 0 objectives"
     );
 }
+
+// ── Step 17: unknown purpose activation is a no-op ────────────────────────
+
+#[test]
+fn unknown_purpose_activation_is_noop() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+    constraint width > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    let count_before = engine
+        .snapshot()
+        .expect("snapshot before")
+        .graph
+        .constraints
+        .len();
+
+    // Activating a non-existent purpose should be silently ignored (lib.rs:423)
+    engine.activate_purpose("does_not_exist", "Bracket");
+
+    let count_after = engine
+        .snapshot()
+        .expect("snapshot after")
+        .graph
+        .constraints
+        .len();
+
+    assert_eq!(
+        count_before, count_after,
+        "unknown purpose should not change constraint count"
+    );
+    assert!(
+        !engine.is_purpose_active("does_not_exist"),
+        "unknown purpose should not register as active"
+    );
+    assert!(
+        engine.active_objectives().is_empty(),
+        "unknown purpose should not inject any objectives"
+    );
+}
+
+// ── Step 18: reactivation after deactivation works ────────────────────────
+
+#[test]
+fn reactivation_after_deactivation() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint 80mm > 0mm
+    constraint 60mm > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    // First activation
+    engine.activate_purpose("mfg_ready", "Bracket");
+    let count_after_first = engine
+        .snapshot()
+        .expect("snapshot after first activate")
+        .graph
+        .constraints
+        .len();
+
+    // Deactivate
+    engine.deactivate_purpose("mfg_ready");
+
+    // Re-activate
+    engine.activate_purpose("mfg_ready", "Bracket");
+    let count_after_second = engine
+        .snapshot()
+        .expect("snapshot after second activate")
+        .graph
+        .constraints
+        .len();
+
+    assert_eq!(
+        count_after_first, count_after_second,
+        "re-activation should produce the same constraint count as first activation"
+    );
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "purpose should be active after re-activation"
+    );
+}
