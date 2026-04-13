@@ -456,7 +456,7 @@ mod tests {
         assert!(matches!(v, Value::Vector(_)));
     }
 
-    // SYNC: sanitize_value Real/Scalar tests mirrored in reify-expr::sanitize tests; Complex/Orientation arms in crate::complex tests — keep in sync
+    // SYNC: sanitize_value tests mirrored in reify-expr::sanitize tests — keep in sync
 
     // ── sanitize_value Real arm characterization tests ───────────────────────
 
