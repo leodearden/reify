@@ -1340,11 +1340,12 @@ mod tests {
     use super::*;
     use reify_types::{CompiledExpr, ValueCellId, ValueMap};
 
-    /// Helper: build a minimal 1-param identity lambda `|param_name| param_name : Real`.
+    /// Helper: build a minimal 1-param identity lambda `|param_name: Real| param_name`
+    /// with an empty capture map.
     ///
-    /// Used by tests that need a syntactically valid Lambda without caring about its body
-    /// semantics.  Supersedes the removed zero-arg `make_test_lambda()` helper — former callers
-    /// of that helper now pass `"x"`; two tests pass `"pt"`.
+    /// Used by tests that need a syntactically valid `Value::Lambda` without caring about
+    /// its body semantics.  The parameter name is configurable so tests asserting on specific
+    /// parameter names (e.g. `"pt"`) can use their own.
     fn make_scalar_lambda(param_name: &str) -> Value {
         let id = ValueCellId::new("$lambda0.S", param_name);
         let body = CompiledExpr::value_ref(id.clone(), Type::Real);
