@@ -804,6 +804,62 @@ mod tests {
         assert!(store.get(&node).is_some());
     }
 
+    /// End-to-end companion to
+    /// `reify_types::value::tests::nan_payload_hash_equality_invariant_exception`.
+    ///
+    /// Locks in the 'Known intentional exception — incremental cache' section of
+    /// `Value::content_hash`'s doc comment (in `crates/reify-types/src/value.rs`):
+    /// two `Value::Real` payloads that differ only in NaN bit-pattern must hash
+    /// identically, so the second evaluation triggers early cutoff (Unchanged) even
+    /// though the raw `f64` bits differ.
+    ///
+    /// If someone ever changes `Value::content_hash` to preserve NaN payloads this
+    /// test will fail here in `reify-eval`, not just in `reify-types`, making the
+    /// cache-layer regression immediately visible.
+    #[test]
+    fn record_evaluation_nan_payload_early_cutoff() {
+        // Build two f64 NaN values with distinct bit patterns.
+        let canonical_nan = f64::NAN;
+        let non_canon_nan = f64::from_bits(f64::NAN.to_bits() ^ 1);
+        assert!(canonical_nan.is_nan());
+        assert!(non_canon_nan.is_nan());
+        assert_ne!(canonical_nan.to_bits(), non_canon_nan.to_bits());
+
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("Bracket", "x"));
+
+        // First evaluation: cold start with canonical NaN -> Changed
+        let result1 = CachedResult::Value(
+            Value::Real(canonical_nan),
+            DeterminacyState::Determined,
+        );
+        let outcome1 = store.record_evaluation(
+            node.clone(),
+            result1,
+            VersionId(1),
+            DependencyTrace::default(),
+        );
+        assert_eq!(outcome1, EvalOutcome::Changed);
+
+        // Second evaluation: NaN with a different bit pattern -> Unchanged (early cutoff)
+        // Value::content_hash canonicalizes all NaN payloads to f64::NAN.to_bits(),
+        // so the two results produce the same hash and the cache treats them as equal.
+        let result2 = CachedResult::Value(
+            Value::Real(non_canon_nan),
+            DeterminacyState::Determined,
+        );
+        let outcome2 = store.record_evaluation(
+            node.clone(),
+            result2,
+            VersionId(2),
+            DependencyTrace::default(),
+        );
+        assert_eq!(outcome2, EvalOutcome::Unchanged);
+
+        // basis_version is still bumped even on early cutoff
+        assert_eq!(store.get(&node).unwrap().basis_version, VersionId(2));
+    }
+
     // --- Version fast path tests ---
 
     #[test]
