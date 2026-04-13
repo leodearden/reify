@@ -56,7 +56,7 @@ fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVect
     }
 }
 
-// ─── step-1: yd — Length ──────────────────────────────────────────────────────
+// ─── step-1/2: yd — Length ────────────────────────────────────────────────────
 
 #[test]
 fn stdlib_yd_resolves_to_length_0p9144() {
@@ -90,4 +90,45 @@ fn stdlib_units_module_contains_yd_with_no_offset() {
         yd.factor
     );
     assert!(yd.offset.is_none(), "yd should have no offset");
+}
+
+// ─── step-3/4: lbf — Force ────────────────────────────────────────────────────
+
+/// lbf = 0.45359237 kg × 9.80665 m/s² = 4.4482216152605 N (exact)
+const LBF_SI: f64 = 4.4482216152605;
+
+#[test]
+fn stdlib_lbf_resolves_to_force_4p4482216152605() {
+    let (v, d) = stdlib_param_si_value("Force", "1lbf");
+    assert!(
+        (v - LBF_SI).abs() < 1e-9,
+        "1lbf should be {} N, got {}",
+        LBF_SI,
+        v
+    );
+    assert_eq!(d, DimensionVector::FORCE);
+}
+
+#[test]
+fn stdlib_units_module_contains_lbf_with_force_dimension() {
+    let modules = stdlib_loader::load_stdlib();
+    let units_module = modules
+        .iter()
+        .find(|m| format!("{}", m.path) == "std/units")
+        .expect("std/units module not found");
+
+    let lbf = units_module
+        .units
+        .iter()
+        .find(|u| u.name == "lbf")
+        .expect("unit 'lbf' not found in std/units");
+
+    assert_eq!(lbf.dimension, DimensionVector::FORCE, "lbf dimension wrong");
+    assert!(
+        (lbf.factor - LBF_SI).abs() < 1e-9,
+        "lbf factor should be {}, got {}",
+        LBF_SI,
+        lbf.factor
+    );
+    assert!(lbf.offset.is_none(), "lbf should have no offset");
 }
