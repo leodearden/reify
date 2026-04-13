@@ -297,6 +297,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn magnitude_nan_im_dimensioned_returns_undef() {
+        // Complex{re:1.0, im:NaN, LENGTH}.magnitude → Undef (dimensioned im path)
+        // hypot propagates NaN; sanitize_value Scalar arm catches non-finite si_value
+        assert!(
+            call_complex_method(1.0, f64::NAN, DimensionVector::LENGTH, Type::length(), "magnitude", Type::length()).is_undef(),
+            "z.magnitude with NaN imaginary part (dimensioned) should return Undef"
+        );
+    }
+
     // ── method regressions: finite values still work ──────────────────────────
 
     #[test]
