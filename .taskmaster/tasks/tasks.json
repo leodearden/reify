@@ -27311,11 +27311,11 @@
         "description": "Two improvements to `crates/reify-eval/src/cache.rs` strengthening the link between the cache's hash-only early-cutoff and the NaN-canonicalization invariant documented in `Value::content_hash`:\n\n1. **Inline cross-reference comment (lines 222-223):** The `record_evaluation` method performs hash-only comparison for early cutoff. `value.rs` already documents this call site as a \"Known intentional exception\" (lines 321-328), but someone reading `cache.rs` alone would not know about the NaN invariant exception. Add a brief comment near the hash comparison, e.g.: `// Hash-only cutoff is intentional; NaN payloads are canonicalized by content_hash. See Value::content_hash doc.`\n\n2. **End-to-end NaN early-cutoff test:** The existing tests in `value.rs` (`nan_payload_hash_equality_invariant_exception`) verify the NaN hash-equality exception at the Value layer only. Add a test in `cache.rs` that records two evaluations whose results differ only in NaN payload and asserts the second returns `EvalOutcome::Unchanged`, confirming the documented intentional behaviour end-to-end.\n\nMemory hints: search \"Value content_hash NaN canonicalization hash-equality invariant\", search \"cache record_evaluation early cutoff hash\", get_entity \"CacheStore\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:15:48.209Z",
+        "updatedAt": "2026-04-13T23:36:28.394Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -33861,7 +33861,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T23:36:26.087Z",
+      "lastModified": "2026-04-13T23:36:28.394Z",
       "taskCount": 1640,
       "completedCount": 1311,
       "tags": [
