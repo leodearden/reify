@@ -6907,16 +6907,17 @@
         "updatedAt": "2026-04-11T11:49:30.653Z"
       },
       {
-        "id": 335,
+        "id": "335",
         "title": "Stdlib: imperial units — ft, thou, yd, lb, oz, lbf, psi, ksi, fl_oz, gal",
-        "description": "Add imperial units to parser. ft=0.3048m, thou=0.0000254m, yd=0.9144m, lb=0.453592kg, oz=0.02835kg, lbf=4.44822N, psi=6894.76Pa, ksi=6894757Pa, fl_oz=2.957e-5m³, gal=3.785e-3m³. Temperature (degC/degF) already handled by tasks 174-177.",
-        "details": "## Tests\n- 1ft=0.3048m, 1lb=0.453592kg, 1psi=6894.76Pa\n- Mixed: lbf * mm → correct energy\n- All have correct dimensions",
-        "testStrategy": "cargo test -p reify-syntax -- imperial",
-        "priority": "high",
+        "description": "Add imperial units to parser. ft=0.3048m, thou=0.0000254m, yd=0.9144m, lb=0.453592kg, oz=0.02835kg, lbf=4.44822N, psi=6894.76Pa, ksi=6894757Pa, fl_oz=2.957e-5m³, gal=3.785e-3m³. Temperature (degC/degF) already handled by tasks 174-177. Attach memory hints: search for 'UnitRegistry unit definitions stdlib imperial units' and 'CompiledUnit struct types.rs' when executing.",
+        "status": "in-progress",
         "dependencies": [
           "334"
         ],
-        "status": "in-progress",
+        "priority": "high",
+        "details": "## Tests\n- 1ft=0.3048m, 1lb=0.453592kg, 1psi=6894.76Pa\n- Mixed: lbf * mm → correct energy\n- All have correct dimensions\n\n## Memory Hints\n- Key entities: UnitRegistry, CompiledUnit, reify-stdlib",
+        "testStrategy": "cargo test -p reify-syntax -- imperial",
+        "subtasks": [],
         "metadata": {
           "milestone": "stdlib-M8.3",
           "modules": [
@@ -6941,9 +6942,7 @@
               "imperial unit conversion factors ft yd lb oz lbf psi"
             ]
           }
-        },
-        "subtasks": [],
-        "updatedAt": "2026-04-13T23:05:05.524Z"
+        }
       },
       {
         "id": 336,
@@ -33211,7 +33210,7 @@
         }
       },
       {
-        "id": "1612",
+        "id": 1612,
         "title": "Use make_analytical_field in run_dim_metadata_test and add source param",
         "description": "In crates/reify-expr/tests/field_calculus_tests.rs, run_dim_metadata_test (~line 542) manually constructs Value::Field + Type::Field (~lines 574-586) instead of calling make_analytical_field. Add a source parameter to make_analytical_field (or create make_field_with_source variant) to support non-Analytical sources, then replace the inline construction in run_dim_metadata_test. Additionally, verify the existence of make_analytical_field before use, as it was not created for Task 413. Add memory_hints for execution context.",
         "status": "in-progress",
