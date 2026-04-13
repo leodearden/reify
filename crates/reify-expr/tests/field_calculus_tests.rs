@@ -68,14 +68,6 @@ fn make_analytical_field(domain: Type, codomain: Type, lambda: Value) -> (Value,
     (field, field_type)
 }
 
-/// Result `Type::Field` for a `divergence` operator: domain → Real.
-fn divergence_result_type(domain: Type) -> Type {
-    Type::Field {
-        domain: Box::new(domain),
-        codomain: Box::new(Type::Real),
-    }
-}
-
 /// Result `Type::Field` for a `curl` operator: domain → Vec3(Real).
 fn curl_result_type(domain: Type) -> Type {
     Type::Field {
@@ -84,34 +76,28 @@ fn curl_result_type(domain: Type) -> Type {
     }
 }
 
-/// Result `Type::Field` for a `laplacian` operator: domain → Real.
-fn laplacian_result_type(domain: Type) -> Type {
+/// Result `Type::Field` for operators producing a scalar field: `domain → Real`.
+///
+/// Used by divergence and laplacian.
+fn scalar_field_result_type(domain: Type) -> Type {
     Type::Field {
         domain: Box::new(domain),
         codomain: Box::new(Type::Real),
     }
 }
 
-/// Result `Type::Field` for a `gradient` operator: domain → Vec_n(Real).
-///
-/// Dispatches on `n`: uses `Type::vec2`/`Type::vec3` for n=2/3 and the
-/// generic `Type::Vector { n, quantity }` struct literal for other values.
+/// Result `Type::Field` for a `gradient` operator: `domain → Vector_n(Real)`.
 fn gradient_result_type(domain: Type, n: usize) -> Type {
-    let codomain = match n {
-        2 => Type::vec2(Type::Real),
-        3 => Type::vec3(Type::Real),
-        _ => Type::Vector {
-            n,
-            quantity: Box::new(Type::Real),
-        },
-    };
     Type::Field {
         domain: Box::new(domain),
-        codomain: Box::new(codomain),
+        codomain: Box::new(Type::Vector {
+            n,
+            quantity: Box::new(Type::Real),
+        }),
     }
 }
 
-/// Unit test for `gradient_result_type`: Vec_n(Real) result field, tested at n=2 and n=3.
+/// Unit test for `gradient_result_type`: Vec_n(Real) result field, tested at n=2, n=3, and n=4.
 #[test]
 fn gradient_result_type_returns_field_vec_n_real() {
     // n=2: Vector2(Real) codomain
@@ -131,6 +117,30 @@ fn gradient_result_type_returns_field_vec_n_real() {
         codomain: Box::new(Type::vec3(Type::Real)),
     };
     assert_eq!(got3, expected3);
+
+    // n=4: arbitrary n — guards the collapsed single-expression form
+    let domain4 = Type::point3(Type::Real);
+    let got4 = gradient_result_type(domain4.clone(), 4);
+    let expected4 = Type::Field {
+        domain: Box::new(domain4),
+        codomain: Box::new(Type::Vector {
+            n: 4,
+            quantity: Box::new(Type::Real),
+        }),
+    };
+    assert_eq!(got4, expected4);
+}
+
+/// Unit test for `scalar_field_result_type`: Real codomain result field.
+#[test]
+fn scalar_field_result_type_returns_field_real_codomain() {
+    let domain = Type::point3(Type::Real);
+    let got = scalar_field_result_type(domain.clone());
+    let expected = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(Type::Real),
+    };
+    assert_eq!(got, expected);
 }
 
 /// Assert that a `Value::Vector` has components matching `expected` within `tol`.
@@ -232,7 +242,7 @@ fn build_divergence_identity_field(label: &str) -> (Value, Type) {
     let div_expr = make_function_call(
         "divergence",
         vec![CompiledExpr::literal(field, field_type)],
-        divergence_result_type(domain_type.clone()),
+        scalar_field_result_type(domain_type.clone()),
     );
 
     let values = ValueMap::new();
@@ -244,7 +254,7 @@ fn build_divergence_identity_field(label: &str) -> (Value, Type) {
         div_result
     );
 
-    (div_result, divergence_result_type(domain_type))
+    (div_result, scalar_field_result_type(domain_type))
 }
 
 /// Build the identity vector field F(x,y,z)=[x,y,z], compute its divergence,
@@ -414,7 +424,7 @@ fn build_laplacian_quadratic_field(label: &str) -> (Value, Type) {
     let lap_expr = make_function_call(
         "laplacian",
         vec![CompiledExpr::literal(field, field_type)],
-        laplacian_result_type(domain_type.clone()),
+        scalar_field_result_type(domain_type.clone()),
     );
 
     let values = ValueMap::new();
@@ -426,7 +436,7 @@ fn build_laplacian_quadratic_field(label: &str) -> (Value, Type) {
         lap_result
     );
 
-    (lap_result, laplacian_result_type(domain_type))
+    (lap_result, scalar_field_result_type(domain_type))
 }
 
 /// Build the quadratic scalar field f(x,y,z)=x²+y²+z², compute its laplacian,
@@ -1315,7 +1325,7 @@ fn divergence_constant_field_near_zero() {
     let div_expr = make_function_call(
         "divergence",
         vec![CompiledExpr::literal(field, field_type)],
-        divergence_result_type(domain_type.clone()),
+        scalar_field_result_type(domain_type.clone()),
     );
 
     let values = ValueMap::new();
@@ -1333,7 +1343,7 @@ fn divergence_constant_field_near_zero() {
     let sample_expr = make_function_call(
         "sample",
         vec![
-            CompiledExpr::literal(div_result, divergence_result_type(domain_type.clone())),
+            CompiledExpr::literal(div_result, scalar_field_result_type(domain_type.clone())),
             CompiledExpr::literal(point, domain_type),
         ],
         Type::Real,
@@ -1491,7 +1501,7 @@ fn laplacian_linear_field_near_zero() {
     let lap_expr = make_function_call(
         "laplacian",
         vec![CompiledExpr::literal(field, field_type)],
-        laplacian_result_type(domain_type.clone()),
+        scalar_field_result_type(domain_type.clone()),
     );
 
     let values = ValueMap::new();
@@ -1509,7 +1519,7 @@ fn laplacian_linear_field_near_zero() {
     let sample_expr = make_function_call(
         "sample",
         vec![
-            CompiledExpr::literal(lap_result, laplacian_result_type(domain_type.clone())),
+            CompiledExpr::literal(lap_result, scalar_field_result_type(domain_type.clone())),
             CompiledExpr::literal(point, domain_type),
         ],
         Type::Real,
@@ -2549,7 +2559,7 @@ fn laplacian_1d_quadratic_accuracy() {
     let lap_expr = make_function_call(
         "laplacian",
         vec![CompiledExpr::literal(field, field_type)],
-        laplacian_result_type(Type::Real),
+        scalar_field_result_type(Type::Real),
     );
 
     let values = ValueMap::new();
@@ -2565,7 +2575,7 @@ fn laplacian_1d_quadratic_accuracy() {
     let sample_expr = make_function_call(
         "sample",
         vec![
-            CompiledExpr::literal(lap_result, laplacian_result_type(Type::Real)),
+            CompiledExpr::literal(lap_result, scalar_field_result_type(Type::Real)),
             CompiledExpr::literal(Value::Real(3.0), Type::Real),
         ],
         Type::Real,
