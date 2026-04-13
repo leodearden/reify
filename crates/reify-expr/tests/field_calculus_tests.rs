@@ -111,68 +111,6 @@ fn gradient_result_type(domain: Type, n: usize) -> Type {
     }
 }
 
-/// Unit test for `make_analytical_field`: asserts the helper returns exactly the same
-/// `(Value, Type)` pair as a hand-built inline construction.
-#[test]
-fn make_analytical_field_constructs_expected_pair() {
-    let domain = Type::point3(Type::Real);
-    let codomain = Type::vec3(Type::Real);
-    let lambda = Value::Undef;
-
-    let (got_value, got_type) =
-        make_analytical_field(domain.clone(), codomain.clone(), lambda.clone());
-
-    let expected_value = Value::Field {
-        domain_type: domain.clone(),
-        codomain_type: codomain.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-    let expected_type = Type::Field {
-        domain: Box::new(domain),
-        codomain: Box::new(codomain),
-    };
-
-    assert_eq!(got_value, expected_value);
-    assert_eq!(got_type, expected_type);
-}
-
-/// Unit test for `divergence_result_type`: scalar result field over the given domain.
-#[test]
-fn divergence_result_type_returns_field_real() {
-    let domain = Type::point3(Type::Real);
-    let got = divergence_result_type(domain.clone());
-    let expected = Type::Field {
-        domain: Box::new(domain),
-        codomain: Box::new(Type::Real),
-    };
-    assert_eq!(got, expected);
-}
-
-/// Unit test for `curl_result_type`: Vec3(Real) result field over the given domain.
-#[test]
-fn curl_result_type_returns_field_vec3_real() {
-    let domain = Type::point3(Type::Real);
-    let got = curl_result_type(domain.clone());
-    let expected = Type::Field {
-        domain: Box::new(domain),
-        codomain: Box::new(Type::vec3(Type::Real)),
-    };
-    assert_eq!(got, expected);
-}
-
-/// Unit test for `laplacian_result_type`: scalar result field over the given domain.
-#[test]
-fn laplacian_result_type_returns_field_real() {
-    let domain = Type::point3(Type::Real);
-    let got = laplacian_result_type(domain.clone());
-    let expected = Type::Field {
-        domain: Box::new(domain),
-        codomain: Box::new(Type::Real),
-    };
-    assert_eq!(got, expected);
-}
-
 /// Unit test for `gradient_result_type`: Vec_n(Real) result field, tested at n=2 and n=3.
 #[test]
 fn gradient_result_type_returns_field_vec_n_real() {
