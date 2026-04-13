@@ -266,3 +266,97 @@ fn stdlib_units_module_contains_fl_oz_and_gal_with_volume_dimension() {
     );
     assert!(gal.offset.is_none(), "gal should have no offset");
 }
+
+// ─── step-9: cross-unit arithmetic lbf * mm → Energy ─────────────────────────
+
+#[test]
+fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
+    // `2lbf * 3mm` compiles to a BinOp whose result_type carries FORCE×LENGTH = ENERGY.
+    let source = "structure def S { param e : Energy = 2lbf * 3mm }";
+    let module = compile_with_stdlib_helper(source);
+
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errs.is_empty(), "unexpected errors: {:?}", errs);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template not found");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "e")
+        .expect("e cell not found");
+
+    // The declared type must be Energy's dimension.
+    assert_eq!(
+        cell.cell_type,
+        reify_types::Type::Scalar {
+            dimension: DimensionVector::ENERGY
+        },
+        "cell_type should be Scalar{{ENERGY}}"
+    );
+
+    let expr = cell.default_expr.as_ref().expect("e has no default_expr");
+
+    // BinOp result type must be Force × Length = Energy.
+    let expected_dim = DimensionVector::FORCE.mul(&DimensionVector::LENGTH);
+    assert_eq!(
+        expr.result_type,
+        reify_types::Type::Scalar {
+            dimension: expected_dim
+        },
+        "BinOp result_type should be Scalar{{FORCE×LENGTH}}, got {:?}",
+        expr.result_type
+    );
+
+    // The outer expression must be a Multiply BinOp.
+    match &expr.kind {
+        reify_types::CompiledExprKind::BinOp {
+            op: reify_types::BinOp::Mul,
+            left,
+            right,
+        } => {
+            // Left operand: 2lbf → Scalar with FORCE dimension, si_value ≈ 2 * LBF_SI
+            match &left.kind {
+                reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+                    si_value,
+                    dimension,
+                    ..
+                }) => {
+                    assert_eq!(*dimension, DimensionVector::FORCE, "left dim should be FORCE");
+                    let expected = 2.0 * LBF_SI;
+                    assert!(
+                        (si_value - expected).abs() < 1e-9,
+                        "left si_value should be {} (2×lbf), got {}",
+                        expected,
+                        si_value
+                    );
+                }
+                other => panic!("left operand should be Literal(Scalar), got {:?}", other),
+            }
+            // Right operand: 3mm → Scalar with LENGTH dimension, si_value = 0.003
+            match &right.kind {
+                reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+                    si_value,
+                    dimension,
+                    ..
+                }) => {
+                    assert_eq!(*dimension, DimensionVector::LENGTH, "right dim should be LENGTH");
+                    assert!(
+                        (si_value - 0.003).abs() < 1e-12,
+                        "right si_value should be 0.003 (3mm), got {}",
+                        si_value
+                    );
+                }
+                other => panic!("right operand should be Literal(Scalar), got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp{{Mul, _, _}}, got {:?}", other),
+    }
+}
