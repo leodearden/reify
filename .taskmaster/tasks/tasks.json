@@ -33174,11 +33174,11 @@
         "description": "Delete the four tautological tests in crates/reify-expr/tests/field_calculus_tests.rs that duplicate helper bodies as expected values: make_analytical_field_constructs_expected_pair (~line 117), divergence_result_type_returns_field_real (~line 142), curl_result_type_returns_field_vec3_real (~line 154), laplacian_result_type_returns_field_real (~line 165). These tests reconstruct the helper body as the expected value, so they can never detect bugs. Optionally replace with property-based assertions (e.g., returned field has source==Analytical).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-13T18:41:52.428Z",
+        "updatedAt": "2026-04-13T18:56:57.021Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -33759,9 +33759,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T18:55:23.579Z",
+      "lastModified": "2026-04-13T18:56:57.022Z",
       "taskCount": 1637,
-      "completedCount": 1304,
+      "completedCount": 1305,
       "tags": [
         "master"
       ]
