@@ -3903,15 +3903,23 @@ fn sample_point_enum_correctness() {
     }
 }
 
-/// Meta-test: assert no stale plan-doc pointers remain in the `#[ignore]` reason strings
-/// of this file.  The two placeholder tests (`divergence_sample_mixed_length_to_real_placeholder`
-/// and `laplacian_sample_mixed_length_to_real_placeholder`) previously had a trailing
+/// Meta-test: assert all `#[ignore]` reason strings in this file are
+/// self-contained inline summaries starting with `"known bug:"`.  The two placeholder
+/// tests (`divergence_sample_mixed_length_to_real_placeholder` and
+/// `laplacian_sample_mixed_length_to_real_placeholder`) previously had a trailing
 /// breadcrumb pointing at a transient plan document step, but that plan file goes stale.
 /// Reason strings must be self-contained inline summaries so they remain meaningful after
 /// the plan doc is gone.  (Task 1622 rationale: option (a) — inline failure-mode summary.)
 ///
-/// Note: the substring being searched for is assembled at runtime so this test does not
-/// trigger its own assertion.
+/// Two guards are applied:
+/// 1. **Positive invariant** — every `#[ignore]` reason string must begin with
+///    `"known bug:"`.  This catches stale pointers of any form (`see plan.md`,
+///    `step-3 of plan`, `analysis in step-7`, …) without enumerating all bad patterns.
+/// 2. **Negative sentinel** — the specific original stale-pointer substring (assembled
+///    at runtime to avoid self-triggering) is also checked directly as belt-and-suspenders.
+///
+/// The marker and needle strings are assembled at runtime so this meta-test does not
+/// contain the literal substrings and accidentally trigger its own assertions.
 #[test]
 fn ignore_reason_strings_have_no_stale_plan_pointers() {
     let path = concat!(
@@ -3919,9 +3927,28 @@ fn ignore_reason_strings_have_no_stale_plan_pointers() {
         "/tests/field_calculus_tests.rs"
     );
     let source = std::fs::read_to_string(path)
-        .expect("failed to read field_calculus_tests.rs for meta-inspection");
-    // Assemble the needle at runtime so this test file does not contain the literal
-    // substring and accidentally trigger its own assertion.
+        .unwrap_or_else(|e| panic!("failed to read {path} for meta-inspection: {e}"));
+
+    // Positive invariant: every #[ignore] reason string must begin with "known bug:".
+    // Catches any stale-pointer form without enumerating all bad patterns.
+    // Marker assembled at runtime so this test does not contain the literal substring.
+    let marker = ["#[ignore", " = \""].concat();
+    let mut remaining = source.as_str();
+    while let Some(pos) = remaining.find(marker.as_str()) {
+        let reason_start = &remaining[pos + marker.len()..];
+        let preview: String = reason_start.chars().take(80).collect();
+        assert!(
+            reason_start.starts_with("known bug:"),
+            "An #[ignore] reason string does not begin with \"known bug:\":\n  {preview:?}\n\
+             Reason strings must be self-contained inline summaries (Task 1622 convention).\n\
+             Affected tests: divergence_sample_mixed_length_to_real_placeholder, \
+             laplacian_sample_mixed_length_to_real_placeholder."
+        );
+        remaining = &remaining[pos + 1..];
+    }
+
+    // Belt-and-suspenders negative check for the specific original stale-pointer pattern.
+    // Assembled at runtime so this test does not contain the literal substring.
     let needle = ["plan", " step-"].concat();
     assert!(
         !source.contains(&needle),
