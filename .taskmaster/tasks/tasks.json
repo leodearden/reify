@@ -5009,12 +5009,9 @@
             "crates/reify-eval/src/lib.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "Task 259"
-            ],
+            "entities": [],
             "queries": [
-              "value-cell lifetime bound-entity member resolution reflective access task 259",
-              "task 259 prerequisites scope re-examination M10 evaluator forall iteration"
+              "resolution for: Purpose reflective access: evaluator"
             ]
           }
         },
@@ -33703,7 +33700,7 @@
         "id": "1635",
         "title": "Add dimensioned mirror tests for magnitude NaN/Inf on im branch",
         "description": "Review suggestion from esc-861-20 (reviewer_comprehensive): the new `magnitude_nan_im_returns_undef` and `magnitude_inf_im_returns_undef` tests in `crates/reify-expr/src/complex.rs` only exercise the dimensionless path. The dimensioned magnitude branch has coverage for NaN on `re` (see ~line 266) but no symmetric NaN/Inf-on-im case — a regression isolated to the dimensioned im branch of sanitize_value could slip through.\n\nAdd dimensioned mirrors, e.g.:\n- `magnitude_nan_im_dimensioned_returns_undef` — `call_complex_method(1.0, f64::NAN, DimensionVector::LENGTH, Type::length(), \"magnitude\", Type::length())`\n- `magnitude_inf_im_dimensioned_returns_undef` — `call_complex_method(1.0, f64::INFINITY, DimensionVector::LENGTH, Type::length(), \"magnitude\", Type::length())`\n\nto lock the dimensioned branch symmetrically.\n\nAdd memory hints pointing to the existing magnitude test patterns in `reify-expr/src/complex.rs` to guide the implementation and ensure consistency with existing tests.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "Refer to existing test patterns in `reify-expr/src/complex.rs` for guidance on implementing dimensioned mirror tests.",
@@ -33721,7 +33718,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-13T18:41:52.837Z"
+        "updatedAt": "2026-04-13T18:50:21.223Z"
       },
       {
         "id": "1636",
@@ -33762,9 +33759,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T18:47:28.350Z",
+      "lastModified": "2026-04-13T18:50:21.224Z",
       "taskCount": 1637,
-      "completedCount": 1302,
+      "completedCount": 1303,
       "tags": [
         "master"
       ]
