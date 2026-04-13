@@ -47,7 +47,41 @@ fn make_value_lambda(
     }
 }
 
+/// Build a `Value::Field` / `Type::Field` pair with an explicit source kind.
+///
+/// The general variant underlying [`make_analytical_field`]: accepts any
+/// `FieldSourceKind` as an explicit parameter rather than hardcoding
+/// `FieldSourceKind::Analytical`.
+///
+/// Parameter order `(domain, codomain, source, lambda)` preserves the existing
+/// `(domain, codomain, …, lambda)` shape from `make_analytical_field` — a
+/// reader translating between the two helpers need only insert one argument.
+///
+/// Call sites that need to retain `domain`/`codomain` after this call should
+/// `.clone()` before passing, matching the existing pattern throughout this file.
+fn make_field_with_source(
+    domain: Type,
+    codomain: Type,
+    source: FieldSourceKind,
+    lambda: Value,
+) -> (Value, Type) {
+    let field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source,
+        lambda: Box::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+    (field, field_type)
+}
+
 /// Build an analytical `Value::Field` / `Type::Field` pair from typed components.
+///
+/// Convenience wrapper over [`make_field_with_source`] that fixes the source to
+/// `FieldSourceKind::Analytical`.
 ///
 /// Returns `(Value::Field { domain_type, codomain_type, source: Analytical, lambda },
 ///           Type::Field  { domain, codomain })`.
