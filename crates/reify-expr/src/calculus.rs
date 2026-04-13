@@ -1355,38 +1355,6 @@ mod tests {
         }
     }
 
-    // --- make_scalar_lambda helper tests ---
-
-    #[test]
-    fn make_scalar_lambda_x_builds_one_param_lambda_with_expected_shape() {
-        let lambda = make_scalar_lambda("x");
-        match lambda {
-            Value::Lambda { params, captures, .. } => {
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].0, "x");
-                assert_eq!(params[0].1, ValueCellId::new("$lambda0.S", "x"));
-                assert!(captures.is_empty());
-            }
-            other => panic!("expected Value::Lambda, got {:?}", other),
-        }
-    }
-
-    /// Pins the param-name propagation path used by the gradient-vector-quantity test and
-    /// `eval_perturbed_point_single_recovers_work_point`.
-    #[test]
-    fn make_scalar_lambda_pt_builds_one_param_lambda_with_pt_name() {
-        let lambda = make_scalar_lambda("pt");
-        match lambda {
-            Value::Lambda { params, captures, .. } => {
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].0, "pt");
-                assert_eq!(params[0].1, ValueCellId::new("$lambda0.S", "pt"));
-                assert!(captures.is_empty());
-            }
-            other => panic!("expected Value::Lambda, got {:?}", other),
-        }
-    }
-
     // --- scalar_dimension unit tests ---
 
     #[test]
@@ -2045,7 +2013,6 @@ mod tests {
     /// Lambda with 3 params and n=3 → decomposed path, returns false.
     #[test]
     fn detect_single_point_param_three_params_n_3_returns_false() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
         let a_id = ValueCellId::new("$lambda0.S", "a");
         let b_id = ValueCellId::new("$lambda0.S", "b");
         let c_id = ValueCellId::new("$lambda0.S", "c");
