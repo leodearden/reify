@@ -1750,9 +1750,6 @@ mod tests {
     /// 1-element point, and verifies:
     /// (a) the result equals the expected `Value::Point` with the perturbed coordinate, and
     /// (b) `work_point` is correctly recovered with length `n=1` after the call.
-    ///
-    /// This characterises the happy path and must pass both before and after the
-    /// `if let` → `match/unreachable!` refactor in step-3.
     #[test]
     fn eval_perturbed_point_single_recovers_work_point() {
         // Identity lambda: |pt| pt
@@ -1791,8 +1788,6 @@ mod tests {
     /// `single_point_param=false` and an empty `work_point`, and verifies:
     /// (a) the result equals `Value::Real(1.0)`, and
     /// (b) `work_point` remains empty after the call (the decomposed path never touches it).
-    ///
-    /// Must pass both before and after the step-3 `if let` → `match/unreachable!` refactor.
     #[test]
     fn eval_perturbed_point_decomposed_returns_correct_result() {
         // Identity lambda: |x| x
@@ -1828,9 +1823,8 @@ mod tests {
     /// non-empty `work_point` panics in debug builds with a message containing
     /// "work_point must be empty".
     ///
-    /// The doc contract says `work_point` must be empty in the decomposed path.  This test
-    /// initially FAILS (no panic) because the `debug_assert` guard does not yet exist;
-    /// after step-5 adds it the test must pass.
+    /// The `debug_assert` guard enforcing the doc contract fires before the lambda is invoked,
+    /// so the test panics with the expected message.
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "work_point must be empty")]
