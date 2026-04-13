@@ -3902,3 +3902,28 @@ fn sample_point_enum_correctness() {
         assert_eq!(items[1], Value::Real(2.0));
     }
 }
+
+/// Meta-test: assert no stale `plan step-N` pointers remain in the `#[ignore]` reason strings
+/// of this file.  The two placeholder tests (`divergence_sample_mixed_length_to_real_placeholder`
+/// and `laplacian_sample_mixed_length_to_real_placeholder`) previously used `— see analysis in
+/// plan step-N` as a breadcrumb, but that plan file is transient.  Reason strings must be
+/// self-contained inline summaries so they remain meaningful after the plan doc is gone.
+/// (Task 1622 rationale: use option (a) — inline failure-mode summary, not a plan-doc pointer.)
+#[test]
+fn ignore_reason_strings_have_no_stale_plan_pointers() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/field_calculus_tests.rs"
+    );
+    let source = std::fs::read_to_string(path)
+        .expect("failed to read field_calculus_tests.rs for meta-inspection");
+    assert!(
+        !source.contains("plan step-"),
+        "Found stale 'plan step-' pointer in an #[ignore] reason string. \
+         Update the reason to a self-contained inline summary \
+         (e.g. \"known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
+         losing the 1/Length result dimension; expected Value::Scalar{{1/Length}}\"). \
+         Affected tests: divergence_sample_mixed_length_to_real_placeholder, \
+         laplacian_sample_mixed_length_to_real_placeholder."
+    );
+}
