@@ -27044,7 +27044,7 @@
         }
       },
       {
-        "id": "1273",
+        "id": 1273,
         "title": "Optimize run_tests to avoid per-test full CompiledModule clone",
         "description": "Performance suggestion from Task 268 review (crates/reify-eval/src/tests_runner.rs:78-93).\n\n`run_tests` currently calls `module.clone()` once per test via `build_isolated_module`, then mutates template lists/constraints and constructs a fresh `Engine`. Cost is O(tests × module_size) just for the clones, plus fresh engine re-eval of everything each iteration. Fine for small test suites but will scale poorly as suite/module sizes grow.\n\nProposed approach: build a single shared \"base\" `CompiledModule` with all non-test templates pre-stripped once, then per-test replace just the one retained test template slot (or wrap in a lightweight borrowing newtype). Reduces per-test overhead from a full deep clone to one template swap.\n\nLow priority — defer until there is evidence of a slow test suite. Confirm no behavioral change via the existing integration tests in crates/reify-eval/tests/test_runner.rs.\n\nAdditionally, integrate memory hints for execution context: entities include `CompiledModule` and `CompiledUnit`. Queries should focus on `CompiledModule` structure fields, units Vec `CompiledUnit`, and `run_tests` test execution performance clone optimization.",
         "status": "pending",
@@ -33211,20 +33211,49 @@
         }
       },
       {
-        "id": 1612,
+        "id": "1612",
         "title": "Use make_analytical_field in run_dim_metadata_test and add source param",
-        "description": "In crates/reify-expr/tests/field_calculus_tests.rs, run_dim_metadata_test (~line 542) manually constructs Value::Field + Type::Field (~lines 574-586) instead of calling make_analytical_field. Add a source parameter to make_analytical_field (or create make_field_with_source variant) to support non-Analytical sources, then replace the inline construction in run_dim_metadata_test.",
-        "details": "",
-        "testStrategy": "",
+        "description": "In crates/reify-expr/tests/field_calculus_tests.rs, run_dim_metadata_test (~line 542) manually constructs Value::Field + Type::Field (~lines 574-586) instead of calling make_analytical_field. Add a source parameter to make_analytical_field (or create make_field_with_source variant) to support non-Analytical sources, then replace the inline construction in run_dim_metadata_test. Additionally, verify the existence of make_analytical_field before use, as it was not created for Task 413. Add memory_hints for execution context.",
         "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": [],
-        "updatedAt": "2026-04-13T23:04:07.809Z",
+        "details": "Ensure make_analytical_field exists before attempting to use it. If it does not exist, consider creating it locally in field_calculus_tests.rs or extracting it to reify-test-support for cross-crate reuse. Add memory_hints to enhance execution context handling.",
+        "testStrategy": "1. Verify the existence of make_analytical_field. 2. Test run_dim_metadata_test to ensure it correctly uses make_analytical_field with the new source parameter. 3. Validate memory_hints integration by checking execution context behavior.",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Verify existence of make_analytical_field",
+            "description": "Check if make_analytical_field is implemented in the codebase.",
+            "dependencies": [],
+            "details": "Search for make_analytical_field in the codebase and confirm its implementation status.",
+            "status": "pending",
+            "testStrategy": "Ensure the function is found and correctly implemented."
+          },
+          {
+            "id": 2,
+            "title": "Add memory_hints for execution context",
+            "description": "Integrate memory_hints to improve execution context handling.",
+            "dependencies": [],
+            "details": "Implement memory_hints in the relevant sections of the code to optimize execution context.",
+            "status": "pending",
+            "testStrategy": "Test the execution context to ensure memory_hints are functioning as expected."
+          }
+        ],
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "make_analytical_field"
+            ],
+            "queries": [
+              "make_analytical_field implementation existence status",
+              "run_dim_metadata_test analytical field source param",
+              "Task 413 make_analytical_field deliverable not created"
+            ]
+          },
+          "_causation_id": "e9029562-837c-4b6e-8162-51e471faa708"
         }
       },
       {
