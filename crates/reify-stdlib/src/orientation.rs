@@ -1,4 +1,4 @@
-use reify_types::{DimensionVector, Value};
+use reify_types::{orientation_is_finite, DimensionVector, Value};
 
 use crate::helpers::{tensor_components_f64, trig_input};
 
@@ -191,7 +191,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
 
 /// Normalize a quaternion (w, x, y, z) to unit length.
 pub(crate) fn normalize_quaternion(w: f64, x: f64, y: f64, z: f64) -> Option<Value> {
-    if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+    if !orientation_is_finite(w, x, y, z) {
         return None;
     }
     let norm = (w * w + x * x + y * y + z * z).sqrt();

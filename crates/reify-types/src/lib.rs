@@ -39,6 +39,7 @@ pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, Trai
 pub use ty::Type;
 pub use value::{
     DeterminacyState, EvalError, FieldSourceKind, Freshness, Satisfaction, Value, ValueMap,
+    orientation_is_finite,
 };
 pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
 pub use warm::{OpaqueState, WarmStartable};
