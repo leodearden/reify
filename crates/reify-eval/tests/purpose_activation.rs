@@ -448,3 +448,166 @@ purpose check_params(subject : Widget) {
     assert!(id_members.contains(&"x"), "should contain 'x'");
     assert!(id_members.contains(&"y"), "should contain 'y'");
 }
+
+// ── Step 12: minimize objective injected on activation ────────────────────
+
+#[test]
+fn minimize_objective_injected() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose lightweight(subject : Structure) {
+    minimize 80mm + 60mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    engine.activate_purpose("lightweight", "Bracket");
+
+    let objectives = engine.active_objectives();
+    assert_eq!(
+        objectives.len(),
+        1,
+        "should have 1 active objective after activation"
+    );
+    assert!(
+        matches!(objectives[0], OptimizationObjective::Minimize(_)),
+        "objective should be Minimize, got {:?}",
+        objectives[0]
+    );
+}
+
+// ── Step 13: minimize objective removed on deactivate ────────────────────
+
+#[test]
+fn minimize_objective_removed_on_deactivate() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose lightweight(subject : Structure) {
+    minimize 80mm + 60mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    engine.activate_purpose("lightweight", "Bracket");
+    engine.deactivate_purpose("lightweight");
+
+    assert!(
+        engine.active_objectives().is_empty(),
+        "active_objectives should be empty after deactivation"
+    );
+}
+
+// ── Step 14: maximize objective injected ─────────────────────────────────
+
+#[test]
+fn maximize_objective_injected() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose strong(subject : Structure) {
+    maximize 80mm * 2
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    engine.activate_purpose("strong", "Bracket");
+
+    let objectives = engine.active_objectives();
+    assert_eq!(
+        objectives.len(),
+        1,
+        "should have 1 active objective after activation"
+    );
+    assert!(
+        matches!(objectives[0], OptimizationObjective::Maximize(_)),
+        "objective should be Maximize, got {:?}",
+        objectives[0]
+    );
+}
+
+// ── Step 15: purpose without objective keeps active_objectives empty ──────
+
+#[test]
+fn purpose_without_objective_keeps_active_objectives_empty() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose ok_basic(subject : Structure) {
+    constraint 1 > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    assert!(
+        engine.active_objectives().is_empty(),
+        "objectives should be empty before activation"
+    );
+
+    engine.activate_purpose("ok_basic", "Bracket");
+
+    assert!(
+        engine.active_objectives().is_empty(),
+        "objectives should remain empty when purpose has no minimize/maximize"
+    );
+}
+
+// ── Step 16: multiple purposes, multiple objectives ───────────────────────
+
+#[test]
+fn multiple_purposes_multiple_objectives() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose lightweight(subject : Structure) {
+    minimize 80mm + 60mm
+}
+
+purpose strong(subject : Structure) {
+    minimize 5mm * 2
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    engine.activate_purpose("lightweight", "Bracket");
+    engine.activate_purpose("strong", "Bracket");
+    assert_eq!(
+        engine.active_objectives().len(),
+        2,
+        "both purposes activated: should have 2 objectives"
+    );
+
+    engine.deactivate_purpose("lightweight");
+    assert_eq!(
+        engine.active_objectives().len(),
+        1,
+        "after deactivating lightweight: should have 1 objective"
+    );
+
+    engine.deactivate_purpose("strong");
+    assert!(
+        engine.active_objectives().is_empty(),
+        "after deactivating both: should have 0 objectives"
+    );
+}
