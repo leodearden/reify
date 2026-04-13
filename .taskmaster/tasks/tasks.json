@@ -13845,11 +13845,11 @@
         "description": "Refactor Value::Field to eliminate inner_field: Option<Box<Value>>. Change FieldSourceKind::Gradient to FieldSourceKind::Gradient(Box<Value>). This removes 16 bytes from all non-gradient Field instances, eliminates the redundant guard in the sample handler, and makes impossible state (Gradient + inner_field=None) unrepresentable. Update match arms in value.rs (PartialEq, Ord, ContentHash, Display), compute_gradient_field and sample dispatch in reify-expr/src/lib.rs. Also fix the stale doc comment on sample_gradient_field that says 'lambda slot' — should say 'inner_field'.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-11T16:19:31.883Z",
+        "updatedAt": "2026-04-13T18:50:22.852Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src",
@@ -33759,7 +33759,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T18:50:21.224Z",
+      "lastModified": "2026-04-13T18:50:22.853Z",
       "taskCount": 1637,
       "completedCount": 1303,
       "tags": [
