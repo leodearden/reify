@@ -132,3 +132,71 @@ fn stdlib_units_module_contains_lbf_with_force_dimension() {
     );
     assert!(lbf.offset.is_none(), "lbf should have no offset");
 }
+
+// ─── step-5/6: psi and ksi — Pressure ────────────────────────────────────────
+
+/// psi = lbf / in² = 4.4482216152605 / 0.00064516 Pa (exact)
+const PSI_SI: f64 = 6894.757293168361;
+/// ksi = 1000 × psi
+const KSI_SI: f64 = 6894757.293168361;
+
+#[test]
+fn stdlib_psi_resolves_to_pressure_6894p757293168361() {
+    let (v, d) = stdlib_param_si_value("Pressure", "1psi");
+    let tol = PSI_SI * 1e-9;
+    assert!(
+        (v - PSI_SI).abs() < tol,
+        "1psi should be {} Pa, got {}",
+        PSI_SI,
+        v
+    );
+    assert_eq!(d, DimensionVector::PRESSURE);
+}
+
+#[test]
+fn stdlib_ksi_resolves_to_pressure_6894757p293168361() {
+    let (v, d) = stdlib_param_si_value("Pressure", "1ksi");
+    let tol = KSI_SI * 1e-9;
+    assert!(
+        (v - KSI_SI).abs() < tol,
+        "1ksi should be {} Pa, got {}",
+        KSI_SI,
+        v
+    );
+    assert_eq!(d, DimensionVector::PRESSURE);
+}
+
+#[test]
+fn stdlib_units_module_contains_psi_and_ksi_with_pressure_dimension() {
+    let modules = stdlib_loader::load_stdlib();
+    let units_module = modules
+        .iter()
+        .find(|m| format!("{}", m.path) == "std/units")
+        .expect("std/units module not found");
+
+    let psi = units_module
+        .units
+        .iter()
+        .find(|u| u.name == "psi")
+        .expect("unit 'psi' not found in std/units");
+    assert_eq!(psi.dimension, DimensionVector::PRESSURE, "psi dimension wrong");
+    assert!(
+        (psi.factor - PSI_SI).abs() < PSI_SI * 1e-9,
+        "psi factor wrong: {}",
+        psi.factor
+    );
+    assert!(psi.offset.is_none(), "psi should have no offset");
+
+    let ksi = units_module
+        .units
+        .iter()
+        .find(|u| u.name == "ksi")
+        .expect("unit 'ksi' not found in std/units");
+    assert_eq!(ksi.dimension, DimensionVector::PRESSURE, "ksi dimension wrong");
+    assert!(
+        (ksi.factor - KSI_SI).abs() < KSI_SI * 1e-9,
+        "ksi factor wrong: {}",
+        ksi.factor
+    );
+    assert!(ksi.offset.is_none(), "ksi should have no offset");
+}
