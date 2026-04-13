@@ -19,7 +19,8 @@ pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
     ConstraintResult, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult,
 };
-pub use diagnostics::{Diagnostic, DiagnosticInfo, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan};
+pub use diagnostics::{Diagnostic, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan};
+pub use diagnostics::DiagnosticInfo;
 pub use dimension::{DimensionVector, Rational};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
