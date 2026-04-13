@@ -1,4 +1,4 @@
-use reify_types::{DimensionVector, Value};
+use reify_types::{DimensionVector, Value, orientation_is_finite};
 
 /// Apply a function to a single argument (by reference, for pattern matching).
 pub(crate) fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
@@ -76,14 +76,13 @@ pub(crate) fn quinary_f64(
 /// log(0), exp(1000) overflow) produce Undef instead of silently propagating
 /// NaN or infinity through the evaluation graph.
 // SYNC: mirror of reify-expr::sanitize_value — keep in sync
+// NOTE: Orientation arm uses reify_types::orientation_is_finite (shared predicate)
 pub(crate) fn sanitize_value(v: Value) -> Value {
     match &v {
         Value::Real(x) if !x.is_finite() => Value::Undef,
         Value::Scalar { si_value, .. } if !si_value.is_finite() => Value::Undef,
         Value::Complex { re, im, .. } if !re.is_finite() || !im.is_finite() => Value::Undef,
-        Value::Orientation { w, x, y, z }
-            if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() =>
-        {
+        Value::Orientation { w, x, y, z } if !orientation_is_finite(*w, *x, *y, *z) => {
             Value::Undef
         }
         _ => v,
