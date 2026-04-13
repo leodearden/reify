@@ -1343,8 +1343,8 @@ mod tests {
     /// Helper: build a minimal 1-param identity lambda `|param_name| param_name : Real`.
     ///
     /// Used by tests that need a syntactically valid Lambda without caring about its body
-    /// semantics.  Replaces the zero-arg `make_test_lambda()` helper — all former callers
-    /// pass `"x"`, two tests pass `"pt"`.
+    /// semantics.  Supersedes the removed zero-arg `make_test_lambda()` helper — former callers
+    /// of that helper now pass `"x"`; two tests pass `"pt"`.
     fn make_scalar_lambda(param_name: &str) -> Value {
         let id = ValueCellId::new("$lambda0.S", param_name);
         let body = CompiledExpr::value_ref(id.clone(), Type::Real);
@@ -1861,18 +1861,6 @@ mod tests {
 
     // --- validate_differentiable_field unit tests ---
 
-    /// Helper: build a minimal valid Lambda value for use in Field construction.
-    fn make_test_lambda() -> Value {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        }
-    }
-
     /// Helper: build a minimal valid Analytical Field with the given lambda.
     fn make_analytical_field(lambda: Value) -> Value {
         Value::Field {
@@ -1885,7 +1873,7 @@ mod tests {
 
     #[test]
     fn validate_differentiable_field_analytical_with_lambda_returns_some() {
-        let lambda = make_test_lambda();
+        let lambda = make_scalar_lambda("x");
         let field = make_analytical_field(lambda);
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_some());
@@ -1896,7 +1884,7 @@ mod tests {
 
     #[test]
     fn validate_differentiable_field_composed_with_lambda_returns_some() {
-        let lambda = make_test_lambda();
+        let lambda = make_scalar_lambda("x");
         let field = Value::Field {
             domain_type: Type::Real,
             codomain_type: Type::Real,
@@ -1928,7 +1916,7 @@ mod tests {
     #[test]
     fn validate_differentiable_field_gradient_source_returns_none() {
         // Gradient fields store the original field in the lambda slot, not a callable Lambda.
-        let lambda = make_test_lambda();
+        let lambda = make_scalar_lambda("x");
         let original_field = make_analytical_field(lambda);
         let field = Value::Field {
             domain_type: Type::Real,
@@ -1942,7 +1930,7 @@ mod tests {
 
     #[test]
     fn validate_differentiable_field_imported_source_returns_none() {
-        let lambda = make_test_lambda();
+        let lambda = make_scalar_lambda("x");
         let field = Value::Field {
             domain_type: Type::Real,
             codomain_type: Type::Real,
@@ -2056,7 +2044,7 @@ mod tests {
     /// Lambda with 1 param and n=3 → wraps in Point, returns true.
     #[test]
     fn detect_single_point_param_one_param_n_gt_1_returns_true() {
-        let lambda = make_test_lambda(); // 1-param lambda
+        let lambda = make_scalar_lambda("x"); // 1-param lambda
         assert!(detect_single_point_param(&lambda, 3));
     }
 
@@ -2083,7 +2071,7 @@ mod tests {
     /// Lambda with 1 param and n=1 → not "single point" (n not > 1), returns false.
     #[test]
     fn detect_single_point_param_one_param_n_1_returns_false() {
-        let lambda = make_test_lambda(); // 1-param lambda
+        let lambda = make_scalar_lambda("x"); // 1-param lambda
         assert!(!detect_single_point_param(&lambda, 1));
     }
 
@@ -2290,7 +2278,7 @@ mod tests {
             domain_type: domain,
             codomain_type: codomain,
             source: FieldSourceKind::Analytical,
-            lambda: Box::new(make_test_lambda()),
+            lambda: Box::new(make_scalar_lambda("x")),
         }
     }
 
