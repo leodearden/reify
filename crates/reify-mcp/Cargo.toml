@@ -17,5 +17,4 @@ test-support = []
 
 [dev-dependencies]
 reify-mcp = { path = ".", features = ["test-support"] }
-reify-types = { workspace = true, features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-std", "io-util", "test-util"] }
