@@ -200,3 +200,69 @@ fn stdlib_units_module_contains_psi_and_ksi_with_pressure_dimension() {
     );
     assert!(ksi.offset.is_none(), "ksi should have no offset");
 }
+
+// ─── step-7/8: fl_oz and gal — Volume (US customary) ─────────────────────────
+
+/// US fl_oz = 231/128 in³ = 29.5735295625 mL exactly
+const FL_OZ_SI: f64 = 0.0000295735295625;
+/// US liquid gallon = 231 in³ exactly
+const GAL_SI: f64 = 0.003785411784;
+
+#[test]
+fn stdlib_fl_oz_resolves_to_volume_2p9573e_minus5() {
+    let (v, d) = stdlib_param_si_value("Volume", "1fl_oz");
+    assert!(
+        (v - FL_OZ_SI).abs() < 1e-15,
+        "1fl_oz should be {} m³, got {}",
+        FL_OZ_SI,
+        v
+    );
+    assert_eq!(d, DimensionVector::VOLUME);
+}
+
+#[test]
+fn stdlib_gal_resolves_to_volume_3p785e_minus3() {
+    let (v, d) = stdlib_param_si_value("Volume", "1gal");
+    assert!(
+        (v - GAL_SI).abs() < 1e-15,
+        "1gal should be {} m³, got {}",
+        GAL_SI,
+        v
+    );
+    assert_eq!(d, DimensionVector::VOLUME);
+}
+
+#[test]
+fn stdlib_units_module_contains_fl_oz_and_gal_with_volume_dimension() {
+    let modules = stdlib_loader::load_stdlib();
+    let units_module = modules
+        .iter()
+        .find(|m| format!("{}", m.path) == "std/units")
+        .expect("std/units module not found");
+
+    let fl_oz = units_module
+        .units
+        .iter()
+        .find(|u| u.name == "fl_oz")
+        .expect("unit 'fl_oz' not found in std/units");
+    assert_eq!(fl_oz.dimension, DimensionVector::VOLUME, "fl_oz dimension wrong");
+    assert!(
+        (fl_oz.factor - FL_OZ_SI).abs() < 1e-15,
+        "fl_oz factor wrong: {}",
+        fl_oz.factor
+    );
+    assert!(fl_oz.offset.is_none(), "fl_oz should have no offset");
+
+    let gal = units_module
+        .units
+        .iter()
+        .find(|u| u.name == "gal")
+        .expect("unit 'gal' not found in std/units");
+    assert_eq!(gal.dimension, DimensionVector::VOLUME, "gal dimension wrong");
+    assert!(
+        (gal.factor - GAL_SI).abs() < 1e-15,
+        "gal factor wrong: {}",
+        gal.factor
+    );
+    assert!(gal.offset.is_none(), "gal should have no offset");
+}
