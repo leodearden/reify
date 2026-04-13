@@ -5,8 +5,8 @@ pub mod dirty;
 pub mod graph;
 pub mod journal;
 pub mod snapshot;
-pub mod tests_runner;
-pub use tests_runner::{TestResult, TestStatus, run_tests};
+pub mod test_runner;
+pub use test_runner::{TestResult, TestStatus, run_tests};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
