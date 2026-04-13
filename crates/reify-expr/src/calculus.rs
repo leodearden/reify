@@ -1755,17 +1755,8 @@ mod tests {
     /// `if let` → `match/unreachable!` refactor in step-3.
     #[test]
     fn eval_perturbed_point_single_recovers_work_point() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
         // Identity lambda: |pt| pt
-        let pt_id = ValueCellId::new("$lambda0.S", "pt");
-        let body = CompiledExpr::value_ref(pt_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("pt".to_string(), pt_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("pt");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1804,17 +1795,8 @@ mod tests {
     /// Must pass both before and after the step-3 `if let` → `match/unreachable!` refactor.
     #[test]
     fn eval_perturbed_point_decomposed_returns_correct_result() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
         // Identity lambda: |x| x
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1853,17 +1835,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "work_point must be empty")]
     fn eval_perturbed_point_decomposed_nonempty_work_point_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
         // Identity lambda: |x| x
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
