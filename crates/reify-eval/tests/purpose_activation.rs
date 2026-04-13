@@ -157,3 +157,172 @@ purpose mfg_ready(subject : Structure) {
         "purpose should not be active"
     );
 }
+
+// ── Step 5: single constraint injection ───────────────────────────────────
+
+#[test]
+fn single_constraint_injection() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+    constraint width > 0mm
+}
+
+purpose ok_basic(subject : Structure) {
+    constraint 1 > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    let before = engine
+        .snapshot()
+        .expect("snapshot before")
+        .graph
+        .constraints
+        .len();
+
+    engine.activate_purpose("ok_basic", "Bracket");
+
+    let after = engine
+        .snapshot()
+        .expect("snapshot after")
+        .graph
+        .constraints
+        .len();
+
+    assert_eq!(
+        after,
+        before + 1,
+        "activating a purpose with 1 constraint should grow count by 1: before={}, after={}",
+        before,
+        after
+    );
+}
+
+// ── Step 6: multiple constraint injection ─────────────────────────────────
+
+#[test]
+fn multiple_constraint_injection() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint 80mm > 0mm
+    constraint 60mm > 0mm
+    constraint 5mm > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    let before = engine
+        .snapshot()
+        .expect("snapshot before")
+        .graph
+        .constraints
+        .len();
+
+    engine.activate_purpose("mfg_ready", "Bracket");
+
+    let after = engine
+        .snapshot()
+        .expect("snapshot after")
+        .graph
+        .constraints
+        .len();
+
+    assert_eq!(
+        after,
+        before + 3,
+        "purpose with 3 constraints should grow count by exactly 3: before={}, after={}",
+        before,
+        after
+    );
+}
+
+// ── Step 7: constraint removal restores count ──────────────────────────────
+
+#[test]
+fn constraint_removal_restores_count() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+    constraint width > 0mm
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint 80mm > 0mm
+    constraint 60mm > 0mm
+    constraint 5mm > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    let before = engine
+        .snapshot()
+        .expect("snapshot before")
+        .graph
+        .constraints
+        .len();
+
+    engine.activate_purpose("mfg_ready", "Bracket");
+    engine.deactivate_purpose("mfg_ready");
+
+    let after = engine
+        .snapshot()
+        .expect("snapshot after deactivate")
+        .graph
+        .constraints
+        .len();
+
+    assert_eq!(
+        after, before,
+        "deactivating purpose must restore constraint count: before={}, after={}",
+        before, after
+    );
+}
+
+// ── Step 8: injected constraint IDs have purpose prefix ───────────────────
+
+#[test]
+fn injected_constraint_ids_have_purpose_prefix() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint 1 > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    engine.activate_purpose("mfg_ready", "Bracket");
+
+    let snapshot = engine
+        .snapshot()
+        .expect("snapshot after activate");
+
+    // At least one injected constraint id must have the purpose-prefix entity
+    // (per lib.rs:433: format!("purpose:{}@{}", purpose_name, entity_ref))
+    let has_purpose_prefix = snapshot
+        .graph
+        .constraints
+        .keys()
+        .any(|id| id.entity.starts_with("purpose:mfg_ready@Bracket"));
+
+    assert!(
+        has_purpose_prefix,
+        "at least one constraint id should start with 'purpose:mfg_ready@Bracket'; found: {:?}",
+        snapshot.graph.constraints.keys().collect::<Vec<_>>()
+    );
+}
