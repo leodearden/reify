@@ -92,6 +92,16 @@ fn laplacian_result_type(domain: Type) -> Type {
     }
 }
 
+/// Result `Type::Field` for operators producing a scalar field: `domain → Real`.
+///
+/// Used by divergence and laplacian.
+fn scalar_field_result_type(domain: Type) -> Type {
+    Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(Type::Real),
+    }
+}
+
 /// Result `Type::Field` for a `gradient` operator: `domain → Vector_n(Real)`.
 fn gradient_result_type(domain: Type, n: usize) -> Type {
     Type::Field {
