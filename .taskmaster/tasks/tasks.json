@@ -33977,17 +33977,6 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-13T23:54:43.625Z"
-      },
-      {
-        "id": 1645,
-        "title": "Fix asymmetric SYNC comment in reify-expr sanitize.rs",
-        "description": "The SYNC comment at crates/reify-expr/src/sanitize.rs:40 still reads 'sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync', but task 892 consolidated all sanitize_value tests from reify-stdlib/src/complex.rs into reify-stdlib/src/helpers.rs. The companion comment in helpers.rs:459 was updated ('sanitize_value tests mirrored in reify-expr::sanitize tests — keep in sync'), but reify-expr's side was missed — leaving the two ends of the mirror asymmetric and pointing future maintainers to a file that no longer holds the mirrored tests.",
-        "details": "Update crates/reify-expr/src/sanitize.rs:40 from:\n\n    // SYNC: sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync\n\nto:\n\n    // SYNC: sanitize_value tests mirrored in reify-stdlib::helpers tests — keep in sync\n\nso both ends of the mirror agree. One-line doc fix. No behavior changes, no new tests. Run `cargo check -p reify-expr` and verify sync_comments_test.sh (if it gates this comment) still passes.\n\nMemory hints: search \"sanitize_value SYNC comment reify-expr reify-stdlib\", search \"task 892 sanitize_value consolidation complex.rs helpers.rs\"",
-        "testStrategy": "",
-        "status": "pending",
-        "dependencies": [],
-        "priority": "low",
-        "subtasks": []
       }
     ],
     "metadata": {
