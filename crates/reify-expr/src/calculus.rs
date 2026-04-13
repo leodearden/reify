@@ -1338,6 +1338,23 @@ pub(crate) fn compute_numerical_laplacian_at_point(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+    /// Helper: build a minimal 1-param identity lambda `|param_name: Real| param_name`
+    /// with an empty capture map.
+    ///
+    /// Used by tests that need a syntactically valid `Value::Lambda` without caring about
+    /// its body semantics.  The parameter name is configurable so tests asserting on specific
+    /// parameter names (e.g. `"pt"`) can use their own.
+    fn make_scalar_lambda(param_name: &str) -> Value {
+        let id = ValueCellId::new("$lambda0.S", param_name);
+        let body = CompiledExpr::value_ref(id.clone(), Type::Real);
+        Value::Lambda {
+            params: vec![(param_name.to_string(), id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        }
+    }
 
     // --- scalar_dimension unit tests ---
 
@@ -1551,16 +1568,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "unexpected codomain_type")]
     fn gradient_result_dim_unexpected_codomain_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1585,16 +1593,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "unexpected Vector quantity")]
     fn gradient_result_dim_unexpected_vector_quantity_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
         // Single-parameter lambda: |pt| pt (body irrelevant — panic fires before evaluation)
-        let pt_id = ValueCellId::new("$lambda0.S", "pt");
-        let body = CompiledExpr::value_ref(pt_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("pt".to_string(), pt_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
+        let lambda = make_scalar_lambda("pt");
 
         // 3D point input — lambda has 1 param and n=3 so single_point_param=true
         let point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
@@ -1626,16 +1626,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "divergence/laplacian codomain must be scalar")]
     fn divergence_unexpected_codomain_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1663,16 +1654,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "divergence/laplacian codomain must be scalar")]
     fn divergence_unexpected_vector_codomain_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1694,16 +1676,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "divergence/laplacian codomain must be scalar")]
     fn laplacian_unexpected_codomain_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1725,16 +1698,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "curl codomain must be vector")]
     fn curl_unexpected_codomain_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1755,22 +1719,10 @@ mod tests {
     /// 1-element point, and verifies:
     /// (a) the result equals the expected `Value::Point` with the perturbed coordinate, and
     /// (b) `work_point` is correctly recovered with length `n=1` after the call.
-    ///
-    /// This characterises the happy path and must pass both before and after the
-    /// `if let` → `match/unreachable!` refactor in step-3.
     #[test]
     fn eval_perturbed_point_single_recovers_work_point() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
         // Identity lambda: |pt| pt
-        let pt_id = ValueCellId::new("$lambda0.S", "pt");
-        let body = CompiledExpr::value_ref(pt_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("pt".to_string(), pt_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("pt");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1805,21 +1757,10 @@ mod tests {
     /// `single_point_param=false` and an empty `work_point`, and verifies:
     /// (a) the result equals `Value::Real(1.0)`, and
     /// (b) `work_point` remains empty after the call (the decomposed path never touches it).
-    ///
-    /// Must pass both before and after the step-3 `if let` → `match/unreachable!` refactor.
     #[test]
     fn eval_perturbed_point_decomposed_returns_correct_result() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
         // Identity lambda: |x| x
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1851,24 +1792,14 @@ mod tests {
     /// non-empty `work_point` panics in debug builds with a message containing
     /// "work_point must be empty".
     ///
-    /// The doc contract says `work_point` must be empty in the decomposed path.  This test
-    /// initially FAILS (no panic) because the `debug_assert` guard does not yet exist;
-    /// after step-5 adds it the test must pass.
+    /// The `debug_assert` guard enforcing the doc contract fires before the lambda is invoked,
+    /// so the test panics with the expected message.
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "work_point must be empty")]
     fn eval_perturbed_point_decomposed_nonempty_work_point_panics_in_debug() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-
         // Identity lambda: |x| x
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        let lambda = Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        };
-
+        let lambda = make_scalar_lambda("x");
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
 
@@ -1893,18 +1824,6 @@ mod tests {
 
     // --- validate_differentiable_field unit tests ---
 
-    /// Helper: build a minimal valid Lambda value for use in Field construction.
-    fn make_test_lambda() -> Value {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
-        let x_id = ValueCellId::new("$lambda0.S", "x");
-        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
-        Value::Lambda {
-            params: vec![("x".to_string(), x_id)],
-            body: Box::new(body),
-            captures: ValueMap::new(),
-        }
-    }
-
     /// Helper: build a minimal valid Analytical Field with the given lambda.
     fn make_analytical_field(lambda: Value) -> Value {
         Value::Field {
@@ -1917,7 +1836,7 @@ mod tests {
 
     #[test]
     fn validate_differentiable_field_analytical_with_lambda_returns_some() {
-        let lambda = make_test_lambda();
+        let lambda = make_scalar_lambda("x");
         let field = make_analytical_field(lambda);
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_some());
@@ -1928,7 +1847,7 @@ mod tests {
 
     #[test]
     fn validate_differentiable_field_composed_with_lambda_returns_some() {
-        let lambda = make_test_lambda();
+        let lambda = make_scalar_lambda("x");
         let field = Value::Field {
             domain_type: Type::Real,
             codomain_type: Type::Real,
@@ -1960,7 +1879,7 @@ mod tests {
     #[test]
     fn validate_differentiable_field_gradient_source_returns_none() {
         // Gradient fields store the original field in the lambda slot, not a callable Lambda.
-        let lambda = make_test_lambda();
+        let lambda = make_scalar_lambda("x");
         let original_field = make_analytical_field(lambda);
         let field = Value::Field {
             domain_type: Type::Real,
@@ -1974,7 +1893,7 @@ mod tests {
 
     #[test]
     fn validate_differentiable_field_imported_source_returns_none() {
-        let lambda = make_test_lambda();
+        let lambda = make_scalar_lambda("x");
         let field = Value::Field {
             domain_type: Type::Real,
             codomain_type: Type::Real,
@@ -2088,14 +2007,13 @@ mod tests {
     /// Lambda with 1 param and n=3 → wraps in Point, returns true.
     #[test]
     fn detect_single_point_param_one_param_n_gt_1_returns_true() {
-        let lambda = make_test_lambda(); // 1-param lambda
+        let lambda = make_scalar_lambda("x"); // 1-param lambda
         assert!(detect_single_point_param(&lambda, 3));
     }
 
     /// Lambda with 3 params and n=3 → decomposed path, returns false.
     #[test]
     fn detect_single_point_param_three_params_n_3_returns_false() {
-        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
         let a_id = ValueCellId::new("$lambda0.S", "a");
         let b_id = ValueCellId::new("$lambda0.S", "b");
         let c_id = ValueCellId::new("$lambda0.S", "c");
@@ -2115,7 +2033,7 @@ mod tests {
     /// Lambda with 1 param and n=1 → not "single point" (n not > 1), returns false.
     #[test]
     fn detect_single_point_param_one_param_n_1_returns_false() {
-        let lambda = make_test_lambda(); // 1-param lambda
+        let lambda = make_scalar_lambda("x"); // 1-param lambda
         assert!(!detect_single_point_param(&lambda, 1));
     }
 
@@ -2322,7 +2240,7 @@ mod tests {
             domain_type: domain,
             codomain_type: codomain,
             source: FieldSourceKind::Analytical,
-            lambda: Box::new(make_test_lambda()),
+            lambda: Box::new(make_scalar_lambda("x")),
         }
     }
 
