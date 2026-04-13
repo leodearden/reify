@@ -75,7 +75,7 @@ pub(crate) fn quinary_f64(
 /// `unary_f64` and `binary_f64` to ensure domain errors (e.g., sqrt(-1),
 /// log(0), exp(1000) overflow) produce Undef instead of silently propagating
 /// NaN or infinity through the evaluation graph.
-// SYNC: mirror of reify-expr::sanitize_value — keep in sync
+// SYNC: mirror of reify-expr::sanitize_value — keep function AND tests in sync
 // NOTE: Orientation arm uses reify_types::orientation_is_finite (shared predicate)
 pub(crate) fn sanitize_value(v: Value) -> Value {
     match &v {
