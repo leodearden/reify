@@ -111,7 +111,7 @@ fn gradient_result_type(domain: Type, n: usize) -> Type {
     }
 }
 
-/// Unit test for `gradient_result_type`: Vec_n(Real) result field, tested at n=2 and n=3.
+/// Unit test for `gradient_result_type`: Vec_n(Real) result field, tested at n=2, n=3, and n=4.
 #[test]
 fn gradient_result_type_returns_field_vec_n_real() {
     // n=2: Vector2(Real) codomain
@@ -131,6 +131,18 @@ fn gradient_result_type_returns_field_vec_n_real() {
         codomain: Box::new(Type::vec3(Type::Real)),
     };
     assert_eq!(got3, expected3);
+
+    // n=4: arbitrary n — guards the collapsed single-expression form
+    let domain4 = Type::point3(Type::Real);
+    let got4 = gradient_result_type(domain4.clone(), 4);
+    let expected4 = Type::Field {
+        domain: Box::new(domain4),
+        codomain: Box::new(Type::Vector {
+            n: 4,
+            quantity: Box::new(Type::Real),
+        }),
+    };
+    assert_eq!(got4, expected4);
 }
 
 /// Assert that a `Value::Vector` has components matching `expected` within `tol`.
