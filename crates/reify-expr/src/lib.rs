@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
     DeterminacyState, DimensionVector, FieldSourceKind, PersistentMap, QuantifierKind, Type, UnOp,
-    Value, ValueCellId, ValueMap,
+    Value, ValueCellId, ValueMap, orientation_is_finite,
 };
 
 /// Maximum recursion depth for user-defined function calls.
@@ -1577,7 +1577,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         // Transform * Vector: apply rotation only (translation is ignored for vectors)
         (Value::Transform { rotation, .. }, Value::Vector(components)) => {
             if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
-                if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                if !orientation_is_finite(*w, *x, *y, *z) {
                     return Value::Undef;
                 }
                 let norm = (w * w + x * x + y * y + z * z).sqrt();
@@ -1604,7 +1604,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             Value::Point(components),
         ) => {
             if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
-                if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                if !orientation_is_finite(*w, *x, *y, *z) {
                     return Value::Undef;
                 }
                 let norm = (w * w + x * x + y * y + z * z).sqrt();
@@ -1671,8 +1671,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                             return Value::Undef;
                         }
                         // Validate and normalize q1 for translation rotation
-                        if !w1.is_finite() || !x1.is_finite() || !y1.is_finite() || !z1.is_finite()
-                        {
+                        if !orientation_is_finite(*w1, *x1, *y1, *z1) {
                             return Value::Undef;
                         }
                         let q1_norm = (w1 * w1 + x1 * x1 + y1 * y1 + z1 * z1).sqrt();
@@ -1683,8 +1682,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                         // Compose rotations: R = R1 * R2
                         let (rw, rx, ry, rz) = quat_mul_t(q1_n, (*w2, *x2, *y2, *z2));
                         // Normalize result quaternion (reject NaN/Inf/zero-length)
-                        if !rw.is_finite() || !rx.is_finite() || !ry.is_finite() || !rz.is_finite()
-                        {
+                        if !orientation_is_finite(rw, rx, ry, rz) {
                             return Value::Undef;
                         }
                         let norm = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt();
