@@ -1,4 +1,4 @@
-use reify_types::Value;
+use reify_types::{Value, orientation_is_finite};
 
 /// Convert a Value that carries NaN or Inf to Undef.
 ///
@@ -14,16 +14,17 @@ use reify_types::Value;
 /// This helper mirrors the private `sanitize_value` in `reify-stdlib` — the
 /// duplication is intentional (making stdlib's version public would widen its
 /// API surface; moving it to reify-types would add evaluation semantics to a
-/// type crate).
+/// type crate). The `Real`, `Scalar`, and `Complex` arms remain local mirrors
+/// of reify-stdlib; the `Orientation` arm delegates to the shared
+/// `reify_types::orientation_is_finite` predicate.
 // SYNC: mirror of reify-stdlib::sanitize_value — keep in sync
+// NOTE: Orientation arm uses reify_types::orientation_is_finite (shared predicate)
 pub(crate) fn sanitize_value(v: Value) -> Value {
     match &v {
         Value::Real(x) if !x.is_finite() => Value::Undef,
         Value::Scalar { si_value, .. } if !si_value.is_finite() => Value::Undef,
         Value::Complex { re, im, .. } if !re.is_finite() || !im.is_finite() => Value::Undef,
-        Value::Orientation { w, x, y, z }
-            if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() =>
-        {
+        Value::Orientation { w, x, y, z } if !orientation_is_finite(*w, *x, *y, *z) => {
             Value::Undef
         }
         _ => v,
