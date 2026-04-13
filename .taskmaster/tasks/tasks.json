@@ -5002,7 +5002,16 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-eval/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Task 259"
+            ],
+            "queries": [
+              "value-cell lifetime bound-entity member resolution reflective access task 259",
+              "task 259 prerequisites scope re-examination M10 evaluator forall iteration"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-12T06:35:55.793Z"
