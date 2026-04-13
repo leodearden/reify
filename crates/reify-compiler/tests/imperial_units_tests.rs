@@ -7,7 +7,7 @@
 mod common;
 
 use common::compile_with_stdlib_helper;
-use reify_compiler::stdlib_loader;
+use reify_compiler::{stdlib_loader, CompiledModule};
 use reify_types::{DimensionVector, Severity};
 
 // ─── local helper ─────────────────────────────────────────────────────────────
@@ -56,6 +56,16 @@ fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVect
     }
 }
 
+/// Return the compiled `std/units` module from the cached stdlib.
+///
+/// Uses the `OnceLock`-backed `load_stdlib()` so repeated calls are free.
+fn units_module() -> &'static CompiledModule {
+    stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| format!("{}", m.path) == "std/units")
+        .expect("std/units module not found")
+}
+
 // ─── step-1/2: yd — Length ────────────────────────────────────────────────────
 
 #[test]
@@ -71,11 +81,7 @@ fn stdlib_yd_resolves_to_length_0p9144() {
 
 #[test]
 fn stdlib_units_module_contains_yd_with_no_offset() {
-    let modules = stdlib_loader::load_stdlib();
-    let units_module = modules
-        .iter()
-        .find(|m| format!("{}", m.path) == "std/units")
-        .expect("std/units module not found");
+    let units_module = units_module();
 
     let yd = units_module
         .units
@@ -111,11 +117,7 @@ fn stdlib_lbf_resolves_to_force_4p4482216152605() {
 
 #[test]
 fn stdlib_units_module_contains_lbf_with_force_dimension() {
-    let modules = stdlib_loader::load_stdlib();
-    let units_module = modules
-        .iter()
-        .find(|m| format!("{}", m.path) == "std/units")
-        .expect("std/units module not found");
+    let units_module = units_module();
 
     let lbf = units_module
         .units
@@ -168,11 +170,7 @@ fn stdlib_ksi_resolves_to_pressure_6894757p293168361() {
 
 #[test]
 fn stdlib_units_module_contains_psi_and_ksi_with_pressure_dimension() {
-    let modules = stdlib_loader::load_stdlib();
-    let units_module = modules
-        .iter()
-        .find(|m| format!("{}", m.path) == "std/units")
-        .expect("std/units module not found");
+    let units_module = units_module();
 
     let psi = units_module
         .units
@@ -234,11 +232,7 @@ fn stdlib_gal_resolves_to_volume_3p785e_minus3() {
 
 #[test]
 fn stdlib_units_module_contains_fl_oz_and_gal_with_volume_dimension() {
-    let modules = stdlib_loader::load_stdlib();
-    let units_module = modules
-        .iter()
-        .find(|m| format!("{}", m.path) == "std/units")
-        .expect("std/units module not found");
+    let units_module = units_module();
 
     let fl_oz = units_module
         .units
@@ -323,7 +317,7 @@ fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
             right,
         } => {
             // Left operand: 2lbf → Scalar with FORCE dimension, si_value ≈ 2 * LBF_SI
-            match &left.kind {
+            let left_si = match &left.kind {
                 reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
                     si_value,
                     dimension,
@@ -337,11 +331,12 @@ fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
                         expected,
                         si_value
                     );
+                    *si_value
                 }
                 other => panic!("left operand should be Literal(Scalar), got {:?}", other),
-            }
+            };
             // Right operand: 3mm → Scalar with LENGTH dimension, si_value = 0.003
-            match &right.kind {
+            let right_si = match &right.kind {
                 reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
                     si_value,
                     dimension,
@@ -353,9 +348,21 @@ fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
                         "right si_value should be 0.003 (3mm), got {}",
                         si_value
                     );
+                    *si_value
                 }
                 other => panic!("right operand should be Literal(Scalar), got {:?}", other),
-            }
+            };
+            // Product check: operand SI values must multiply to the expected energy.
+            // Guards against a class of bug where dimension math is right but the
+            // scaling factors are not multiplied through correctly.
+            let energy_si = left_si * right_si;
+            let expected_energy = 2.0 * LBF_SI * 0.003;
+            assert!(
+                (energy_si - expected_energy).abs() < 1e-9,
+                "2lbf * 3mm energy should be {} J, got {}",
+                expected_energy,
+                energy_si
+            );
         }
         other => panic!("expected BinOp{{Mul, _, _}}, got {:?}", other),
     }
@@ -403,11 +410,7 @@ fn existing_imperial_units_ft_thou_lb_oz_unchanged_post_task_335() {
     }
 
     // Verify offset=None for all four via the stdlib module units list.
-    let modules = stdlib_loader::load_stdlib();
-    let units_module = modules
-        .iter()
-        .find(|m| format!("{}", m.path) == "std/units")
-        .expect("std/units module not found");
+    let units_module = units_module();
 
     for name in &["ft", "thou", "lb", "oz"] {
         let u = units_module
