@@ -705,3 +705,203 @@ purpose mfg_ready(subject : Structure) {
         "purpose should be active after re-activation"
     );
 }
+
+// ── Step 19: example file parses and compiles ─────────────────────────────
+
+#[test]
+fn m10_purpose_activation_example_parses_and_compiles() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/m10_purpose_activation.ri should exist");
+
+    // Parse
+    let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    // Compile with stdlib (uses Length units)
+    let compiled = parse_and_compile_with_stdlib(&source);
+
+    // Should have at least 1 template named Bracket
+    let bracket = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bracket")
+        .expect("should have a Bracket template");
+    assert!(
+        !bracket.value_cells.is_empty(),
+        "Bracket should have value cells"
+    );
+
+    // Should have at least 5 compiled purposes
+    assert!(
+        compiled.compiled_purposes.len() >= 5,
+        "expected >=5 purposes (ok_basic, mfg_ready, lightweight, strong, dimensionally_valid), got {}",
+        compiled.compiled_purposes.len()
+    );
+
+    let purpose_names: Vec<&str> = compiled
+        .compiled_purposes
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    for name in &["ok_basic", "mfg_ready", "lightweight", "strong", "dimensionally_valid"] {
+        assert!(
+            purpose_names.contains(name),
+            "expected purpose '{}' in {:?}",
+            name,
+            purpose_names
+        );
+    }
+}
+
+// ── Step 20: example file — all structure constraints satisfied ───────────
+
+#[test]
+fn m10_purpose_activation_example_constraints_satisfied() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/m10_purpose_activation.ri should exist");
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // No eval-level errors
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    // Check constraints — all must be Satisfied
+    let check = engine.check(&compiled);
+    assert!(
+        check.constraint_results.len() >= 8,
+        "expected >=8 constraint results (8 structure-level assertions), got {}",
+        check.constraint_results.len()
+    );
+
+    for entry in &check.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
+}
+
+// ── Step 21: example file — activate lightweight (minimize) purpose ───────
+
+#[test]
+fn m10_purpose_activation_example_activate_minimize_purpose() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/m10_purpose_activation.ri should exist");
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    let count_before = engine
+        .snapshot()
+        .expect("snapshot before")
+        .graph
+        .constraints
+        .len();
+
+    // Activate lightweight (has 1 constraint + minimize objective)
+    engine.activate_purpose("lightweight", "Bracket");
+
+    let count_after = engine
+        .snapshot()
+        .expect("snapshot after activate")
+        .graph
+        .constraints
+        .len();
+
+    assert!(
+        count_after > count_before,
+        "activating lightweight should inject >=1 constraint: before={}, after={}",
+        count_before,
+        count_after
+    );
+
+    let objectives = engine.active_objectives();
+    assert!(
+        objectives.iter().any(|o| matches!(o, OptimizationObjective::Minimize(_))),
+        "lightweight purpose should inject a Minimize objective"
+    );
+
+    // Deactivate — count restored, objectives empty
+    engine.deactivate_purpose("lightweight");
+    let count_restored = engine
+        .snapshot()
+        .expect("snapshot after deactivate")
+        .graph
+        .constraints
+        .len();
+    assert_eq!(
+        count_restored, count_before,
+        "deactivating lightweight must restore constraint count"
+    );
+    assert!(
+        engine.active_objectives().is_empty(),
+        "deactivating lightweight must clear objectives"
+    );
+}
+
+// ── Step 22: example file — activate mfg_ready (multi-constraint) purpose ──
+
+#[test]
+fn m10_purpose_activation_example_activate_multi_constraint_purpose() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/m10_purpose_activation.ri should exist");
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+
+    let count_before = engine
+        .snapshot()
+        .expect("snapshot before")
+        .graph
+        .constraints
+        .len();
+
+    // mfg_ready has exactly 3 literal constraints
+    engine.activate_purpose("mfg_ready", "Bracket");
+
+    let count_after = engine
+        .snapshot()
+        .expect("snapshot after activate")
+        .graph
+        .constraints
+        .len();
+
+    assert_eq!(
+        count_after,
+        count_before + 3,
+        "mfg_ready has 3 constraints: count should grow by exactly 3: before={}, after={}",
+        count_before,
+        count_after
+    );
+
+    // Deactivate — exact restoration
+    engine.deactivate_purpose("mfg_ready");
+    let count_restored = engine
+        .snapshot()
+        .expect("snapshot after deactivate")
+        .graph
+        .constraints
+        .len();
+    assert_eq!(
+        count_restored, count_before,
+        "deactivating mfg_ready must restore constraint count exactly"
+    );
+}
