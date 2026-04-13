@@ -137,6 +137,18 @@ fn gradient_result_type_returns_field_vec_n_real() {
     assert_eq!(got4, expected4);
 }
 
+/// Unit test for `scalar_field_result_type`: Real codomain result field.
+#[test]
+fn scalar_field_result_type_returns_field_real_codomain() {
+    let domain = Type::point3(Type::Real);
+    let got = scalar_field_result_type(domain.clone());
+    let expected = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(Type::Real),
+    };
+    assert_eq!(got, expected);
+}
+
 /// Assert that a `Value::Vector` has components matching `expected` within `tol`.
 fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &str) {
     match result {
