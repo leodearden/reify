@@ -33042,7 +33042,7 @@
         "description": "Two follow-ups from task 1362 review in crates/reify-eval/src/calculus.rs:\n\n1. **Remove stale \"Currently FAILS\" doc comments**: The divergence and laplacian tests have \"Currently FAILS\" doc comments that are no longer accurate — the tests now pass. Remove or update these misleading comments.\n\n2. **Extract test setup helpers** (make_scalar_lambda etc.): ~80 lines of test setup code are repeated across multiple calculus tests. Extract shared helpers like make_scalar_lambda to DRY up the test module.\n\nmemory_hints: search \"Currently FAILS divergence laplacian calculus\", search \"make_scalar_lambda test setup calculus\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -33057,7 +33057,7 @@
             "crates/reify-test-support"
           ]
         },
-        "updatedAt": "2026-04-13T16:51:18.873Z"
+        "updatedAt": "2026-04-13T18:41:51.210Z"
       },
       {
         "id": "1605",
@@ -33734,9 +33734,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T18:38:34.663Z",
+      "lastModified": "2026-04-13T18:41:51.210Z",
       "taskCount": 1637,
-      "completedCount": 1300,
+      "completedCount": 1301,
       "tags": [
         "master"
       ]
