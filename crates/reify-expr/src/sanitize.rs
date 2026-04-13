@@ -17,7 +17,7 @@ use reify_types::{Value, orientation_is_finite};
 /// type crate). The `Real`, `Scalar`, and `Complex` arms remain local mirrors
 /// of reify-stdlib; the `Orientation` arm delegates to the shared
 /// `reify_types::orientation_is_finite` predicate.
-// SYNC: mirror of reify-stdlib::sanitize_value — keep in sync
+// SYNC: mirror of reify-stdlib::sanitize_value — keep function AND tests in sync
 // NOTE: Orientation arm uses reify_types::orientation_is_finite (shared predicate)
 pub(crate) fn sanitize_value(v: Value) -> Value {
     match &v {
