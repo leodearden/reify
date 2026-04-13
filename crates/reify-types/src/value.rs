@@ -1100,6 +1100,20 @@ impl Value {
     }
 }
 
+/// Return `true` iff all four quaternion components are finite (not NaN,
+/// not ±∞).
+///
+/// This is the shared orientation-finiteness predicate used by:
+/// - `sanitize_value` in `reify-expr` and `reify-stdlib` (Orientation arm)
+/// - The Transform * Vector, Transform * Point, and Transform * Transform
+///   rotation guards in `reify-expr`
+///
+/// Callers write `!orientation_is_finite(w, x, y, z)` to test for the
+/// "return Undef" branch, preserving existing control-flow patterns.
+pub fn orientation_is_finite(w: f64, x: f64, y: f64, z: f64) -> bool {
+    w.is_finite() && x.is_finite() && y.is_finite() && z.is_finite()
+}
+
 /// Format a floating-point number for display: whole numbers render without
 /// decimal points (e.g. `80.0` → `"80"`).
 pub fn format_display_number(v: f64) -> String {
