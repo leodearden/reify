@@ -3101,7 +3101,7 @@
           "173",
           "177"
         ],
-        "status": "in-progress",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "examples",
@@ -3123,7 +3123,7 @@
           "bundle_key": "L"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-13T18:38:01.497Z"
+        "updatedAt": "2026-04-13T18:42:58.034Z"
       },
       {
         "id": "180",
@@ -33735,7 +33735,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T18:41:52.837Z",
+      "lastModified": "2026-04-13T18:42:58.037Z",
       "taskCount": 1637,
       "completedCount": 1301,
       "tags": [
