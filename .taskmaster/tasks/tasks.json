@@ -2800,7 +2800,7 @@
         "dependencies": [
           "164"
         ],
-        "status": "in-progress",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "examples",
@@ -2816,7 +2816,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-13T16:51:17.703Z"
+        "updatedAt": "2026-04-13T18:20:00.005Z"
       },
       {
         "id": "166",
@@ -33735,7 +33735,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T18:15:50.319Z",
+      "lastModified": "2026-04-13T18:20:00.006Z",
       "taskCount": 1637,
       "completedCount": 1297,
       "tags": [
