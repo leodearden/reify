@@ -1110,6 +1110,7 @@ impl Value {
 ///
 /// Callers write `!orientation_is_finite(w, x, y, z)` to test for the
 /// "return Undef" branch, preserving existing control-flow patterns.
+#[inline]
 pub fn orientation_is_finite(w: f64, x: f64, y: f64, z: f64) -> bool {
     w.is_finite() && x.is_finite() && y.is_finite() && z.is_finite()
 }
