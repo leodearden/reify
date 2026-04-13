@@ -4741,7 +4741,7 @@
         "id": "250",
         "title": "Ad-hoc port selectors: evaluator",
         "description": "At evaluation time, resolve ad-hoc selectors against the geometry kernel: @face(name) -> query named face, compute centroid + normal -> frame. @point(coords) -> frame at coords without using the kernel. @edge(name) -> query named edge, compute midpoint + tangent -> frame. If selector fails (topology changed), port frame becomes undef, diagnostic emitted.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "249"
         ],
@@ -4773,7 +4773,7 @@
           },
           "_causation_id": "87cb5b2d-821c-457c-b886-1c25c2b7fc97"
         },
-        "updatedAt": "2026-04-12T07:39:24.042Z"
+        "updatedAt": "2026-04-13T16:51:18.076Z"
       },
       {
         "id": "251",
@@ -33726,7 +33726,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T16:51:17.703Z",
+      "lastModified": "2026-04-13T16:51:18.077Z",
       "taskCount": 1637,
       "completedCount": 1297,
       "tags": [
