@@ -33783,15 +33783,16 @@
         "description": "Rename the shared predicate `orientation_is_finite` (crates/reify-types/src/value.rs:1114) to `quaternion_is_finite` (or `quat_components_finite`) so the name reflects its actual signature — it takes four raw `f64` components, not a `Value::Orientation`. One call site in `crates/reify-expr/src/lib.rs` (eval_mul Transform*Transform) even passes intermediate `quat_mul_t` products `(rw, rx, ry, rz)`, making the current name misleading. While touching these files, also reorder the import in `crates/reify-stdlib/src/orientation.rs:1` from `{orientation_is_finite, DimensionVector, Value}` to `{DimensionVector, Value, orientation_is_finite}` (post-rename: `{DimensionVector, Value, quaternion_is_finite}`) for consistency with `helpers.rs` and `sanitize.rs`. Purely cosmetic / naming cleanup — no behavioral change. Update: the function definition + doc comment + tests in value.rs, the re-export in reify-types/src/lib.rs, and all call sites across reify-expr (lib.rs, sanitize.rs) and reify-stdlib (helpers.rs, orientation.rs).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-13T23:18:37.729Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T23:18:37.332Z",
+      "lastModified": "2026-04-13T23:18:37.730Z",
       "taskCount": 1639,
       "completedCount": 1309,
       "tags": [
