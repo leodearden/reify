@@ -27107,13 +27107,13 @@
         "description": "Naming consistency fix from Task 268 review.\n\nThe source module is `crates/reify-eval/src/tests_runner.rs` (plural) while the integration test file is `crates/reify-eval/tests/test_runner.rs` (singular), and the public items (`run_tests`, `TestResult`, `TestStatus`) use singular `test`. The `tests_runner` module name is inconsistent with both the integration test and the public API, and `tests` awkwardly shadows the common unit-test module convention.\n\nAction:\n1. Rename `crates/reify-eval/src/tests_runner.rs` → `crates/reify-eval/src/test_runner.rs`.\n2. Update `pub mod tests_runner;` → `pub mod test_runner;` and any `pub use tests_runner::…` in `crates/reify-eval/src/lib.rs`.\n3. Run `cargo build -p reify-eval` and `cargo test -p reify-eval` to verify.\n\nNo external API changes — the re-exported symbols stay the same.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "268"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:45:48.105Z",
+        "updatedAt": "2026-04-13T23:29:20.710Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -33861,7 +33861,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T23:29:20.039Z",
+      "lastModified": "2026-04-13T23:29:20.711Z",
       "taskCount": 1640,
       "completedCount": 1310,
       "tags": [
