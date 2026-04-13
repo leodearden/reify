@@ -33937,15 +33937,16 @@
         "description": "Follow-up from Task 1622 review triage (esc-1622-16, S3).\n\nThe meta-test `ignore_reason_strings_have_no_stale_plan_pointers` in crates/reify-expr/tests/field_calculus_tests.rs only protects that one file. The convention \"reason strings should not point at transient plan docs\" is presumably repo-wide, but a sibling test file with `#[ignore = \"see plan step-7\"]` in any other crate would not be caught.\n\nFix: promote the check to a workspace-wide guard. Options:\n- Small `xtask` that walks `**/tests/**/*.rs` and asserts the same convention.\n- A dedicated `tests/` integration test in a workspace-scoped crate that does the walk.\n- Alternatively, if workspace promotion is too heavy, add a comment on the existing narrow test acknowledging the one-file scope so future authors know to extend it when adding ignored tests elsewhere.\n\nThe reviewer (esc-1622-16, reviewer_comprehensive) explicitly noted: \"No action required for Task 1622 itself\" — this is pure follow-up scope expansion.\n\nmemory_hints:\n- Original narrow test: crates/reify-expr/tests/field_calculus_tests.rs ~line 3923\n- Task 1622 established the \"known bug:\" prefix convention for ignore reasons.\n- Check for existing xtask infrastructure before creating a new crate.\n\nModules: xtask, crates/reify-expr/tests",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-13T23:48:52.731Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T23:48:47.484Z",
+      "lastModified": "2026-04-13T23:48:52.731Z",
       "taskCount": 1642,
       "completedCount": 1312,
       "tags": [
