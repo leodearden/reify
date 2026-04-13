@@ -33256,7 +33256,7 @@
         "id": "1612",
         "title": "Use make_analytical_field in run_dim_metadata_test and add source param",
         "description": "In crates/reify-expr/tests/field_calculus_tests.rs, run_dim_metadata_test (~line 542) manually constructs Value::Field + Type::Field (~lines 574-586) instead of calling make_analytical_field. Add a source parameter to make_analytical_field (or create make_field_with_source variant) to support non-Analytical sources, then replace the inline construction in run_dim_metadata_test. Additionally, verify the existence of make_analytical_field before use, as it was not created for Task 413. Add memory_hints for execution context.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "Ensure make_analytical_field exists before attempting to use it. If it does not exist, consider creating it locally in field_calculus_tests.rs or extracting it to reify-test-support for cross-crate reuse. Add memory_hints to enhance execution context handling.",
@@ -33279,9 +33279,10 @@
             "description": "Integrate memory_hints to improve execution context handling.",
             "dependencies": [],
             "details": "Implement memory_hints in the relevant sections of the code to optimize execution context.",
-            "status": "pending",
+            "status": "done",
             "testStrategy": "Test the execution context to ensure memory_hints are functioning as expected.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-04-13T23:43:40.460Z"
           }
         ],
         "metadata": {
@@ -33300,7 +33301,7 @@
           },
           "_causation_id": "e9029562-837c-4b6e-8162-51e471faa708"
         },
-        "updatedAt": "2026-04-13T23:43:38.636Z"
+        "updatedAt": "2026-04-13T23:43:40.460Z"
       },
       {
         "id": "1613",
@@ -33921,9 +33922,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T23:43:38.636Z",
+      "lastModified": "2026-04-13T23:43:40.460Z",
       "taskCount": 1640,
-      "completedCount": 1310,
+      "completedCount": 1311,
       "tags": [
         "master"
       ]
