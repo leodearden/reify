@@ -3101,7 +3101,7 @@
           "173",
           "177"
         ],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "modules": [
             "examples",
@@ -3120,10 +3120,16 @@
             "181"
           ],
           "bundled_at": "2026-04-11",
-          "bundle_key": "L"
+          "bundle_key": "L",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Bundle: M8 combined example + pipeline integration tests + error case coverage"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-13T18:42:58.034Z"
+        "updatedAt": "2026-04-13T18:44:39.776Z"
       },
       {
         "id": "180",
@@ -33735,9 +33741,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T18:42:58.037Z",
+      "lastModified": "2026-04-13T18:44:39.776Z",
       "taskCount": 1637,
-      "completedCount": 1301,
+      "completedCount": 1302,
       "tags": [
         "master"
       ]
