@@ -585,19 +585,9 @@ fn run_dim_metadata_test(
     let params: Vec<(&str, ValueCellId)> = names[..n].iter().copied().zip(ids).collect();
     let lambda = make_value_lambda(params, body, ValueMap::new());
 
-    // Wrap in Value::Field.
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source,
-        lambda: Box::new(lambda),
-    };
-
-    // Wrap in Type::Field.
-    let field_type = Type::Field {
-        domain: Box::new(domain_type),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    // Build the (Value::Field, Type::Field) pair via the source-parameterised helper.
+    let (field, field_type) =
+        make_field_with_source(domain_type.clone(), codomain_type.clone(), source, lambda);
 
     // Build the function call.
     let expr = make_function_call(
