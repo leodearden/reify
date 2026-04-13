@@ -356,4 +356,24 @@ mod tests {
             other => panic!("expected Orientation{{1,0,0,0}}, got {:?}", other),
         }
     }
+
+    // ── sanitize_value wildcard arm (`_ => v`) characterization tests ─────────
+
+    #[test]
+    fn sanitize_undef_returns_undef() {
+        assert_eq!(
+            sanitize_value(Value::Undef),
+            Value::Undef,
+            "Undef is idempotent: sanitize_value(Undef) must return Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_bool_passthrough() {
+        assert_eq!(
+            sanitize_value(Value::Bool(true)),
+            Value::Bool(true),
+            "Bool(true) must pass through unchanged"
+        );
+    }
 }
