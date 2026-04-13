@@ -68,6 +68,48 @@ fn make_analytical_field(domain: Type, codomain: Type, lambda: Value) -> (Value,
     (field, field_type)
 }
 
+/// Unit test for `make_field_with_source`: verifies that the returned
+/// `Value::Field` and `Type::Field` carry the source kind, domain type,
+/// codomain type, and lambda supplied by the caller.
+#[test]
+fn make_field_with_source_builds_field_with_given_source() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        Type::Real,
+        FieldSourceKind::Composed,
+        lambda.clone(),
+    );
+
+    // (c) Type::Field carries the supplied domain and codomain.
+    assert_eq!(
+        field_type,
+        Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::Real),
+        }
+    );
+
+    // (a), (b), (d) — destructure the Value::Field and assert each field.
+    let Value::Field {
+        domain_type,
+        codomain_type,
+        source,
+        lambda: boxed_lambda,
+    } = field
+    else {
+        panic!("expected Value::Field");
+    };
+
+    assert_eq!(domain_type, Type::Real);
+    assert_eq!(codomain_type, Type::Real);
+    assert_eq!(source, FieldSourceKind::Composed);
+    assert_eq!(*boxed_lambda, lambda);
+}
+
 /// Result `Type::Field` for a `curl` operator: domain → Vec3(Real).
 fn curl_result_type(domain: Type) -> Type {
     Type::Field {
