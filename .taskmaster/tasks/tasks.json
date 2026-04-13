@@ -33843,15 +33843,16 @@
         "description": "Follow-up from Task 1612 review triage (esc-1612-15, S1).\n\nIn crates/reify-expr/tests/field_calculus_tests.rs, the `make_field_with_source_builds_field_with_given_source` test (~lines 102-144) iterates over only 3 of the 8 current `FieldSourceKind` variants: Analytical, Composed, Laplacian. The unchecked variants are Sampled, Imported, Gradient, Divergence, and Curl.\n\nSince the loop already iterates and the per-iteration assertions are constant, extending the array to all variants is essentially free and would protect against future enum additions silently bypassing the helper (the `[...]` array is not an exhaustive match, so new variants would not force an update here).\n\nPreferred fix: iterate over the full FieldSourceKind enum (all 8 current variants). Alternative: add a brief comment explaining why these three are representative.\n\nVerification: `cargo test -p reify-expr --test field_calculus_tests make_field_with_source_builds_field_with_given_source`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-13T23:22:58.724Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-13T23:22:57.267Z",
+      "lastModified": "2026-04-13T23:22:58.725Z",
       "taskCount": 1640,
       "completedCount": 1310,
       "tags": [
