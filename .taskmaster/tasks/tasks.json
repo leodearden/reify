@@ -34329,7 +34329,11 @@
         "updatedAt": "2026-04-14T05:23:23.247Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr/tests"
+            "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/tests/field_eval_tests.rs",
+            "crates/reify-expr/tests/gradient_tests.rs"
           ]
         }
       }
