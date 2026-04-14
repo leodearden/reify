@@ -704,15 +704,60 @@ fn codomain_component_type(codomain: &Type) -> Type {
     }
 }
 
+/// Build the standard analytical lambda body for `eval_field_op`.
+///
+/// Stamps every `value_ref` and intermediate node with the codomain's component
+/// type (see `codomain_component_type`):
+///  - Vector codomain `Vec{n}(Q)` → each arg is stamped with `Q`; the outer
+///    `FunctionCall` result_type is the full codomain.
+///  - Scalar / Real / other codomain → value_refs and intermediate `BinOp::Add`
+///    nodes are stamped with the codomain itself (handled in a later step; currently
+///    still uses `Type::Real` for the scalar branch until step-6 lands).
+///
+/// This ensures the body's static type annotations are consistent with the declared
+/// field codomain, which is the invariant exercised by the Case B regression guards
+/// (`divergence_sample_mixed_real_to_velocity_returns_scalar` and
+/// `laplacian_sample_mixed_real_to_temperature_returns_scalar`).
+fn build_eval_field_op_body(ids: &[ValueCellId], codomain: &Type) -> CompiledExpr {
+    let component_ty = codomain_component_type(codomain);
+    match codomain {
+        Type::Vector { n: vec_n, .. } => {
+            // Identity: vec_n(x, y, z, ...) — each arg stamped with the inner quantity type.
+            let args: Vec<CompiledExpr> = ids
+                .iter()
+                .map(|id| CompiledExpr::value_ref(id.clone(), component_ty.clone()))
+                .collect();
+            make_function_call(&format!("vec{vec_n}"), args, codomain.clone())
+        }
+        _ => {
+            // Linear sum: x + y + z + ...
+            // NOTE: scalar branch still uses Type::Real for value_refs and Add nodes;
+            // updated to use component_ty in step-6.
+            let mut acc = CompiledExpr::value_ref(ids[0].clone(), Type::Real);
+            for id in &ids[1..] {
+                acc = CompiledExpr::binop(
+                    BinOp::Add,
+                    acc,
+                    CompiledExpr::value_ref(id.clone(), Type::Real),
+                    Type::Real,
+                );
+            }
+            acc
+        }
+    }
+}
+
 /// Evaluate a calculus operator on a standard analytical test field.
 ///
 /// Builds a `Value::Field` with the given `domain` and `codomain` types, using a
-/// standard lambda body:
+/// standard lambda body built by [`build_eval_field_op_body`]:
 ///  - Vector codomain → identity `vec_n(x, y, z, ...)` (passes params straight through)
 ///  - Scalar / Real / other codomain → linear sum `x + y + z + ...`
 ///
-/// Value refs inside the body use `Type::Real` annotations (trust-the-declaration
-/// pattern, consistent with the rest of the test suite).
+/// Value refs and intermediate nodes inside the body are stamped with the codomain's
+/// component type (`codomain_component_type(codomain)`): the inner quantity for
+/// Vector codomains, or the codomain itself for scalar/Real shapes.  This keeps the
+/// body statically type-consistent with the declared field codomain.
 ///
 /// Supports `"gradient"`, `"divergence"`, `"curl"`, and `"laplacian"`.
 /// Returns the operator-result `Value` (a `Value::Field` for valid inputs).
@@ -731,30 +776,8 @@ fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
         .map(|&name| ValueCellId::new("$lambda0.S", name))
         .collect();
 
-    // Build lambda body.
-    let body = match &codomain {
-        Type::Vector { n: vec_n, .. } => {
-            // Identity: vec_n(x, y, z, ...)
-            let args: Vec<CompiledExpr> = ids
-                .iter()
-                .map(|id| CompiledExpr::value_ref(id.clone(), Type::Real))
-                .collect();
-            make_function_call(&format!("vec{vec_n}"), args, codomain.clone())
-        }
-        _ => {
-            // Linear sum: x + y + z + ...
-            let mut acc = CompiledExpr::value_ref(ids[0].clone(), Type::Real);
-            for id in &ids[1..] {
-                acc = CompiledExpr::binop(
-                    BinOp::Add,
-                    acc,
-                    CompiledExpr::value_ref(id.clone(), Type::Real),
-                    Type::Real,
-                );
-            }
-            acc
-        }
-    };
+    // Build lambda body using the extracted helper.
+    let body = build_eval_field_op_body(&ids, &codomain);
 
     let params: Vec<(&str, ValueCellId)> = names[..n].iter().copied().zip(ids).collect();
     let lambda = make_value_lambda(params, body, ValueMap::new());
@@ -831,6 +854,88 @@ fn codomain_component_type_returns_vector_quantity_or_codomain_itself() {
         Type::Real,
         "Real should yield itself"
     );
+}
+
+/// `build_eval_field_op_body` (Vector branch) stamps each `value_ref` with the
+/// codomain's component type (the inner quantity of the Vector), not `Type::Real`.
+///
+/// Case 1: Vec3(Scalar<Velocity>) → component type is Scalar<Velocity>.
+/// Case 2: Vec3(Real)             → component type is Real (regression check).
+///
+/// For each case the test asserts:
+/// (a) top-level kind is FunctionCall with name "vec3" and result_type == codomain;
+/// (b) exactly 3 ValueRef nodes are present in the tree;
+/// (c) every ValueRef's result_type equals the expected component type.
+#[test]
+fn build_eval_field_op_body_vector_branch_stamps_codomain_component_type() {
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+    let ids: Vec<ValueCellId> = ["x", "y", "z"]
+        .iter()
+        .map(|&name| ValueCellId::new("$lambda0.S", name))
+        .collect();
+
+    // ── Case 1: Vec3(Scalar<Velocity>) ───────────────────────────────────────
+    let vel_scalar = Type::Scalar { dimension: velocity_dim };
+    let vec3_velocity = Type::vec3(vel_scalar.clone());
+    let body1 = build_eval_field_op_body(&ids, &vec3_velocity);
+
+    // (a) top-level kind and result_type
+    match &body1.kind {
+        CompiledExprKind::FunctionCall { function, .. } => {
+            assert_eq!(function.name, "vec3",
+                "case 1: expected FunctionCall 'vec3', got {:?}", function.name);
+        }
+        other => panic!("case 1: expected FunctionCall, got {:?}", other),
+    }
+    assert_eq!(
+        body1.result_type, vec3_velocity,
+        "case 1: top-level result_type should be Vec3(Velocity), got {:?}", body1.result_type
+    );
+
+    // (b,c) collect value_ref result_types
+    let mut value_ref_types: Vec<Type> = Vec::new();
+    body1.walk(&mut |node| {
+        if matches!(&node.kind, CompiledExprKind::ValueRef(_)) {
+            value_ref_types.push(node.result_type.clone());
+        }
+    });
+    assert_eq!(value_ref_types.len(), 3, "case 1: expected 3 ValueRef nodes, got {}", value_ref_types.len());
+    for ty in &value_ref_types {
+        assert_eq!(
+            *ty, vel_scalar,
+            "case 1: each ValueRef should have result_type Scalar<Velocity>, got {:?}", ty
+        );
+    }
+
+    // ── Case 2: Vec3(Real) — regression check ────────────────────────────────
+    let vec3_real = Type::vec3(Type::Real);
+    let body2 = build_eval_field_op_body(&ids, &vec3_real);
+
+    match &body2.kind {
+        CompiledExprKind::FunctionCall { function, .. } => {
+            assert_eq!(function.name, "vec3",
+                "case 2: expected FunctionCall 'vec3', got {:?}", function.name);
+        }
+        other => panic!("case 2: expected FunctionCall, got {:?}", other),
+    }
+    assert_eq!(
+        body2.result_type, vec3_real,
+        "case 2: top-level result_type should be Vec3(Real), got {:?}", body2.result_type
+    );
+
+    let mut value_ref_types2: Vec<Type> = Vec::new();
+    body2.walk(&mut |node| {
+        if matches!(&node.kind, CompiledExprKind::ValueRef(_)) {
+            value_ref_types2.push(node.result_type.clone());
+        }
+    });
+    assert_eq!(value_ref_types2.len(), 3, "case 2: expected 3 ValueRef nodes, got {}", value_ref_types2.len());
+    for ty in &value_ref_types2 {
+        assert_eq!(
+            *ty, Type::Real,
+            "case 2: each ValueRef should have result_type Real, got {:?}", ty
+        );
+    }
 }
 
 /// Sample a field value at the standard test point for its domain type.
