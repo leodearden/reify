@@ -33406,7 +33406,7 @@
             "crates/reify-eval/tests/collection_sub_eval.rs"
           ],
           "modules": [
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ]
         }
       },
@@ -33607,7 +33607,7 @@
             "crates/reify-eval/tests/stress_sweep_degenerate.rs"
           ],
           "modules": [
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ]
         }
       },
