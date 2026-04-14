@@ -500,13 +500,12 @@ fn range_valid_compiles_without_ice() {
     assert!(errors.is_empty(), "expected no errors on valid range, got: {:?}", errors);
 }
 
-/// Zero-arg stdlib function call should emit a type-inference warning.
+/// Zero-arg stdlib function call emits a type-inference warning.
 ///
-/// expr.rs:575 falls through to `compiled_args.first().map(...).unwrap_or(Type::Real)`
-/// for non-geometry stdlib functions.  When `args` is empty the `first()` is
-/// `None`, so the result type silently defaults to `Type::Real`.  After
-/// step-12 this site will emit a warning.  This test is currently FAILING
-/// because no warning is emitted.
+/// expr.rs:586 calls `unwrap_or_else` and emits
+/// `Diagnostic::warning("cannot infer return type of zero-arg function…")`
+/// when `compiled_args` is empty.  This test verifies that warning is
+/// present so the silent-default is caught at compile time.
 #[test]
 fn stdlib_fn_no_args_emits_type_inference_warning() {
     let source = r#"
