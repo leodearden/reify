@@ -5377,14 +5377,14 @@
         "status": "in-progress",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-eval/tests"
+            "crates/reify-compiler",
+            "crates/reify-eval"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/tests/annotation_compile_tests.rs",
-            "crates/reify-eval/tests/m9_constraint_def.rs"
+            "crates/reify-compiler/tests/optimized_annotation_tests.rs",
+            "crates/reify-eval/tests/optimized_registry_tests.rs"
           ]
         },
         "subtasks": [],
@@ -5403,20 +5403,15 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests",
-            "crates/reify-eval/tests",
-            "crates/reify-syntax/src",
-            "crates/reify-syntax/tests",
-            "crates/reify-test-support/src",
-            "tree-sitter-reify/grammar.js"
+            "crates/reify-compiler",
+            "crates/reify-types"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
+            "crates/reify-compiler/src/annotations.rs",
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-types/src/lib.rs",
-            "crates/reify-types/src/constraint.rs"
+            "crates/reify-types/src/lib.rs"
           ],
           "memory_hints": {
             "entities": [
