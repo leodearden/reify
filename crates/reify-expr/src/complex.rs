@@ -33,12 +33,21 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
                     if *re == 0.0 && *im == 0.0 {
                         return Some(Value::Undef);
                     }
-                    // The pre-guard above is essential: atan2(y, Inf) = 0.0 and
-                    // atan2(y, -Inf) = ±π are both finite, so sanitize_value alone
-                    // cannot detect Inf inputs — it would silently return a wrong result.
-                    // After the guard, atan2(finite, finite) with at least one non-zero
-                    // argument always returns a value in [-π, π], so no output
-                    // sanitization is needed here.
+                    // Both pre-guards above are essential — they catch finite-output
+                    // cases that would otherwise slip past sanitize_value:
+                    //
+                    //   • is_finite guard: atan2(y, ±Inf) = 0.0 or ±π, and
+                    //     atan2(±Inf, x) = ±π/2 — all finite. sanitize_value cannot
+                    //     detect NaN/Inf inputs from these outputs alone.
+                    //
+                    //   • zero-vector guard: atan2(0.0, 0.0) = 0.0 which is
+                    //     also finite, so sanitize_value cannot distinguish the
+                    //     mathematically-undefined zero-vector case from a legitimate
+                    //     zero-angle result.
+                    //
+                    // After both guards, atan2(finite, finite) with at least one
+                    // non-zero argument always returns a value in [-π, π], so no
+                    // output sanitization is needed here.
                     let angle = im.atan2(*re);
                     Some(Value::Scalar {
                         si_value: angle,
@@ -447,12 +456,28 @@ mod tests {
     }
 
     #[test]
+    fn phase_inf_im_returns_undef() {
+        // Complex{re:1.0, im:+Inf, DIMENSIONLESS}.phase → Undef
+        // Note: atan2(+Inf, 1.0) = π/2 which is finite — sanitize_value alone
+        // would NOT catch this Inf input. The pre-guard is what correctly rejects it.
+        assert!(
+            call_complex_method(1.0, f64::INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            "z.phase with +Inf imaginary part should return Undef"
+        );
+    }
+
+    #[test]
     fn phase_neg_inf_im_returns_undef() {
         // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.phase → Undef
-        // The Complex carries an Inf component, violating sanitization convention
+        //
+        // Note: atan2(-Inf, 1.0) = -π/2, which is finite — so sanitize_value alone
+        // would NOT catch this -Inf input and would silently return a wrong result.
+        // The pre-guard (!re.is_finite() || !im.is_finite()) is what correctly
+        // rejects this case. This test locks that behaviour as a regression guard.
         assert!(
             call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
-            "z.phase with -Inf imaginary part should return Undef"
+            "z.phase with -Inf imaginary part should return Undef (atan2(-Inf,1.0)=-π/2 is finite, \
+             so the pre-guard, not sanitize_value, is what catches this)"
         );
     }
 
@@ -468,6 +493,31 @@ mod tests {
             call_complex_method(f64::NEG_INFINITY, 1.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
             "z.phase with -Inf real part should return Undef (atan2(1.0,-Inf)=π is finite, \
              so the pre-guard, not sanitize_value, is what catches this)"
+        );
+    }
+
+    // ── method: phase (zero-vector edge case) ─────────────────────────────────
+
+    #[test]
+    fn phase_zero_complex_returns_undef() {
+        // Complex{re:0.0, im:0.0, DIMENSIONLESS}.phase → Undef
+        // atan2(0.0, 0.0) = 0.0 which is finite — neither sanitize_value nor the
+        // is_finite pre-guard can detect this case. The zero-vector guard
+        // (`*re == 0.0 && *im == 0.0`) correctly rejects the mathematically-
+        // undefined phase of the zero vector. This test locks that guard as a
+        // regression guard.
+        assert!(
+            call_complex_method(0.0, 0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            "z.phase with zero vector should return Undef (atan2(0.0,0.0)=0.0 is finite, \
+             so the zero-vector guard, not sanitize_value, is what catches this)"
+        );
+        // IEEE-754: -0.0 == 0.0, so the zero-vector guard also catches signed-zero
+        // variants. Lock this against any future refactor that might swap == for a
+        // bit-pattern check (e.g. to_bits() == 0).
+        assert!(
+            call_complex_method(-0.0, -0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            "z.phase with signed-zero vector (-0.0,-0.0) should return Undef \
+             (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
         );
     }
 
@@ -538,6 +588,26 @@ mod tests {
                 assert_eq!(dimension, DimensionVector::ANGLE);
             }
             other => panic!("expected Scalar{{π, ANGLE}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn phase_finite_dimensioned_returns_angle() {
+        // Complex{re:1.0, im:1.0, LENGTH}.phase → Scalar{π/4, ANGLE}
+        // The phase method ignores the dimension of the Complex components and always
+        // returns a dimensionless angle — this test locks that contract.
+        match call_complex_method(1.0, 1.0, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()) {
+            Value::Scalar { si_value, dimension } => {
+                let expected = std::f64::consts::FRAC_PI_4;
+                assert!(
+                    (si_value - expected).abs() < 1e-12,
+                    "expected π/4 ≈ {}, got {}",
+                    expected,
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Scalar{{π/4, ANGLE}}, got {:?}", other),
         }
     }
 
