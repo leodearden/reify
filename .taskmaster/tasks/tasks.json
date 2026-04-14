@@ -34103,11 +34103,11 @@
         "description": "Follow-up quality improvements to crates/reify-compiler/tests/imperial_units_tests.rs (from task 335 review). Four related test-quality changes in one file.",
         "details": "Review of task 335 surfaced four improvements to imperial_units_tests.rs, all small and co-located:\n\n1. **Regression guard for `in`** (test:374): `existing_imperial_units_ft_thou_lb_oz_unchanged_post_task_335` omits `in` (inch, 0.0254 m), even though the task touched that line. Add `(\"1in\", 0.0254)` to `length_cases` and `\"in\"` to the offset-check loop. The literal `1in` parses fine in source position.\n\n2. **Cross-relationship tests** (test:115-272): New units are verified only in isolation against hand-typed constants that mirror units.ri verbatim (LBF_SI, PSI_SI, KSI_SI, FL_OZ_SI, GAL_SI). A typo copied to both files would pass. Add a test that uses both forms and asserts equality: `1yd == 3ft`, `1ksi == 1000 psi`, `1gal == 128 fl_oz`, `1psi == 1 lbf / (1 in * 1 in)`. This locks dimensional relationships, not just magic numbers.\n\n3. **Helper extraction** (test:79-110,135-165,200-230,285-315): The `units_module().units.iter().find(|u| u.name == X).expect(...)` pattern is repeated 7+ times with identical dimension/factor/offset assertions. Add a private helper `fn assert_simple_unit(name: &str, expected_dim: DimensionVector, expected_factor: f64, rel_tol: f64)` that centralises the offset=None invariant. Leave the parse→compile `_resolves_to_*` tests separate since they cover a different code path.\n\n4. **Tighten psi/ksi tolerances** (test:163): `stdlib_psi_resolves_to_pressure_*` uses `PSI_SI * 1e-9` (≈ 6.9e-6 absolute). The constant in units.ri is the f64 round-trip of the exact value, so `1e-12` absolute (matching yd/ft/thou) would still pass and tighten the net by ~6 orders of magnitude. Same for ksi.\n\n## Test plan\n- Add `in` case to length_cases; verify offset-check loop still green.\n- Add a new `#[test] cross_relationships_between_imperial_units()` that asserts the four equalities above within 1e-12 relative tolerance of the larger value.\n- Extract `assert_simple_unit` helper and rewrite `stdlib_units_module_contains_*` tests to use it.\n- Change psi/ksi tests to `1e-12` absolute tolerance.\n- `cargo test -p reify-compiler --test imperial_units_tests` green.\n\nSpawned from: task 335 review (esc-335-19).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:25.637Z",
+        "updatedAt": "2026-04-14T12:30:52.357Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -34265,11 +34265,11 @@
         "description": "Further widen the non-recursion tripwire in sanitize_wildcard_variants_passthrough by adding List and Transform cases to the mirrored tests in crates/reify-expr/src/sanitize.rs (~line 472) and crates/reify-stdlib/src/helpers.rs (~line 893). Task 1644 already broadened the sample from Bool/Int/String to include Vector and Frame; this follow-up extends coverage to two more container/struct wildcard variants that share the same risk profile.",
         "details": "Append the following two cases to the `cases` array in both crates/reify-expr/src/sanitize.rs (sanitize_wildcard_variants_passthrough, ~line 472) and crates/reify-stdlib/src/helpers.rs (mirrored test, ~line 893):\n\n- Value::List(vec![Value::Real(f64::NAN)])\n- Value::Transform {\n      rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),\n      translation: Box::new(Value::Vector(vec![\n          Value::Real(f64::NAN),\n          Value::Real(0.0),\n          Value::Real(0.0),\n      ])),\n  }\n\nBoth cases deliberately carry NaN payloads so the existing non-recursion tripwire semantics continue to hold: if sanitize_value were ever refactored to recurse into children, the inner NaN would become Undef and the assert_eq! would fail (Value::PartialEq uses to_bits(), so NaN == NaN here).\n\nSYNC contract: the two copies of this test MUST remain in step — add identical cases in both files in the same commit. Update the doc comment (\"five of ~25\") in both crates to reflect the new count.\n\nVerify with:\n    cargo test -p reify-expr sanitize_wildcard_variants_passthrough\n    cargo test -p reify-stdlib sanitize_wildcard_variants_passthrough\n\nMemory hints: search \"sanitize_wildcard_variants_passthrough task 1644 Vector Frame\"; search \"task 892 sanitize_value consolidation\"; related: Task 1643 (asymmetric SYNC comment in same area).\n\nConfirm that Value::List and Value::Transform variants actually exist in crates/reify-expr/src/value.rs with the expected shape before coding — if the Transform variant shape differs (e.g., uses different field names or a non-Box inner value), adjust accordingly while preserving the NaN tripwire intent.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:25.723Z",
+        "updatedAt": "2026-04-14T12:30:53.375Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src",
@@ -34460,7 +34460,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:30:51.569Z",
+      "lastModified": "2026-04-14T12:30:53.375Z",
       "taskCount": 1661,
       "completedCount": 1338,
       "tags": [
