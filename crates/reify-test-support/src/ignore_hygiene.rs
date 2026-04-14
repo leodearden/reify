@@ -744,6 +744,41 @@ mod tests {
         );
     }
 
+    // ── collect_workspace_stale_pointers — real workspace pin ─────────────────
+
+    /// Unit-level pin: collect_workspace_stale_pointers on the real workspace
+    /// must return zero violations, mirroring the intent of the integration
+    /// test `no_stale_plan_pointers_in_workspace_ignore_reasons` in
+    /// `crates/reify-test-support/tests/ignore_reason_hygiene.rs`.
+    ///
+    /// CARGO_MANIFEST_DIR is `crates/reify-test-support`; two `.parent()` calls
+    /// reach the workspace root — established convention (Task 348).
+    ///
+    /// Both this test and the integration test must remain green; they are
+    /// complementary rather than redundant — this one exercises the extracted
+    /// helper directly, while the integration test exercises it through the
+    /// public crate API.
+    #[test]
+    fn cwsp_real_workspace_has_no_stale_plan_pointers() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let workspace_root = std::path::Path::new(manifest_dir)
+            .parent()
+            .expect("crates/ parent of CARGO_MANIFEST_DIR")
+            .parent()
+            .expect("workspace root parent of crates/");
+
+        let violations = collect_workspace_stale_pointers(workspace_root);
+
+        assert!(
+            violations.is_empty(),
+            "Found stale plan-step pointer(s) in #[ignore] reason strings.\n\
+             Replace each pointer with a self-contained inline summary \
+             (e.g. \"known bug: describe the actual failure mode here\").\n\
+             Offenders:\n  {}",
+            violations.join("\n  ")
+        );
+    }
+
     // ── walk_test_rs_files ────────────────────────────────────────────────────
 
     /// Build a synthetic workspace tree using tempfile::tempdir() and verify that
