@@ -508,6 +508,11 @@ mod tests {
             "reads should contain x exactly twice (once per branch), got: {:?}",
             trace.reads
         );
+        // Pin traversal order: condition → then_branch → else_branch
+        // (matches collect_value_refs_inner's Conditional arm in reify-types/src/expr.rs)
+        assert_eq!(trace.reads[0], flag, "reads[0] should be the condition (flag)");
+        assert_eq!(trace.reads[1], x, "reads[1] should be the then-branch (x)");
+        assert_eq!(trace.reads[2], x, "reads[2] should be the else-branch (x)");
     }
 
     /// Step 2: Verify extract_dependency_trace handles nested Conditional expressions —
