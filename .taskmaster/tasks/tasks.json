@@ -13214,10 +13214,11 @@
           "files": [
             "crates/reify-lsp/src/analysis.rs",
             "crates/reify-lsp/src/goto_def.rs",
-            "crates/reify-lsp/tests/in_process_bridge.rs"
+            "crates/reify-eval/tests/geometry_error_handling.rs"
           ],
           "modules": [
-            "crates/reify-lsp"
+            "crates/reify-lsp/src",
+            "crates/reify-eval/tests"
           ],
           "memory_hints": {
             "entities": [],
@@ -13434,8 +13435,8 @@
             "818e7314-6409-426f-89c3-275441a9d4cb"
           ],
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-compiler/src",
+            "crates/reify-eval/src"
           ],
           "memory_hints": {
             "entities": [
