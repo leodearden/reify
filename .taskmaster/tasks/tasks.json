@@ -6390,7 +6390,20 @@
             "examples/geometry_modeling.ri",
             "examples/sweep_and_transform.ri",
             "crates/reify-eval/tests/m8_stdlib_integration.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "reify-stdlib",
+              "reify-eval",
+              "reify-test-support"
+            ],
+            "queries": [
+              "stdlib geometry primitives cone torus cylinder extrude boolean",
+              "OCCT integration STEP export reify",
+              "reify-stdlib split into 8 submodules",
+              "stdlib M8.1 geometry modeling sweep transform integration"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-14T12:37:51.291Z"
