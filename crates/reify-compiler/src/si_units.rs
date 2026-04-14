@@ -69,7 +69,7 @@ pub struct SiDerivedUnit {
     pub prefix_combos: &'static [&'static str],
 }
 
-/// The 24 standard SI derived units plus non-SI accepted engineering units
+/// The 25 standard SI derived units plus non-SI accepted engineering units
 /// (`eV`, `bar`, `mbar`, `rpm`, `rad_per_s`, `Pa_s`).
 ///
 /// Ordering matches the task spec. `prefix_combos` holds only the
@@ -234,12 +234,14 @@ pub const SI_DERIVED_UNITS: &[SiDerivedUnit] = &[
         factor: 1.0,
         prefix_combos: &[],
     },
-    // NOTE (suggestion #1 from review): `sr` (steradian, SolidAngle) is absent
-    // here because the test in tests/si_units_tests.rs asserts exactly 24 entries
-    // and that file is outside the amendment-pass scope. Adding `sr` to either
-    // this table or to stdlib/units.ri requires touching out-of-scope files.
-    // Tracked as a follow-up: add `pub unit sr : SolidAngle = 1` to units.ri
-    // and update the count assertion in si_units_tests.rs.
+    // sr (steradian) — SI unit of solid angle. Dimensionless like radian;
+    // prefixed steradians (msr, usr) are not conventional, so prefix_combos is empty.
+    SiDerivedUnit {
+        name: "sr",
+        dimension: "SolidAngle",
+        factor: 1.0,
+        prefix_combos: &[],
+    },
 ];
 
 /// Build the `.ri` source text for all SI units.
