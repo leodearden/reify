@@ -3,6 +3,8 @@
 //! Validates UnitEntry, UnitRegistry, resolve_dimension_type,
 //! evaluate_const_expr, compile_unit, and the full unit pre-pass in compile().
 
+mod common;
+
 use reify_compiler::{
     CompiledModule, UnitEntry, UnitRegistry, compile, compile_with_prelude, compile_with_stdlib,
     stdlib_loader,
@@ -1699,25 +1701,10 @@ fn cross_module_user_unit_collision_blames_source_module() {
         dup_diag.message
     );
 
-    // (c) Exactly one label — the user-module branch emits only the duplicate
-    // decl span and omits the original's SourceSpan::empty(0) to avoid a
-    // misleading byte-0 label.
-    assert_eq!(
-        dup_diag.labels.len(),
-        1,
-        "user-module unit collision should emit exactly one label on the user's duplicate decl, got {:?}",
-        dup_diag.labels
-    );
-
-    // (c) … and that single label must not use SourceSpan::empty(0).
-    let empty_span = SourceSpan::empty(0);
-    for label in &dup_diag.labels {
-        assert_ne!(
-            label.span, empty_span,
-            "diagnostic label '{}' has SourceSpan::empty(0) — misleading offset",
-            label.message
-        );
-    }
+    // (c) Exactly one label with a non-empty span — the user-module branch
+    // emits only the duplicate decl span and omits the original's
+    // SourceSpan::empty(0) to avoid a misleading byte-0 label.
+    common::assert_single_non_empty_label(dup_diag);
 }
 
 // ── step-7 (task-416): affine unit referencing another affine unit is rejected ─

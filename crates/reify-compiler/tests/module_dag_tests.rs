@@ -1,5 +1,7 @@
 //! Tests for module DAG: cycle detection, diamond dedup, topological ordering.
 
+mod common;
+
 use std::fs;
 use std::path::PathBuf;
 
@@ -508,25 +510,10 @@ fn compile_project_detects_cross_module_unit_collision() {
         dup_diag.message
     );
 
-    // (c) Exactly one label — the user-module branch emits only the duplicate
-    // decl span and omits the original's SourceSpan::empty(0) to avoid a
-    // misleading byte-0 label.
-    assert_eq!(
-        dup_diag.labels.len(),
-        1,
-        "cross-module user unit collision should emit exactly one label on the user's duplicate decl, got {:?}",
-        dup_diag.labels
-    );
-
-    // (c) … and that single label must not use SourceSpan::empty(0).
-    let empty_span = reify_types::SourceSpan::empty(0);
-    for label in &dup_diag.labels {
-        assert_ne!(
-            label.span, empty_span,
-            "diagnostic label '{}' has SourceSpan::empty(0) — misleading offset",
-            label.message
-        );
-    }
+    // (c) Exactly one label with a non-empty span — the user-module branch
+    // emits only the duplicate decl span and omits the original's
+    // SourceSpan::empty(0) to avoid a misleading byte-0 label.
+    common::assert_single_non_empty_label(dup_diag);
 
     let _ = fs::remove_dir_all(&dir);
 }
