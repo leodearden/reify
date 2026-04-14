@@ -429,25 +429,37 @@ fn violated_constraint_detected() {
     );
 
     // The violation must correspond specifically to the `clearance < width` constraint
-    // on entity Bracket (not some unrelated or cascade failure).
-    assert!(
-        violations.iter().any(|e| e.id.entity == "Bracket"),
-        "expected the violated constraint to be on entity Bracket (clearance < width), \
-         but no Bracket violation found among: {:?}",
+    // on entity Bracket (not some unrelated or cascade failure).  Inline constraints
+    // have label=None so we cannot match by label directly; instead assert exactly one
+    // Bracket violation — any more would indicate an unexpected regression.
+    let bracket_violation_count = violations.iter().filter(|e| e.id.entity == "Bracket").count();
+    assert_eq!(
+        bracket_violation_count,
+        1,
+        "expected exactly 1 Bracket violation (clearance < width), \
+         but found {} Bracket violations among: {:?}",
+        bracket_violation_count,
         violations.iter().map(|e| &e.id).collect::<Vec<_>>()
     );
 
-    // Other previously-passing Bracket constraints (`width < length`, `clearance > 0mm`)
-    // must remain Satisfied — guards against cascade-failure regressions masking the real bug.
+    // Other previously-passing Bracket constraints must remain Satisfied — guards against
+    // cascade-failure regressions masking the real bug.  The violating source produces
+    // 12 total Bracket constraint results (verified empirically): 11 Satisfied and 1
+    // Violated (`clearance < width`).  The threshold is set to 9 (out of 11 actual)
+    // to meaningfully catch regressions while tolerating minor example-file evolution.
+    // Breakdown of Satisfied constraints: 2 trait constraints (length>0mm, mass>0kg),
+    // 4 InRange predicates (label InRange[0]/InRange[1] × 2 invocations), 3 determined
+    // predicates (length, width, mass), plus `width<length` and `clearance>0mm`.
     let bracket_still_satisfied: Vec<_> = check_result
         .constraint_results
         .iter()
         .filter(|e| e.id.entity == "Bracket" && e.satisfaction == Satisfaction::Satisfied)
         .collect();
     assert!(
-        bracket_still_satisfied.len() >= 2,
-        "expected at least 2 Bracket constraints still Satisfied after raising clearance \
-         (including width<length and clearance>0mm), got {}",
+        bracket_still_satisfied.len() >= 9,
+        "expected at least 9 Bracket constraints still Satisfied after raising clearance \
+         (actual healthy count is 11 — InRange×4, determined×3, trait×2, width<length, \
+         clearance>0mm), got {}",
         bracket_still_satisfied.len()
     );
 }
