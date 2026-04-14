@@ -111,23 +111,24 @@ pub const SI_PREFIX_BASES: &[SiPrefixBase] = &[
 /// - `name` — unit symbol as written in Reify source (e.g. `"Pa"`, `"ohm"`, `"eV"`).
 /// - `dimension` — PascalCase dimension name resolved via `type_resolution::resolve_dimension_type`.
 /// - `factor` — multiplicative conversion to SI (e.g. `1.0` for Pa, `1.602176634e-19` for eV).
-/// - `prefix_combos` — which SI prefixes to auto-generate for this unit. The
-///   conventional engineering subset — not every prefix × every unit, since
-///   `RQ`-scale kelvin or `y`-scale siemens would only bloat the generated source.
-///   Empty means the unit is emitted unprefixed only.
+/// - `prefix_combos` — which SI prefixes to auto-generate for this unit.
+///   Always `PrefixSet::Only(list)` — derived units never use `PrefixSet::All`
+///   since no derived unit needs all 20 SI prefixes in engineering practice.
+///   `PrefixSet::Only(&[])` means the unit is emitted in unprefixed form only
+///   (no prefixed variants).
 pub struct SiDerivedUnit {
     pub name: &'static str,
     pub dimension: &'static str,
     pub factor: f64,
-    pub prefix_combos: &'static [&'static str],
+    pub prefix_combos: PrefixSet,
 }
 
 /// The 25 SI and engineering-derived units (19 standard SI plus `eV`, `bar`,
 /// `mbar`, `rpm`, `rad_per_s`, `Pa_s`).
 ///
-/// Ordering matches the task spec. `prefix_combos` holds only the
-/// commonly-used engineering prefixes per unit; the generator expands each
-/// into `<prefix><name>` declarations with `prefix_factor * base_factor`.
+/// Ordering matches the task spec. `prefix_combos` is `PrefixSet::Only(list)`
+/// for all entries; the generator expands each into `<prefix><name>` declarations
+/// with `prefix_factor * base_factor`. `PrefixSet::Only(&[])` means unprefixed only.
 ///
 /// Design notes:
 /// - `Bq` is dimensionally `s⁻¹` (same as `Hz`) — distinct symbol, same dim.
@@ -142,43 +143,43 @@ pub const SI_DERIVED_UNITS: &[SiDerivedUnit] = &[
         name: "N",
         dimension: "Force",
         factor: 1.0,
-        prefix_combos: &["k", "M", "G"],
+        prefix_combos: PrefixSet::Only(&["k", "M", "G"]),
     },
     SiDerivedUnit {
         name: "Pa",
         dimension: "Pressure",
         factor: 1.0,
-        prefix_combos: &["k", "M", "G"],
+        prefix_combos: PrefixSet::Only(&["k", "M", "G"]),
     },
     SiDerivedUnit {
         name: "J",
         dimension: "Energy",
         factor: 1.0,
-        prefix_combos: &["m", "k", "M", "G"],
+        prefix_combos: PrefixSet::Only(&["m", "k", "M", "G"]),
     },
     SiDerivedUnit {
         name: "W",
         dimension: "Power",
         factor: 1.0,
-        prefix_combos: &["u", "m", "k", "M", "G"],
+        prefix_combos: PrefixSet::Only(&["u", "m", "k", "M", "G"]),
     },
     SiDerivedUnit {
         name: "V",
         dimension: "Voltage",
         factor: 1.0,
-        prefix_combos: &["u", "m", "k"],
+        prefix_combos: PrefixSet::Only(&["u", "m", "k"]),
     },
     SiDerivedUnit {
         name: "Hz",
         dimension: "Frequency",
         factor: 1.0,
-        prefix_combos: &["k", "M", "G", "T"],
+        prefix_combos: PrefixSet::Only(&["k", "M", "G", "T"]),
     },
     SiDerivedUnit {
         name: "ohm",
         dimension: "Resistance",
         factor: 1.0,
-        prefix_combos: &["m", "k", "M", "G"],
+        prefix_combos: PrefixSet::Only(&["m", "k", "M", "G"]),
     },
     SiDerivedUnit {
         name: "S",
@@ -186,116 +187,116 @@ pub const SI_DERIVED_UNITS: &[SiDerivedUnit] = &[
         factor: 1.0,
         // nS/uS/mS common in electronics; pS/fS used in RF design and
         // leakage characterisation.
-        prefix_combos: &["f", "p", "n", "u", "m"],
+        prefix_combos: PrefixSet::Only(&["f", "p", "n", "u", "m"]),
     },
     SiDerivedUnit {
         name: "F",
         dimension: "Capacitance",
         factor: 1.0,
         // fF (femtofarad) standard in RF/IC design (parasitic caps, MEMS).
-        prefix_combos: &["f", "p", "n", "u", "m"],
+        prefix_combos: PrefixSet::Only(&["f", "p", "n", "u", "m"]),
     },
     SiDerivedUnit {
         name: "H",
         dimension: "Inductance",
         factor: 1.0,
-        prefix_combos: &["u", "m"],
+        prefix_combos: PrefixSet::Only(&["u", "m"]),
     },
     SiDerivedUnit {
         name: "Wb",
         dimension: "MagneticFlux",
         factor: 1.0,
-        prefix_combos: &["u", "m"],
+        prefix_combos: PrefixSet::Only(&["u", "m"]),
     },
     SiDerivedUnit {
         name: "T",
         dimension: "MagneticFluxDensity",
         factor: 1.0,
-        prefix_combos: &["u", "m"],
+        prefix_combos: PrefixSet::Only(&["u", "m"]),
     },
     SiDerivedUnit {
         name: "lm",
         dimension: "LuminousFlux",
         factor: 1.0,
-        prefix_combos: &[],
+        prefix_combos: PrefixSet::Only(&[]),
     },
     SiDerivedUnit {
         name: "lx",
         dimension: "Illuminance",
         factor: 1.0,
-        prefix_combos: &[],
+        prefix_combos: PrefixSet::Only(&[]),
     },
     SiDerivedUnit {
         name: "Bq",
         dimension: "Frequency",
         factor: 1.0,
-        prefix_combos: &[],
+        prefix_combos: PrefixSet::Only(&[]),
     },
     SiDerivedUnit {
         name: "Gy",
         dimension: "AbsorbedDose",
         factor: 1.0,
         // uGy/mGy are standard in radiation dosimetry (medical imaging).
-        prefix_combos: &["u", "m"],
+        prefix_combos: PrefixSet::Only(&["u", "m"]),
     },
     SiDerivedUnit {
         name: "Sv",
         dimension: "AbsorbedDose",
         factor: 1.0,
         // uSv/mSv are the common units in health physics and occupational dose.
-        prefix_combos: &["u", "m"],
+        prefix_combos: PrefixSet::Only(&["u", "m"]),
     },
     SiDerivedUnit {
         name: "C",
         dimension: "Charge",
         factor: 1.0,
-        prefix_combos: &["p", "n", "u", "m"],
+        prefix_combos: PrefixSet::Only(&["p", "n", "u", "m"]),
     },
     // Non-SI factor conversions.
     SiDerivedUnit {
         name: "eV",
         dimension: "Energy",
         factor: 1.602176634e-19,
-        prefix_combos: &["k", "M", "G", "T"],
+        prefix_combos: PrefixSet::Only(&["k", "M", "G", "T"]),
     },
     SiDerivedUnit {
         name: "bar",
         dimension: "Pressure",
         factor: 100000.0,
-        prefix_combos: &[],
+        prefix_combos: PrefixSet::Only(&[]),
     },
     SiDerivedUnit {
         name: "mbar",
         dimension: "Pressure",
         factor: 100.0,
-        prefix_combos: &[],
+        prefix_combos: PrefixSet::Only(&[]),
     },
     // rpm = 2π/60 rad·s⁻¹ = π/30.
     SiDerivedUnit {
         name: "rpm",
         dimension: "AngularVelocity",
         factor: std::f64::consts::PI / 30.0,
-        prefix_combos: &[],
+        prefix_combos: PrefixSet::Only(&[]),
     },
     SiDerivedUnit {
         name: "rad_per_s",
         dimension: "AngularVelocity",
         factor: 1.0,
-        prefix_combos: &[],
+        prefix_combos: PrefixSet::Only(&[]),
     },
     SiDerivedUnit {
         name: "Pa_s",
         dimension: "DynamicViscosity",
         factor: 1.0,
-        prefix_combos: &[],
+        prefix_combos: PrefixSet::Only(&[]),
     },
     // sr (steradian) — SI unit of solid angle. Dimensionless like radian;
-    // prefixed steradians (msr, usr) are not conventional, so prefix_combos is empty.
+    // prefixed steradians (msr, usr) are not conventional, so no prefixed variants.
     SiDerivedUnit {
         name: "sr",
         dimension: "SolidAngle",
         factor: 1.0,
-        prefix_combos: &[],
+        prefix_combos: PrefixSet::Only(&[]),
     },
 ];
 
@@ -360,23 +361,26 @@ pub fn build_si_units_source() -> String {
 
         // Prefixed variants — resolve each prefix symbol's factor from
         // SI_PREFIXES, multiply with the unit's base factor, and emit.
-        for prefix in u.prefix_combos {
-            let prefix_factor = SI_PREFIXES
-                .iter()
-                .find(|(sym, _)| *sym == *prefix)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "SI_DERIVED_UNITS entry `{}` references unknown prefix `{}`",
-                        u.name, prefix
-                    )
-                })
-                .1;
-            let combined = prefix_factor * u.factor;
-            let combined_str = format_f64_as_decimal(combined);
-            out.push_str(&format!(
-                "pub unit {}{} : {} = {}\n",
-                prefix, u.name, u.dimension, combined_str
-            ));
+        // Derived units always use PrefixSet::Only(list); iterate the list.
+        if let PrefixSet::Only(list) = u.prefix_combos {
+            for prefix in list {
+                let prefix_factor = SI_PREFIXES
+                    .iter()
+                    .find(|(sym, _)| *sym == *prefix)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "SI_DERIVED_UNITS entry `{}` references unknown prefix `{}`",
+                            u.name, prefix
+                        )
+                    })
+                    .1;
+                let combined = prefix_factor * u.factor;
+                let combined_str = format_f64_as_decimal(combined);
+                out.push_str(&format!(
+                    "pub unit {}{} : {} = {}\n",
+                    prefix, u.name, u.dimension, combined_str
+                ));
+            }
         }
         out.push('\n');
     }
@@ -554,18 +558,22 @@ mod tests {
     /// `SI_DERIVED_UNITS` references a symbol that actually exists in
     /// `SI_PREFIXES`. A typo here would only surface at `load_stdlib()` time
     /// (inside `OnceLock::get_or_init`) crashing every downstream user.
+    ///
+    /// Derived units use `PrefixSet::Only(list)` exclusively; iterate the list.
     #[test]
     fn all_derived_unit_prefix_combos_are_valid_si_prefix_symbols() {
         let known: std::collections::HashSet<&str> =
             SI_PREFIXES.iter().map(|(sym, _)| *sym).collect();
         for unit in SI_DERIVED_UNITS {
-            for prefix in unit.prefix_combos {
-                assert!(
-                    known.contains(prefix),
-                    "SI_DERIVED_UNITS entry `{}` has unknown prefix `{}` in prefix_combos",
-                    unit.name,
-                    prefix
-                );
+            if let PrefixSet::Only(list) = unit.prefix_combos {
+                for prefix in list {
+                    assert!(
+                        known.contains(prefix),
+                        "SI_DERIVED_UNITS entry `{}` has unknown prefix `{}` in prefix_combos",
+                        unit.name,
+                        prefix
+                    );
+                }
             }
         }
     }
