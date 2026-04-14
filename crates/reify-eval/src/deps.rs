@@ -4,9 +4,10 @@
 //! the compiled expression tree. This is a safe over-approximation for Reify
 //! expressions: because they are pure, the set of cells an expression *can*
 //! read is a superset of (or equal to) the set it *will* read on any given
-//! evaluation — conditional branches and match arms may short-circuit at runtime, but the
-//! statically collected reads cover every reachable ValueRef. There is no
-//! benefit to runtime (Adapton-style) tracing in a pure language.
+//! evaluation — conditional branches and match arms include every reachable ValueRef
+//! across all arms, even though only one arm is taken at runtime, so the static set
+//! is a superset of the runtime-read set. There is no benefit to runtime
+//! (Adapton-style) tracing in a pure language.
 
 use reify_types::{CompiledExpr, ValueCellId};
 
