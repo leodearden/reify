@@ -34966,6 +34966,19 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1677,
+        "title": "Restore 'Fillet' needle in modify test and generalize assert_rejected_at_compile helper",
+        "description": "Follow-up from task 1628 review (esc-1628-28, reviewer_comprehensive). Two improvements to crates/reify-eval/tests/geometry_error_handling.rs:\n\nS1 (test_coverage): `build_modify_missing_arg_no_kernel_error` (line ~1143) dropped the 'Fillet' needle during refactoring. The original test verified the warning message contained 'missing required geometry argument', 'radius', AND 'Fillet'. The current call only checks the first two: `&[\"missing required geometry argument\", \"radius\"]`. Add 'Fillet' back: `&[\"missing required geometry argument\", \"radius\", \"Fillet\"]`. Also restore 'Fillet' mention in the doc comment at line ~1080 (assertion 3 description).\n\nS2 (code_reuse): `build_primitive_missing_arg_no_kernel_error` (lines ~1006-1069) has the same 5-assertion pattern as the helper but checks `ops.is_empty()` instead of `ops.len() == 1`. Generalize `assert_rejected_at_compile` to accept an `Option<fn(&GeometryOp)->bool>` for the primitive check — `None` means expect zero ops (no preceding primitive), `Some(f)` means expect exactly one op matching `f`. This lets `build_primitive_missing_arg_no_kernel_error` use the helper too.\n\nMemory hints: entity \"compile_geometry_op\", search \"assert_rejected_at_compile helper\".",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1628
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -34978,7 +34991,7 @@
       ],
       "created": "2026-04-14T20:20:51.699Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-14T20:20:56.210Z"
+      "updated": "2026-04-14T20:21:00.443Z"
     }
   }
 }
