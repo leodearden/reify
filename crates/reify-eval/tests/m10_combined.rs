@@ -58,6 +58,17 @@ fn constraint_count(engine: &Engine) -> usize {
         .len()
 }
 
+// ── Test 7: assembly connect has connector and explicit port mapping ──────────
+
+/// Feature 4 (connect with connector type + explicit port mapping).
+/// Asserts assembly has exactly 1 connection, connector_sub is present,
+/// port_mappings contains diameter→diameter and flow_rate→flow_rate,
+/// and the compatibility constraint is Satisfied.
+#[test]
+fn assembly_connect_has_connector_and_explicit_mapping() {
+    todo!("step-14 impl: assert connection connector_sub, port_mappings, compat constraint")
+}
+
 // ── Test 6: frame/transform lets and port frames present ─────────────────────
 
 /// Feature 3 (Frame/Transform in let bindings and port definitions).
