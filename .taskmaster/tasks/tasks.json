@@ -34777,15 +34777,16 @@
         "description": "Follow-up from esc-1312-20 (reviewer_comprehensive, task 1312). Two items: (1) At guard_compilation.rs:542, doc comment says \"a future 14th MemberDecl variant\" — embeds a fragile count that will be wrong after the next addition. Change to \"a future new MemberDecl variant must be explicitly handled\". (2) At guard_compilation.rs:546-579, the characterization test only covers ConstraintInst inside a guarded block's silent-drop arm but five other variants (Port, Connect, Chain, AssociatedType, MetaBlock) are also silently ignored without characterization tests. Add at least one more test for Port or Connect inside a where {} block to strengthen confidence that the wildcard-to-explicit refactor is behavior-preserving.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-14T19:57:08.808Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T19:57:07.206Z",
+      "lastModified": "2026-04-14T19:57:08.808Z",
       "taskCount": 1669,
       "completedCount": 1395,
       "tags": [
