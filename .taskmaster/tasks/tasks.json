@@ -32557,7 +32557,7 @@
             "crates/reify-compiler/tests/unit_registry_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ]
         }
       },
@@ -32778,7 +32778,7 @@
         "updatedAt": "2026-04-10T11:03:09.716Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/src"
           ],
           "files": [
             "crates/reify-eval/src/lib.rs"
