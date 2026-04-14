@@ -35,7 +35,7 @@ structure def S {
     constraint Coincident(a: x, b: x)
 }
 "#;
-    let compiled = parse_and_compile(&source);
+    let compiled = parse_and_compile(source);
 
     let mock = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
     let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
@@ -78,7 +78,7 @@ structure def S {
     constraint Coincident(a: x, b: x)
 }
 "#;
-    let compiled = parse_and_compile(&source);
+    let compiled = parse_and_compile(source);
 
     let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
     // No optimized impl registered — falls back.
@@ -125,7 +125,7 @@ structure def Mixed {
     constraint PlainEq(a: x, b: x)
 }
 "#;
-    let compiled = parse_and_compile(&source);
+    let compiled = parse_and_compile(source);
 
     let mock = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
     let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);

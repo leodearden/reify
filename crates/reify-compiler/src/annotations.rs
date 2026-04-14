@@ -156,10 +156,10 @@ pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Op
 pub(crate) fn optimized_target(annotations: &[reify_syntax::Annotation]) -> Option<String> {
     for ann in annotations {
         if ann.name == "optimized" {
-            if let Some(first) = ann.args.first() {
-                if let reify_syntax::ExprKind::StringLiteral(s) = &first.kind {
-                    return Some(s.clone());
-                }
+            if let Some(first) = ann.args.first()
+                && let reify_syntax::ExprKind::StringLiteral(s) = &first.kind
+            {
+                return Some(s.clone());
             }
             return None;
         }

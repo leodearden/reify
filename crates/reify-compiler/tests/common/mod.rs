@@ -7,6 +7,7 @@ use reify_types::{ModulePath, Severity};
 
 /// Parse `source` and compile it as a single module named `"unit_test"`.
 /// Panics if the parser returns any errors.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
 pub fn parse_and_compile(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
     assert!(
@@ -18,6 +19,7 @@ pub fn parse_and_compile(source: &str) -> CompiledModule {
 }
 
 /// Return only the `Severity::Error` diagnostics from a compiled module.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
 pub fn errors_only(module: &CompiledModule) -> Vec<&reify_types::Diagnostic> {
     module
         .diagnostics
