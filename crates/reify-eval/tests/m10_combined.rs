@@ -64,7 +64,20 @@ fn constraint_count(engine: &Engine) -> usize {
 /// an Assembly template (confirming compile-cleanliness and top-level structure name).
 #[test]
 fn m10_combined_compiles_with_assembly_template() {
-    todo!("step-4 impl: assert parse_and_compile_with_stdlib produces Assembly template")
+    let compiled = parse_and_compile_with_stdlib(&source());
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected at least one template in the compiled module"
+    );
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("should have an Assembly template");
+    assert!(
+        !assembly.value_cells.is_empty(),
+        "Assembly should have value cells (params and lets)"
+    );
 }
 
 // ── Test 1: file parses without errors ──────────────────────────────────────
