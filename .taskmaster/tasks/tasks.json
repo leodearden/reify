@@ -12118,9 +12118,14 @@
             "crates/reify-compiler/tests/structural_physical_tests.rs"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "crates/reify-compiler/tests/structural_physical_tests.rs",
+              "reify-stdlib"
+            ],
             "queries": [
-              "resolution for: Add missing test coverage for under-tested stdlib traits"
+              "reify-stdlib 8 submodules traits Flexible Plastic ThermallyConductive ElectricallyConductive Sealed",
+              "stdlib trait required_member conformance test coverage",
+              "Rigid moment_of_inertia ElasticallyDeformable max_elastic_strain missing-member tests"
             ]
           }
         }
