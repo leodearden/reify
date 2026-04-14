@@ -1,9 +1,12 @@
 //! M8–M11 diagnostic coverage checkpoint.
 //!
+//! **File**: `diagnostic_coverage_checkpoint.rs`  (covers milestones M8 through M11;
+//! originally named `m11_diagnostic_coverage.rs`, renamed to clarify cross-milestone scope)
+//!
 //! This file is the authoritative integration-coverage checkpoint ensuring that every
-//! compiler error and warning category introduced across milestones M8–M11 has at least
-//! one dedicated test case in this binary. It is intentionally kept self-contained so
-//! that retiring or refactoring individual per-milestone test files (m9_error_cases.rs,
+//! major compiler error and warning category introduced across milestones M8–M11 has at
+//! least one dedicated test case in this binary. It is intentionally kept self-contained
+//! so that retiring or refactoring individual per-milestone test files (m9_error_cases.rs,
 //! annotation_compile_tests.rs, pragma_compile_tests.rs, guard_compilation.rs, …) does
 //! not silently remove cross-milestone diagnostic coverage.
 //!
@@ -298,7 +301,10 @@ structure def S : Shaped {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("missing required member"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -336,7 +342,10 @@ structure def S : Countable {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("type mismatch for trait member"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -369,7 +378,10 @@ structure def S : NonExistentTrait {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("unresolved trait"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -411,7 +423,10 @@ structure def S : HasX + HasXInt {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("conflicting trait requirements"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -453,7 +468,10 @@ structure def S : TraitAlpha + TraitBeta {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("conflicting trait let bindings"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -494,7 +512,10 @@ structure def S : ProvidesLength + ProvidesMass {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("conflicting trait") && d.message.contains("size"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -532,7 +553,10 @@ structure def S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("unknown constraint definition"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -572,7 +596,10 @@ structure def S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("unknown argument"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -613,7 +640,10 @@ structure def S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("missing argument"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -648,7 +678,10 @@ structure S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("no termination condition"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -683,7 +716,10 @@ structure S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("does not decrement parameter"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -718,7 +754,10 @@ structure S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("undef is not allowed"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -755,7 +794,10 @@ structure def S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("entity has no meta block") || d.message.contains("no meta block"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -793,7 +835,10 @@ structure def S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("meta block has no key"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -831,7 +876,10 @@ structure def Widget {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate entity definition") && d.message.contains("Widget"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -864,7 +912,10 @@ unit myunit : Length
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate unit declaration") && d.message.contains("myunit"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -896,7 +947,10 @@ unit mm : Length = 0.001
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("already defined in stdlib prelude") && d.message.contains("mm"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -929,7 +983,10 @@ type Foo = Real
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate type alias declaration") && d.message.contains("Foo"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -972,7 +1029,10 @@ structure def S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate port name") && d.message.contains("mount"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -1445,7 +1505,10 @@ structure def Assembly { sub part = Box<Bolt, Bolt>() }
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("too many type arguments") && d.message.contains("Box"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -1479,7 +1542,10 @@ structure def Assembly { sub part = Box() }
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("missing type argument") && d.message.contains("T"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
@@ -1514,18 +1580,180 @@ structure def Assembly { sub part = Box<Widget>() }
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 
-    let first = errors[0];
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("does not satisfy bound") && d.message.contains("Widget"))
+        .unwrap();
     assert!(!first.labels.is_empty(), "expected at least one label");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
 
+// ── Missing-from-prior-checkpoints coverage ───────────────────────────────────
+
+/// A recursive sub with a where-clause guard that references only a non-Int/non-Bool
+/// parameter should produce "guard does not reference any Int or Bool parameter".
+///
+/// Uses a literal guard expression (`1 > 0`) so no parameter is referenced at all.
+/// Exercises termination.rs line 63–67.
+#[test]
+fn recursive_sub_guard_no_int_or_bool_param() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where 1 > 0
+}
+"#;
+    let module = compile_module(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for guard not referencing Int/Bool param, got: {:?}",
+        module.diagnostics
+    );
+
+    let has_msg = errors
+        .iter()
+        .any(|d| d.message.contains("guard does not reference any Int or Bool"));
+    assert!(
+        has_msg,
+        "expected 'guard does not reference any Int or Bool' error, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("guard does not reference any Int or Bool"))
+        .unwrap();
+    assert!(!first.labels.is_empty(), "expected at least one label");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
+}
+
+/// A structure declaring a trait that requires a sub-component but not providing
+/// that sub should produce "missing required sub-component" diagnostic.
+///
+/// Exercises conformance.rs line 237–238.
+#[test]
+fn missing_required_sub_component() {
+    let source = r#"
+trait HasEngine {
+    sub engine = Engine()
+}
+
+structure def Engine {
+    param hp : Int = 100
+}
+
+structure def Vehicle : HasEngine {
+    param speed : Int = 60
+}
+"#;
+    let module = compile_module(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for missing required sub-component, got: {:?}",
+        module.diagnostics
+    );
+
+    let has_msg = errors.iter().any(|d| {
+        d.message.contains("missing required sub-component") && d.message.contains("engine")
+    });
+    assert!(
+        has_msg,
+        "expected 'missing required sub-component' mentioning 'engine', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("missing required sub-component"))
+        .unwrap();
+    assert!(!first.labels.is_empty(), "expected at least one label");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
+}
+
+/// A `structure def` and an `occurrence def` with the same name should produce
+/// "duplicate entity definition" — verifying that cross-kind collisions (not just
+/// same-kind) are caught by the lib.rs pass-1 deduplication.
+///
+/// Exercises lib.rs line 180.
+#[test]
+fn duplicate_entity_structure_and_occurrence_collision() {
+    let source = r#"
+structure def Gadget {
+    param x : Length = 1mm
+}
+
+occurrence def Gadget {
+    param x : Length = 2mm
+}
+"#;
+    let module = compile_module(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for structure/occurrence name collision, got: {:?}",
+        module.diagnostics
+    );
+
+    let has_msg = errors.iter().any(|d| {
+        d.message.contains("duplicate entity definition") && d.message.contains("Gadget")
+    });
+    assert!(
+        has_msg,
+        "expected 'duplicate entity definition' mentioning 'Gadget', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate entity definition") && d.message.contains("Gadget"))
+        .unwrap();
+    assert!(!first.labels.is_empty(), "expected at least one label");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
+}
+
+/// Circular trait refinement (A refines B, B refines A) should not panic.
+///
+/// The compiler uses a visited-set to break the cycle, so compilation completes
+/// without infinite recursion. This test documents the "no crash" invariant
+/// and anchors the conformance.rs cycle-detection path in this checkpoint file
+/// so retiring m9_error_cases.rs does not silently drop the coverage.
+///
+/// Exercises conformance.rs line 367 (visited-set dedup).
+#[test]
+fn circular_trait_refinement_no_panic() {
+    let source = r#"
+trait A : B {
+    param x : Length
+}
+
+trait B : A {
+    param y : Length
+}
+
+structure def S : A {
+    param x : Length = 1mm
+    param y : Length = 2mm
+}
+"#;
+    // Must not panic — the visited-set prevents infinite recursion.
+    // Whether errors are emitted is implementation-defined (no assertion on count).
+    let module = compile_module(source);
+    // Document: compilation completes without panic.
+    let _ = errors_only(&module);
+}
+
 // ── Coverage summary ──────────────────────────────────────────────────────────
 
-/// Document-only: this constant records the expected minimum test count for this
-/// checkpoint file. It is an author-maintained invariant — not a runtime assertion.
+/// Document-only: this constant records the exact test count for this checkpoint
+/// file. It is an author-maintained invariant — not a runtime assertion.
 /// Update when adding or removing tests from this file.
 ///
-/// Current coverage (task 294):
+/// Current coverage (task 294 + amendments):
 ///   1  smoke test
 ///   5  M8  type-alias & dimension-mismatch
 ///   6  M9  trait conformance
@@ -1535,7 +1763,12 @@ structure def Assembly { sub part = Box<Widget>() }
 ///   4  M11 annotation context
 ///   4  M11 pragma unknown
 ///   3  M10/M11 generic type argument
+///   4  additional coverage (guard no-int/bool, missing sub-component,
+///      cross-kind duplicate entity, circular trait refinement)
 ///   ───
-///  40  total
+///  44  total
+///
+/// This value equals the actual test count — keeping it at the exact count
+/// (rather than a floor) makes discrepancies immediately visible during review.
 #[allow(dead_code)]
-const EXPECTED_MIN_TESTS: usize = 30;
+const EXPECTED_MIN_TESTS: usize = 44;
