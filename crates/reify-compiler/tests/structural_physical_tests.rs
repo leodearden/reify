@@ -19,6 +19,30 @@ fn load_stdlib_module() -> &'static CompiledModule {
         .expect("stdlib should contain std/structural/physical module")
 }
 
+/// Parse and compile `source` against the full stdlib prelude, asserting no
+/// parse or compile errors. Returns the `CompiledModule` for further inspection.
+fn compile_structure(source: &str) -> CompiledModule {
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compile errors: {:?}",
+        errors
+    );
+    compiled
+}
+
 // ─── step-1: file exists, parses, compiles without errors ────────────────────
 
 /// Step 1: structural_physical.ri file exists, parses cleanly, compiles
@@ -471,182 +495,6 @@ structure def Incomplete : Physical {
     );
 }
 
-// ─── task-558 step-3: Plastic conforming structure has constraints injected ───
-
-/// A structure conforming to Plastic should have exactly 2 constraints injected
-/// from the trait: `hardening_modulus > 0` and `plastic_strain >= 0`.
-#[test]
-fn plastic_conforming_structure_has_constraints_injected() {
-    let source = r#"
-structure def PlasticBody : Plastic {
-    param plastic_strain : Real = 0.05
-    param hardening_modulus : Real = 1000.0
-}
-"#;
-    let prelude = stdlib_loader::load_stdlib();
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
-
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "PlasticBody : Plastic should compile without errors, got: {:?}",
-        errors
-    );
-
-    let template = compiled
-        .templates
-        .first()
-        .expect("expected at least 1 template");
-
-    assert!(
-        template.trait_bounds.contains(&"Plastic".to_string()),
-        "PlasticBody should have 'Plastic' trait bound, got: {:?}",
-        template.trait_bounds
-    );
-
-    assert_eq!(
-        template.constraints.len(),
-        2,
-        "expected exactly 2 constraints injected from Plastic trait, got {}",
-        template.constraints.len()
-    );
-}
-
-// ─── task-558 step-4: Plastic constraint expressions use correct operators ────
-
-/// The 2 injected Plastic constraints must use the correct comparison operators:
-/// - `hardening_modulus > 0` uses BinOp::Gt (strictly greater-than)
-/// - `plastic_strain >= 0` uses BinOp::Ge (greater-than-or-equal)
-#[test]
-fn plastic_constraint_expressions_use_correct_operators() {
-    let source = r#"
-structure def PlasticBody : Plastic {
-    param plastic_strain : Real = 0.05
-    param hardening_modulus : Real = 1000.0
-}
-"#;
-    let prelude = stdlib_loader::load_stdlib();
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
-
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "PlasticBody : Plastic should compile without errors, got: {:?}",
-        errors
-    );
-
-    let template = compiled
-        .templates
-        .first()
-        .expect("expected at least 1 template");
-
-    assert_eq!(
-        template.constraints.len(),
-        2,
-        "expected exactly 2 constraints from Plastic, got {}",
-        template.constraints.len()
-    );
-
-    // Find constraint for hardening_modulus (should use Gt) and
-    // plastic_strain (should use Ge).
-    let mut found_hm_gt = false;
-    let mut found_ps_ge = false;
-
-    for cc in &template.constraints {
-        match &cc.expr.kind {
-            CompiledExprKind::BinOp { op, left, .. } => {
-                let member = match &left.kind {
-                    CompiledExprKind::ValueRef(id) => id.member.as_str(),
-                    _ => continue,
-                };
-                match (member, op) {
-                    ("hardening_modulus", BinOp::Gt) => found_hm_gt = true,
-                    ("plastic_strain", BinOp::Ge) => found_ps_ge = true,
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    }
-
-    assert!(
-        found_hm_gt,
-        "expected a BinOp(Gt) constraint on 'hardening_modulus', constraints: {:?}",
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        found_ps_ge,
-        "expected a BinOp(Ge) constraint on 'plastic_strain', constraints: {:?}",
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
-    );
-}
-
-// ─── task-558 step-5: plastic_strain=0.0 boundary value compiles ─────────────
-
-/// Boundary-value test: plastic_strain=0.0 is physically valid (undeformed
-/// material) and must satisfy the `>= 0` constraint. Ensures we used `>=`
-/// not `>` for plastic_strain.
-#[test]
-fn plastic_strain_zero_boundary_compiles() {
-    let source = r#"
-structure def PlasticBody : Plastic {
-    param plastic_strain : Real = 0.0
-    param hardening_modulus : Real = 500.0
-}
-"#;
-    let prelude = stdlib_loader::load_stdlib();
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
-
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "PlasticBody with plastic_strain=0.0 should compile without errors \
-         (zero is valid for undeformed material, constraint is >=), got: {:?}",
-        errors
-    );
-}
-
 // ─── task-558 step-1: Plastic trait has constraint defaults ──────────────────
 
 /// Plastic trait should have exactly 2 constraint defaults:
@@ -675,6 +523,153 @@ fn plastic_trait_has_constraint_defaults() {
          (hardening_modulus > 0 and plastic_strain >= 0), got {} defaults: {:?}",
         constraint_defaults.len(),
         plastic.defaults.iter().map(|d| &d.kind).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-558 step-3: Plastic conforming structure has constraints injected ───
+
+/// A structure conforming to Plastic should have exactly 2 constraints injected
+/// from the trait: `hardening_modulus > 0` and `plastic_strain >= 0`.
+#[test]
+fn plastic_conforming_structure_has_constraints_injected() {
+    let compiled = compile_structure(
+        r#"
+structure def PlasticBody : Plastic {
+    param plastic_strain : Real = 0.05
+    param hardening_modulus : Real = 1000.0
+}
+"#,
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    assert!(
+        template.trait_bounds.contains(&"Plastic".to_string()),
+        "PlasticBody should have 'Plastic' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+
+    assert_eq!(
+        template.constraints.len(),
+        2,
+        "expected exactly 2 constraints injected from Plastic trait, got {}",
+        template.constraints.len()
+    );
+}
+
+// ─── task-558 step-4: Plastic constraint expressions use correct operators ────
+
+/// The 2 injected Plastic constraints must use the correct comparison operators:
+/// - `hardening_modulus > 0` uses BinOp::Gt (strictly greater-than), RHS = 0
+/// - `plastic_strain >= 0` uses BinOp::Ge (greater-than-or-equal), RHS = 0
+#[test]
+fn plastic_constraint_expressions_use_correct_operators() {
+    let compiled = compile_structure(
+        r#"
+structure def PlasticBody : Plastic {
+    param plastic_strain : Real = 0.05
+    param hardening_modulus : Real = 1000.0
+}
+"#,
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    assert_eq!(
+        template.constraints.len(),
+        2,
+        "expected exactly 2 constraints from Plastic, got {}",
+        template.constraints.len()
+    );
+
+    // Find constraint for hardening_modulus (should use Gt, RHS=0) and
+    // plastic_strain (should use Ge, RHS=0).
+    let mut found_hm_gt = false;
+    let mut found_ps_ge = false;
+
+    for cc in &template.constraints {
+        match &cc.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                let member = match &left.kind {
+                    CompiledExprKind::ValueRef(id) => id.member.as_str(),
+                    _ => continue,
+                };
+                let rhs_is_zero = match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(v)) => *v == 0,
+                    CompiledExprKind::Literal(Value::Real(v)) => v.abs() < 1e-9,
+                    _ => false,
+                };
+                match (member, op) {
+                    ("hardening_modulus", BinOp::Gt) if rhs_is_zero => found_hm_gt = true,
+                    ("plastic_strain", BinOp::Ge) if rhs_is_zero => found_ps_ge = true,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        found_hm_gt,
+        "expected BinOp(Gt, hardening_modulus, 0), constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        found_ps_ge,
+        "expected BinOp(Ge, plastic_strain, 0), constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── task-558 step-5: plastic_strain=0.0 boundary value compiles ─────────────
+
+/// Boundary-value test: compile a structure with plastic_strain=0.0.
+/// Verifies two things:
+/// 1. The structure compiles without errors (zero plastic_strain is a valid input).
+/// 2. The injected constraint for plastic_strain uses `>=` (Ge), not `>` (Gt).
+///    Because the compiler injects but does not evaluate constraints, the `>=`
+///    semantics are confirmed by inspecting the BinOp operator directly.
+#[test]
+fn plastic_strain_zero_boundary_compiles() {
+    let compiled = compile_structure(
+        r#"
+structure def PlasticBody : Plastic {
+    param plastic_strain : Real = 0.0
+    param hardening_modulus : Real = 500.0
+}
+"#,
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    // Confirm the injected constraint for plastic_strain uses Ge (>=), not Gt (>).
+    let ps_constraint = template.constraints.iter().find(|cc| {
+        matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
+            if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "plastic_strain")
+        )
+    });
+    let cc = ps_constraint.expect("expected a constraint referencing plastic_strain");
+    assert!(
+        matches!(&cc.expr.kind, CompiledExprKind::BinOp { op: BinOp::Ge, .. }),
+        "plastic_strain constraint must use BinOp::Ge (>=), not BinOp::Gt (>), got: {:?}",
+        cc.expr.kind
     );
 }
 
