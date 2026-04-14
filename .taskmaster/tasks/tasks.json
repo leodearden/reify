@@ -7174,7 +7174,7 @@
           "milestone": "stdlib-M8.4",
           "modules": [
             "examples",
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -7202,13 +7202,11 @@
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
-            "examples",
-            "crates/reify-eval/tests"
+            "examples"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "examples/boolean_edge_cases.ri",
-            "crates/reify-eval/tests/stress_error_messages.rs"
+            "examples/boolean_edge_cases.ri"
           ]
         },
         "subtasks": [],
