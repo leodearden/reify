@@ -7206,11 +7206,13 @@
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
-            "examples"
+            "examples",
+            "crates/reify-eval/tests"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "examples/boolean_edge_cases.ri"
+            "examples/boolean_edge_cases.ri",
+            "crates/reify-eval/tests/boolean_edge_cases.rs"
           ]
         },
         "subtasks": [],
@@ -7256,12 +7258,14 @@
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
-            "examples"
+            "examples",
+            "crates/reify-eval/tests"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "examples/pattern_composition.ri",
-            "examples/large_assembly.ri"
+            "examples/large_assembly.ri",
+            "crates/reify-eval/tests/stress_assembly.rs"
           ]
         },
         "subtasks": [],
