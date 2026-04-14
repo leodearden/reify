@@ -8634,7 +8634,7 @@
             "crates/reify-compiler/tests/termination_check_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ]
         }
       },
