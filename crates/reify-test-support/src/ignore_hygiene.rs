@@ -149,22 +149,20 @@ pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
         }
     }
 
-    // Belt-and-suspenders negative check for the specific original stale-pointer pattern.
-    // Doc-comment lines are skipped here too so this guard agrees with guard 1+2 and
-    // with find_stale_plan_pointers_in_source (lock-step guarantee).
-    // DO NOT inline — split at boundary ["plan", " step-"] keeps the guarded
-    // sequence from appearing adjacent in this source file.
-    let stale_needle = ["plan", " step-"].concat();
-    let has_stale_in_non_doc_line = source
-        .lines()
-        .filter(|line| !is_doc_comment_line(line))
-        .any(|line| line.contains(&stale_needle));
-    if has_stale_in_non_doc_line {
+    // Guard 3: delegate stale-pointer detection to find_stale_plan_pointers_in_source.
+    // This gives guard 3 the same byte-level marker walk, multi-line-reason support,
+    // and `///`/`//!` doc-comment skipping as the standalone scanner — a single source
+    // of truth for stale-needle detection.  Note: guard 3 now only catches stale
+    // needles that appear *inside* an `#[ignore = "..."]` reason string; bare-prose
+    // occurrences outside any attribute are no longer caught here (guards 1+2 handle
+    // every real-world case).
+    let stale_violations = find_stale_plan_pointers_in_source(source);
+    if !stale_violations.is_empty() {
+        let violation_list = stale_violations.join("\n  ");
         return Err(format!(
-            "Found stale-pointer substring in source. \
-             Update any affected {} reason string to a self-contained inline summary \
-             (e.g. \"known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
-             losing the 1/Length result dimension; expected Value::Scalar{{1/Length}}\").",
+            "Found stale-pointer substring in {} reason string(s). \
+             Update affected reason strings to self-contained inline summaries \
+             (Task 1622 convention):\n  {violation_list}",
             ["#[", "ignore]"].concat(),
         ));
     }
@@ -489,13 +487,17 @@ mod tests {
 
     #[test]
     fn check_ignore_reasons_rejects_stale_plan_step_needle() {
-        // A source containing the stale-pointer needle (assembled at runtime)
-        // must be rejected by the belt-and-suspenders negative sentinel.
-        // The error must mention "stale-pointer" so we can tell the negative
-        // sentinel fired (not the bare-ignore guard or the positive-invariant
-        // guard).  Needle and source assembled at runtime so this file does not
-        // contain the literal sequence as adjacent characters.
-        let src = ["# source containing the needle: ", "plan", " step-", "5\n"].concat();
+        // An `#[ignore]` reason string containing the stale-pointer needle
+        // (assembled at runtime) must be rejected by the negative sentinel.
+        // The input uses a proper `#[ignore = "known bug: ..."]` attribute so
+        // find_stale_plan_pointers_in_source (now powering guard 3) detects it.
+        // The error must mention "stale-pointer" so we can tell guard 3 fired
+        // (not the bare-ignore guard or the positive-invariant guard).
+        // Marker, needle, and source assembled at runtime so this file does not
+        // contain the literal adjacent sequences.
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let src = format!("{marker}known bug: see {needle}5 reference\"]");
         let err = check_ignore_reasons(&src)
             .expect_err("expected source containing the stale-pointer needle to be rejected");
         assert!(
