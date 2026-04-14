@@ -1470,6 +1470,17 @@ impl Engine {
                     continue;
                 }
 
+                // Guarded sub on a non-recursive template: do NOT elaborate.
+                // A guard on a sub is meaningful only in a recursive context. The
+                // child-frame analog is the `child_template.is_recursive` filter
+                // inside `unfold_recursive_sub` (see the recursive-subs collection
+                // below). This branch provides the symmetric root-frame gate: if
+                // the top-level template is non-recursive and the sub is guarded,
+                // Phase 2 must not materialise the sub's entity.
+                if !template.is_recursive && sub.guard_expr.is_some() {
+                    continue;
+                }
+
                 // Recursive sub: evaluate guard before elaborating, then unfold recursively.
                 if template.is_recursive && sub.guard_expr.is_some() {
                     let mut unfold_budget = self.max_unfold_nodes;
