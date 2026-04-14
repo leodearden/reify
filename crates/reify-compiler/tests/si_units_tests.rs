@@ -480,6 +480,10 @@ fn task_test_derived_units_and_prefixed_resolve_via_stdlib() {
         ("DynamicViscosity", "1Pa_s", 1.0, DimensionVector::DYNAMIC_VISCOSITY),
         // Solid angle.
         ("SolidAngle", "1sr", 1.0, DimensionVector::SOLID_ANGLE),
+        // RF/IC engineering: femtofarad, pico/femtosiemens.
+        ("Capacitance", "1fF", 1e-15, DimensionVector::CAPACITANCE),
+        ("Conductance", "1pS", 1e-12, DimensionVector::CONDUCTANCE),
+        ("Conductance", "1fS", 1e-15, DimensionVector::CONDUCTANCE),
     ];
 
     for (ptype, literal, expected, expected_dim) in cases {
