@@ -1585,6 +1585,76 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
     );
 }
 
+/// MetaAccess expressions evaluate correctly through the concurrent path.
+///
+/// Module: template 'S' with meta {"grade": "A2"}, param `width` (default mm(10.0)),
+/// let `grade_label` = meta_access("S", "grade"), constraint `grade_label == "A2"`.
+///
+/// Cold check → Satisfied. edit_check_concurrent(width, mm(20.0)):
+///   - grade_label should still resolve to "A2" (meta_map wired through concurrent path)
+///   - constraint grade_label == "A2" should remain Satisfied
+#[tokio::test]
+async fn edit_check_concurrent_with_meta_access() {
+    use reify_runtime::concurrent_eval::edit_check_concurrent;
+    use reify_test_support::builders::{eq, literal, value_ref};
+    use reify_test_support::mm;
+    use reify_types::{CompiledExpr, Satisfaction};
+
+    let width_id = ValueCellId::new("S", "width");
+    let grade_label_id = ValueCellId::new("S", "grade_label");
+
+    // grade_label = meta_access("S", "grade")
+    let meta_expr = CompiledExpr::meta_access("S".to_string(), "grade".to_string());
+    // constraint: grade_label == "A2"
+    let grade_label_ref = value_ref("S", "grade_label");
+    let a2_literal = CompiledExpr::literal(Value::String("A2".to_string()), Type::String);
+    let constraint_expr = eq(grade_label_ref, a2_literal);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .meta(
+            [("grade".to_string(), "A2".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .param("S", "width", Type::length(), Some(literal(mm(10.0))))
+        .let_binding("S", "grade_label", Type::String, meta_expr)
+        .constraint("S", 0, None, constraint_expr)
+        .build();
+
+    let module = build_module(template);
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold check: grade_label == "A2" → Satisfied
+    let cold_result = engine.check(&module);
+    assert_eq!(
+        cold_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "cold check: grade_label == 'A2' should be Satisfied"
+    );
+
+    let cancel = CancellationToken::new();
+
+    // Concurrent edit: width changes, meta_access must still resolve correctly
+    let check_result = edit_check_concurrent(&mut engine, width_id.clone(), mm(20.0), &cancel)
+        .await
+        .unwrap();
+
+    // grade_label should still be "A2" — meta_map is stable
+    assert_eq!(
+        check_result.values.get(&grade_label_id),
+        Some(&Value::String("A2".to_string())),
+        "grade_label should resolve to 'A2' through concurrent path"
+    );
+
+    // Constraint must remain Satisfied
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "grade_label == 'A2' must remain Satisfied after concurrent width edit"
+    );
+}
+
 // --- Poison recovery tests ---
 //
 // These tests verify that poisoned locks are recovered gracefully via

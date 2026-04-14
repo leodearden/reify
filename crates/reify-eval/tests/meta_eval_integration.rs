@@ -275,6 +275,78 @@ fn eval_meta_access_collection_sub_component() {
     );
 }
 
+/// step-8: A let member inside the else branch of a guarded group resolves to
+/// the meta value when guard=false.
+///
+/// Build template 'S' with:
+///   - meta {"mode": "alternative"}
+///   - Bool param 'active' (default false)
+///   - Guarded group: guard_expr = ValueRef(active), one else_member 'mode_label'
+///     whose default_expr is meta_access("S", "mode")
+///
+/// After eval():
+///   - guard cell evaluates to false
+///   - mode_label (in else branch) == Value::String("alternative")
+#[test]
+fn eval_meta_access_in_else_members_when_guard_false() {
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let mode_label_id = ValueCellId::new("S", "mode_label");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+    let meta_expr = CompiledExpr::meta_access("S".to_string(), "mode".to_string());
+
+    // The else_member: a Let binding whose expr is meta_access
+    let mode_label_decl = ValueCellDecl {
+        id: mode_label_id.clone(),
+        kind: ValueCellKind::Let,
+        visibility: Visibility::Public,
+        cell_type: Type::String,
+        default_expr: Some(meta_expr),
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .meta(
+            [("mode".to_string(), "alternative".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![],                   // members (active when guard=true) — none
+            vec![],                   // constraints
+            vec![mode_label_decl],    // else_members (active when guard=false)
+            vec![],                   // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    assert_eq!(
+        result.values.get(&guard_id),
+        Some(&Value::Bool(false)),
+        "guard cell should evaluate to false"
+    );
+    assert_eq!(
+        result.values.get(&mode_label_id),
+        Some(&Value::String("alternative".to_string())),
+        "else_member Let with MetaAccess should resolve to 'alternative' when guard=false"
+    );
+}
+
 /// step-9: eval_cached() resolves MetaAccess expressions correctly.
 ///
 /// Build template 'Widget' with meta {"description": "A widget"} and a
