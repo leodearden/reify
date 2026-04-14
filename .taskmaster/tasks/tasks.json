@@ -8076,13 +8076,10 @@
         "metadata": {
           "files": [
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/traits.rs",
-            "crates/reify-compiler/tests/trait_merge_tests.rs",
-            "crates/reify-eval/tests/trait_merge_eval.rs"
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval/tests"
+            "crates/reify-compiler"
           ]
         }
       },
@@ -8102,11 +8099,12 @@
           "files": [
             "crates/reify-compiler/tests/determinacy_compile_tests.rs",
             "crates/reify-expr/src/lib.rs",
-            "crates/reify-expr/tests/field_eval_tests.rs"
+            "crates/reify-eval/tests/determinacy_predicates.rs"
           ],
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-expr"
+            "crates/reify-compiler",
+            "crates/reify-expr",
+            "crates/reify-eval"
           ]
         }
       },
