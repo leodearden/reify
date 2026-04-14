@@ -34053,7 +34053,7 @@
         "updatedAt": "2026-04-14T00:05:33.190Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ],
           "memory_hints": {
             "entities": [
@@ -34064,7 +34064,10 @@
               "cross-relationship tests imperial units lbf psi ksi gal fl_oz",
               "units.ri imperial unit constants LBF_SI PSI_SI KSI_SI"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/tests/imperial_units_tests.rs"
+          ]
         }
       },
       {
@@ -34179,8 +34182,7 @@
         "updatedAt": "2026-04-14T04:14:31.890Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ],
           "memory_hints": {
             "entities": [
@@ -34193,7 +34195,12 @@
               "task 1638 geometric_params material_params evaluator layer completion",
               "no references to material_params in reify-compiler compiler tests only cover params"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/traits.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
+          ]
         }
       },
       {
