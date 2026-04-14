@@ -34039,7 +34039,17 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "crates/reify-compiler/tests/imperial_units_tests.rs"
+            ],
+            "queries": [
+              "imperial units task 335 reviewer follow-up esc-335-19",
+              "cross-relationship tests imperial units lbf psi ksi gal fl_oz",
+              "units.ri imperial unit constants LBF_SI PSI_SI KSI_SI"
+            ]
+          }
         }
       },
       {
