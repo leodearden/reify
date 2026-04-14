@@ -33060,7 +33060,7 @@
             "crates/reify-eval/tests/collection_sub_eval.rs"
           ],
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ]
         },
         "updatedAt": "2026-04-14T07:04:27.047Z"
@@ -33167,11 +33167,12 @@
         "updatedAt": "2026-04-10T17:22:35.425Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src",
+            "crates/reify-eval/src"
           ],
           "files": [
             "crates/reify-compiler/src/geometry.rs",
-            "crates/reify-compiler/src/lib.rs"
+            "crates/reify-eval/src/lib.rs"
           ]
         }
       },
