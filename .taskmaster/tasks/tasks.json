@@ -27500,11 +27500,12 @@
         "updatedAt": "2026-04-09T08:22:02.039Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler",
+            "crates/reify-types"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/termination.rs",
+            "crates/reify-types/src/lib.rs",
             "crates/reify-compiler/tests/termination_check_tests.rs"
           ]
         }
