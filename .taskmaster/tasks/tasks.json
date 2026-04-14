@@ -25319,17 +25319,14 @@
         "updatedAt": "2026-04-11T07:44:49.000Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
             "crates/reify-compiler",
-            "crates/reify-types",
-            "crates/reify-eval/tests",
-            "crates/reify-eval/src"
+            "crates/reify-eval"
           ],
           "files": [
-            "crates/reify-eval/src/lib.rs",
             "crates/reify-compiler/src/geometry.rs",
-            "crates/reify-types/src/diagnostics.rs",
-            "crates/reify-eval/tests/sweep_e2e.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/geometry_error_handling.rs"
           ],
           "bundled_from": [
             "1189",
