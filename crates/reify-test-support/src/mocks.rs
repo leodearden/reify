@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 use reify_types::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId,
     ConstraintResult, ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError,
-    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError,
-    ReprKind, ResolutionProblem, Satisfaction, SolveResult, TessError, Type, Value, ValueCellId,
-    ValueMap,
+    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl,
+    OptimizedImplInput, OptimizedImplOutput, QueryError, ReprKind, ResolutionProblem, Satisfaction,
+    SolveResult, TessError, Type, Value, ValueCellId, ValueMap,
 };
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
@@ -82,6 +82,75 @@ impl ConstraintChecker for MockConstraintChecker {
                 }
             })
             .collect()
+    }
+}
+
+/// Mock optimized-constraint implementation used to exercise the `@optimized`
+/// dispatch path in reify-eval (Task 273).
+///
+/// Mirrors `MockConstraintChecker` in shape — configurable per-id results and
+/// a default — and additionally records every `ConstraintNodeId` it was
+/// invoked with. Tests can read `calls()` to assert that dispatch routed a
+/// constraint through the optimized path instead of the language-level
+/// `ConstraintChecker`.
+pub struct MockOptimizedImpl {
+    results: HashMap<ConstraintNodeId, Satisfaction>,
+    default: Satisfaction,
+    calls: Arc<Mutex<Vec<ConstraintNodeId>>>,
+}
+
+impl MockOptimizedImpl {
+    pub fn new() -> Self {
+        Self {
+            results: HashMap::new(),
+            default: Satisfaction::Satisfied,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Set the result for a specific constraint id.
+    pub fn with_result(mut self, id: ConstraintNodeId, satisfaction: Satisfaction) -> Self {
+        self.results.insert(id, satisfaction);
+        self
+    }
+
+    /// Set the default result for constraints not explicitly configured.
+    pub fn with_default(mut self, satisfaction: Satisfaction) -> Self {
+        self.default = satisfaction;
+        self
+    }
+
+    /// Snapshot of every `ConstraintNodeId` this impl has been invoked with,
+    /// in call order. A cloned Vec so callers can inspect it without holding
+    /// the internal lock.
+    pub fn calls(&self) -> Vec<ConstraintNodeId> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl Default for MockOptimizedImpl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OptimizedImpl for MockOptimizedImpl {
+    fn check(&self, input: &OptimizedImplInput) -> OptimizedImplOutput {
+        let mut calls = self.calls.lock().unwrap();
+        let results = input
+            .constraints
+            .iter()
+            .map(|(id, _)| {
+                calls.push(id.clone());
+                let satisfaction = self.results.get(id).copied().unwrap_or(self.default);
+                ConstraintResult {
+                    id: id.clone(),
+                    satisfaction,
+                    diagnostics: ConstraintDiagnostics::default(),
+                }
+            })
+            .collect();
+        OptimizedImplOutput { results }
     }
 }
 
