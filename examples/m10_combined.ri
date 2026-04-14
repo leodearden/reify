@@ -91,10 +91,12 @@ structure def Assembly {
     // Under `determined(origin)` the let bindings derived from `origin`
     // are safe to reference — the guard proves origin was successfully
     // constructed, so the constraints inside the block are active and
-    // well-defined.
+    // well-defined. Both guarded bindings (shifted, total_offset) are
+    // distinct from the top-level constraints below, exercising reference
+    // safety on derived paths not already covered at the top level.
     where determined(origin) {
         constraint determined(shifted)
-        constraint determined(displacement)
+        constraint determined(total_offset)
     }
 
     // ── Constraints (assertions ≥ 15, all Satisfied) ───────────────────────
