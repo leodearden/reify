@@ -32526,7 +32526,16 @@
           "files": [
             "crates/reify-compiler/tests/silent_defaults_tests.rs",
             "crates/reify-compiler/src/scope.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entity_refs": [
+              "sub_member_types"
+            ],
+            "search_queries": [
+              "sub_member_types scope entity population",
+              "non-collection sub trait-qualified access fallback expr.rs"
+            ]
+          }
         }
       },
       {
