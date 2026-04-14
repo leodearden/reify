@@ -20248,12 +20248,10 @@
         "updatedAt": "2026-04-13T23:12:36.690Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-types"
+            "crates/reify-compiler/src"
           ],
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-types/src/ty.rs"
+            "crates/reify-compiler/src/lib.rs"
           ],
           "memory_hints": [
             {
@@ -20566,7 +20564,8 @@
         "updatedAt": "2026-04-04T09:05:52.643Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr"
+            "crates/reify-expr/src",
+            "crates/reify-expr/tests"
           ],
           "files": [
             "crates/reify-expr/src/lib.rs",
