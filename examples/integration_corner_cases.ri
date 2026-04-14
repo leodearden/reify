@@ -1,0 +1,179 @@
+// Integration corner-cases example.
+//
+// Exercises edge cases and undef propagation through the full pipeline.
+//
+// Features covered:
+//   1. 3-deep type alias chain (Velocity → Acceleration → Jerk)
+//   2. Trait with all member kinds (param, let, constraint, port)
+//   3. Vacuous constraint def with 0 predicates
+//   4. Empty list .count
+//   5. Undef propagation (arithmetic, comparison, negation)
+//   6. Option edge cases: none vs some(undef)
+//   7. Recursive structure with depth=0 guard (no child unfolded)
+//   8. 4-element chained comparison
+//   9. Kleene three-valued logic (false∧Undef=false, true∨Undef=true)
+//  10. Range with equal bounds (degenerate range)
+//  11. auto(free) multiple solver variables
+//
+// All active constraints are designed to be Satisfied or Indeterminate.
+// Total active constraints >= 28 (well above the >=25 requirement).
+
+// ── Feature 1: 3-deep type alias chain ───────────────────────────────────────
+
+type Velocity = Length / Time
+type Acceleration = Velocity / Time
+type Jerk = Acceleration / Time
+
+structure def JerkDemo {
+    param j : Jerk = 1mm
+    constraint determined(j)
+}
+
+// ── Feature 2: Trait with all member kinds ────────────────────────────────────
+
+trait FullTrait {
+    param size : Length
+    let doubled = size * 2
+    constraint size > 0mm
+    port output : out FullTrait
+}
+
+structure def FullTraitImpl : FullTrait {
+    param size : Length = 50mm
+    constraint size < 1000mm
+    constraint determined(size)
+    constraint determined(doubled)
+}
+
+// ── Feature 3: Vacuous constraint def with 0 predicates ──────────────────────
+
+constraint def Vacuous {
+    param v : Length
+}
+
+structure def VacuousUser {
+    param w : Length = 10mm
+    constraint Vacuous(v: w)
+    constraint determined(w)
+    constraint w > 0mm
+}
+
+// ── Feature 4: Empty list .count ─────────────────────────────────────────────
+
+structure def EmptyListOps {
+    let empty = []
+    let n = empty.count
+    constraint n >= 0
+    constraint determined(n)
+}
+
+// ── Feature 5: Undef propagation ─────────────────────────────────────────────
+
+structure def UndefPropagation {
+    // param u has no default → Undef
+    param u : Real
+    let arith = u + 1       // Undef + 1 = Undef
+    let cmp   = u > 0       // Undef > 0 = Undef (Kleene)
+    let neg   = -u          // -Undef = Undef
+
+    // u is undetermined (no default); arith/cmp/neg evaluate to Undef
+    // at the Value level (verified by Rust tests), but DeterminacyState of
+    // let bindings is always Determined even when the value is Undef.
+    constraint undetermined(u)
+    // !constrained(u): undetermined params are not solver variables
+    constraint !constrained(u)
+}
+
+// ── Feature 6: Option edge cases ─────────────────────────────────────────────
+
+structure def OptionEdgeCases {
+    // param u has no default → Undef
+    param u : Real
+    let s = some(u)     // wraps Undef in Option; the Option itself is determined
+    let n = none        // intentional absence
+
+    constraint undetermined(u)
+    constraint determined(s)    // some(Undef) is a determined Option value
+    constraint determined(n)    // none is a determined Option value
+}
+
+// ── Feature 7: Recursive structure with depth=0 guard ────────────────────────
+
+structure def RecTree {
+    param depth : Int    = 0
+    param span  : Length = 100mm
+
+    // Guard: depth > 0 prevents unfolding when depth is already 0
+    sub child = RecTree(depth: depth - 1, span: span / 2) where depth > 0
+
+    constraint determined(depth)
+    constraint determined(span)
+    constraint span > 0mm
+    constraint depth >= 0
+}
+
+// ── Feature 8: 4-element chained comparison ───────────────────────────────────
+
+structure def ChainedFour {
+    param a : Length = 1mm
+    param b : Length = 2mm
+    param c : Length = 3mm
+    param d : Length = 4mm
+
+    // Desugars to And(And(Lt(a,b), Lt(b,c)), Lt(c,d))
+    let chain = a < b < c < d
+
+    constraint chain
+    constraint a < d
+    constraint determined(chain)
+}
+
+// ── Feature 9: Kleene three-valued logic ─────────────────────────────────────
+
+structure def KleeneEdge {
+    // param u has no default → Undef
+    param u : Real
+    let u_bool = u > 0          // Undef (since u is Undef)
+
+    // Kleene AND: false ∧ Undef = false (absorbing element)
+    let and_absorb = false && u_bool
+
+    // Kleene OR: true ∨ Undef = true (absorbing element)
+    let or_absorb  = true || u_bool
+
+    // Implies pattern: !false || Undef = true || Undef = true
+    let implies_vacuous = !false || u_bool
+
+    constraint !and_absorb          // false && Undef = false → !false = true
+    constraint or_absorb            // true || Undef = true
+    constraint implies_vacuous      // !false || Undef = true
+}
+
+// ── Feature 10: Range with equal bounds (degenerate range) ───────────────────
+
+structure def EqualRange {
+    param v : Length = 5mm
+    let r = 5mm..5mm
+
+    // v is pinned at 5mm by constraints (equal-bound range semantics)
+    constraint v >= 5mm
+    constraint v <= 5mm
+    constraint determined(v)
+    constraint determined(r)
+}
+
+// ── Feature 11: auto(free) multiple solver variables ─────────────────────────
+
+structure def AutoFreeMulti {
+    param x : Scalar = auto(free)
+    param y : Scalar = auto(free)
+
+    // constrained() checks that x and y are solver variables (state == Auto)
+    constraint constrained(x)
+    constraint constrained(y)
+
+    // These constraints are Indeterminate (x, y are auto — no concrete value)
+    constraint x > 0
+    constraint y > 0
+    constraint x + y < 100
+}
