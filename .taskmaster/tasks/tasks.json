@@ -28874,7 +28874,7 @@
         "updatedAt": "2026-04-09T21:09:10.202Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
             "crates/reify-compiler/src/entity.rs",
@@ -28895,7 +28895,7 @@
         "updatedAt": "2026-04-09T21:08:53.542Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/tests/silent_defaults_tests.rs"
