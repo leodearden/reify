@@ -33961,7 +33961,7 @@
         "id": "1643",
         "title": "Fix asymmetric SYNC comment in reify-expr sanitize.rs",
         "description": "The SYNC comment at crates/reify-expr/src/sanitize.rs:40 still reads 'sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync', but task 892 consolidated all sanitize_value tests from reify-stdlib/src/complex.rs into reify-stdlib/src/helpers.rs. The companion comment in helpers.rs:459 was updated ('sanitize_value tests mirrored in reify-expr::sanitize tests — keep in sync'), but reify-expr's side was missed — leaving the two ends of the mirror asymmetric and pointing future maintainers to a file that no longer holds the mirrored tests.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "Update crates/reify-expr/src/sanitize.rs:40 from:\n\n    // SYNC: sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync\n\nto:\n\n    // SYNC: sanitize_value tests mirrored in reify-stdlib::helpers tests — keep in sync\n\nso both ends of the mirror agree. One-line doc fix. No behavior changes, no new tests. Run `cargo check -p reify-expr` to confirm nothing broke and verify sync_comments_test.sh (if it gates this comment) still passes.\n\nMemory hints: search \"sanitize_value SYNC comment reify-expr reify-stdlib\", search \"task 892 sanitize_value consolidation complex.rs helpers.rs\", search: 'sanitize.rs SYNC comment complex helpers consolidation Task 892'",
@@ -33973,7 +33973,7 @@
           ],
           "memory_hints": "Task 892 consolidated complex.rs tests into helpers.rs (see task 892 for commit); search: 'sanitize.rs SYNC comment consolidation Task 892 complex helpers'; file: crates/reify-expr/src/sanitize.rs line ~40 vs crates/reify-expr/tests/helpers.rs line ~459"
         },
-        "updatedAt": "2026-04-14T00:27:25.127Z"
+        "updatedAt": "2026-04-14T04:09:40.233Z"
       },
       {
         "id": "1644",
@@ -34126,9 +34126,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T04:09:27.807Z",
+      "lastModified": "2026-04-14T04:09:40.233Z",
       "taskCount": 1652,
-      "completedCount": 1320,
+      "completedCount": 1321,
       "tags": [
         "master"
       ]
