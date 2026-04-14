@@ -34175,7 +34175,19 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "crates/reify-compiler/src/traits.rs",
+              "crates/reify-compiler/tests"
+            ],
+            "queries": [
+              "reify-compiler reflective query params compile-time validation traits.rs compile_reflective_query",
+              "geometry check deferred eval time forall sub-component variable",
+              "task 1638 geometric_params material_params evaluator layer completion",
+              "no references to material_params in reify-compiler compiler tests only cover params"
+            ]
+          }
         }
       },
       {
