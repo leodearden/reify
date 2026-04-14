@@ -34209,11 +34209,11 @@
         "description": "Further widen the non-recursion tripwire in sanitize_wildcard_variants_passthrough by adding List and Transform cases to the mirrored tests in crates/reify-expr/src/sanitize.rs (~line 472) and crates/reify-stdlib/src/helpers.rs (~line 893). Task 1644 already broadened the sample from Bool/Int/String to include Vector and Frame; this follow-up extends coverage to two more container/struct wildcard variants that share the same risk profile.",
         "details": "Append the following two cases to the `cases` array in both crates/reify-expr/src/sanitize.rs (sanitize_wildcard_variants_passthrough, ~line 472) and crates/reify-stdlib/src/helpers.rs (mirrored test, ~line 893):\n\n- Value::List(vec![Value::Real(f64::NAN)])\n- Value::Transform {\n      rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),\n      translation: Box::new(Value::Vector(vec![\n          Value::Real(f64::NAN),\n          Value::Real(0.0),\n          Value::Real(0.0),\n      ])),\n  }\n\nBoth cases deliberately carry NaN payloads so the existing non-recursion tripwire semantics continue to hold: if sanitize_value were ever refactored to recurse into children, the inner NaN would become Undef and the assert_eq! would fail (Value::PartialEq uses to_bits(), so NaN == NaN here).\n\nSYNC contract: the two copies of this test MUST remain in step — add identical cases in both files in the same commit. Update the doc comment (\"five of ~25\") in both crates to reflect the new count.\n\nVerify with:\n    cargo test -p reify-expr sanitize_wildcard_variants_passthrough\n    cargo test -p reify-stdlib sanitize_wildcard_variants_passthrough\n\nMemory hints: search \"sanitize_wildcard_variants_passthrough task 1644 Vector Frame\"; search \"task 892 sanitize_value consolidation\"; related: Task 1643 (asymmetric SYNC comment in same area).\n\nConfirm that Value::List and Value::Transform variants actually exist in crates/reify-expr/src/value.rs with the expected shape before coding — if the Transform variant shape differs (e.g., uses different field names or a non-Box inner value), adjust accordingly while preserving the NaN tripwire intent.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T06:21:39.232Z",
+        "updatedAt": "2026-04-14T07:04:03.359Z",
         "metadata": {
           "modules": [
             "crates/reify-expr",
@@ -34340,7 +34340,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T07:04:03.282Z",
+      "lastModified": "2026-04-14T07:04:03.359Z",
       "taskCount": 1658,
       "completedCount": 1330,
       "tags": [
