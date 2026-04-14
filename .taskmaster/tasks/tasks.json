@@ -10930,7 +10930,7 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
