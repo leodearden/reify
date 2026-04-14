@@ -91,13 +91,17 @@ fn ri_file_parses_and_compiles() {
         errors
     );
 
-    // Step C: at least 4 templates (Widget, Bracket, RecursiveChain, Plate)
-    assert!(
-        compiled.templates.len() >= 4,
-        "expected >= 4 templates in m9_integration.ri, got {}",
-        compiled.templates.len()
-    );
+    // Step C: exactly 4 templates (Widget, Bracket, RecursiveChain, Plate).
+    // Tight count locks in the intended cross-feature set — accidental extras or
+    // removals are caught, without the redundant name-then-count error cascade.
     let template_names: Vec<&str> = compiled.templates.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        compiled.templates.len(),
+        4,
+        "expected exactly 4 templates in m9_integration.ri, got {}: {:?}",
+        compiled.templates.len(),
+        template_names
+    );
     for expected_name in &["Widget", "Bracket", "RecursiveChain", "Plate"] {
         assert!(
             template_names.contains(expected_name),
@@ -463,17 +467,30 @@ structure def TermTree {
         "TermTree.child.value should be Undef (next_value has no default → Undef arg propagation)"
     );
 
-    // Cross-feature: constraint determined(next_value) = Violated at root (next_value is Undetermined)
-    let det_constraint = check_result
+    // Cross-feature: constraint determined(next_value) = Violated at every TermTree
+    // level. At root, next_value is Undetermined; at the child (depth=0), next_value
+    // carries the Undef propagated from the root's Undetermined value. Neither is
+    // determined → each TermTree entry must be Violated. Using filter+per-entry
+    // assertion (mirroring the root_constraints pattern at lines 557-574) avoids
+    // `.find()` latching onto a nondeterministic first match.
+    let termtree_constraints: Vec<_> = check_result
         .constraint_results
         .iter()
-        .find(|e| e.id.entity == "TermTree")
-        .expect("expected constraint result for TermTree (determined(next_value))");
-    assert_eq!(
-        det_constraint.satisfaction,
-        Satisfaction::Violated,
-        "determined(next_value) should be Violated when next_value has no default"
+        .filter(|e| e.id.entity == "TermTree")
+        .collect();
+    assert!(
+        !termtree_constraints.is_empty(),
+        "expected at least one constraint result for TermTree (determined(next_value))"
     );
+    for e in &termtree_constraints {
+        assert_eq!(
+            e.satisfaction,
+            Satisfaction::Violated,
+            "TermTree constraint {:?} (determined(next_value)) should be Violated, got {:?}",
+            e.label,
+            e.satisfaction
+        );
+    }
 }
 
 // ── Step 13/14: recursive structure with determinacy constraint ───────────────
@@ -652,10 +669,13 @@ fn full_pipeline_cross_feature_values() {
             e.id.entity == "Bracket" && e.label == Some("DeterminedInRange[0]".to_string())
         })
         .collect();
-    // Two DeterminedInRange invocations (size and length) → two [0] entries
-    assert!(
-        bracket_dir0.len() >= 2,
-        "expected >= 2 DeterminedInRange[0] for Bracket (size and length invocations), got {}",
+    // Exactly two DeterminedInRange invocations on Bracket in the example
+    // (size and length) → exactly two [0] entries. Locking to == 2 catches
+    // accidental drift if a third invocation is added later.
+    assert_eq!(
+        bracket_dir0.len(),
+        2,
+        "expected exactly 2 DeterminedInRange[0] for Bracket (size and length invocations), got {}",
         bracket_dir0.len()
     );
     for e in &bracket_dir0 {
