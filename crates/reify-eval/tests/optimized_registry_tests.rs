@@ -20,7 +20,7 @@ use reify_types::Satisfaction;
 #[test]
 fn engine_register_optimized_impl_stores_and_dispatches() {
     // A module using `@optimized("geo::coincident")` on a constraint def that
-    // the language-level checker would evaluate as Satisfied (x == x). We
+    // the language-level checker would evaluate as Satisfied (1.0 == 1.0). We
     // register a MockOptimizedImpl that returns Violated — so if the result
     // is Violated, the mock must have handled it (NOT the SimpleConstraintChecker).
     let source = r#"
@@ -30,8 +30,8 @@ constraint def Coincident {
     param b: Real
     a == b
 }
-structure S {
-    param x: Real
+structure def S {
+    param x: Real = 1.0
     constraint Coincident(a: x, b: x)
 }
 "#;
@@ -65,7 +65,7 @@ structure S {
 fn unregistered_optimized_target_falls_back_to_checker() {
     // Same module as above, but the optimized impl is NOT registered. The
     // language-level `SimpleConstraintChecker` should handle the constraint
-    // and return Satisfied (x == x).
+    // and return Satisfied (1.0 == 1.0).
     let source = r#"
 @optimized("geo::coincident")
 constraint def Coincident {
@@ -73,8 +73,8 @@ constraint def Coincident {
     param b: Real
     a == b
 }
-structure S {
-    param x: Real
+structure def S {
+    param x: Real = 1.0
     constraint Coincident(a: x, b: x)
 }
 "#;

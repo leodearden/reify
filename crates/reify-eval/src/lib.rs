@@ -16,11 +16,12 @@ use reify_compiler::{
     CompiledConstraint, CompiledModule, CompiledPurpose, TopologyTemplate, ValueCellKind,
 };
 use reify_types::{
-    AutoParam, CompiledFunction, ConstraintChecker, ConstraintInput, ConstraintNodeId,
-    ConstraintSolver, ContentHash, DeterminacyState, Diagnostic, ExportFormat, FIELD_ENTITY_PREFIX,
-    GeometryHandleId, GeometryKernel, Mesh, OptimizationObjective, PersistentMap,
-    ResolutionProblem, Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, Value,
-    ValueCellId, ValueMap, VersionId,
+    AutoParam, CompiledExpr, CompiledFunction, ConstraintChecker, ConstraintInput,
+    ConstraintNodeId, ConstraintResult, ConstraintSolver, ContentHash, DeterminacyState,
+    Diagnostic, ExportFormat, FIELD_ENTITY_PREFIX, GeometryHandleId, GeometryKernel, Mesh,
+    OptimizationObjective, OptimizedImpl, OptimizedImplInput, PersistentMap, ResolutionProblem,
+    Satisfaction, SnapshotId, SnapshotProvenance, SolveResult, Value, ValueCellId, ValueMap,
+    VersionId,
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
@@ -123,6 +124,12 @@ pub struct Engine {
     /// (e.g., binary tree with `left` and `right` produces B^D nodes).
     /// Default: 10_000.
     max_unfold_nodes: usize,
+    /// Registry of optimized constraint implementations, keyed by the target
+    /// name declared on a constraint def's `@optimized("target")` annotation.
+    /// Populated via `register_optimized_impl`. At check time, any constraint
+    /// whose `optimized_target` matches a registered key is routed to that
+    /// impl instead of the language-level `constraint_checker` (Task 273).
+    optimization_registry: HashMap<String, Box<dyn OptimizedImpl>>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -331,7 +338,112 @@ impl Engine {
             meta_map: HashMap::new(),
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            optimization_registry: HashMap::new(),
         }
+    }
+
+    /// Register an optimized implementation for constraints annotated with
+    /// `@optimized("target")` (Task 273).
+    ///
+    /// Constraints compiled from a `constraint def` that carried a matching
+    /// annotation are routed to `imp` instead of the language-level
+    /// `ConstraintChecker`. If no impl is registered for a target, the
+    /// language-level checker handles those constraints unchanged.
+    pub fn register_optimized_impl(
+        &mut self,
+        target: impl Into<String>,
+        imp: Box<dyn OptimizedImpl>,
+    ) {
+        self.optimization_registry.insert(target.into(), imp);
+    }
+
+    /// Dispatch a batch of constraints to either their registered optimized
+    /// implementation or the language-level `ConstraintChecker`, preserving
+    /// the order of `entries` in the returned results (Task 273).
+    ///
+    /// Each entry is `(id, expr, optimized_target)`. Constraints whose
+    /// `optimized_target` is `Some(t)` AND `t` is in `optimization_registry`
+    /// are sent to that impl; everything else falls through to
+    /// `self.constraint_checker`.
+    fn dispatch_constraints<'a>(
+        &self,
+        entries: Vec<(ConstraintNodeId, &'a CompiledExpr, Option<&'a str>)>,
+        values: &'a ValueMap,
+        functions: &'a [CompiledFunction],
+        determinacy: Option<&'a PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+    ) -> Vec<ConstraintResult> {
+        if entries.is_empty() {
+            return Vec::new();
+        }
+
+        // Results in input order. We fill slots as each path completes.
+        let mut results: Vec<Option<ConstraintResult>> =
+            (0..entries.len()).map(|_| None).collect();
+
+        // Bucket original indices by registered target. Unregistered (or None)
+        // targets go to the language-level fallback path.
+        let mut optimized_groups: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut fallback_indices: Vec<usize> = Vec::new();
+        for (i, (_, _, target)) in entries.iter().enumerate() {
+            match target {
+                Some(t) if self.optimization_registry.contains_key(*t) => {
+                    optimized_groups
+                        .entry((*t).to_string())
+                        .or_default()
+                        .push(i);
+                }
+                _ => fallback_indices.push(i),
+            }
+        }
+
+        // Dispatch each optimized group through its registered impl. The
+        // contract is that the impl returns one `ConstraintResult` per input
+        // constraint, in the same order. We weave them back into the original
+        // result vector via each entry's recorded original index.
+        for (target, indices) in &optimized_groups {
+            let imp = self
+                .optimization_registry
+                .get(target)
+                .expect("target was just bucketed from optimization_registry");
+            let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = indices
+                .iter()
+                .map(|&i| (entries[i].0.clone(), entries[i].1))
+                .collect();
+            let input = OptimizedImplInput {
+                constraints,
+                values,
+                functions,
+                determinacy,
+            };
+            let output = imp.check(&input);
+            for (&orig_idx, result) in indices.iter().zip(output.results.into_iter()) {
+                results[orig_idx] = Some(result);
+            }
+        }
+
+        // Dispatch the remainder through the language-level checker — same
+        // input shape the callers used before Task 273.
+        if !fallback_indices.is_empty() {
+            let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = fallback_indices
+                .iter()
+                .map(|&i| (entries[i].0.clone(), entries[i].1))
+                .collect();
+            let input = ConstraintInput {
+                constraints,
+                values,
+                functions,
+                determinacy,
+            };
+            let fallback_results = self.constraint_checker.check(&input);
+            for (&orig_idx, result) in fallback_indices.iter().zip(fallback_results.into_iter()) {
+                results[orig_idx] = Some(result);
+            }
+        }
+
+        results
+            .into_iter()
+            .map(|r| r.expect("dispatch_constraints: every slot must be filled"))
+            .collect()
     }
 
     /// Returns the compiled stdlib prelude modules stored by this engine.
@@ -461,6 +573,7 @@ impl Engine {
                     "purpose:{}:constraint:{}",
                     purpose_name, i
                 )),
+                optimized_target: constraint.optimized_target.clone(),
             };
             state
                 .snapshot
@@ -2310,19 +2423,23 @@ impl Engine {
             .collect();
 
         if !constraint_nodes.is_empty() {
-            let constraint_pairs: Vec<_> = constraint_nodes
+            let entries: Vec<_> = constraint_nodes
                 .iter()
-                .map(|cnode| (cnode.id.clone(), &cnode.expr))
+                .map(|cnode| {
+                    (
+                        cnode.id.clone(),
+                        &cnode.expr,
+                        cnode.optimized_target.as_deref(),
+                    )
+                })
                 .collect();
 
-            let input = ConstraintInput {
-                constraints: constraint_pairs,
+            let results = self.dispatch_constraints(
+                entries,
                 values,
-                functions: &self.functions,
-                determinacy: Some(&state.snapshot.values),
-            };
-
-            let results = self.constraint_checker.check(&input);
+                &self.functions,
+                Some(&state.snapshot.values),
+            );
             for (result, cnode) in results.into_iter().zip(constraint_nodes.iter()) {
                 diagnostics.extend(Self::labeled_diagnostics(
                     result.diagnostics.messages,
@@ -2699,19 +2816,17 @@ impl Engine {
                 continue;
             }
 
-            let constraint_pairs: Vec<_> = active_constraints
+            let entries: Vec<_> = active_constraints
                 .iter()
-                .map(|c| (c.id.clone(), &c.expr))
+                .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
                 .collect();
 
-            let input = ConstraintInput {
-                constraints: constraint_pairs,
-                values: &values,
-                functions: &module.functions,
-                determinacy: Some(&state.snapshot.values),
-            };
-
-            let results = self.constraint_checker.check(&input);
+            let results = self.dispatch_constraints(
+                entries,
+                &values,
+                &module.functions,
+                Some(&state.snapshot.values),
+            );
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                 diagnostics.extend(Self::labeled_diagnostics(
@@ -2793,21 +2908,19 @@ impl Engine {
                 continue;
             }
 
-            let constraint_pairs: Vec<_> = active_constraints
+            let entries: Vec<_> = active_constraints
                 .iter()
-                .map(|c| (c.id.clone(), &c.expr))
+                .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
                 .collect();
 
             // After eval(), eval_state is always Some — unwrap is safe here.
             let det_values = &self.eval_state.as_ref().unwrap().snapshot.values;
-            let input = ConstraintInput {
-                constraints: constraint_pairs,
-                values: &eval_result.values,
-                functions: &module.functions,
-                determinacy: Some(det_values),
-            };
-
-            let results = self.constraint_checker.check(&input);
+            let results = self.dispatch_constraints(
+                entries,
+                &eval_result.values,
+                &module.functions,
+                Some(det_values),
+            );
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                 diagnostics.extend(Self::labeled_diagnostics(
@@ -2859,19 +2972,17 @@ impl Engine {
             let active_constraints = Self::collect_active_constraints(template, &values);
 
             if !active_constraints.is_empty() {
-                let constraint_pairs: Vec<_> = active_constraints
+                let entries: Vec<_> = active_constraints
                     .iter()
-                    .map(|c| (c.id.clone(), &c.expr))
+                    .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
                     .collect();
 
-                let input = ConstraintInput {
-                    constraints: constraint_pairs,
-                    values: &values,
-                    functions: &module.functions,
-                    determinacy: Some(&state.snapshot.values),
-                };
-
-                let results = self.constraint_checker.check(&input);
+                let results = self.dispatch_constraints(
+                    entries,
+                    &values,
+                    &module.functions,
+                    Some(&state.snapshot.values),
+                );
 
                 for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                     diagnostics.extend(Self::labeled_diagnostics(
@@ -3176,19 +3287,17 @@ impl Engine {
             let active_constraints = Self::collect_active_constraints(template, &values);
 
             if !active_constraints.is_empty() {
-                let constraint_pairs: Vec<_> = active_constraints
+                let entries: Vec<_> = active_constraints
                     .iter()
-                    .map(|c| (c.id.clone(), &c.expr))
+                    .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
                     .collect();
 
-                let input = ConstraintInput {
-                    constraints: constraint_pairs,
-                    values: &values,
-                    functions: &module.functions,
-                    determinacy: Some(&state.snapshot.values),
-                };
-
-                let results = self.constraint_checker.check(&input);
+                let results = self.dispatch_constraints(
+                    entries,
+                    &values,
+                    &module.functions,
+                    Some(&state.snapshot.values),
+                );
 
                 for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                     diagnostics.extend(Self::labeled_diagnostics(

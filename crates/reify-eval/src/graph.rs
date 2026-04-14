@@ -27,6 +27,11 @@ pub struct ConstraintNodeData {
     pub label: Option<String>,
     pub expr: CompiledExpr,
     pub content_hash: ContentHash,
+    /// Target name from an `@optimized("...")` annotation on the originating
+    /// constraint def, if any. Used by `Engine::dispatch_constraints` to route
+    /// this constraint through a registered `OptimizedImpl` instead of the
+    /// language-level `ConstraintChecker` (Task 273).
+    pub optimized_target: Option<String>,
 }
 
 /// A realization node in the evaluation graph.
@@ -133,6 +138,7 @@ impl EvaluationGraph {
                     label: constraint.label.clone(),
                     expr: constraint.expr.clone(),
                     content_hash: id_hash.combine(constraint.expr.content_hash),
+                    optimized_target: constraint.optimized_target.clone(),
                 };
                 graph.constraints.insert(constraint.id.clone(), node);
             }
@@ -316,6 +322,7 @@ impl EvaluationGraph {
                         label: constraint.label.clone(),
                         expr: constraint.expr.clone(),
                         content_hash: id_hash.combine(constraint.expr.content_hash),
+                        optimized_target: constraint.optimized_target.clone(),
                     };
                     graph.constraints.insert(constraint.id.clone(), node);
                     constraint_ids.push(constraint.id.clone());
@@ -350,6 +357,7 @@ impl EvaluationGraph {
                         label: constraint.label.clone(),
                         expr: constraint.expr.clone(),
                         content_hash: id_hash.combine(constraint.expr.content_hash),
+                        optimized_target: constraint.optimized_target.clone(),
                     };
                     graph.constraints.insert(constraint.id.clone(), node);
                     else_constraint_ids.push(constraint.id.clone());
@@ -565,6 +573,7 @@ mod tests {
             label: None,
             expr: expr.clone(),
             content_hash: hash,
+            optimized_target: None,
         };
 
         assert_eq!(node.id, id);
@@ -691,6 +700,7 @@ mod tests {
             label: None,
             expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
             content_hash: ContentHash::of_str("c0"),
+            optimized_target: None,
         };
         graph.constraints.insert(cnid.clone(), cnode);
         assert_eq!(graph.constraints.len(), 1);
@@ -1114,6 +1124,7 @@ mod tests {
                 label: None,
                 expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
                 content_hash: hash_h,
+                optimized_target: None,
             },
         );
 
@@ -1148,6 +1159,7 @@ mod tests {
                 label: None,
                 expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
                 content_hash: hash_h,
+                optimized_target: None,
             },
         );
 
