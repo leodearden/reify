@@ -12089,7 +12089,7 @@
             "crates/reify-compiler/tests/structural_physical_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ]
         },
         "updatedAt": "2026-04-07T14:33:05.432Z"
