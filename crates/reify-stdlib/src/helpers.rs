@@ -884,13 +884,25 @@ mod tests {
     #[test]
     fn sanitize_wildcard_variants_passthrough() {
         // Smoke test: representative `_ => v` variants pass through bit-identical.
-        // Bool(true/false), Int, and String sample three of ~25 variants that all
-        // hit the wildcard arm; the *_finite_passthrough tests above cover the rest.
+        // Bool(true/false), Int, String, Vector, and Frame sample five of ~25 variants
+        // that all hit the wildcard arm, now including one container variant and one
+        // struct-shaped variant whose nested payloads are irrelevant because
+        // sanitize_value does not recurse; the *_finite_passthrough tests above cover
+        // the rest.
         let cases = [
             Value::Bool(true),
             Value::Bool(false),
             Value::Int(0),
             Value::String("x".to_string()),
+            Value::Vector(vec![Value::Real(1.0)]),
+            Value::Frame {
+                origin: Box::new(Value::Point(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ])),
+                basis: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+            },
         ];
         for v in &cases {
             assert_eq!(
