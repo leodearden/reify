@@ -6046,7 +6046,7 @@
           "215",
           "291"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-lsp/src"
@@ -6061,7 +6061,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T14:26:57.209Z"
+        "updatedAt": "2026-04-14T15:39:00.084Z"
       },
       {
         "id": "299",
@@ -7273,7 +7273,7 @@
           "307",
           "312"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
@@ -7288,7 +7288,7 @@
         },
         "subtasks": [],
         "details": "Degenerate booleans: coincident faces, tangent solids, union of identical shapes, difference→empty, nested ((A∪B)∩C)\\D, thin solid (1μm), union_all 20+ solids. Verify no panics, graceful errors.",
-        "updatedAt": "2026-04-14T14:29:54.584Z"
+        "updatedAt": "2026-04-14T15:39:00.223Z"
       },
       {
         "id": "346",
@@ -34637,7 +34637,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T14:40:37.400Z",
+      "lastModified": "2026-04-14T15:39:00.223Z",
       "taskCount": 1661,
       "completedCount": 1383,
       "tags": [
