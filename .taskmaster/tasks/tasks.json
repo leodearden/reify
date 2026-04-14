@@ -9274,11 +9274,11 @@
         "description": "In crates/reify-eval/tests/m9_trait_conformance.rs: rename qualified_access_disambiguation to per_structure_constraint_counts. Update docstring to reflect it verifies constraint counts per structure, not qualified access disambiguation. Add TODO for when qualified access syntax is available. (Review followup from task 194)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:39:02.795Z",
+        "updatedAt": "2026-04-14T12:40:00.552Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -34558,7 +34558,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:40:00.104Z",
+      "lastModified": "2026-04-14T12:40:00.552Z",
       "taskCount": 1661,
       "completedCount": 1376,
       "tags": [
