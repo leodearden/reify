@@ -23,6 +23,34 @@ pub fn make_simple_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
 }
 
+/// Parse, compile, eval with `SimpleConstraintChecker`, return `EvalResult`.
+///
+/// Convenience helper for tests that need to go straight from source text
+/// to evaluated values without manually constructing an engine.
+///
+/// # Panics
+/// Panics if there are any parse or compile errors.
+#[cfg(feature = "eval-helpers")]
+pub fn eval_source(src: &str) -> reify_eval::EvalResult {
+    let compiled = parse_and_compile(src);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled)
+}
+
+/// Parse, compile, check with `SimpleConstraintChecker`, return `CheckResult`.
+///
+/// Convenience helper for tests that need to go straight from source text
+/// to constraint check results without manually constructing an engine.
+///
+/// # Panics
+/// Panics if there are any parse or compile errors.
+#[cfg(feature = "eval-helpers")]
+pub fn check_source(src: &str) -> reify_eval::CheckResult {
+    let compiled = parse_and_compile(src);
+    let mut engine = make_simple_engine();
+    engine.check(&compiled)
+}
+
 /// Parse `source`, assert no parse errors, compile, assert no compile errors.
 /// Returns the compiled module ready for eval.
 ///
