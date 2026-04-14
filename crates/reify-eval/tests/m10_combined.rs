@@ -123,6 +123,19 @@ fn geom_ready_purpose_compiled_and_activatable() {
     );
 }
 
+// ── Test 11: violation regression guard ──────────────────────────────────────
+
+/// Regression guard: a deliberately invalid source produces at least one Violated result.
+/// Mutates `constraint tx > 0mm` → `constraint tx > 1000mm` (tx = 100mm, so 100 > 1000 is false).
+/// Asserts: (1) the substitution changed the source (guards against target drift),
+///          (2) at least one constraint_result is Satisfied::Violated,
+///          (3) total count is still >= 15 (checker did not short-circuit).
+/// Mirrors m9_combined.rs::violated_constraint_detected.
+#[test]
+fn violated_constraint_detected() {
+    todo!("step-22 impl: mutate source, check, assert >= 1 Violated result")
+}
+
 // ── Test 10: ad-hoc port selector let binding present ────────────────────────
 
 /// Feature 6 (ad-hoc port selector).
