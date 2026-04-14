@@ -351,6 +351,45 @@ fn parse_mixed_auto_and_auto_free() {
     ));
 }
 
+/// `auto(constrained)` — unrecognized modifier — should produce parse errors.
+///
+/// The grammar hard-codes the literal `free` as the only accepted modifier inside
+/// `auto(...)`.  This test is an intentional regression guard: if someone generalises
+/// the modifier into an arbitrary identifier, this test will fail and force them to
+/// decide whether that semantic change is deliberate.
+///
+/// The span overlap check ensures the error is attributed to the `auto(constrained)`
+/// token rather than some unrelated part of the source.  A future grammar change that
+/// accidentally accepts `auto(constrained)` while still producing an unrelated error
+/// elsewhere (e.g. a stray `}`) would silently pass without this check.
+#[test]
+fn parse_auto_unrecognized_modifier_is_error() {
+    let source = r#"structure T {
+    param x: Scalar = auto(constrained)
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        !module.errors.is_empty(),
+        "expected parse errors for unrecognized modifier 'constrained' in auto(...)"
+    );
+    // At least one error must overlap the `auto(constrained)` token.  Using
+    // `str::find` avoids hard-coded magic byte offsets that would silently
+    // become wrong if the source fixture changes.
+    let token = "auto(constrained)";
+    let auto_start = source.find(token).expect("fixture must contain 'auto(constrained)'") as u32;
+    let auto_end = auto_start + token.len() as u32;
+    let has_overlapping_error = module
+        .errors
+        .iter()
+        .any(|e| e.span.start < auto_end && e.span.end > auto_start);
+    assert!(
+        has_overlapping_error,
+        "expected at least one parse error overlapping `auto(constrained)` \
+         (bytes {auto_start}..{auto_end}), got: {:?}",
+        module.errors,
+    );
+}
+
 /// Line comment with `//` on its own line should parse without errors.
 #[test]
 fn parse_line_comment_double_slash() {
