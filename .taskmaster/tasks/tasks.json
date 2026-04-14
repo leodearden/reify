@@ -23162,11 +23162,11 @@
         "description": "The prelude-collection block in module_dag.rs:239-257 (compile_project) is a copy of lines 168-178 (compile_module). Both call sites use identical logic to filter Declaration::Import and clone matching CompiledModules.\n\nExtract a helper function, e.g. `fn collect_preludes(parsed: &ParsedModule, modules: &HashMap<String, CompiledModule>) -> Vec<CompiledModule>`, and call it from both compile_module and compile_project. This localizes the import filter and cloning policy, preventing drift if prelude collection ever needs to handle qualified/glob/aliased imports.\n\nmemory_hints: search \"compile_module compile_project prelude collection\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:19.015Z",
+        "updatedAt": "2026-04-14T09:52:24.413Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -23810,11 +23810,11 @@
         "description": "The existing test `let_none_with_typed_annotation_gets_correct_type` covers `let y : Option<Length> = none`. Consider adding tests for these edge cases to strengthen confidence in the guard conditions:\n\n1. `let y : SomeAlias = none` where SomeAlias resolves to an Option type (exercises alias resolution path)\n2. `let y : Length = none` (non-Option annotation — should NOT apply the fixup)\n3. `let y = none` (no annotation — should retain the default Option<Real>)\n\nFile: `crates/reify-compiler/tests/qualified_access_compile_tests.rs`\n\n## Memory hints\n- Search: \"OptionNone typed annotation let binding\" for prior context on the fixup\n- Related symbol: `compile_entity` `MemberDecl::Let` arm in `crates/reify-compiler/src/lib.rs`",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:19.728Z",
+        "updatedAt": "2026-04-14T09:52:24.488Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -34378,7 +34378,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T09:52:24.327Z",
+      "lastModified": "2026-04-14T09:52:24.488Z",
       "taskCount": 1661,
       "completedCount": 1333,
       "tags": [
