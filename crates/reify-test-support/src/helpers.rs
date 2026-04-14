@@ -115,6 +115,28 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_make_simple_engine() {
+        use reify_types::Satisfaction;
+        let compiled = super::parse_and_compile(bracket_source());
+        let mut engine = super::make_simple_engine();
+        let result = engine.check(&compiled);
+        assert!(
+            !result.constraint_results.is_empty(),
+            "engine.check should produce non-empty constraint_results for bracket source"
+        );
+        for entry in &result.constraint_results {
+            assert_eq!(
+                entry.satisfaction,
+                Satisfaction::Satisfied,
+                "constraint {} should be Satisfied under SimpleConstraintChecker, got {:?}",
+                entry.id,
+                entry.satisfaction
+            );
+        }
+    }
+
     #[test]
     fn test_parse_compile_expect_err_detects_error() {
         // Source with an undefined reference should produce a compile error.
