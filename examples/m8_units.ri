@@ -15,7 +15,10 @@
 //   Pressure: psi (6894.757293168361 Pa)
 //   Volume:  gal (0.003785411784 m³)
 //
-// Cross-system arithmetic (step-20) is added in a subsequent implementation step.
+// Cross-system arithmetic (step-20):
+//   mixed_len      = 1in + 25.4mm        → Length ≈ 0.0508m
+//   energy_imperial = 2lbf * 3mm         → Energy ≈ 0.026689 J
+//   pressure_ratio = (1psi) / (1Pa)      → Dimensionless ≈ 6894.757
 
 structure def UnitShowcase {
     // ── SI-prefix length ────────────────────────────────────────────────────────
@@ -52,4 +55,14 @@ structure def UnitShowcase {
 
     // ── Imperial volume (step-18) ────────────────────────────────────────────────
     let volume_gal = 1gal
+
+    // ── Cross-system arithmetic (step-20) ────────────────────────────────────────
+    // 1in + 25.4mm: both Length → 0.0254m + 0.0254m = 0.0508m
+    let mixed_len = 1in + 25.4mm
+
+    // 2lbf * 3mm: Force × Length = Energy → 2*4.4482216152605 N * 0.003 m
+    let energy_imperial = 2lbf * 3mm
+
+    // (1psi) / (1Pa): Pressure / Pressure = Dimensionless → ≈6894.757
+    let pressure_ratio = (1psi) / (1Pa)
 }
