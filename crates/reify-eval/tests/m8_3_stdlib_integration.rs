@@ -15,7 +15,7 @@ use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
 use reify_test_support::parse_and_compile_with_stdlib;
-use reify_types::{DimensionVector, ModulePath, Severity, Value, ValueCellId};
+use reify_types::{CompiledExprKind, DimensionVector, ModulePath, Severity, Value, ValueCellId};
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
 
@@ -296,6 +296,91 @@ fn ports_rotary_connection_compiles() {
         "Gearbox.input port type_name should be 'RotaryPort', got '{}'",
         input_port.type_name
     );
+}
+
+// ── step-9: ports_threaded_m8_port_values ────────────────────────────────────
+
+/// Asserts the compiled Motor template's mount port has the correct M8 thread
+/// dimensions in its port member default_exprs (compile-level assertion):
+///   - thread_major_dia : default_expr Literal(Scalar(0.008 m, LENGTH))  = 8mm
+///   - thread_pitch     : default_expr Literal(Scalar(0.00125 m, LENGTH)) = 1.25mm
+#[test]
+fn ports_threaded_m8_port_values() {
+    let compiled = compiled_ri(PATH_PORTS, "m8_ports");
+
+    let motor = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Motor")
+        .expect("Motor template should exist");
+
+    let mount_port = motor
+        .ports
+        .iter()
+        .find(|p| p.name == "mount")
+        .expect("Motor should have a 'mount' port");
+
+    // ── thread_major_dia (8mm = 0.008 m) ──────────────────────────────────────
+    let major_dia_member = mount_port
+        .members
+        .iter()
+        .find(|m| m.id.member.contains("thread_major_dia"))
+        .expect("mount port should have a 'thread_major_dia' member");
+
+    let major_expr = major_dia_member
+        .default_expr
+        .as_ref()
+        .expect("thread_major_dia should have a default_expr");
+
+    match &major_expr.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+            assert!(
+                (si_value - 0.008).abs() < 1e-9,
+                "thread_major_dia should be 0.008m (8mm), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "thread_major_dia should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "thread_major_dia default_expr should be Scalar literal, got {:?}",
+            other
+        ),
+    }
+
+    // ── thread_pitch (1.25mm = 0.00125 m) ────────────────────────────────────
+    let pitch_member = mount_port
+        .members
+        .iter()
+        .find(|m| m.id.member.contains("thread_pitch"))
+        .expect("mount port should have a 'thread_pitch' member");
+
+    let pitch_expr = pitch_member
+        .default_expr
+        .as_ref()
+        .expect("thread_pitch should have a default_expr");
+
+    match &pitch_expr.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+            assert!(
+                (si_value - 0.00125).abs() < 1e-9,
+                "thread_pitch should be 0.00125m (1.25mm), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "thread_pitch should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "thread_pitch default_expr should be Scalar literal, got {:?}",
+            other
+        ),
+    }
 }
 
 // ── Section 3: m8_tolerancing.ri ─────────────────────────────────────────────
