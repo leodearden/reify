@@ -12139,8 +12139,7 @@
             "crates/reify-compiler/src/stdlib_loader.rs"
           ],
           "modules": [
-            "crates/reify-compiler/stdlib",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ]
         },
         "updatedAt": "2026-04-13T18:55:22.869Z"
@@ -12521,8 +12520,7 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/tests/sweep_e2e.rs"
+            "crates/reify-eval/tests/geometry_error_handling.rs"
           ],
           "modules": [
             "crates/reify-eval"
