@@ -27158,12 +27158,11 @@
         "updatedAt": "2026-04-09T04:12:54.373Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
-            "crates/reify-compiler/src/expr.rs",
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/collection_sub_tests.rs"
+            "crates/reify-compiler/src/expr.rs"
           ]
         }
       },
@@ -27180,12 +27179,11 @@
         "updatedAt": "2026-04-09T04:13:16.775Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
-            "crates/reify-compiler/src/expr.rs",
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/collection_sub_tests.rs"
+            "crates/reify-compiler/src/expr.rs"
           ]
         }
       },
