@@ -12125,11 +12125,11 @@
         "description": "Five of eight traits (Flexible, Plastic, ThermallyConductive, ElectricallyConductive, Sealed) only tested for name presence. Need member, type, constraint, and conformance tests.",
         "details": "Add per-trait tests covering: (a) required_member names and types, (b) conforming structure compiles without errors, (c) constraints injected correctly. Add missing-member negative tests for Rigid (moment_of_inertia) and ElasticallyDeformable (max_elastic_strain). Add centroid_y/z assertions to rigid_cross_module_three_level_refinement_chain.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T15:39:00.416Z",
+        "updatedAt": "2026-04-14T15:39:08.123Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -12226,7 +12226,7 @@
         "description": "Plastic trait is the only trait in structural_physical.ri with no constraints. Negative plastic_strain and zero hardening_modulus are physically nonsensical.",
         "details": "Add constraint hardening_modulus > 0 and constraint plastic_strain >= 0 to the Plastic trait definition in crates/reify-compiler/stdlib/structural_physical.ri, consistent with the constraint pattern used by all other traits in the file.\n\nFiles: crates/reify-compiler/stdlib/structural_physical.ri",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "329"
         ],
@@ -12241,7 +12241,7 @@
             "crates/reify-compiler/src"
           ]
         },
-        "updatedAt": "2026-04-13T18:55:22.869Z"
+        "updatedAt": "2026-04-14T15:39:08.587Z"
       },
       {
         "id": "559",
@@ -34638,7 +34638,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T15:39:05.409Z",
+      "lastModified": "2026-04-14T15:39:08.587Z",
       "taskCount": 1661,
       "completedCount": 1383,
       "tags": [
