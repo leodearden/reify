@@ -52,6 +52,18 @@ fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
     reify_compiler::compile(&parsed)
 }
 
+/// Returns `true` if any string in `messages` contains `word` as a whole token.
+///
+/// Token boundaries are any character that is neither ASCII alphanumeric nor `_`.
+/// This mirrors the closure logic that was duplicated at four call sites in this
+/// file before extraction.
+fn mentions_word<'a>(mut messages: impl Iterator<Item = &'a str>, word: &str) -> bool {
+    messages.any(|msg| {
+        msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|tok| tok == word)
+    })
+}
+
 #[test]
 fn test_mentions_word() {
     // (1) exact match: the word 'self' appears as its own token
