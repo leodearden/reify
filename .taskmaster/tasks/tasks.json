@@ -13809,12 +13809,11 @@
         "updatedAt": "2026-04-13T19:00:41.435Z",
         "metadata": {
           "modules": [
-            "crates/reify-types",
-            "crates/reify-expr"
+            "crates/reify-types/src",
+            "crates/reify-expr/src"
           ],
           "files": [
             "crates/reify-types/src/value.rs",
-            "crates/reify-expr/src/calculus.rs",
             "crates/reify-expr/src/lib.rs"
           ]
         }
