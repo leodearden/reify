@@ -2081,3 +2081,108 @@ fn budget_not_consumed_when_depth_limit_hit() {
         result.diagnostics
     );
 }
+
+// ─── Budget exhaustion: budget==0 emits Error diagnostic and stops unfolding ──
+
+/// When the node budget reaches zero, `unfold_recursive_sub` emits a
+/// `Severity::Error` diagnostic containing "total node budget exhausted" and
+/// stops creating nodes.
+///
+/// Setup:
+///   Template S: is_recursive=true, param n: Int = 10
+///     sub left  = S(n: n-1) where n > 0
+///     sub right = S(n: n-1) where n > 0
+///   max_unfold_nodes = 3
+///
+/// Depth-first trace for the top-level "left" sub (fresh budget=3):
+///   unfold(S,         "left",  depth=0, budget=3): guard true (n=10>0), budget 3→2, create S.left(n=9)
+///   unfold(S.left,    "left",  depth=1, budget=2): guard true (n=9>0),  budget 2→1, create S.left.left(n=8)
+///   unfold(S.left.left, "left", depth=2, budget=1): guard true (n=8>0), budget 1→0, create S.left.left.left(n=7)
+///   unfold(S.left.left.left, "left",  depth=3, budget=0): budget==0 → ERROR
+///   unfold(S.left.left.left, "right", depth=3, budget=0): budget==0 → ERROR
+///   unfold(S.left.left,      "right", depth=2, budget=0): budget==0 → ERROR
+///   unfold(S.left,           "right", depth=1, budget=0): budget==0 → ERROR ← S.left.right NOT created
+///
+/// n=10 ensures all exhaustion points occur where the guard would still be true
+/// (minimum n at an exhaustion call is n=7 for S.left.left.left's children),
+/// confirming budget is the sole reason for termination.
+///
+/// Assertions:
+///   (1) At least one Error diagnostic with "total node budget exhausted"
+///   (2) S.left.n == 9  (created within budget)
+///   (3) S.left.right does NOT exist  (budget==0 when it would be created)
+///   (4) S.left.left.right does NOT exist  (budget==0 at that point too)
+#[test]
+fn unfold_recursive_node_budget_exhaustion() {
+    // guard: n > 0
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    // arg: n = n - 1
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template_s = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(10), Type::Int)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "left",
+            "S",
+            vec![("n".to_string(), n_minus_1.clone())],
+            guard.clone(),
+        )
+        .sub_component_with_guard("right", "S", vec![("n".to_string(), n_minus_1)], guard)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_s)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    engine.set_max_unfold_nodes(3);
+    let result = engine.eval(&module);
+
+    // (1) At least one Error diagnostic with "total node budget exhausted"
+    let has_budget_exhausted_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains("total node budget exhausted"));
+    assert!(
+        has_budget_exhausted_error,
+        "Expected at least one Error diagnostic containing 'total node budget exhausted', \
+         got: {:?}",
+        result.diagnostics
+    );
+
+    // (2) S.left should exist with n=9 (first node created, within budget)
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left", "n")),
+        Some(&Value::Int(9)),
+        "S.left.n should be 9 (created when budget was 3→2)"
+    );
+
+    // (3) S.left.right must NOT exist: when unfolding S.left's "right" sub, budget==0
+    assert!(
+        !result
+            .values
+            .contains(&ValueCellId::new("S.left.right", "n")),
+        "S.left.right should not exist: budget==0 after the left-chain consumed it all. \
+         If present, budget was not properly exhausted depth-first."
+    );
+
+    // (4) S.left.left.right must NOT exist: budget==0 when processing S.left.left's "right" sub
+    assert!(
+        !result
+            .values
+            .contains(&ValueCellId::new("S.left.left.right", "n")),
+        "S.left.left.right should not exist: budget==0 after S.left.left.left was created. \
+         If present, budget accounting for sibling branches is broken."
+    );
+}
