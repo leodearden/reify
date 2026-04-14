@@ -134,12 +134,17 @@ pub(crate) fn validate_annotations(
         }
     }
 
-    // Duplicate-annotation checks. `optimized_target` (the extractor used by
-    // the compiler to stamp `CompiledConstraint::optimized_target`) uses
-    // first-valid-wins semantics: it skips malformed @optimized entries (those
-    // without a string-literal arg) and returns the first well-formed one.
-    // Warn on every *valid* @optimized past the first valid one so the user
-    // knows their shadowed entry is ignored:
+    // Duplicate-annotation checks. These only apply in constraint_def context
+    // because `optimized_target` (the extractor that stamps
+    // `CompiledConstraint::optimized_target`) is only called by entity.rs when
+    // lowering constraint defs. On structure/occurrence contexts, multiple
+    // @optimized annotations have no consumer downstream, so warning that one
+    // "shadows" another would be misleading — there is nothing being shadowed.
+    //
+    // Within constraint_def, `optimized_target` uses first-valid-wins semantics:
+    // it skips malformed @optimized entries (those without a string-literal arg)
+    // and returns the first well-formed one. Warn on every *valid* @optimized
+    // past the first valid one so the user knows their shadowed entry is ignored:
     //   @optimized("new_target")
     //   @optimized("legacy_target")   // ← valid but shadowed; warn here
     //
@@ -148,21 +153,23 @@ pub(crate) fn validate_annotations(
     // them here would produce contradictory diagnostics: e.g. warning that
     // annotation #1 is malformed and then warning that annotation #2 is
     // shadowed by annotation #1.
-    let mut seen_valid_optimized = false;
-    for ann in annotations {
-        if ann.name == "optimized"
-            && matches!(ann.args.first(), Some(reify_types::AnnotationArg::String(_)))
-        {
-            if seen_valid_optimized {
-                diagnostics.push(
-                    Diagnostic::warning(
-                        "multiple @optimized annotations on the same declaration — only the first well-formed one is used"
-                            .to_string(),
-                    )
-                    .with_label(DiagnosticLabel::new(ann.span, "duplicate @optimized")),
-                );
+    if context == "constraint_def" {
+        let mut seen_valid_optimized = false;
+        for ann in annotations {
+            if ann.name == "optimized"
+                && matches!(ann.args.first(), Some(reify_types::AnnotationArg::String(_)))
+            {
+                if seen_valid_optimized {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "multiple @optimized annotations on the same declaration — only the first well-formed one is used"
+                                .to_string(),
+                        )
+                        .with_label(DiagnosticLabel::new(ann.span, "duplicate @optimized")),
+                    );
+                }
+                seen_valid_optimized = true;
             }
-            seen_valid_optimized = true;
         }
     }
 }

@@ -552,6 +552,36 @@ structure S {
     );
 }
 
+/// Multiple valid `@optimized` annotations on a *structure* must NOT emit the
+/// duplicate-@optimized warning — the target string is not consumed on
+/// structure contexts (`optimized_target` is only called by entity.rs when
+/// lowering constraint defs), so there is nothing being "shadowed".
+#[test]
+fn multiple_valid_optimized_on_structure_does_not_warn() {
+    let module = compile_module(
+        r#"
+@optimized("kernel::fast")
+@optimized("kernel::slow")
+structure S {
+    param x: Real
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let duplicate_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("multiple @optimized annotations"))
+        .collect();
+    assert!(
+        duplicate_warnings.is_empty(),
+        "multiple @optimized on structure must not warn about duplicates (target not consumed); got: {:?}",
+        duplicate_warnings
+    );
+}
+
 /// A valid single `@optimized("target")` must NOT trip any of the new
 /// malformed-annotation warnings.
 #[test]
