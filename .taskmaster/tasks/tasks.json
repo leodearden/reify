@@ -8297,8 +8297,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/constraint_inst_tests.rs",
-            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
+            "crates/reify-compiler/tests/constraint_inst_tests.rs"
           ]
         },
         "subtasks": [],
@@ -8319,8 +8318,8 @@
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/type_compat.rs",
+            "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/tests/implicit_conversion_tests.rs"
           ]
         },
