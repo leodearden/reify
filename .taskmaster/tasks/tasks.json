@@ -17148,12 +17148,10 @@
         "metadata": {
           "files": [
             "crates/reify-eval/tests/m9_trait_conformance.rs",
-            "crates/reify-test-support/src/lib.rs",
             "crates/reify-eval/tests/recursive_unfold.rs"
           ],
           "modules": [
-            "crates/reify-eval/tests",
-            "crates/reify-test-support"
+            "crates/reify-eval"
           ],
           "bundled_from": [
             "788",
