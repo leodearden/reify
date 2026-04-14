@@ -27835,7 +27835,7 @@
         "updatedAt": "2026-04-09T09:31:58.116Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ],
           "files": [
             "crates/reify-compiler/tests/termination_check_tests.rs"
