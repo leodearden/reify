@@ -66,7 +66,61 @@ fn constraint_count(engine: &Engine) -> usize {
 /// is cleanly deactivatable.
 #[test]
 fn geom_ready_purpose_compiled_and_activatable() {
-    todo!("step-16 impl: assert geom_ready purpose present, activatable, +3 constraints")
+    let compiled = parse_and_compile_with_stdlib(&source());
+
+    // (a) geom_ready purpose is present in compiled_purposes
+    let geom_ready = compiled
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "geom_ready")
+        .expect("geom_ready purpose should be in compiled_purposes");
+
+    // (b) param has entity_kind == "Structure"
+    assert_eq!(
+        geom_ready.params.len(),
+        1,
+        "geom_ready should have exactly 1 param (subject)"
+    );
+    assert_eq!(
+        geom_ready.params[0].entity_kind,
+        "Structure",
+        "geom_ready param entity_kind should be 'Structure', got '{}'",
+        geom_ready.params[0].entity_kind
+    );
+
+    // (c) activate against Assembly and assert is_purpose_active
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+
+    engine.activate_purpose("geom_ready", "Assembly");
+    assert!(
+        engine.is_purpose_active("geom_ready"),
+        "geom_ready should be active after activate_purpose"
+    );
+
+    // (d) constraint count grows by exactly 3 (three literal constraints in purpose body)
+    assert_eq!(
+        constraint_count(&engine),
+        before + 3,
+        "geom_ready has 3 literal constraints: count should grow by exactly 3 (got {} before, {} after)",
+        before,
+        constraint_count(&engine)
+    );
+
+    // (e) deactivate restores count
+    engine.deactivate_purpose("geom_ready");
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "deactivating geom_ready must restore constraint count to {} (got {})",
+        before,
+        constraint_count(&engine)
+    );
+    assert!(
+        !engine.is_purpose_active("geom_ready"),
+        "geom_ready should NOT be active after deactivate_purpose"
+    );
 }
 
 // ── Test 7: assembly connect has connector and explicit port mapping ──────────
