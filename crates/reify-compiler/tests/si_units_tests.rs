@@ -665,3 +665,59 @@ fn existing_units_ri_still_has_m_kg_s_rad_deg_degC_degF_imperial() {
     let (v, _) = stdlib_param_si_value("Mass", "1g");
     assert!((v - 0.001).abs() < 1e-12, "1g wrong: {}", v);
 }
+
+// ─── S4: SI_PREFIX_BASES restricted prefix filtering ─────────────────────────
+
+/// Once SI_PREFIX_BASES supports per-base prefix_combos filtering, the generator
+/// must only emit the allowed prefixes for restricted bases (K, cd, rad) while
+/// still emitting all 20 prefixes for unrestricted bases (m, g, s, A, mol).
+#[test]
+fn si_prefix_bases_restricted_entries_only_generate_specified_prefixes() {
+    let src = si_units::build_si_units_source();
+
+    // Nonsensical combinations must be ABSENT after filtering.
+    for absent in &[
+        "pub unit QK",
+        "pub unit qK",
+        "pub unit qcd",
+        "pub unit Qcd",
+        "pub unit Qrad",
+        "pub unit qrad",
+    ] {
+        assert!(
+            !src.contains(absent),
+            "generated source must NOT contain `{}` (nonsensical prefix combo)\n\nfull source:\n{}",
+            absent,
+            src
+        );
+    }
+
+    // Restricted bases must still emit their allowed prefixes.
+    for present in &[
+        "pub unit mK : Temperature",
+        "pub unit uK : Temperature",
+        "pub unit nK : Temperature",
+        "pub unit mcd : LuminousIntensity",
+        "pub unit ucd : LuminousIntensity",
+        "pub unit mrad : Angle",
+        "pub unit urad : Angle",
+        "pub unit nrad : Angle",
+    ] {
+        assert!(
+            src.contains(present),
+            "generated source missing expected restricted-prefix line: `{}`\n\nfull source:\n{}",
+            present,
+            src
+        );
+    }
+
+    // Unrestricted bases must still get all 20 prefixes.
+    for present in &["pub unit Qm : Length", "pub unit qm : Length"] {
+        assert!(
+            src.contains(present),
+            "generated source missing unrestricted-base line: `{}`\n\nfull source:\n{}",
+            present,
+            src
+        );
+    }
+}
