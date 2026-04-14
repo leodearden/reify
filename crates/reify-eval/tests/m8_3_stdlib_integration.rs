@@ -788,3 +788,73 @@ fn units_cross_system_arithmetic() {
     );
 }
 
+// ── step-21: m8_3_all_four_fixtures_green ────────────────────────────────────
+
+/// Capstone regression guard: re-runs all four M8.3 fixtures through the full
+/// parse → compile_with_stdlib → eval pipeline and asserts:
+///   1. No Severity::Error diagnostics at any stage (parse, compile, eval).
+///   2. At least 1 value cell populated per fixture (non-empty eval result).
+///   3. The expected top-level structure name is present in compiled.templates.
+///
+/// Acts as a single-command smoke check for future regressions across the
+/// entire M8.3 milestone. Relies on the same `eval_ri_file` + `compiled_ri`
+/// helpers as the individual tests above.
+#[test]
+fn m8_3_all_four_fixtures_green() {
+    // ── m8_materials.ri ───────────────────────────────────────────────────────
+    {
+        let result = eval_ri_file(PATH_MATERIALS, "m8_materials");
+        assert!(
+            !result.values.is_empty(),
+            "m8_materials.ri: eval result should be non-empty"
+        );
+        let compiled = compiled_ri(PATH_MATERIALS, "m8_materials");
+        assert!(
+            compiled.templates.iter().any(|t| t.name == "AluminumBracket"),
+            "m8_materials.ri: AluminumBracket should be present in compiled templates"
+        );
+    }
+
+    // ── m8_ports.ri ───────────────────────────────────────────────────────────
+    {
+        let result = eval_ri_file(PATH_PORTS, "m8_ports");
+        assert!(
+            !result.values.is_empty(),
+            "m8_ports.ri: eval result should be non-empty"
+        );
+        let compiled = compiled_ri(PATH_PORTS, "m8_ports");
+        assert!(
+            compiled.templates.iter().any(|t| t.name == "DriveTrain"),
+            "m8_ports.ri: DriveTrain should be present in compiled templates"
+        );
+    }
+
+    // ── m8_tolerancing.ri ─────────────────────────────────────────────────────
+    {
+        let result = eval_ri_file(PATH_TOLERANCING, "m8_tolerancing");
+        assert!(
+            !result.values.is_empty(),
+            "m8_tolerancing.ri: eval result should be non-empty"
+        );
+        let compiled = compiled_ri(PATH_TOLERANCING, "m8_tolerancing");
+        assert!(
+            compiled.templates.iter().any(|t| t.name == "Flange"),
+            "m8_tolerancing.ri: Flange should be present in compiled templates"
+        );
+    }
+
+    // ── m8_units.ri ───────────────────────────────────────────────────────────
+    {
+        let result = eval_ri_file(PATH_UNITS, "m8_units");
+        assert!(
+            !result.values.is_empty(),
+            "m8_units.ri: eval result should be non-empty"
+        );
+        let compiled = compiled_ri(PATH_UNITS, "m8_units");
+        assert!(
+            compiled.templates.iter().any(|t| t.name == "UnitShowcase"),
+            "m8_units.ri: UnitShowcase should be present in compiled templates"
+        );
+    }
+}
+
