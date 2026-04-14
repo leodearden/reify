@@ -52,6 +52,43 @@ fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
     reify_compiler::compile(&parsed)
 }
 
+#[test]
+fn test_mentions_word() {
+    // (1) exact match: the word 'self' appears as its own token
+    assert!(mentions_word(
+        ["unknown identifier `self`"].iter().copied(),
+        "self"
+    ));
+
+    // (2) substring-only: 'self' is embedded inside 'myself' — not a whole word
+    assert!(!mentions_word(["myself"].iter().copied(), "self"));
+
+    // (3) underscore-adjacent: 'self_param' is a single token, does not match 'self'
+    assert!(!mentions_word(["self_param"].iter().copied(), "self"));
+
+    // (4) callers pre-lowercase their messages, so pass lowercased strings;
+    //     'self' at start of message
+    assert!(mentions_word(["self is invalid here"].iter().copied(), "self"));
+
+    // (5) empty iterator → false
+    assert!(!mentions_word(std::iter::empty(), "self"));
+
+    // (6) word at end of message
+    assert!(mentions_word(["cannot use self"].iter().copied(), "self"));
+
+    // (7) multiple messages — only the second mentions the word
+    assert!(mentions_word(
+        ["unrelated error", "invalid use of self"].iter().copied(),
+        "self"
+    ));
+
+    // (8) none of the messages mention the word
+    assert!(!mentions_word(
+        ["unrelated error", "something else entirely"].iter().copied(),
+        "self"
+    ));
+}
+
 // ─── step-1: self.param resolves to correct ValueRef ───
 
 #[test]
