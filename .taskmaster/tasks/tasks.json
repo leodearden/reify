@@ -7152,7 +7152,7 @@
           "260",
           "326"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-M8.4",
           "modules": [
@@ -7167,7 +7167,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-14T05:05:37.784Z"
       },
       {
         "id": "344",
@@ -34273,7 +34273,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T05:05:37.526Z",
+      "lastModified": "2026-04-14T05:05:37.784Z",
       "taskCount": 1657,
       "completedCount": 1325,
       "tags": [
