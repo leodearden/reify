@@ -34909,11 +34909,11 @@
         "description": "Follow-up from esc-1637-24 (reviewer_comprehensive, task 1637). Three items: (1) Extract common eval_source/check_source wrapper functions from crates/reify-eval/tests/m9_combined.rs, m9_integration.rs, m9_constraint_def.rs into reify-test-support or a shared module, parameterized by engine factory if needed. (2) Migrate remaining test files still using direct `Engine::new(Box::new(SimpleConstraintChecker), None)` to `make_simple_engine()`: m10_combined.rs (~6 sites), optimized_registry_tests.rs (~3 sites), m8_3_stdlib_integration.rs, purpose_activation.rs, resolution.rs. Files with `.with_solver()` chaining may need a builder variant. (3) Add a negative test for make_simple_engine that feeds a source with a violated constraint and asserts a non-Satisfied result, differentiating SimpleConstraintChecker from the mock.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:08:13.125Z",
+        "updatedAt": "2026-04-14T20:15:23.909Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/m10_combined.rs",
@@ -34930,7 +34930,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T20:15:23.203Z",
+      "lastModified": "2026-04-14T20:15:23.909Z",
       "taskCount": 1673,
       "completedCount": 1401,
       "tags": [
