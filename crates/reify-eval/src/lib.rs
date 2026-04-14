@@ -8,7 +8,7 @@ pub mod snapshot;
 pub mod test_runner;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -349,12 +349,39 @@ impl Engine {
     /// annotation are routed to `imp` instead of the language-level
     /// `ConstraintChecker`. If no impl is registered for a target, the
     /// language-level checker handles those constraints unchanged.
+    ///
+    /// If an impl is already registered for `target`, it is silently
+    /// overwritten and the previous impl is dropped. This matches `HashMap`
+    /// insert semantics and is intentional to support hot-reload and test
+    /// fixture scenarios where callers swap impls between runs.
+    ///
+    /// Note: this registry is only consulted from the *checker* path inside
+    /// `dispatch_constraints`. The solver path (`Engine::resolve` / the
+    /// `ConstraintSolver` seam) does not yet route through `OptimizedImpl`,
+    /// so `@optimized` constraints participate in auto-param resolution via
+    /// the ordinary language-level solver. See [`OptimizedImpl`].
     pub fn register_optimized_impl(
         &mut self,
         target: impl Into<String>,
         imp: Box<dyn OptimizedImpl>,
     ) {
         self.optimization_registry.insert(target.into(), imp);
+    }
+
+    /// Remove a previously registered optimized impl for `target`.
+    ///
+    /// Returns `true` if an impl was registered (and has now been dropped),
+    /// `false` otherwise. Primarily intended for tests and hot-reload
+    /// scenarios where callers need to swap impls between runs.
+    pub fn unregister_optimized_impl(&mut self, target: &str) -> bool {
+        self.optimization_registry.remove(target).is_some()
+    }
+
+    /// Iterate over the targets that currently have a registered optimized
+    /// impl, in unspecified order. Primarily intended for diagnostics and
+    /// test assertions ("was this target registered?").
+    pub fn optimized_targets(&self) -> impl Iterator<Item = &str> {
+        self.optimization_registry.keys().map(String::as_str)
     }
 
     /// Dispatch a batch of constraints to either their registered optimized
@@ -365,6 +392,11 @@ impl Engine {
     /// `optimized_target` is `Some(t)` AND `t` is in `optimization_registry`
     /// are sent to that impl; everything else falls through to
     /// `self.constraint_checker`.
+    ///
+    /// Dispatch across registered targets happens in deterministic order
+    /// (targets are iterated via a `BTreeMap`) so that any side effects —
+    /// logging, metrics, impls that share mutable state — are reproducible
+    /// from run to run.
     fn dispatch_constraints<'a>(
         &self,
         entries: Vec<(ConstraintNodeId, &'a CompiledExpr, Option<&'a str>)>,
@@ -380,35 +412,36 @@ impl Engine {
         let mut results: Vec<Option<ConstraintResult>> =
             (0..entries.len()).map(|_| None).collect();
 
-        // Bucket original indices by registered target. Unregistered (or None)
-        // targets go to the language-level fallback path.
-        let mut optimized_groups: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut fallback_indices: Vec<usize> = Vec::new();
-        for (i, (_, _, target)) in entries.iter().enumerate() {
+        // Bucket entries by registered target. Keys borrow from the entry's
+        // `Option<&'a str>` — no allocation. A `BTreeMap` gives deterministic
+        // dispatch order across targets. `None` targets and targets with no
+        // registered impl go to the language-level fallback bucket.
+        //
+        // We move `(ConstraintNodeId, &CompiledExpr)` directly into the
+        // buckets so the dispatch path never clones a `ConstraintNodeId`.
+        let mut optimized_groups: BTreeMap<&'a str, Vec<(usize, (ConstraintNodeId, &'a CompiledExpr))>> =
+            BTreeMap::new();
+        let mut fallback: Vec<(usize, (ConstraintNodeId, &'a CompiledExpr))> = Vec::new();
+        for (i, (id, expr, target)) in entries.into_iter().enumerate() {
             match target {
-                Some(t) if self.optimization_registry.contains_key(*t) => {
-                    optimized_groups
-                        .entry((*t).to_string())
-                        .or_default()
-                        .push(i);
+                Some(t) if self.optimization_registry.contains_key(t) => {
+                    optimized_groups.entry(t).or_default().push((i, (id, expr)));
                 }
-                _ => fallback_indices.push(i),
+                _ => fallback.push((i, (id, expr))),
             }
         }
 
         // Dispatch each optimized group through its registered impl. The
         // contract is that the impl returns one `ConstraintResult` per input
-        // constraint, in the same order. We weave them back into the original
-        // result vector via each entry's recorded original index.
-        for (target, indices) in &optimized_groups {
+        // constraint, in the same order. We weave results back into the
+        // original result vector via each entry's recorded original index.
+        for (target, bucket) in optimized_groups {
             let imp = self
                 .optimization_registry
                 .get(target)
                 .expect("target was just bucketed from optimization_registry");
-            let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = indices
-                .iter()
-                .map(|&i| (entries[i].0.clone(), entries[i].1))
-                .collect();
+            let (indices, constraints): (Vec<usize>, Vec<(ConstraintNodeId, &'a CompiledExpr)>) =
+                bucket.into_iter().unzip();
             let input = OptimizedImplInput {
                 constraints,
                 values,
@@ -416,18 +449,24 @@ impl Engine {
                 determinacy,
             };
             let output = imp.check(&input);
-            for (&orig_idx, result) in indices.iter().zip(output.results.into_iter()) {
+            assert_eq!(
+                output.results.len(),
+                indices.len(),
+                "OptimizedImpl for target {:?} returned {} results for {} constraints",
+                target,
+                output.results.len(),
+                indices.len(),
+            );
+            for (orig_idx, result) in indices.into_iter().zip(output.results) {
                 results[orig_idx] = Some(result);
             }
         }
 
         // Dispatch the remainder through the language-level checker — same
         // input shape the callers used before Task 273.
-        if !fallback_indices.is_empty() {
-            let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = fallback_indices
-                .iter()
-                .map(|&i| (entries[i].0.clone(), entries[i].1))
-                .collect();
+        if !fallback.is_empty() {
+            let (indices, constraints): (Vec<usize>, Vec<(ConstraintNodeId, &'a CompiledExpr)>) =
+                fallback.into_iter().unzip();
             let input = ConstraintInput {
                 constraints,
                 values,
@@ -435,7 +474,14 @@ impl Engine {
                 determinacy,
             };
             let fallback_results = self.constraint_checker.check(&input);
-            for (&orig_idx, result) in fallback_indices.iter().zip(fallback_results.into_iter()) {
+            assert_eq!(
+                fallback_results.len(),
+                indices.len(),
+                "ConstraintChecker returned {} results for {} constraints",
+                fallback_results.len(),
+                indices.len(),
+            );
+            for (orig_idx, result) in indices.into_iter().zip(fallback_results) {
                 results[orig_idx] = Some(result);
             }
         }
