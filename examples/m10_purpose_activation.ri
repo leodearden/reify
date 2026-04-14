@@ -1,0 +1,68 @@
+// M10 purpose activation: exercises purpose declare/activate/deactivate lifecycle
+//
+// Coverage:
+//  1. activate_purpose / is_purpose_active API
+//  2. deactivate_purpose restores constraint count
+//  3. Idempotent activation (double-activate is no-op)
+//  4. Single-constraint injection via purpose
+//  5. Multi-constraint injection via purpose (mfg_ready: exactly 3 constraints)
+//  6. minimize objective injection/removal via purpose (lightweight)
+//  7. maximize objective injection/removal via purpose (strong)
+//  8. pub purpose declaration (dimensionally_valid)
+
+structure Bracket {
+    param width : Length = 80mm
+    param height : Length = 60mm
+    param thickness : Length = 5mm
+
+    let volume = width * height * thickness
+
+    // ── Assertions (≥8; all Satisfied with default param values) ──────────
+
+    // 1-3: Positivity checks
+    constraint width > 0mm
+    constraint height > 0mm
+    constraint thickness > 0mm
+
+    // 4-5: Upper bounds
+    constraint width < 500mm
+    constraint height < 500mm
+
+    // 6-7: Ordering relationships
+    constraint width > thickness
+    constraint height > thickness
+
+    // 8: Additive length check (80mm + 60mm = 140mm > 100mm)
+    constraint width + height > 100mm
+}
+
+// Single-constraint purpose
+purpose ok_basic(subject : Structure) {
+    constraint 1 > 0
+}
+
+// Multi-constraint purpose — exactly 3 literal constraints
+purpose mfg_ready(subject : Structure) {
+    constraint 80mm > 0mm
+    constraint 60mm > 0mm
+    constraint 5mm > 0mm
+}
+
+// Minimize-objective purpose — 1 constraint + minimize
+purpose lightweight(subject : Structure) {
+    constraint 100mm > 50mm
+    minimize 80mm + 60mm
+}
+
+// Maximize-objective purpose — 1 constraint + maximize
+purpose strong(subject : Structure) {
+    constraint 5mm > 1mm
+    maximize 80mm * 2
+}
+
+// Pub purpose — 3 literal constraints
+pub purpose dimensionally_valid(part : Structure) {
+    constraint 80mm > 0mm
+    constraint 60mm > 5mm
+    constraint 500mm > 80mm
+}

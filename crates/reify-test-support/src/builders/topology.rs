@@ -160,6 +160,7 @@ impl TopologyTemplateBuilder {
             expr,
             span: SourceSpan::new(0, 0),
             domain: None,
+            optimized_target: None,
         });
         self
     }

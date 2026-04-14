@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 use reify_types::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId,
     ConstraintResult, ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError,
-    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError,
-    ReprKind, ResolutionProblem, Satisfaction, SolveResult, TessError, Type, Value, ValueCellId,
-    ValueMap,
+    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl,
+    OptimizedImplInput, OptimizedImplOutput, QueryError, ReprKind, ResolutionProblem, Satisfaction,
+    SolveResult, TessError, Type, Value, ValueCellId, ValueMap,
 };
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
@@ -82,6 +82,93 @@ impl ConstraintChecker for MockConstraintChecker {
                 }
             })
             .collect()
+    }
+}
+
+/// Mock optimized-constraint implementation used to exercise the `@optimized`
+/// dispatch path in reify-eval (Task 273).
+///
+/// Mirrors `MockConstraintChecker` in shape — configurable per-id results and
+/// a default — and additionally records every `ConstraintNodeId` it was
+/// invoked with. Tests can read `calls()` to assert that dispatch routed a
+/// constraint through the optimized path instead of the language-level
+/// `ConstraintChecker`.
+pub struct MockOptimizedImpl {
+    results: HashMap<ConstraintNodeId, Satisfaction>,
+    default: Satisfaction,
+    calls: Arc<Mutex<Vec<ConstraintNodeId>>>,
+}
+
+impl MockOptimizedImpl {
+    pub fn new() -> Self {
+        Self {
+            results: HashMap::new(),
+            default: Satisfaction::Satisfied,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Set the result for a specific constraint id.
+    pub fn with_result(mut self, id: ConstraintNodeId, satisfaction: Satisfaction) -> Self {
+        self.results.insert(id, satisfaction);
+        self
+    }
+
+    /// Set the default result for constraints not explicitly configured.
+    pub fn with_default(mut self, satisfaction: Satisfaction) -> Self {
+        self.default = satisfaction;
+        self
+    }
+
+    /// Snapshot of every `ConstraintNodeId` this impl has been invoked with,
+    /// in call order. A cloned Vec so callers can inspect it without holding
+    /// the internal lock.
+    pub fn calls(&self) -> Vec<ConstraintNodeId> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// A clone of the shared call-tracking handle.
+    ///
+    /// Useful when the mock itself has been moved into a `Box<dyn OptimizedImpl>`
+    /// (e.g. registered on an `Engine`) and is no longer reachable by the test.
+    /// Callers grab a handle *before* boxing, then assert against it after the
+    /// engine run:
+    ///
+    /// ```ignore
+    /// let mock = MockOptimizedImpl::new();
+    /// let calls = mock.calls_handle();
+    /// engine.register_optimized_impl("target_a", Box::new(mock));
+    /// engine.check(&compiled);
+    /// assert_eq!(calls.lock().unwrap().len(), 1);
+    /// ```
+    pub fn calls_handle(&self) -> Arc<Mutex<Vec<ConstraintNodeId>>> {
+        Arc::clone(&self.calls)
+    }
+}
+
+impl Default for MockOptimizedImpl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OptimizedImpl for MockOptimizedImpl {
+    fn check(&self, input: &OptimizedImplInput) -> OptimizedImplOutput {
+        let mut calls = self.calls.lock().unwrap();
+        let results = input
+            .constraints
+            .iter()
+            .map(|(id, _)| {
+                calls.push(id.clone());
+                let satisfaction = self.results.get(id).copied().unwrap_or(self.default);
+                ConstraintResult {
+                    id: id.clone(),
+                    satisfaction,
+                    diagnostics: ConstraintDiagnostics::default(),
+                }
+            })
+            .collect();
+        OptimizedImplOutput { results }
     }
 }
 
@@ -641,6 +728,89 @@ mod tests {
 
         let results = checker.check(&input);
         assert_eq!(results[0].satisfaction, Satisfaction::Violated);
+    }
+
+    // step-7 (Task 273 — @optimized plumbing): failing tests for MockOptimizedImpl.
+    //
+    // MockOptimizedImpl mirrors MockConstraintChecker but also records every
+    // constraint id it was invoked with, so tests can assert that dispatch
+    // actually routed a constraint through the optimized path instead of the
+    // language-level checker.
+    #[test]
+    fn mock_optimized_impl_returns_default_satisfaction() {
+        let cnid = ConstraintNodeId::new("S", 0);
+        let imp = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
+
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let input = reify_types::OptimizedImplInput {
+            constraints: vec![(cnid.clone(), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let output = imp.check(&input);
+        assert_eq!(output.results.len(), 1);
+        assert_eq!(output.results[0].id, cnid);
+        assert_eq!(output.results[0].satisfaction, Satisfaction::Violated);
+    }
+
+    #[test]
+    fn mock_optimized_impl_returns_per_id_result() {
+        let a = ConstraintNodeId::new("S", 0);
+        let b = ConstraintNodeId::new("S", 1);
+        let imp = MockOptimizedImpl::new()
+            .with_default(Satisfaction::Satisfied)
+            .with_result(a.clone(), Satisfaction::Violated);
+
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let input = reify_types::OptimizedImplInput {
+            constraints: vec![(a.clone(), &expr), (b.clone(), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let output = imp.check(&input);
+        assert_eq!(output.results.len(), 2);
+        assert_eq!(output.results[0].id, a);
+        assert_eq!(output.results[0].satisfaction, Satisfaction::Violated);
+        assert_eq!(output.results[1].id, b);
+        assert_eq!(output.results[1].satisfaction, Satisfaction::Satisfied);
+    }
+
+    #[test]
+    fn mock_optimized_impl_records_calls() {
+        let a = ConstraintNodeId::new("S", 0);
+        let b = ConstraintNodeId::new("S", 1);
+        let imp = MockOptimizedImpl::new();
+
+        assert!(imp.calls().is_empty(), "no calls yet");
+
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let input = reify_types::OptimizedImplInput {
+            constraints: vec![(a.clone(), &expr), (b.clone(), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let _ = imp.check(&input);
+        let calls = imp.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], a);
+        assert_eq!(calls[1], b);
+    }
+
+    #[test]
+    fn mock_optimized_impl_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockOptimizedImpl>();
+
+        let _boxed: Box<dyn reify_types::OptimizedImpl> = Box::new(MockOptimizedImpl::new());
     }
 
     #[test]

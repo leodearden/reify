@@ -1,0 +1,427 @@
+//! Tests for imperial unit declarations in stdlib/units.ri (task 335).
+//!
+//! Covers: yd (Length), lbf (Force), psi/ksi (Pressure), fl_oz/gal (Volume),
+//! plus regression guards for the four pre-existing imperial units
+//! (ft, thou, lb, oz) and a cross-unit arithmetic check (lbf * mm → Energy).
+
+mod common;
+
+use common::compile_with_stdlib_helper;
+use reify_compiler::{stdlib_loader, CompiledModule};
+use reify_types::{DimensionVector, Severity};
+
+// ─── local helper ─────────────────────────────────────────────────────────────
+
+/// Compile a structure with a single default-valued param and return the
+/// Scalar's (si_value, dimension) from its default expression.
+///
+/// Source compiled: `structure def S { param x : <param_type> = <literal> }`
+fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVector) {
+    let source = format!(
+        "structure def S {{ param x : {} = {} }}",
+        param_type, literal
+    );
+    let module = compile_with_stdlib_helper(&source);
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "source `{}` produced errors: {:?}",
+        source,
+        errs
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template not found");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "x")
+        .expect("x cell not found");
+    let expr = cell.default_expr.as_ref().expect("x has no default_expr");
+    if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+        si_value,
+        dimension,
+        ..
+    }) = &expr.kind
+    {
+        (*si_value, *dimension)
+    } else {
+        panic!("unexpected expression kind: {:?}", expr.kind);
+    }
+}
+
+/// Return the compiled `std/units` module from the cached stdlib.
+///
+/// Uses the `OnceLock`-backed `load_stdlib()` so repeated calls are free.
+fn units_module() -> &'static CompiledModule {
+    stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| format!("{}", m.path) == "std/units")
+        .expect("std/units module not found")
+}
+
+// ─── step-1/2: yd — Length ────────────────────────────────────────────────────
+
+#[test]
+fn stdlib_yd_resolves_to_length_0p9144() {
+    let (v, d) = stdlib_param_si_value("Length", "1yd");
+    assert!(
+        (v - 0.9144).abs() < 1e-12,
+        "1yd should be 0.9144 m, got {}",
+        v
+    );
+    assert_eq!(d, DimensionVector::LENGTH);
+}
+
+#[test]
+fn stdlib_units_module_contains_yd_with_no_offset() {
+    let units_module = units_module();
+
+    let yd = units_module
+        .units
+        .iter()
+        .find(|u| u.name == "yd")
+        .expect("unit 'yd' not found in std/units");
+
+    assert_eq!(yd.dimension, DimensionVector::LENGTH, "yd dimension wrong");
+    assert!(
+        (yd.factor - 0.9144).abs() < 1e-12,
+        "yd factor should be 0.9144, got {}",
+        yd.factor
+    );
+    assert!(yd.offset.is_none(), "yd should have no offset");
+}
+
+// ─── step-3/4: lbf — Force ────────────────────────────────────────────────────
+
+/// lbf = 0.45359237 kg × 9.80665 m/s² = 4.4482216152605 N (exact)
+const LBF_SI: f64 = 4.4482216152605;
+
+#[test]
+fn stdlib_lbf_resolves_to_force_4p4482216152605() {
+    let (v, d) = stdlib_param_si_value("Force", "1lbf");
+    assert!(
+        (v - LBF_SI).abs() < 1e-9,
+        "1lbf should be {} N, got {}",
+        LBF_SI,
+        v
+    );
+    assert_eq!(d, DimensionVector::FORCE);
+}
+
+#[test]
+fn stdlib_units_module_contains_lbf_with_force_dimension() {
+    let units_module = units_module();
+
+    let lbf = units_module
+        .units
+        .iter()
+        .find(|u| u.name == "lbf")
+        .expect("unit 'lbf' not found in std/units");
+
+    assert_eq!(lbf.dimension, DimensionVector::FORCE, "lbf dimension wrong");
+    assert!(
+        (lbf.factor - LBF_SI).abs() < 1e-9,
+        "lbf factor should be {}, got {}",
+        LBF_SI,
+        lbf.factor
+    );
+    assert!(lbf.offset.is_none(), "lbf should have no offset");
+}
+
+// ─── step-5/6: psi and ksi — Pressure ────────────────────────────────────────
+
+/// psi = lbf / in² = 4.4482216152605 / 0.00064516 Pa (exact)
+const PSI_SI: f64 = 6894.757293168361;
+/// ksi = 1000 × psi
+const KSI_SI: f64 = 6894757.293168361;
+
+#[test]
+fn stdlib_psi_resolves_to_pressure_6894p757293168361() {
+    let (v, d) = stdlib_param_si_value("Pressure", "1psi");
+    let tol = PSI_SI * 1e-9;
+    assert!(
+        (v - PSI_SI).abs() < tol,
+        "1psi should be {} Pa, got {}",
+        PSI_SI,
+        v
+    );
+    assert_eq!(d, DimensionVector::PRESSURE);
+}
+
+#[test]
+fn stdlib_ksi_resolves_to_pressure_6894757p293168361() {
+    let (v, d) = stdlib_param_si_value("Pressure", "1ksi");
+    let tol = KSI_SI * 1e-9;
+    assert!(
+        (v - KSI_SI).abs() < tol,
+        "1ksi should be {} Pa, got {}",
+        KSI_SI,
+        v
+    );
+    assert_eq!(d, DimensionVector::PRESSURE);
+}
+
+#[test]
+fn stdlib_units_module_contains_psi_and_ksi_with_pressure_dimension() {
+    let units_module = units_module();
+
+    let psi = units_module
+        .units
+        .iter()
+        .find(|u| u.name == "psi")
+        .expect("unit 'psi' not found in std/units");
+    assert_eq!(psi.dimension, DimensionVector::PRESSURE, "psi dimension wrong");
+    assert!(
+        (psi.factor - PSI_SI).abs() < PSI_SI * 1e-9,
+        "psi factor wrong: {}",
+        psi.factor
+    );
+    assert!(psi.offset.is_none(), "psi should have no offset");
+
+    let ksi = units_module
+        .units
+        .iter()
+        .find(|u| u.name == "ksi")
+        .expect("unit 'ksi' not found in std/units");
+    assert_eq!(ksi.dimension, DimensionVector::PRESSURE, "ksi dimension wrong");
+    assert!(
+        (ksi.factor - KSI_SI).abs() < KSI_SI * 1e-9,
+        "ksi factor wrong: {}",
+        ksi.factor
+    );
+    assert!(ksi.offset.is_none(), "ksi should have no offset");
+}
+
+// ─── step-7/8: fl_oz and gal — Volume (US customary) ─────────────────────────
+
+/// US fl_oz = 231/128 in³ = 29.5735295625 mL exactly
+const FL_OZ_SI: f64 = 0.0000295735295625;
+/// US liquid gallon = 231 in³ exactly
+const GAL_SI: f64 = 0.003785411784;
+
+#[test]
+fn stdlib_fl_oz_resolves_to_volume_2p9573e_minus5() {
+    let (v, d) = stdlib_param_si_value("Volume", "1fl_oz");
+    assert!(
+        (v - FL_OZ_SI).abs() < 1e-15,
+        "1fl_oz should be {} m³, got {}",
+        FL_OZ_SI,
+        v
+    );
+    assert_eq!(d, DimensionVector::VOLUME);
+}
+
+#[test]
+fn stdlib_gal_resolves_to_volume_3p785e_minus3() {
+    let (v, d) = stdlib_param_si_value("Volume", "1gal");
+    assert!(
+        (v - GAL_SI).abs() < 1e-15,
+        "1gal should be {} m³, got {}",
+        GAL_SI,
+        v
+    );
+    assert_eq!(d, DimensionVector::VOLUME);
+}
+
+#[test]
+fn stdlib_units_module_contains_fl_oz_and_gal_with_volume_dimension() {
+    let units_module = units_module();
+
+    let fl_oz = units_module
+        .units
+        .iter()
+        .find(|u| u.name == "fl_oz")
+        .expect("unit 'fl_oz' not found in std/units");
+    assert_eq!(fl_oz.dimension, DimensionVector::VOLUME, "fl_oz dimension wrong");
+    assert!(
+        (fl_oz.factor - FL_OZ_SI).abs() < 1e-15,
+        "fl_oz factor wrong: {}",
+        fl_oz.factor
+    );
+    assert!(fl_oz.offset.is_none(), "fl_oz should have no offset");
+
+    let gal = units_module
+        .units
+        .iter()
+        .find(|u| u.name == "gal")
+        .expect("unit 'gal' not found in std/units");
+    assert_eq!(gal.dimension, DimensionVector::VOLUME, "gal dimension wrong");
+    assert!(
+        (gal.factor - GAL_SI).abs() < 1e-15,
+        "gal factor wrong: {}",
+        gal.factor
+    );
+    assert!(gal.offset.is_none(), "gal should have no offset");
+}
+
+// ─── step-9: cross-unit arithmetic lbf * mm → Energy ─────────────────────────
+
+#[test]
+fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
+    // `2lbf * 3mm` compiles to a BinOp whose result_type carries FORCE×LENGTH = ENERGY.
+    let source = "structure def S { param e : Energy = 2lbf * 3mm }";
+    let module = compile_with_stdlib_helper(source);
+
+    let errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errs.is_empty(), "unexpected errors: {:?}", errs);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template not found");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "e")
+        .expect("e cell not found");
+
+    // The declared type must be Energy's dimension.
+    assert_eq!(
+        cell.cell_type,
+        reify_types::Type::Scalar {
+            dimension: DimensionVector::ENERGY
+        },
+        "cell_type should be Scalar{{ENERGY}}"
+    );
+
+    let expr = cell.default_expr.as_ref().expect("e has no default_expr");
+
+    // BinOp result type must be Force × Length = Energy.
+    let expected_dim = DimensionVector::FORCE.mul(&DimensionVector::LENGTH);
+    assert_eq!(
+        expr.result_type,
+        reify_types::Type::Scalar {
+            dimension: expected_dim
+        },
+        "BinOp result_type should be Scalar{{FORCE×LENGTH}}, got {:?}",
+        expr.result_type
+    );
+
+    // The outer expression must be a Multiply BinOp.
+    match &expr.kind {
+        reify_types::CompiledExprKind::BinOp {
+            op: reify_types::BinOp::Mul,
+            left,
+            right,
+        } => {
+            // Left operand: 2lbf → Scalar with FORCE dimension, si_value ≈ 2 * LBF_SI
+            let left_si = match &left.kind {
+                reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+                    si_value,
+                    dimension,
+                    ..
+                }) => {
+                    assert_eq!(*dimension, DimensionVector::FORCE, "left dim should be FORCE");
+                    let expected = 2.0 * LBF_SI;
+                    assert!(
+                        (si_value - expected).abs() < 1e-9,
+                        "left si_value should be {} (2×lbf), got {}",
+                        expected,
+                        si_value
+                    );
+                    *si_value
+                }
+                other => panic!("left operand should be Literal(Scalar), got {:?}", other),
+            };
+            // Right operand: 3mm → Scalar with LENGTH dimension, si_value = 0.003
+            let right_si = match &right.kind {
+                reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+                    si_value,
+                    dimension,
+                    ..
+                }) => {
+                    assert_eq!(*dimension, DimensionVector::LENGTH, "right dim should be LENGTH");
+                    assert!(
+                        (si_value - 0.003).abs() < 1e-12,
+                        "right si_value should be 0.003 (3mm), got {}",
+                        si_value
+                    );
+                    *si_value
+                }
+                other => panic!("right operand should be Literal(Scalar), got {:?}", other),
+            };
+            // Product check: operand SI values must multiply to the expected energy.
+            // Guards against a class of bug where dimension math is right but the
+            // scaling factors are not multiplied through correctly.
+            let energy_si = left_si * right_si;
+            let expected_energy = 2.0 * LBF_SI * 0.003;
+            assert!(
+                (energy_si - expected_energy).abs() < 1e-9,
+                "2lbf * 3mm energy should be {} J, got {}",
+                expected_energy,
+                energy_si
+            );
+        }
+        other => panic!("expected BinOp{{Mul, _, _}}, got {:?}", other),
+    }
+}
+
+// ─── step-10: regression guard for pre-existing imperial units ────────────────
+
+#[test]
+fn existing_imperial_units_ft_thou_lb_oz_unchanged_post_task_335() {
+    // Verify the four pre-existing imperial unit factors and dimensions
+    // are unchanged by this task's edits to units.ri.
+
+    // Length units (SI base: metre)
+    let length_cases: &[(&str, f64)] = &[
+        ("1ft",   0.3048),
+        ("1thou", 0.0000254),
+    ];
+    for (literal, expected) in length_cases {
+        let (v, d) = stdlib_param_si_value("Length", literal);
+        assert!(
+            (v - expected).abs() < 1e-12,
+            "{} should be {} m, got {}",
+            literal,
+            expected,
+            v
+        );
+        assert_eq!(d, DimensionVector::LENGTH, "{} dimension wrong", literal);
+    }
+
+    // Mass units (SI base: kilogram)
+    let mass_cases: &[(&str, f64)] = &[
+        ("1lb",  0.45359237),
+        ("1oz",  0.028349523125),
+    ];
+    for (literal, expected) in mass_cases {
+        let (v, d) = stdlib_param_si_value("Mass", literal);
+        assert!(
+            (v - expected).abs() < 1e-12,
+            "{} should be {} kg, got {}",
+            literal,
+            expected,
+            v
+        );
+        assert_eq!(d, DimensionVector::MASS, "{} dimension wrong", literal);
+    }
+
+    // Verify offset=None for all four via the stdlib module units list.
+    let units_module = units_module();
+
+    for name in &["ft", "thou", "lb", "oz"] {
+        let u = units_module
+            .units
+            .iter()
+            .find(|u| u.name == *name)
+            .unwrap_or_else(|| panic!("unit '{}' not found in std/units", name));
+        assert!(
+            u.offset.is_none(),
+            "unit '{}' should have no offset",
+            name
+        );
+    }
+}
