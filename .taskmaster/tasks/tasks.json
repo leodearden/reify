@@ -32803,8 +32803,10 @@
         "updatedAt": "2026-04-10T11:03:09.716Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
+          ],
+          "files": [
+            "crates/reify-eval/src/lib.rs"
           ]
         }
       },
