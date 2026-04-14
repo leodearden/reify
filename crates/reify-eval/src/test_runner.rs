@@ -83,9 +83,48 @@ pub struct TestResult {
 /// Each test is evaluated in an isolated `Engine` instance (no state leaks
 /// between tests) against a `CompiledModule` that contains the target test
 /// template plus non-test templates (with their constraints stripped so only
-/// the test's own constraints fire). `make_checker` is called once per test
-/// to produce a fresh `Box<dyn ConstraintChecker>`; stateless checkers like
-/// `SimpleConstraintChecker` can return `Box::new(SimpleConstraintChecker)`.
+/// the test's own constraints fire).
+///
+/// # Checker lifecycle
+///
+/// `make_checker` is called **once per test** to produce a fresh
+/// `Box<dyn ConstraintChecker>`.  A stateful checker (one that accumulates
+/// diagnostics or caches solver state) **must not** be shared across tests;
+/// the closure form ensures each `Engine` starts with a clean instance.
+///
+/// # Examples
+///
+/// Stateless checker — the common case:
+///
+/// ```ignore
+/// let results = reify_eval::run_tests(&compiled, || Box::new(SimpleConstraintChecker));
+/// ```
+///
+/// Stateful checker — when the checker must vary per-test:
+///
+/// ```ignore
+/// let results = reify_eval::run_tests(&compiled, || {
+///     Box::new(MockConstraintChecker::new().with_default(Satisfaction::Indeterminate))
+/// });
+/// ```
+///
+/// # No pre-baked wrapper
+///
+/// `reify-eval` is intentionally decoupled from any concrete `ConstraintChecker`
+/// implementation — the trait lives in `reify-types`, not `reify-constraints`.
+/// A `run_tests_simple` shortcut would promote `reify-constraints` (and its
+/// `argmin` / `ndarray` transitive deps) from a dev-dependency to a runtime
+/// dependency, forcing all consumers to pay that cost.  Callers can define a
+/// local helper instead:
+///
+/// ```ignore
+/// fn simple() -> Box<dyn ConstraintChecker> { Box::new(SimpleConstraintChecker) }
+/// ```
+///
+/// # See also
+///
+/// - `reify_types::ConstraintChecker` — the trait all checkers implement
+/// - `reify_constraints::SimpleConstraintChecker` — the canonical stateless implementation
 pub fn run_tests<F>(module: &CompiledModule, mut make_checker: F) -> Vec<TestResult>
 where
     F: FnMut() -> Box<dyn ConstraintChecker>,
