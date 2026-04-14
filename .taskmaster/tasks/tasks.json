@@ -23525,11 +23525,10 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-types/src/value.rs",
-            "crates/reify-types/src/hash.rs"
+            "crates/reify-types/src/value.rs"
           ],
           "modules": [
-            "crates/reify-types"
+            "crates/reify-types/src"
           ]
         },
         "updatedAt": "2026-04-11T07:45:52.000Z"
