@@ -1089,6 +1089,7 @@ impl<'a> Lowering<'a> {
             is_pub: false,
             value,
             where_clause: None, // fn let bindings have no where clause
+            annotations: Vec::new(),
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -1392,6 +1393,7 @@ impl<'a> Lowering<'a> {
             type_expr,
             default,
             where_clause,
+            annotations: Vec::new(),
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -1422,6 +1424,7 @@ impl<'a> Lowering<'a> {
             type_expr,
             value,
             where_clause,
+            annotations: Vec::new(),
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
