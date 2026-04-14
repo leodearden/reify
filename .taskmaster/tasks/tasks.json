@@ -8087,7 +8087,8 @@
             "crates/reify-compiler/tests/trait_merge_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
           ]
         }
       },
@@ -8106,13 +8107,11 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/tests/determinacy_compile_tests.rs",
-            "crates/reify-expr/src/lib.rs",
-            "crates/reify-eval/tests/determinacy_predicates.rs"
+            "crates/reify-expr/tests/determinacy_eval_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-expr",
-            "crates/reify-eval"
+            "crates/reify-compiler/tests",
+            "crates/reify-expr/tests"
           ]
         }
       },
