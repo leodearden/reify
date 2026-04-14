@@ -4,7 +4,7 @@
 //! parse → compile → eval/check → verify.
 //! Uses examples/m9_constraint_def.ri as the source file.
 
-use reify_test_support::{make_simple_engine, parse_and_compile};
+use reify_test_support::{check_source, parse_and_compile};
 use reify_types::{ModulePath, Satisfaction, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -55,10 +55,7 @@ fn constraint_def_all_constraints_satisfied() {
     let source =
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
-    let compiled = parse_and_compile(&source);
-
-    let mut engine = make_simple_engine();
-    let check_result = engine.check(&compiled);
+    let check_result = check_source(&source);
 
     // Must have at least some constraint results (file has active constraints)
     assert!(
@@ -86,9 +83,7 @@ fn single_predicate_values() {
     let source =
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
-    let compiled = parse_and_compile(&source);
-    let mut engine = make_simple_engine();
-    let check_result = engine.check(&compiled);
+    let check_result = check_source(&source);
 
     // Wall.thickness = 5mm = 0.005 m (SI)
     let thickness_id = ValueCellId::new("Wall", "thickness");
@@ -139,9 +134,7 @@ fn multi_param_bounded_values() {
     let source =
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
-    let compiled = parse_and_compile(&source);
-    let mut engine = make_simple_engine();
-    let check_result = engine.check(&compiled);
+    let check_result = check_source(&source);
 
     // Pipe.diameter = 20mm = 0.020 m (SI)
     let diameter_id = ValueCellId::new("Pipe", "diameter");
@@ -190,8 +183,7 @@ fn conjunction_predicate_labels() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let mut engine = make_simple_engine();
-    let check_result = engine.check(&compiled);
+    let check_result = check_source(&source);
 
     // Beam must be in the compiled templates
     let has_beam = compiled.templates.iter().any(|t| t.name == "Beam");
@@ -228,8 +220,7 @@ fn reused_def_both_structures() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let mut engine = make_simple_engine();
-    let check_result = engine.check(&compiled);
+    let check_result = check_source(&source);
 
     // Both structures must exist
     let has_thin = compiled.templates.iter().any(|t| t.name == "ThinPlate");
@@ -263,8 +254,7 @@ fn named_args_order_independent() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let mut engine = make_simple_engine();
-    let check_result = engine.check(&compiled);
+    let check_result = check_source(&source);
 
     // FlippedPipe must be present
     let has_flipped = compiled.templates.iter().any(|t| t.name == "FlippedPipe");
@@ -300,9 +290,7 @@ fn total_constraint_count() {
     let source =
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
-    let compiled = parse_and_compile(&source);
-    let mut engine = make_simple_engine();
-    let check_result = engine.check(&compiled);
+    let check_result = check_source(&source);
 
     assert!(
         check_result.constraint_results.len() >= 8,
@@ -331,8 +319,7 @@ fn guarded_constraint_inactive() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let mut engine = make_simple_engine();
-    let check_result = engine.check(&compiled);
+    let check_result = check_source(&source);
 
     // InactiveWall must exist as a template
     let has_inactive = compiled.templates.iter().any(|t| t.name == "InactiveWall");
