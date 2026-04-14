@@ -12070,7 +12070,7 @@
             "crates/reify-compiler/tests/structural_physical_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ]
         },
         "updatedAt": "2026-04-14T07:04:16.005Z"
@@ -12120,7 +12120,7 @@
             "crates/reify-compiler/src/stdlib_loader.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ]
         },
         "updatedAt": "2026-04-13T18:55:22.869Z"
