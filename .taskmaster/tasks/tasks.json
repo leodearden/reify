@@ -11995,11 +11995,11 @@
         "description": "Six test improvements across two files:\n\n**crates/reify-compiler/tests/recursive_detection_tests.rs:**\n1. `sub_referencing_unknown_structure_not_recursive` (line ~339): Assert S is present in templates before checking is_recursive, or explicitly document as smoke test. Currently if-let silently passes with zero assertions.\n2. `warning_diagnostic_emitted_for_cycle` (line ~249): Also test multi-node cycle path string format (e.g. 'A -> B -> A') — currently only tests self-reference 'S -> S'.\n\n**crates/reify-eval/tests/recursive_unfold.rs:**\n3. `cyclic_let_bindings_emit_diagnostic` (line ~1232): Replace single-char member names `a`/`b` with distinctive names (e.g. `count_x`/`count_y`) to avoid false positive assertions.\n4. Add missing test: guarded sub on non-recursive template (`is_recursive=false` + guard_expr present). Verify guarded sub is NOT unfolded.\n5. `unfold_mutual_recursion_heterogeneous_members` (line ~1069): Extend to verify depth 2 (`A.b.a.width == 5`), not just depth 1.\n6. `unfold_mutual_recursion_with_let_bindings` (line ~995): Give each template unique let-binding names (e.g. A has `a_only`, B has `b_only`) to distinguish correct per-entity template lookup from buggy fixed-parent-template.\n\nmemory_hints: search \"recursive detection tests\", search \"recursive unfold test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:15.248Z",
+        "updatedAt": "2026-04-14T09:52:23.908Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests",
@@ -12060,7 +12060,7 @@
         "description": "Two tests have overly loose assertions that could pass for wrong reasons.",
         "details": "1. physical_constraint_injected_into_conforming_structure: only asserts !constraints.is_empty(). Should verify constraint references 'volume'.\n2. missing_volume_produces_error_diagnostic: broad 'missing' fallback in error message check could match unrelated errors. Should assert specifically on 'volume'.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12073,7 +12073,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-14T07:04:16.005Z"
+        "updatedAt": "2026-04-14T09:52:23.987Z"
       },
       {
         "id": "557",
@@ -13205,7 +13205,7 @@
         "description": "Review suggestions from task 437. Test gaps: (1) analysis.rs guarded-group tests assert only info.name/info.kind but not info.span or info.cell_type — span is the thing that was broken. (2) goto_def tests check only line number, not character offset. (3) No direct unit tests for find_named_member_span on hand-constructed MemberDecl slices (edge cases: empty slice, name in else_members only, depth-2 match). (4) No regression test for refactored find_parsed_member_span_and_doc (top-level members still resolve). (5) Revolve missing-arg test only exercises missing 'ox', not other required fields.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13227,7 +13227,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-14T07:04:41.844Z"
+        "updatedAt": "2026-04-14T09:52:24.068Z"
       },
       {
         "id": "604",
@@ -34378,7 +34378,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T09:52:23.832Z",
+      "lastModified": "2026-04-14T09:52:24.068Z",
       "taskCount": 1661,
       "completedCount": 1333,
       "tags": [
