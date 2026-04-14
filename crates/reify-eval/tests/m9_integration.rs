@@ -91,11 +91,25 @@ fn ri_file_parses_and_compiles() {
         errors
     );
 
-    // Step C: at least one template (structures are present)
-    assert!(
-        !compiled.templates.is_empty(),
-        "expected at least one template in m9_integration.ri, got none"
+    // Step C: exactly 4 templates (Widget, Bracket, RecursiveChain, Plate).
+    // Tight count locks in the intended cross-feature set — accidental extras or
+    // removals are caught, without the redundant name-then-count error cascade.
+    let template_names: Vec<&str> = compiled.templates.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        compiled.templates.len(),
+        4,
+        "expected exactly 4 templates in m9_integration.ri, got {}: {:?}",
+        compiled.templates.len(),
+        template_names
     );
+    for expected_name in &["Widget", "Bracket", "RecursiveChain", "Plate"] {
+        assert!(
+            template_names.contains(expected_name),
+            "expected template '{}' in m9_integration.ri, got: {:?}",
+            expected_name,
+            template_names
+        );
+    }
 }
 
 // ── Step 3: constraint def with determinacy — satisfied case ─────────────────
@@ -174,10 +188,10 @@ structure S {
         entry.label
     );
     // determined(size) evaluates to Bool(false) when size is Undetermined → Violated
-    assert_ne!(
+    assert_eq!(
         entry.satisfaction,
-        Satisfaction::Satisfied,
-        "RequireDetermined[0] should NOT be Satisfied when param is undetermined, got: {:?}",
+        Satisfaction::Violated,
+        "RequireDetermined[0] should be Violated when param is undetermined, got: {:?}",
         entry.satisfaction
     );
 }
@@ -453,17 +467,30 @@ structure def TermTree {
         "TermTree.child.value should be Undef (next_value has no default → Undef arg propagation)"
     );
 
-    // Cross-feature: constraint determined(next_value) = Violated at root (next_value is Undetermined)
-    let det_constraint = check_result
+    // Cross-feature: constraint determined(next_value) = Violated at every TermTree
+    // level. At root, next_value is Undetermined; at the child (depth=0), next_value
+    // carries the Undef propagated from the root's Undetermined value. Neither is
+    // determined → each TermTree entry must be Violated. Using filter+per-entry
+    // assertion (mirroring the root_constraints pattern at lines 557-574) avoids
+    // `.find()` latching onto a nondeterministic first match.
+    let termtree_constraints: Vec<_> = check_result
         .constraint_results
         .iter()
-        .find(|e| e.id.entity == "TermTree")
-        .expect("expected constraint result for TermTree (determined(next_value))");
-    assert_ne!(
-        det_constraint.satisfaction,
-        Satisfaction::Satisfied,
-        "determined(next_value) should NOT be Satisfied when next_value has no default"
+        .filter(|e| e.id.entity == "TermTree")
+        .collect();
+    assert!(
+        !termtree_constraints.is_empty(),
+        "expected at least one constraint result for TermTree (determined(next_value))"
     );
+    for e in &termtree_constraints {
+        assert_eq!(
+            e.satisfaction,
+            Satisfaction::Violated,
+            "TermTree constraint {:?} (determined(next_value)) should be Violated, got {:?}",
+            e.label,
+            e.satisfaction
+        );
+    }
 }
 
 // ── Step 13/14: recursive structure with determinacy constraint ───────────────
@@ -614,16 +641,12 @@ fn full_pipeline_cross_feature_values() {
 
     let compiled = parse_and_compile(&source);
     let checker = SimpleConstraintChecker;
-    let mut eval_engine = reify_eval::Engine::new(Box::new(checker), None);
-    let eval_result = eval_engine.eval(&compiled);
-
-    let checker2 = SimpleConstraintChecker;
-    let mut check_engine = reify_eval::Engine::new(Box::new(checker2), None);
-    let check_result = check_engine.check(&compiled);
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let check_result = engine.check(&compiled);
 
     // 1. Widget.size = 30mm = 0.03 SI (default from structure, implements Measurable)
     let widget_size_id = ValueCellId::new("Widget", "size");
-    let widget_size = eval_result
+    let widget_size = check_result
         .values
         .get(&widget_size_id)
         .expect("Widget.size should exist");
@@ -646,10 +669,14 @@ fn full_pipeline_cross_feature_values() {
             e.id.entity == "Bracket" && e.label == Some("DeterminedInRange[0]".to_string())
         })
         .collect();
-    // Two DeterminedInRange invocations → two [0] entries
-    assert!(
-        !bracket_dir0.is_empty(),
-        "expected at least one DeterminedInRange[0] for Bracket, got 0"
+    // Exactly two DeterminedInRange invocations on Bracket in the example
+    // (size and length) → exactly two [0] entries. Locking to == 2 catches
+    // accidental drift if a third invocation is added later.
+    assert_eq!(
+        bracket_dir0.len(),
+        2,
+        "expected exactly 2 DeterminedInRange[0] for Bracket (size and length invocations), got {}",
+        bracket_dir0.len()
     );
     for e in &bracket_dir0 {
         assert_eq!(
@@ -663,7 +690,7 @@ fn full_pipeline_cross_feature_values() {
     //    child.span = 100mm/2 = 50mm = 0.05 SI
     //    child.child.span = 50mm/2 = 25mm = 0.025 SI
     let child_span_id = ValueCellId::new("RecursiveChain.child", "span");
-    let child_span = eval_result
+    let child_span = check_result
         .values
         .get(&child_span_id)
         .expect("RecursiveChain.child.span should exist");
@@ -678,7 +705,7 @@ fn full_pipeline_cross_feature_values() {
     }
 
     let grandchild_span_id = ValueCellId::new("RecursiveChain.child.child", "span");
-    let grandchild_span = eval_result
+    let grandchild_span = check_result
         .values
         .get(&grandchild_span_id)
         .expect("RecursiveChain.child.child.span should exist");
@@ -697,7 +724,7 @@ fn full_pipeline_cross_feature_values() {
 
     // 4. Plate.length = 50mm = 0.05 SI (injected from Bounded trait, empty body structure)
     let plate_length_id = ValueCellId::new("Plate", "length");
-    let plate_length = eval_result
+    let plate_length = check_result
         .values
         .get(&plate_length_id)
         .expect("Plate.length should exist (injected from Bounded trait)");

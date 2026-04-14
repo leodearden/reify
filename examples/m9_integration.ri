@@ -13,8 +13,8 @@
 //      (trait conformance + constraint def + determinacy — all 3 features)
 //   F. Structure 'Bracket' implementing 'Bounded' + 'Measurable' + using 'DeterminedInRange' twice
 //      (multi-trait + constraint def with determinacy — cross-feature composition)
-//   G. Structure 'RecursiveChain' with sub guard using determined(span) && depth > 0
-//      (recursive unfolding gated by a determinacy predicate)
+//   G. Structure 'RecursiveChain' with sub guard using depth > 0 and per-level
+//      'constraint determined(span)' (recursive unfolding + determinacy at each level)
 //   H. Structure 'Plate' with empty body — defaults + constraints injected from 'Bounded'
 //      (trait default injection + determinacy)
 //
