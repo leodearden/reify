@@ -533,6 +533,51 @@ structure S {
     );
 }
 
+/// Characterization test for task 1312: `ConstraintInst` inside a `where {}` block is
+/// silently ignored by `compile_guarded_members` — no "not yet supported" or ICE
+/// diagnostic is emitted.
+///
+/// This test pins the current silent-drop behavior so the wildcard→explicit-arm refactor
+/// in `compile_guarded_members` is verified behavior-preserving. The real compile-time
+/// guarantee (a future 14th `MemberDecl` variant must be explicitly handled) is provided
+/// by Rust's exhaustiveness checker after the `_ => {}` wildcard is replaced by explicit
+/// variant names.
+#[test]
+fn constraint_inst_in_block_guard_silently_ignored() {
+    let source = r#"
+constraint def NonNeg {
+    param x : Scalar
+    x >= 0
+}
+structure S {
+    param active : Bool = true
+    param y : Scalar = 5mm
+    where active {
+        constraint NonNeg(x: y)
+    }
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let bad_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            let msg = d.message.to_lowercase();
+            d.severity == Severity::Error
+                && (msg.contains("not yet supported")
+                    || msg.contains("internal compiler error")
+                    || msg.contains("ice"))
+        })
+        .collect();
+
+    assert!(
+        bad_errors.is_empty(),
+        "expected no 'not yet supported' or ICE error for constraint inst in block guard, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// Reference safety: a top-level constraint referencing a guarded param should
 /// produce a diagnostic. Currently the unguarded-reference check only walks
 /// value_cells, not top-level constraints.
