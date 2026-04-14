@@ -23,6 +23,23 @@ fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     (template, compiled.diagnostics)
 }
 
+/// Helper: assert that no Error-severity diagnostics are present.
+///
+/// Centralises the repeated filter→assert pattern used by the silent-drop
+/// characterization tests so changes to the assertion message only need to
+/// happen in one place.
+fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{context}: expected no error diagnostics, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// Parse `param x : Scalar = 5mm where active` — the per-declaration where clause
 /// should compile into a CompiledGuardedGroup with x as a guarded member.
 #[test]
@@ -565,16 +582,9 @@ structure S {
     // precise characterization of "silently ignored".  This also avoids the
     // fragile substring check for "ice" which could false-positive on words like
     // "service" or "notice" in future diagnostic messages.
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
-    assert!(
-        errors.is_empty(),
-        "expected no error diagnostics for constraint inst in block guard \
-         (should be silently dropped), got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    assert_no_error_diagnostics(
+        &diagnostics,
+        "constraint inst in block guard (should be silently dropped)",
     );
 }
 
@@ -597,18 +607,20 @@ structure def S {
 }
 "#;
 
-    let (_, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
+    assert_no_error_diagnostics(
+        &diagnostics,
+        "port in block guard (should be silently dropped)",
+    );
+    // Positive assertion: the port declared inside the guarded block must NOT
+    // appear in the compiled template's top-level ports list — it should have
+    // been silently dropped rather than promoted.
     assert!(
-        errors.is_empty(),
-        "expected no error diagnostics for port in block guard \
-         (should be silently dropped), got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        template.ports.is_empty(),
+        "expected no compiled ports — port declared inside a guarded block should be \
+         silently dropped, not promoted to top-level, got: {:?}",
+        template.ports.iter().map(|p| &p.name).collect::<Vec<_>>()
     );
 }
 
@@ -632,18 +644,26 @@ structure def S {
 }
 "#;
 
-    let (_, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
+    assert_no_error_diagnostics(
+        &diagnostics,
+        "connect in block guard (should be silently dropped)",
+    );
+    // Positive assertion: the `connect a -> b` inside the guarded block must NOT
+    // appear in the compiled template's connections list — it should have been
+    // silently dropped.  (The top-level port declarations for `a` and `b` are
+    // compiled normally, so template.ports will be non-empty; only the connection
+    // that lives inside the guard is checked here.)
     assert!(
-        errors.is_empty(),
-        "expected no error diagnostics for connect in block guard \
-         (should be silently dropped), got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        template.connections.is_empty(),
+        "expected no compiled connections — connect inside a guarded block should be \
+         silently dropped, not promoted to top-level, got: {:?}",
+        template
+            .connections
+            .iter()
+            .map(|c| format!("{} -> {}", c.left_port, c.right_port))
+            .collect::<Vec<_>>()
     );
 }
 
