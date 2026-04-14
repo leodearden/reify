@@ -5489,7 +5489,13 @@
           "files": [
             "crates/reify-compiler/tests/solver_hint_tests.rs",
             "crates/reify-eval/tests/solver_hint_eval_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: @solver_hint: tests"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-14T12:30:27.365Z"
@@ -6124,7 +6130,13 @@
             "305"
           ],
           "bundled_at": "2026-04-11",
-          "bundle_key": "K"
+          "bundle_key": "K",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Bundle: stdlib primitives — cone + torus + wedge + box_centered + cylinder_centered"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-14T12:30:27.625Z"
@@ -8231,7 +8243,13 @@
           "files": [
             "crates/reify-expr/tests/meta_eval_tests.rs",
             "crates/reify-compiler/tests/meta_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Improve meta test coverage: remove redundant test, add panic + assertion tests"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-14T12:30:32.329Z"
@@ -12027,7 +12045,13 @@
           "files": [
             "crates/reify-compiler/tests/recursive_detection_tests.rs",
             "crates/reify-eval/tests/recursive_unfold.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen recursive detection and unfold test assertions"
+            ]
+          }
         }
       },
       {
@@ -28303,7 +28327,13 @@
           "files": [
             "crates/reify-compiler/src/entity.rs",
             "crates/reify-compiler/src/guards.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: refactor(compiler): extract auto_free helper to dedupe 3 call sites"
+            ]
+          }
         }
       },
       {
@@ -30553,7 +30583,13 @@
           ],
           "files": [
             "crates/reify-compiler/tests/silent_defaults_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add test for non-collection sub instance qualified access"
+            ]
+          }
         }
       },
       {
@@ -33387,7 +33423,13 @@
           ],
           "files": [
             "crates/reify-eval/tests/collection_sub_eval.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Harden collection_sub_eval count-change test coverage"
+            ]
+          }
         }
       },
       {
@@ -33907,7 +33949,13 @@
           ],
           "files": [
             "crates/reify-eval/tests/m9_combined.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: m9_combined.rs: return &'static str from source() and tighten violation assertions"
+            ]
+          }
         }
       },
       {
@@ -34125,13 +34173,9 @@
             "crates/reify-compiler/tests"
           ],
           "memory_hints": {
-            "entities": [
-              "crates/reify-compiler/tests/imperial_units_tests.rs"
-            ],
+            "entities": [],
             "queries": [
-              "imperial units task 335 reviewer follow-up esc-335-19",
-              "cross-relationship tests imperial units lbf psi ksi gal fl_oz",
-              "units.ri imperial unit constants LBF_SI PSI_SI KSI_SI"
+              "resolution for: Imperial units tests: add `in` guard, cross-relationship tests, helper, tighter tolerances"
             ]
           },
           "files": [
