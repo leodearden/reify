@@ -5924,12 +5924,12 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-eval/tests/m11_incremental_eval.rs"
+            "crates/reify-eval/tests/m11_incremental.rs"
           ]
         },
         "subtasks": [],
@@ -5948,18 +5948,15 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-types",
-            "crates/reify-compiler",
-            "crates/reify-expr",
-            "crates/reify-eval"
+            "crates/reify-types/src",
+            "crates/reify-compiler/src",
+            "crates/reify-eval/src"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-types/src/ty.rs",
             "crates/reify-types/src/value.rs",
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-expr/src/lib.rs",
             "crates/reify-eval/src/lib.rs"
           ]
         },
