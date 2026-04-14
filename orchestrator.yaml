@@ -5,10 +5,6 @@
 max_concurrent_tasks: 48
 max_per_module: 1
 lock_depth: 4
-module_overrides:
-  tests: 2
-  "gui/src": 4    # frontend tasks create separate subdirs (viewport/, editor/, panels/) — safe to parallelize
-
 # Verification commands (Rust + GUI frontend)
 # package-lock.json is committed — use npm ci for reproducible installs
 # Commands use `cargo --workspace`; orchestrator's scope_cargo rewriter rewrites
@@ -28,6 +24,10 @@ concurrent_verify: false
 verify_env:
   RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
+  # Global jobserver: all concurrent cargo processes share 32 rustc tokens.
+  # A solo task gets all 32 CPUs; N concurrent tasks split them ~32/N each.
+  # The FIFO is managed by reify-jobserver.service (systemd --user).
+  CARGO_MAKEFLAGS: "--jobserver-auth=fifo:/tmp/reify-jobserver"
 
 # Usage cap / multi-account failover
 # 5 automation accounts (F→E→C→B→D); A reserved for interactive, G not in pool.

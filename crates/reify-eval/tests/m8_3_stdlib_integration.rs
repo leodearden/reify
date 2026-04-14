@@ -401,7 +401,7 @@ fn m8_tolerancing_smoke() {
 ///   - sub pos (Position): tolerance_value=0.1mm (0.0001m), material_condition=MMC
 ///   - sub flat (Flatness): tolerance_value=0.05mm (0.00005m)
 ///   - sub finish (SurfaceFinish): parameter=Ra, value=1.6μm (1.6e-6m)
-/// Tests both compile-level (template exists) and eval-level (values resolved).
+///     Tests both compile-level (template exists) and eval-level (values resolved).
 #[test]
 fn tolerancing_position_mmc_flatness_ra() {
     let result = eval_ri_file(PATH_TOLERANCING, "m8_tolerancing");
