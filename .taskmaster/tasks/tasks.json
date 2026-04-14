@@ -10034,11 +10034,10 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-eval/tests/meta_eval_integration.rs",
-            "crates/reify-expr/tests/meta_eval_tests.rs"
+            "crates/reify-eval/tests/guard_eval.rs"
           ],
           "modules": [
-            "crates/reify-eval",
-            "crates/reify-expr"
+            "crates/reify-eval/tests"
           ]
         }
       },
@@ -10055,11 +10054,10 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/src/deps.rs"
+            "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
