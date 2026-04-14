@@ -33979,7 +33979,7 @@
         "id": "1644",
         "title": "Broaden sanitize_wildcard_variants_passthrough with container/struct Value variants",
         "description": "sanitize_wildcard_variants_passthrough in both crates/reify-expr/src/sanitize.rs (~line 464) and crates/reify-stdlib/src/helpers.rs (~line 885) currently covers only Bool/Int/String out of ~25 wildcard-arm Value variants. Variants that own non-trivial payloads (Vector, Tensor, Map, Lambda, Frame, Transform, etc.) never get even a smoke check — and those are the shapes most likely to break if a future guarded arm accidentally moves out of `v`. The cost of adding two or three variants is trivial and meaningfully widens the safety net.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "details": "In both crates/reify-expr/src/sanitize.rs (sanitize_wildcard_variants_passthrough) and crates/reify-stdlib/src/helpers.rs (the mirrored test), extend the `cases` array to include at least one container variant and one struct-shaped variant, e.g.:\n\n- Value::Vector(vec![Value::Real(1.0)])\n- Value::Frame { .. }  or  Value::Transform { .. }\n\nKeep the tests mirrored per the SYNC contract — add the same cases in both crates in the same commit. Verify with:\n\n    cargo test -p reify-expr sanitize_wildcard_variants_passthrough\n    cargo test -p reify-stdlib sanitize_wildcard_variants_passthrough\n\nMemory hints: search \"sanitize_value wildcard variants reify-expr reify-stdlib\", search \"task 892 sanitize_value consolidation\". Additional memory hints: search: 'sanitize_wildcard_variants_passthrough Value variants Bool Int String coverage'; related: Task 1643 (asymmetric SYNC comment in same area).",
@@ -33991,7 +33991,8 @@
             "crates/reify-stdlib/src"
           ],
           "memory_hints": "search: 'sanitize_wildcard_variants_passthrough Value variants wildcard arm coverage'; related Task 1643 (asymmetric SYNC comment in same area); files: crates/reify-expr/src/sanitize.rs ~line 464, crates/reify-expr/tests/helpers.rs ~line 885"
-        }
+        },
+        "updatedAt": "2026-04-14T04:09:41.435Z"
       },
       {
         "id": "1645",
@@ -34126,7 +34127,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T04:09:40.233Z",
+      "lastModified": "2026-04-14T04:09:41.435Z",
       "taskCount": 1652,
       "completedCount": 1321,
       "tags": [
