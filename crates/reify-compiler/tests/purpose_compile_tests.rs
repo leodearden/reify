@@ -260,6 +260,32 @@ purpose machining_tolerance(subject : Structure) {
         1,
         "expected 1 compiled purpose"
     );
+
+    // Verify 'thou' resolved to the correct SI value (≈0.0000254 m).
+    // Without the unit registry being threaded into the purpose scope, the
+    // literal would fail to resolve and we would never reach this assertion.
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+    let constraint = &purpose.constraints[0];
+    if let CompiledExprKind::BinOp { left, .. } = &constraint.expr.kind {
+        if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &left.kind {
+            assert!(
+                (si_value - 0.0000254).abs() < 1e-12,
+                "1thou should compile to ≈0.0000254 m (SI), got {}",
+                si_value
+            );
+        } else {
+            panic!(
+                "expected Scalar literal for '1thou' left side, got {:?}",
+                left.kind
+            );
+        }
+    } else {
+        panic!(
+            "expected BinOp constraint expression, got {:?}",
+            constraint.expr.kind
+        );
+    }
 }
 
 // ── Step 3 (task-416): unknown unit in purpose constraint emits error ─────────
@@ -331,7 +357,8 @@ purpose hot_enough(subject : Structure) {
 
     // The constraint is: 100degC > 200degC
     // Left side should be Literal(Scalar { si_value ≈ 373.15 }).
-    if let CompiledExprKind::BinOp { left, .. } = &constraint.expr.kind {
+    // Right side should be Literal(Scalar { si_value ≈ 473.15 }).
+    if let CompiledExprKind::BinOp { left, right, .. } = &constraint.expr.kind {
         if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &left.kind {
             assert!(
                 (si_value - 373.15).abs() < 1e-9,
@@ -342,6 +369,18 @@ purpose hot_enough(subject : Structure) {
             panic!(
                 "expected Scalar literal for '100degC' left side, got {:?}",
                 left.kind
+            );
+        }
+        if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &right.kind {
+            assert!(
+                (si_value - 473.15).abs() < 1e-9,
+                "200degC should compile to 473.15K, got {}",
+                si_value
+            );
+        } else {
+            panic!(
+                "expected Scalar literal for '200degC' right side, got {:?}",
+                right.kind
             );
         }
     } else {
