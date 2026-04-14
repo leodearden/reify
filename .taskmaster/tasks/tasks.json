@@ -30230,7 +30230,7 @@
         "updatedAt": "2026-04-10T01:31:14.700Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
             "crates/reify-compiler/src/expr.rs",
