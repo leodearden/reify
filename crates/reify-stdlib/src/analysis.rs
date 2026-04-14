@@ -123,4 +123,50 @@ mod tests {
         let result = eval_analysis("von_mises", &[tensor]).unwrap();
         assert_scalar_approx!(result, sigma, DimensionVector::PRESSURE);
     }
+
+    #[test]
+    fn von_mises_hydrostatic_returns_zero() {
+        // Hydrostatic stress [[p,0,0],[0,p,0],[0,0,p]] → von Mises = 0
+        let p = 100e6;
+        let tensor = make_dimensioned_matrix(
+            &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("von_mises", &[tensor]).unwrap();
+        assert_scalar_approx!(result, 0.0, DimensionVector::PRESSURE);
+    }
+
+    #[test]
+    fn von_mises_pure_shear() {
+        // Pure shear [[0,τ,0],[τ,0,0],[0,0,0]] → von Mises = τ·√3
+        let tau = 50e6;
+        let tensor = make_dimensioned_matrix(
+            &[&[0.0, tau, 0.0], &[tau, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("von_mises", &[tensor]).unwrap();
+        let expected = tau * 3.0_f64.sqrt();
+        assert_scalar_approx!(result, expected, DimensionVector::PRESSURE);
+    }
+
+    #[test]
+    fn von_mises_wrong_arg_count_returns_undef() {
+        assert!(eval_analysis("von_mises", &[]).unwrap().is_undef());
+        let t = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
+        assert!(eval_analysis("von_mises", &[t.clone(), t]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn von_mises_non_matrix_returns_undef() {
+        assert!(eval_analysis("von_mises", &[Value::Real(42.0)])
+            .unwrap()
+            .is_undef());
+    }
+
+    #[test]
+    fn von_mises_non_3x3_returns_undef() {
+        // 2x2 matrix
+        let m2x2 = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
+        assert!(eval_analysis("von_mises", &[m2x2]).unwrap().is_undef());
+    }
 }
