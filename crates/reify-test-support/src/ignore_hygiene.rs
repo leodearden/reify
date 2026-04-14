@@ -549,32 +549,36 @@ mod tests {
         );
     }
 
-    /// Guard 3 (negative sentinel) isolation: a `///` doc-comment line that
-    /// contains ONLY the stale needle — without any `#[ignore]` marker — must
-    /// be accepted.  This pins guard 3's doc-skip filter independently of
-    /// guards 1+2, which would have already returned early on a marker.
-    /// If a future refactor drops the `filter(|l| !is_doc_comment_line(l))`
-    /// clause from guard 3 while keeping it on guards 1+2, this test fails.
+    /// Guard 3 "no-marker" path: a `///` doc-comment line that contains the
+    /// stale needle but no `#[ignore]` marker must be accepted.  After the
+    /// delegation refactor, guard 3 calls `find_stale_plan_pointers_in_source`,
+    /// which only walks `#[ignore = "..."]` reason strings — so a bare doc-comment
+    /// line without a marker is not flagged because there is simply no marker to
+    /// scan, not because of guard-3-specific doc-comment filtering.
+    ///
+    /// Doc-comment skipping with a marker present is covered by the lock-step
+    /// test `lock_step_doc_comment_skipping_in_both_scanners` (see above).
     #[test]
     fn check_ignore_reasons_guard3_skips_doc_comment_lines() {
         let needle = ["plan", " step-"].concat();
         // Source has no #[ignore] marker — only a doc-comment line with the needle.
-        // Guards 1+2 will not fire; only guard 3 can reject or accept.
+        // find_stale_plan_pointers_in_source finds no markers, so guard 3 passes.
         let src = format!("/// contains needle: {needle}3\n");
         assert!(
             check_ignore_reasons(&src).is_ok(),
-            "guard 3 should skip a stale needle that lives on a /// doc-comment line",
+            "guard 3 should accept a source with no #[ignore] markers (needle only in a doc-comment)",
         );
     }
 
-    // ── check_ignore_reasons guard-3 delegation (RED tests) ─────────────────
+    // ── check_ignore_reasons guard-3 delegation pinning tests ────────────────
 
-    /// RED-1: guard 3 error must cite the line number of the offending
-    /// `#[ignore]` attribute.  Source has a compliant `known bug:` prefix
-    /// that also contains the stale needle, placed on line 3 (after two blank
-    /// lines).  The current guard 3 produces a static error message with no
-    /// line information — this test is expected to fail (RED) until guard 3
-    /// delegates to `find_stale_plan_pointers_in_source`.
+    /// Pins that guard 3 cites the line number of the offending `#[ignore]`
+    /// attribute in its error message.  Written RED before the delegation to
+    /// `find_stale_plan_pointers_in_source` (which carries line-number
+    /// information), now green and kept as a regression pin.
+    ///
+    /// Source: a compliant `known bug:` prefix that also contains the stale
+    /// needle, placed on line 3 (after two blank lines).
     #[test]
     fn check_ignore_reasons_guard3_error_cites_line_number() {
         let marker = ["#[ignore", " = \""].concat();
@@ -589,13 +593,14 @@ mod tests {
         );
     }
 
-    /// RED-2: guard 3 must delegate to `find_stale_plan_pointers_in_source`
-    /// so that the error message contains the same violation preview as the
-    /// dedicated scanner.  Uses the test-(g) fixture: `\` + newline
-    /// continuation with the stale needle on the second line.  The current
-    /// guard 3 uses a line-level scan whose static error message does NOT
-    /// include any preview from `find_stale_plan_pointers_in_source` — this
-    /// test is expected to fail (RED) until guard 3 delegates.
+    /// Pins that guard 3 error messages include the same violation preview
+    /// produced by `find_stale_plan_pointers_in_source`, confirming the two
+    /// are sourced from the same scanner.  Written RED when guard 3 used a
+    /// line-level scan whose static error contained no preview; now green and
+    /// kept as a regression pin against future divergence.
+    ///
+    /// Uses the test-(g) fixture: `\` + newline continuation with the stale
+    /// needle on the second line — a cross-line case the old scan missed.
     #[test]
     fn check_ignore_reasons_delegates_guard3_to_find_stale_plan_pointers() {
         let marker = ["#[ignore", " = \""].concat();

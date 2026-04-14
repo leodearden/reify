@@ -865,7 +865,10 @@ pub fn mutual_recursion_module() -> CompiledModule {
 /// - Purpose `"mfg_ready"` with `@solver_hint` annotation
 pub fn annotated_module() -> CompiledModule {
     let rigid_trait = CompiledTraitBuilder::new("Rigid")
-        .annotation(annotation_with_args("deprecated", vec![ann_str("use Rigid2")]))
+        .annotation(annotation_with_args(
+            "deprecated",
+            vec![ann_str("use Rigid2")],
+        ))
         .build();
 
     let bolt_template = TopologyTemplateBuilder::new("Bolt")
@@ -1079,7 +1082,10 @@ mod tests {
         assert_eq!(bolt.annotations.len(), 2);
         let ann_names: Vec<&str> = bolt.annotations.iter().map(|a| a.name.as_str()).collect();
         assert!(ann_names.contains(&"test"), "expected @test annotation");
-        assert!(ann_names.contains(&"optimized"), "expected @optimized annotation");
+        assert!(
+            ann_names.contains(&"optimized"),
+            "expected @optimized annotation"
+        );
 
         // (c) one field with @deprecated annotation
         assert_eq!(module.fields.len(), 1);
@@ -1249,9 +1255,7 @@ mod tests {
     /// Helper: parse and compile `source`, assert no errors and exactly one
     /// `Severity::Warning` mentioning both "unknown port type" and
     /// "NonExistentTrait". Returns the `CompiledModule` for further assertions.
-    fn assert_warning_source_compiles_with_unknown_port_warning(
-        source: &str,
-    ) -> CompiledModule {
+    fn assert_warning_source_compiles_with_unknown_port_warning(source: &str) -> CompiledModule {
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(
             parsed.errors.is_empty(),
@@ -1288,7 +1292,9 @@ mod tests {
 
     #[test]
     fn warn_source_with_unknown_port_type_produces_unknown_port_warning_no_errors() {
-        assert_warning_source_compiles_with_unknown_port_warning(warn_source_with_unknown_port_type());
+        assert_warning_source_compiles_with_unknown_port_warning(
+            warn_source_with_unknown_port_type(),
+        );
     }
 
     #[test]
@@ -1306,10 +1312,10 @@ mod tests {
     }
 
     #[test]
-    fn warn_source_with_unknown_port_type_with_width_param_cell_has_length_type_span_kind_and_default() {
+    fn warn_source_with_unknown_port_type_with_width_param_cell_has_length_type_span_kind_and_default()
+     {
         let source = warn_source_with_unknown_port_type_with_width();
-        let compiled =
-            assert_warning_source_compiles_with_unknown_port_warning(source);
+        let compiled = assert_warning_source_compiles_with_unknown_port_warning(source);
         let s_template = compiled
             .templates
             .iter()
@@ -1344,12 +1350,10 @@ mod tests {
             )
         });
         assert_eq!(
-            span_text,
-            "param width : Length = 80mm",
+            span_text, "param width : Length = 80mm",
             "expected width cell span to cover the full `param width : Length = 80mm` \
              declaration, got span {:?} covering {:?}",
-            width_cell.span,
-            span_text,
+            width_cell.span, span_text,
         );
         assert!(
             matches!(width_cell.kind, ValueCellKind::Param),

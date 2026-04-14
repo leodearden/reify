@@ -44,8 +44,7 @@ pub fn assert_warn_count_delta(
     );
     let actual_delta = after - before;
     assert_eq!(
-        actual_delta,
-        expected_delta,
+        actual_delta, expected_delta,
         "expected warn delta of {expected_delta} (before={before}, after={after}): {context}"
     );
 }
@@ -217,12 +216,7 @@ impl tracing::Subscriber for CountingSubscriber {
 
     fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
 
-    fn record_follows_from(
-        &self,
-        _span: &tracing::span::Id,
-        _follows: &tracing::span::Id,
-    ) {
-    }
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
 
     fn event(&self, event: &tracing::Event<'_>) {
         // Apply optional target-prefix filter before counting.
@@ -243,7 +237,6 @@ impl tracing::Subscriber for CountingSubscriber {
 
     fn exit(&self, _span: &tracing::span::Id) {}
 }
-
 
 // ── Contract violation marker ─────────────────────────────────────────────────
 
@@ -366,10 +359,7 @@ impl WarnCapture {
     /// Panics if the count does not equal `expected`.
     pub fn assert_count(&self, expected: usize) {
         let n = self.count();
-        assert_eq!(
-            n, expected,
-            "expected {expected} WARN events, got {n}"
-        );
+        assert_eq!(n, expected, "expected {expected} WARN events, got {n}");
     }
 
     /// Assert that exactly `expected` WARN events were emitted **and** that at
@@ -501,14 +491,12 @@ impl WarnCapture {
     /// [`assert_any_event_has_fields`]: Self::assert_any_event_has_fields
     pub fn assert_any_event_field_contains(&self, key: &str, substring: &str) {
         let all_fields = self.fields_by_event();
-        let found = all_fields
-            .iter()
-            .any(|event_fields| {
-                event_fields
-                    .get(key)
-                    .map(|v| v.contains(substring))
-                    .unwrap_or(false)
-            });
+        let found = all_fields.iter().any(|event_fields| {
+            event_fields
+                .get(key)
+                .map(|v| v.contains(substring))
+                .unwrap_or(false)
+        });
         if !found {
             let msgs = self.messages();
             panic!(
@@ -569,7 +557,8 @@ impl tracing::field::Visit for MessageVisitor {
         if field.name() == "message" {
             self.message = value.to_owned();
         } else {
-            self.fields.insert(field.name().to_owned(), value.to_owned());
+            self.fields
+                .insert(field.name().to_owned(), value.to_owned());
         }
     }
 
@@ -1091,7 +1080,11 @@ mod tests {
             tracing::warn!("second warning");
         });
 
-        assert_eq!(capture.count(), 2, "count should be 2 after two WARN events");
+        assert_eq!(
+            capture.count(),
+            2,
+            "count should be 2 after two WARN events"
+        );
     }
 
     /// `WarnCapture::messages()` captures the formatted text of each WARN event.

@@ -364,7 +364,7 @@ impl TopologyTemplateBuilder {
 #[cfg(test)]
 mod annotation_tests {
     use super::*;
-    use crate::builders::{annotation, annotation_with_args, ann_str};
+    use crate::builders::{ann_str, annotation, annotation_with_args};
 
     #[test]
     fn topology_builder_single_annotation() {
