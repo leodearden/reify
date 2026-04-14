@@ -23241,11 +23241,11 @@
         "description": "The prelude-collection block in module_dag.rs:239-257 (compile_project) is a copy of lines 168-178 (compile_module). Both call sites use identical logic to filter Declaration::Import and clone matching CompiledModules.\n\nExtract a helper function, e.g. `fn collect_preludes(parsed: &ParsedModule, modules: &HashMap<String, CompiledModule>) -> Vec<CompiledModule>`, and call it from both compile_module and compile_project. This localizes the import filter and cloning policy, preventing drift if prelude collection ever needs to handle qualified/glob/aliased imports.\n\nmemory_hints: search \"compile_module compile_project prelude collection\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:40.004Z",
+        "updatedAt": "2026-04-14T12:36:12.695Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -29227,11 +29227,11 @@
         "description": "Two related documentation issues around sub_member_types after Task 1365's landing:\n\n1. crates/reify-compiler/src/scope.rs:36 — the doc comment reads \"Member types for non-collection sub-components\" but entity.rs:417-429 populates sub_member_types for ALL subs unconditionally (no is_collection guard). Update to: \"Member types for all sub-components: sub_name → { member_name → Type }. Populated for ALL subs (collection and non-collection) for self.sub.member resolution.\" This aligns with the new comment already in expr.rs:1506 (\"sub_member_types covers ALL subs\").\n\n2. crates/reify-compiler/src/expr.rs:1512-1517 — the `.or_else(|| ... collection_sub_member_types ...)` fallback branch is unreachable because sub_member_types is a superset of collection_sub_member_types (entity.rs:417 populates for all subs; entity.rs:431 populates for collection subs only). Add a brief comment like \"// Defensive: sub_member_types is a superset, but fall back just in case.\" to explain why the branch exists and prevent future confusion. Do NOT remove the fallback — keep it as defensive coding.\n\nBoth are documentation-only changes, no behavior change. Source: reviewer_comprehensive on Task 1365.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:46.221Z",
+        "updatedAt": "2026-04-14T12:36:13.335Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -34558,9 +34558,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:36:10.610Z",
+      "lastModified": "2026-04-14T12:36:13.336Z",
       "taskCount": 1661,
-      "completedCount": 1370,
+      "completedCount": 1372,
       "tags": [
         "master"
       ]
