@@ -33191,9 +33191,11 @@
         "updatedAt": "2026-04-10T17:22:35.425Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests",
-            "examples/m5_geometry_flange.ri"
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/lib.rs"
           ]
         }
       },
