@@ -12043,12 +12043,12 @@
         "updatedAt": "2026-03-27T09:27:10.721Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/tests/stdlib_loader_tests.rs",
-            "crates/reify-compiler/tests/structural_physical_tests.rs"
+            "crates/reify-compiler/tests/structural_physical_tests.rs",
+            "crates/reify-compiler/tests/stdlib_loader_tests.rs"
           ]
         }
       },
