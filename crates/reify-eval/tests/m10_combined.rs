@@ -58,6 +58,15 @@ fn constraint_count(engine: &Engine) -> usize {
         .len()
 }
 
+// ── Test 4: total constraint count meets threshold ───────────────────────────
+
+/// Capstone assertion: constraint_results.len() >= 15, all Satisfied.
+/// Guards against silent regressions where constraints are silently dropped.
+#[test]
+fn total_constraint_count_meets_threshold() {
+    todo!("step-8 impl: assert >= 15 constraint results, all Satisfied")
+}
+
 // ── Test 3: all constraints satisfied ────────────────────────────────────────
 
 /// Smoke test: file produces constraint results and all are Satisfied.
