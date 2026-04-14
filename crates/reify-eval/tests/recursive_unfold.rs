@@ -1064,18 +1064,29 @@ fn unfold_mutual_recursion_three_node_cycle() {
 
 // ─── step-28b: mutual recursion with let-bindings ────────────────────────────
 
-/// Two mutually-recursive templates with let-bindings:
-///   A { param n: Int = 2; let val: Int = n * 10; is_recursive = true; sub b = B(n: n-1) where n > 0 }
-///   B { param n: Int = 0; let val: Int = n * 10; is_recursive = true; sub a = A(n: n-1) where n > 0 }
+/// Two mutually-recursive templates with DISTINCT per-template let-binding names
+/// and DISTINCT coefficient expressions:
+///   A { param n: Int = 2; let a_only: Int = n * 10; is_recursive = true;
+///       sub b = B(n: n-1) where n > 0 }
+///   B { param n: Int = 0; let b_only: Int = n * 7;  is_recursive = true;
+///       sub a = A(n: n-1) where n > 0 }
 ///
 /// Starting from A(n=2):
-///   A(n=2, val=20) → A.b = B(n=1, val=10) → A.b.a = A(n=0, val=0)
+///   A(n=2, a_only=20) → A.b = B(n=1, b_only=7) → A.b.a = A(n=0, a_only=0)
 ///
-/// This verifies that Phase 3 (elaborate_child_lets_only) receives the correct
-/// child-scoped recursive_sub_names for BFS traversal at each mutual recursion depth.
+/// Prior version used identical name `val` and identical expression `n*10` on both
+/// templates, making a buggy "reuse A's template for every entity" implementation
+/// produce identical values and pass silently. Distinct names and coefficients
+/// produce observable divergence: A.a_only must equal 20, A.b.b_only must equal 7.
+///
+/// Key leakage assertions (task 553 improvement #6):
+///   - A.b_only must NOT exist  (B's binding must not appear in an A instance)
+///   - A.b.a_only must NOT exist (A's binding must not leak into a B instance)
+///
+/// This verifies per-entity template lookup at each mutual-recursion depth.
 #[test]
 fn unfold_mutual_recursion_with_let_bindings() {
-    // Template A: param n=2, let val = n * 10, sub b = B(n: n-1) where n > 0
+    // Template A: param n=2, let a_only = n * 10, sub b = B(n: n-1) where n > 0
     let template_a = TopologyTemplateBuilder::new("A")
         .param(
             "A",
@@ -1085,7 +1096,7 @@ fn unfold_mutual_recursion_with_let_bindings() {
         )
         .let_binding(
             "A",
-            "val",
+            "a_only",
             Type::Int,
             binop(
                 BinOp::Mul,
@@ -1109,7 +1120,7 @@ fn unfold_mutual_recursion_with_let_bindings() {
         )
         .build();
 
-    // Template B: param n=0, let val = n * 10, sub a = A(n: n-1) where n > 0
+    // Template B: param n=0, let b_only = n * 7, sub a = A(n: n-1) where n > 0
     let template_b = TopologyTemplateBuilder::new("B")
         .param(
             "B",
@@ -1119,12 +1130,12 @@ fn unfold_mutual_recursion_with_let_bindings() {
         )
         .let_binding(
             "B",
-            "val",
+            "b_only",
             Type::Int,
             binop(
                 BinOp::Mul,
                 value_ref_typed("B", "n", Type::Int),
-                literal(Value::Int(10)),
+                literal(Value::Int(7)),
             ),
         )
         .is_recursive(true)
@@ -1152,25 +1163,35 @@ fn unfold_mutual_recursion_with_let_bindings() {
     let mut engine = Engine::new(Box::new(checker), None);
     let result = engine.eval(&module);
 
-    // A(n=2): val = 2 * 10 = 20
+    // A(n=2): a_only = 2 * 10 = 20
     assert_eq!(
-        result.values.get(&ValueCellId::new("A", "val")),
+        result.values.get(&ValueCellId::new("A", "a_only")),
         Some(&Value::Int(20)),
-        "A.val should be 20 (= 2 * 10)"
+        "A.a_only should be 20 (= 2 * 10)"
     );
 
-    // A.b = B(n=1): val = 1 * 10 = 10
+    // A.b = B(n=1): b_only = 1 * 7 = 7 (NOT 10 — coefficient diverges from A)
     assert_eq!(
-        result.values.get(&ValueCellId::new("A.b", "val")),
-        Some(&Value::Int(10)),
-        "A.b.val should be 10 (= 1 * 10)"
+        result.values.get(&ValueCellId::new("A.b", "b_only")),
+        Some(&Value::Int(7)),
+        "A.b.b_only should be 7 (= 1 * 7, B's distinct coefficient)"
     );
 
-    // A.b.a = A(n=0): val = 0 * 10 = 0
+    // A.b.a = A(n=0): a_only = 0 * 10 = 0
     assert_eq!(
-        result.values.get(&ValueCellId::new("A.b.a", "val")),
+        result.values.get(&ValueCellId::new("A.b.a", "a_only")),
         Some(&Value::Int(0)),
-        "A.b.a.val should be 0 (= 0 * 10)"
+        "A.b.a.a_only should be 0 (= 0 * 10, A instance at depth 2)"
+    );
+
+    // Leakage assertions: B's binding must not appear in an A instance and vice versa.
+    assert!(
+        !result.values.contains(&ValueCellId::new("A", "b_only")),
+        "A.b_only must NOT exist — B's binding must not appear in an A instance"
+    );
+    assert!(
+        !result.values.contains(&ValueCellId::new("A.b", "a_only")),
+        "A.b.a_only must NOT exist — A's binding must not leak into a B instance"
     );
 }
 
