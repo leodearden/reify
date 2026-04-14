@@ -316,6 +316,7 @@ constraint def Positive {
         let test_templates = module.test_templates();
         let target = test_templates.iter().find(|t| t.name == "TestA").expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
+        assert!(!module.constraint_defs.is_empty(), "constraint_defs must be non-empty in source module");
         assert_eq!(isolated.constraint_defs.len(), module.constraint_defs.len(),
             "constraint_defs must be preserved");
         assert!(!module.functions.is_empty(), "functions must be non-empty in source module");
