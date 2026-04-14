@@ -20677,11 +20677,11 @@
         "description": "In crates/reify-expr/src/lib.rs: (1) Add phase_inf_im_returns_undef test for im=+Infinity. (2) Add phase_zero_complex_returns_undef test for 0+0i. (3) Update stale comment on phase_neg_inf_im noting atan2(-Inf,1.0) is finite so pre-guard catches it. (4) Expand 'pre-guard is essential' comment to name both is_finite guard and zero-vector guard.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-13T23:56:31.808Z",
+        "updatedAt": "2026-04-14T00:27:23.823Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -34067,9 +34067,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T00:19:25.163Z",
+      "lastModified": "2026-04-14T00:27:23.827Z",
       "taskCount": 1649,
-      "completedCount": 1318,
+      "completedCount": 1319,
       "tags": [
         "master"
       ]
