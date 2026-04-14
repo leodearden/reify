@@ -543,14 +543,10 @@ structure def S : Left + Right {
 
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
     assert!(
-        errors.is_empty(),
-        "expected 0 errors (Right provides default for Base requirement via diamond), got: {:?}",
-        errors
+        diagnostics.is_empty(),
+        "expected no diagnostics (Right provides default for Base requirement via diamond), got: {:?}",
+        diagnostics
     );
 
     let x_cells: Vec<_> = template
@@ -561,13 +557,20 @@ structure def S : Left + Right {
     assert_eq!(
         x_cells.len(),
         1,
-        "expected exactly 1 'x' value cell from diamond inheritance, got {}",
+        // >1 would indicate dedup failure: Base's requirement was processed
+        // twice (once via Left, once via Right) and not collapsed by `visited`.
+        "expected exactly 1 'x' value cell from diamond inheritance (>1 means dedup failed), got {}",
         x_cells.len()
     );
     assert_eq!(
         x_cells[0].kind,
         ValueCellKind::Param,
         "x should materialize as Param cell (Right's default is a param)"
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Real,
+        "x should be Real-typed (matching the param declaration in Right)"
     );
     assert!(
         x_cells[0].default_expr.is_some(),
