@@ -61,9 +61,27 @@ fn constraint_count(engine: &Engine) -> usize {
 // ── Test 3: all constraints satisfied ────────────────────────────────────────
 
 /// Smoke test: file produces constraint results and all are Satisfied.
+/// Complements `total_constraint_count_meets_threshold`, which additionally asserts count >= 15.
 #[test]
 fn all_constraints_satisfied() {
-    todo!("step-6 impl: assert all constraint results are Satisfied")
+    let check_result = check_source(&source());
+
+    // Must have at least some constraint results
+    assert!(
+        !check_result.constraint_results.is_empty(),
+        "expected at least one constraint result"
+    );
+
+    // Every entry must be exactly Satisfied (Violated and Indeterminate both fail)
+    for entry in &check_result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
 }
 
 // ── Test 2: compiles with Assembly template ──────────────────────────────────
