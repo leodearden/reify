@@ -547,11 +547,7 @@ structure def S {
     assert_eq!(port.members.len(), 1, "expected 1 port member");
 
     let foo = &port.members[0];
-    assert!(
-        foo.id.member.contains("mount.foo"),
-        "expected id containing 'mount.foo', got '{}'",
-        foo.id.member
-    );
+    assert_eq!(foo.id, reify_types::ValueCellId::new("S", "mount.foo"));
     assert_eq!(
         foo.kind,
         ValueCellKind::Auto { free: true },
