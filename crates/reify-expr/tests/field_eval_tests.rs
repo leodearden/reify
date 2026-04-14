@@ -299,7 +299,7 @@ fn sample_one_param_lambda_binds_entire_point_as_single_value() {
 /// # Cross-reference
 ///
 /// `gradient_wrong_size_tensor_point_returns_undef` in `gradient_tests.rs`
-/// (at ~line 228) pins the same `apply_lambda` arity contract via the gradient
+/// pins the same `apply_lambda` arity contract via the gradient
 /// path: it passes a 2-component `Value::Tensor` as a single arg to a 3-param
 /// lambda, also triggering `lib.rs:586`. Both tests enforce the same no-unpack
 /// invariant from different entry points.
@@ -359,14 +359,36 @@ fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
         "sample() never unpacks input; multi-param lambda always hits \
          apply_lambda arity check (1 forwarded arg vs 3 params)"
     );
-    // The constant body (42.0) is unreachable: the arity check fires before
-    // the body is evaluated. Asserting this explicitly makes the claim testable
-    // rather than merely documented.
-    assert_ne!(
-        sample_result,
+    // Positive control: the identical constant body IS reachable via a 1-param
+    // lambda (arity matches).  This proves that Undef above is caused solely by
+    // the arity check, not by anything in the body.
+    let x_id2 = ValueCellId::new("$lambda1.S", "x");
+    let body2 = CompiledExpr::literal(Value::Real(42.0), Type::Real);
+    let lambda2 = make_value_lambda(vec![("x", x_id2)], body2, ValueMap::new());
+    let field2 = Value::Field {
+        domain_type: Type::Real,
+        codomain_type: Type::Real,
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda2),
+    };
+    let field2_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::Real),
+    };
+    let sample_expr2 = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field2, field2_type),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let positive_result = eval_expr(&sample_expr2, &EvalContext::simple(&values));
+    assert_eq!(
+        positive_result,
         Value::Real(42.0),
-        "unreachable body: the constant 42.0 must never be observed \
-         (apply_lambda arity check fires before body executes)"
+        "1-param lambda body IS reachable (arity matches); proves Undef \
+         above comes from the arity check, not the body content"
     );
 }
 
