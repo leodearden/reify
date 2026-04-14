@@ -14214,7 +14214,7 @@
         "description": "In `crates/reify-eval/tests/recursive_unfold.rs`, the `cyclic_let_bindings_emit_diagnostic` test (line ~1380-1385) checks `d.message.contains(\"a\") && d.message.contains(\"b\")` to verify member names are mentioned in the diagnostic. Since \"a\" is a single character, this condition passes trivially for almost any diagnostic message. Fix: assert on the exact list format (e.g., `contains(\"[a, b]\")`) or on quoted member names (`contains(\"'a'\")` and `contains(\"'b'\")`).\n\nmemory_hints: search \"cyclic let-binding diagnostic\" in recursive_unfold.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14226,7 +14226,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-14T15:39:39.958Z"
+        "updatedAt": "2026-04-14T19:15:20.615Z"
       },
       {
         "id": "644",
@@ -34665,9 +34665,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T19:14:14.006Z",
+      "lastModified": "2026-04-14T19:15:20.616Z",
       "taskCount": 1661,
-      "completedCount": 1385,
+      "completedCount": 1386,
       "tags": [
         "master"
       ]
