@@ -499,11 +499,24 @@ fn edit_param_count_int_undef_undef_int_transition() {
     );
 
     // Undef → Undef must be a no-op
-    engine
+    let r2 = engine
         .edit_param(n_id.clone(), Value::Undef)
         .expect("second edit to Undef should succeed");
+    for i in 0..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            r2.values.get(&scoped_id).is_none(),
+            "bolts[{}].diameter must be absent after Undef->Undef",
+            i
+        );
+    }
+    assert_eq!(
+        count_bolt_diameter_instances(&r2.values),
+        0,
+        "no bolt diameter instances should exist after Undef->Undef"
+    );
 
-    // Step 3: Undef → Int(2): old_count=0 (via `_ => 0`) → creates bolts[0..2)
+    // Undef → Int(2) must elaborate exactly bolts[0..2)
     let result = engine
         .edit_param(n_id, Value::Int(2))
         .expect("edit to Int(2) should succeed");
