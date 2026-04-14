@@ -33077,7 +33077,7 @@
         "description": "Three follow-ups from task 957 review in crates/reify-eval/src/collection_sub_eval.rs:\n\n1. **Assert no bolt instances exist** (not just old ones removed): After edit_param removes a bolt, assert that zero bolt instances remain — current tests only check the old one is gone, not that no new spurious ones appeared.\n\n2. **Extract shared bolt_count_fixtures helper**: 4 bolt-count tests duplicate ~30 lines of identical fixture setup. Extract a shared helper to reduce duplication and improve maintainability.\n\n3. **Assert edit propagated to count cell**: After editing a bolt count parameter, assert the downstream count cell reflects the new value — covers the end-to-end propagation path.\n\nmemory_hints: search \"bolt_count edit_param collection_sub_eval\", search \"bolt count test fixtures\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -33088,7 +33088,8 @@
           "modules": [
             "crates/reify-eval"
           ]
-        }
+        },
+        "updatedAt": "2026-04-14T07:04:27.047Z"
       },
       {
         "id": "1604",
@@ -34341,7 +34342,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T07:04:26.252Z",
+      "lastModified": "2026-04-14T07:04:27.047Z",
       "taskCount": 1658,
       "completedCount": 1333,
       "tags": [
