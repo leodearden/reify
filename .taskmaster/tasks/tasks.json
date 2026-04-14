@@ -28241,7 +28241,7 @@
         "updatedAt": "2026-04-14T07:04:08.470Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
             "crates/reify-compiler/src/entity.rs",
@@ -28287,12 +28287,12 @@
             ]
           },
           "files": [
-            "crates/reify-compiler/tests/boundary2_producer.rs",
-            "crates/reify-syntax/src/lib.rs"
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-compiler/tests/boundary2_producer.rs"
           ],
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-syntax"
+            "crates/reify-syntax/src",
+            "crates/reify-compiler/tests"
           ]
         }
       },
