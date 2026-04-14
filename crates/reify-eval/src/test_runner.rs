@@ -274,8 +274,10 @@ mod tests {
     #[test]
     fn build_isolated_module_preserves_shared_infrastructure() {
         use super::build_isolated_module;
-        // Rich source that populates every shared-infrastructure collection so
-        // equality assertions cannot trivially pass as 0==0.
+        // Rich source that populates every shared-infrastructure collection
+        // (functions, fields, type_aliases, units, trait_defs, enum_defs,
+        // constraint_defs, imports, pragmas, module path) so equality assertions
+        // cannot trivially pass as 0==0.
         let source = r#"
 #precision(value=64)
 
