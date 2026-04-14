@@ -9238,11 +9238,11 @@
         "description": "In crates/reify-eval/tests/m9_trait_conformance.rs: rename qualified_access_disambiguation to per_structure_constraint_counts. Update docstring to reflect it verifies constraint counts per structure, not qualified access disambiguation. Add TODO for when qualified access syntax is available. (Review followup from task 194)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:39.954Z",
+        "updatedAt": "2026-04-14T09:52:23.754Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10820,7 +10820,7 @@
         "description": "Multiple test quality issues in stdlib_loader_tests.rs and stdlib_prelude_tests.rs need fixing.",
         "details": "1. Add negative test: compile Steel:Elastic with plain compile() (no prelude) and assert error diagnostic (proves prelude is required)\n2. Strengthen eval_with_prelude_trait_conformance to check specific param values (youngs_modulus, poissons_ratio, shear_modulus) not just !is_empty()\n3. Strengthen compile_with_prelude_injects_trait_constraints to verify constraint content (uts >= yield_strength), not just !is_empty()\n4. Add HardnessScale enum check to materials_mechanical_traits_present\n\nFiles: crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs\n\nmemory_hints: search \"stdlib prelude test\" \"compile_with_prelude\" | entities: stdlib_loader, Engine",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10835,7 +10835,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-14T07:04:13.981Z"
+        "updatedAt": "2026-04-14T09:52:23.832Z"
       },
       {
         "id": "505",
@@ -34378,7 +34378,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T09:52:23.677Z",
+      "lastModified": "2026-04-14T09:52:23.832Z",
       "taskCount": 1661,
       "completedCount": 1333,
       "tags": [
