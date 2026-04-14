@@ -137,3 +137,35 @@ fn solver_hint_missing_collection_warns() {
         warns.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ── Step 17: @solver_hint in guarded block compiles ────────────────────────
+
+#[test]
+fn solver_hint_in_guarded_block_compiles() {
+    let source = r#"structure S {
+        param x : Real = 1
+        where x > 0 {
+            @solver_hint("discrete_set", sizes)
+            param width : Length = auto
+        }
+    }"#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let template = &module.templates[0];
+    // Find the guarded "width" value cell
+    let width_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "width")
+        .expect("expected a 'width' value cell");
+
+    assert_eq!(
+        width_cell.solver_hints.len(),
+        1,
+        "expected 1 solver hint on guarded param, got {:?}",
+        width_cell.solver_hints
+    );
+    assert_eq!(width_cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
+    assert_eq!(width_cell.solver_hints[0].collection, "sizes");
+}
