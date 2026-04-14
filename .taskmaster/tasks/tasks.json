@@ -34373,11 +34373,11 @@
         "description": "Post-merge review of Task 774 identified three test-quality improvements in `crates/reify-expr/tests/field_eval_tests.rs` for the two arity-mismatch tests added there. All three target the same file and complementary concerns; address them together.\n\n1. **Make one-param test discriminating (lines 184-270).** `sample_one_param_lambda_with_three_element_point_returns_undef` currently asserts end-state Undef with an inline `negate_value(Point) → Undef` body_check. But a hypothetical failure mode where sample() decomposed the Point into 3 args (triggering apply_lambda's arity check: 3 args vs 1 param → Undef) would still make the assertion pass, defeating the stated \"binds the entire Point as a single value\" contract. Fix: use a body that observably depends on what `x` is bound to — e.g., `count(x)` returning 3 iff x is bound to the whole Point, or a String codomain body that lets you assert on a Point-shaped result. Goal: make the binding observable rather than inferred from a shared Undef sink.\n\n2. **Address redundancy with gradient_tests.rs:262-299 (lines 259-346).** `sample_multi_param_lambda_returns_undef_due_to_no_unpacking` hits the same apply_lambda arity check (lib.rs:586) that `wrong_size_point` in gradient_tests.rs already pins (passes a 2-elt Tensor as 1 arg to a 3-param lambda → Undef). Prefer: add a cross-reference comment pointing to gradient_tests.rs so maintainers see both pin the same contract, AND extend the assertion to also verify the constant body `42.0` is NOT observed (e.g., `assert_ne!(result, Value::Real(42.0))`) to make the \"unreachable body\" claim explicit. Alternative: drop the test in favor of gradient_tests.rs coverage.\n\n3. **Document intentional type-incoherence (lines 309-310 and 244).** The multi-param test's Field has `domain_type: Type::Real` but its lambda has 3 params — a type-incoherent Field the compiler would never produce. Add a sentence to the doc comment acknowledging this is intentionally synthetic to exercise the runtime defensive path and noting that sample()'s analytical dispatch does not consult the type metadata. Likewise, in the one-param test, `field_type` uses `Type::point3(Type::length())` but the runtime Point uses plain `Value::Real(...)` — consider using `Value::Scalar { dimension: LENGTH }` components to match the type (see `sample_gradient_of_constant_field_near_zero` at ~line 408 for the idiomatic pattern).\n\nmemory_hints: search \"apply_lambda arity check\", read crates/reify-expr/tests/field_eval_tests.rs:184-346 and crates/reify-expr/tests/gradient_tests.rs:260-299 before starting.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:25.812Z",
+        "updatedAt": "2026-04-14T12:30:54.024Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -34460,7 +34460,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:30:53.375Z",
+      "lastModified": "2026-04-14T12:30:54.025Z",
       "taskCount": 1661,
       "completedCount": 1338,
       "tags": [
