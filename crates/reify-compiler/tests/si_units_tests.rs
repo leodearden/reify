@@ -700,6 +700,55 @@ fn prefix_set_only_empty_excludes_all() {
     assert!(!ps.includes("n"));
 }
 
+// ── PrefixSet field on SiPrefixBase ──────────────────────────────────────────
+
+#[test]
+fn si_prefix_bases_use_prefix_set_enum() {
+    let find_base = |name: &str| -> &si_units::SiPrefixBase {
+        si_units::SI_PREFIX_BASES
+            .iter()
+            .find(|b| b.name == name)
+            .unwrap_or_else(|| panic!("base `{}` missing from SI_PREFIX_BASES", name))
+    };
+
+    // Unrestricted bases use PrefixSet::All.
+    for name in &["m", "g", "s", "A", "mol"] {
+        let base = find_base(name);
+        assert_eq!(
+            base.prefix_combos,
+            si_units::PrefixSet::All,
+            "base `{}` should have PrefixSet::All, got {:?}",
+            name,
+            base.prefix_combos
+        );
+    }
+
+    // Restricted bases use PrefixSet::Only with correct prefix lists.
+    let k = find_base("K");
+    assert_eq!(
+        k.prefix_combos,
+        si_units::PrefixSet::Only(&["n", "u", "m"]),
+        "K should have PrefixSet::Only(&[\"n\", \"u\", \"m\"]), got {:?}",
+        k.prefix_combos
+    );
+
+    let cd = find_base("cd");
+    assert_eq!(
+        cd.prefix_combos,
+        si_units::PrefixSet::Only(&["m", "u"]),
+        "cd should have PrefixSet::Only(&[\"m\", \"u\"]), got {:?}",
+        cd.prefix_combos
+    );
+
+    let rad = find_base("rad");
+    assert_eq!(
+        rad.prefix_combos,
+        si_units::PrefixSet::Only(&["m", "u", "n"]),
+        "rad should have PrefixSet::Only(&[\"m\", \"u\", \"n\"]), got {:?}",
+        rad.prefix_combos
+    );
+}
+
 // ─── S4: SI_PREFIX_BASES restricted prefix filtering ─────────────────────────
 
 /// Once SI_PREFIX_BASES supports per-base prefix_combos filtering, the generator
