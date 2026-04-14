@@ -538,6 +538,37 @@ fn stdlib_fn_no_args_emits_type_inference_warning() {
     );
 }
 
+// ── task-1666 step-2: negative case — single-arg call must NOT emit zero-arg warning ──
+
+/// Calling a stdlib-style function with one argument must NOT produce a
+/// "zero-arg function" type-inference warning.
+///
+/// expr.rs:594-597 takes the `compiled_args.first().map(...)` path when args
+/// are present, so `unwrap_or_else` (which emits the warning) is never reached.
+/// This test prevents regressions where the warning is emitted unconditionally.
+#[test]
+fn stdlib_fn_single_arg_no_zero_arg_warning() {
+    let source = r#"
+        structure S {
+            let x = sqrt(1.0)
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(
+        errors.is_empty(),
+        "single-arg stdlib call should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warning_diagnostics(&module);
+    assert!(
+        warnings.iter().all(|d| !d.message.contains("zero-arg function")),
+        "single-arg call should not emit a zero-arg warning, got: {:?}",
+        warnings
+    );
+}
+
 // ── task-823 step-13: expr.rs:1511 sub-member type ICE — green path ─────────
 
 /// Sub-component qualified member access compiles without ICE.
