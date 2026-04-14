@@ -132,10 +132,39 @@ fn geom_ready_purpose_compiled_and_activatable() {
 /// NOTE: Ad-hoc selectors currently evaluate to Value::Undef in the pure expression
 /// evaluator (reify-expr/src/lib.rs:511). We intentionally do NOT assert on the
 /// payload — only on presence — so this test remains valid when engine-side geometry
-/// resolution lands later.
+/// resolution lands later. See reify-expr/src/lib.rs:511 for the Undef quirk.
 #[test]
 fn ad_hoc_port_selector_let_binding_present() {
-    todo!("step-20 impl: verify supply_point cell is present in compiled template and eval results")
+    // (a) Compiled template has a value cell named supply_point
+    let compiled = parse_and_compile_with_stdlib(&source());
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly template should exist");
+
+    let has_supply_point = assembly
+        .value_cells
+        .iter()
+        .any(|c| c.id.member == "supply_point");
+    assert!(
+        has_supply_point,
+        "Assembly template should have a value cell named 'supply_point' (from `let supply_point = supply @ point(...)`)"
+    );
+
+    // (b) Eval result contains the supply_point key (payload may be Undef — see note above)
+    let result = eval_source(&source());
+    let supply_point_id = ValueCellId::new("Assembly", "supply_point");
+    assert!(
+        result.values.contains(&supply_point_id),
+        "eval result should contain Assembly.supply_point; Assembly-entity keys present: {:?}",
+        result
+            .values
+            .iter()
+            .filter(|(k, _)| k.entity == "Assembly")
+            .map(|(k, _)| k.member.as_str())
+            .collect::<Vec<_>>()
+    );
 }
 
 // ── Test 9: where-block nested constraints present and satisfied ──────────────
