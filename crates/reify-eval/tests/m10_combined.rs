@@ -58,6 +58,16 @@ fn constraint_count(engine: &Engine) -> usize {
         .len()
 }
 
+// ── Test 6: frame/transform lets and port frames present ─────────────────────
+
+/// Feature 3 (Frame/Transform in let bindings and port definitions).
+/// Asserts rot/base/mount/xform are non-Undef and that supply/demand ports
+/// have frame_expr compiled (confirming `frame = base` and `frame = mount`).
+#[test]
+fn frame_transform_lets_and_port_frames_present() {
+    todo!("step-12 impl: assert frame/transform lets non-Undef and ports have frame_expr")
+}
+
 // ── Test 5: geometric let bindings are determined ────────────────────────────
 
 /// Feature 1 (geometric type params) + Feature 2 (Point/Vector arithmetic in lets).
