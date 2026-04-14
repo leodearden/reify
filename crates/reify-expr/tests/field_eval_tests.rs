@@ -181,6 +181,163 @@ fn sample_temperature_over_length_field() {
     );
 }
 
+/// Sampling a 1-param analytical field with a 3-element Point returns Undef.
+///
+/// # Contract pinned
+///
+/// sample() must return `Value::Undef` when the lambda parameter count and the
+/// point dimension count are mismatched. This test covers the case where the
+/// domain is a 3-element `Type::point3` but the lambda has only one parameter.
+///
+/// # Mechanism
+///
+/// sample's analytical path forwards the entire point as a **single element**
+/// to apply_lambda (`&evaluated_args[1..]` is a 1-element slice). For a 1-param
+/// lambda the apply_lambda arity check therefore **passes** (1 arg == 1 param),
+/// and the body executes with `x` bound to the full `Value::Point(...)`.
+///
+/// The body is `-x` (`UnOp::Neg` applied to x). Per spec 3.3.1 affine rules,
+/// point negation is forbidden: `negate_value(Point(_))` returns `Value::Undef`,
+/// confirmed by the existing `value_negate_point3_returns_undef` test in
+/// `point_vector_eval_tests.rs`. The body evaluation therefore yields Undef,
+/// which propagates up through sample().
+///
+/// Together with `sample_three_param_lambda_with_scalar_point_returns_undef`
+/// (which directly exercises the apply_lambda arity-check code path), these two
+/// tests jointly pin the observable durable contract: sample() returns Undef
+/// whenever the lambda parameter count and the point dimension count do not match.
+#[test]
+fn sample_one_param_lambda_with_three_element_point_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| -> -x  (body is UnOp::Neg applied to x)
+    // When x is bound to a Value::Point, negate_value returns Value::Undef per
+    // spec 3.3.1 (affine rules forbid point negation).
+    let body = CompiledExpr::unop(
+        reify_types::UnOp::Neg,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::length());
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // sample(field, Point3(1.0, 2.0, 3.0)) -> Undef
+    // apply_lambda sees 1 arg (the whole Point) vs 1 param -> arity passes.
+    // Body `-x` with x = Point returns Undef via negate_value (affine rules).
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "sample of 1-param field with 3-element Point must return Undef \
+         (body -x returns Undef via affine rules when x is a Point)"
+    );
+}
+
+/// Sampling a 3-param analytical field with a scalar point returns Undef.
+///
+/// # Contract pinned
+///
+/// sample() must return `Value::Undef` when the lambda parameter count and the
+/// point dimension count are mismatched. This test covers the case where the
+/// domain is a scalar (`Type::Real`) but the lambda has three parameters.
+///
+/// # Mechanism
+///
+/// sample's analytical path forwards the entire scalar as a **single element**
+/// to apply_lambda (`&evaluated_args[1..]` is a 1-element slice containing the
+/// `Value::Real(1.0)` point). apply_lambda checks arity at
+/// `crates/reify-expr/src/lib.rs:586`:
+///
+/// ```rust
+/// if args.len() != params.len() {
+///     return Value::Undef;
+/// }
+/// ```
+///
+/// Here `args.len() == 1` but `params.len() == 3`, so the check fires and
+/// `Value::Undef` is returned **before the body is evaluated**. The constant
+/// body (`42.0`) is therefore unreachable in this test — it exists only to
+/// satisfy the lambda construction and to match the idiomatic 3-param pattern
+/// from `sample_gradient_of_constant_field_near_zero`.
+///
+/// Together with `sample_one_param_lambda_with_three_element_point_returns_undef`,
+/// this test jointly pins the observable durable contract: sample() returns Undef
+/// whenever the lambda parameter count and the point dimension count do not match.
+#[test]
+fn sample_three_param_lambda_with_scalar_point_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| 42.0  (constant body; unreachable due to arity check)
+    let body = CompiledExpr::literal(Value::Real(42.0), Type::Real);
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // sample(field, Real(1.0)) -> Undef
+    // apply_lambda sees 1 arg vs 3 params -> arity check fires -> Undef.
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(Value::Real(1.0), domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "sample of 3-param field with scalar point must return Undef \
+         (apply_lambda arity check: 1 arg vs 3 params)"
+    );
+}
+
 // ── Transient: gradient stub tests (MUST be updated when gradient is implemented) ──
 
 /// Gradient of a constant field should yield near-zero components.
