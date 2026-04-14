@@ -23817,7 +23817,7 @@
         "updatedAt": "2026-04-14T07:04:19.728Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/tests/qualified_access_compile_tests.rs"
@@ -24146,7 +24146,7 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
