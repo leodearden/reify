@@ -22938,11 +22938,10 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-stdlib/src/lib.rs",
-            "crates/reify-stdlib/src/orientation.rs"
+            "crates/reify-stdlib/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-stdlib"
+            "crates/reify-stdlib/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
@@ -23170,7 +23169,7 @@
         "updatedAt": "2026-04-14T07:04:19.015Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
             "crates/reify-compiler/src/module_dag.rs"
