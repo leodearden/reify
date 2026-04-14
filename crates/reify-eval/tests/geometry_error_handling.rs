@@ -1390,7 +1390,7 @@ fn build_scale_negative_factor_emits_diagnostic() {
 /// 1. Call kernel exactly once — for the preceding Sphere that provides the
 ///    profile handle — but never call kernel for the Extrude op itself.
 /// 2. Return geometry_output=None (the realization as a whole fails).
-/// 3. Emit a Warning whose message contains both 'extrude dropped' and 'degenerate'
+/// 3. Emit a Warning whose message contains 'extrude dropped', 'degenerate', and 'NaN'
 ///    (the site-specific diagnostic from lib.rs:3670).
 /// 4. Emit an Error containing 'failed to compile geometry operation'.
 /// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
