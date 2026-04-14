@@ -1103,15 +1103,15 @@ impl Value {
 /// Return `true` iff all four quaternion components are finite (not NaN,
 /// not ±∞).
 ///
-/// This is the shared orientation-finiteness predicate used by:
+/// This is the shared quaternion-finiteness predicate used by:
 /// - `sanitize_value` in `reify-expr` and `reify-stdlib` (Orientation arm)
 /// - The Transform * Vector, Transform * Point, and Transform * Transform
 ///   rotation guards in `reify-expr`
 ///
-/// Callers write `!orientation_is_finite(w, x, y, z)` to test for the
+/// Callers write `!quaternion_is_finite(w, x, y, z)` to test for the
 /// "return Undef" branch, preserving existing control-flow patterns.
 #[inline]
-pub fn orientation_is_finite(w: f64, x: f64, y: f64, z: f64) -> bool {
+pub fn quaternion_is_finite(w: f64, x: f64, y: f64, z: f64) -> bool {
     w.is_finite() && x.is_finite() && y.is_finite() && z.is_finite()
 }
 
@@ -4858,68 +4858,68 @@ mod tests {
         Value::Orientation { w, x, y, z }
     }
 
-    // ── orientation_is_finite predicate tests ────────────────────────────────
+    // ── quaternion_is_finite predicate tests ────────────────────────────────
 
     #[test]
-    fn orientation_is_finite_all_finite_returns_true() {
+    fn quaternion_is_finite_all_finite_returns_true() {
         assert!(
-            orientation_is_finite(1.0, 0.0, 0.0, 0.0),
+            quaternion_is_finite(1.0, 0.0, 0.0, 0.0),
             "all-finite quaternion should be finite"
         );
     }
 
     #[test]
-    fn orientation_is_finite_nan_in_w_returns_false() {
+    fn quaternion_is_finite_nan_in_w_returns_false() {
         assert!(
-            !orientation_is_finite(f64::NAN, 0.0, 0.0, 0.0),
+            !quaternion_is_finite(f64::NAN, 0.0, 0.0, 0.0),
             "NaN in w should not be finite"
         );
     }
 
     #[test]
-    fn orientation_is_finite_nan_in_x_returns_false() {
+    fn quaternion_is_finite_nan_in_x_returns_false() {
         assert!(
-            !orientation_is_finite(1.0, f64::NAN, 0.0, 0.0),
+            !quaternion_is_finite(1.0, f64::NAN, 0.0, 0.0),
             "NaN in x should not be finite"
         );
     }
 
     #[test]
-    fn orientation_is_finite_nan_in_y_returns_false() {
+    fn quaternion_is_finite_nan_in_y_returns_false() {
         assert!(
-            !orientation_is_finite(1.0, 0.0, f64::NAN, 0.0),
+            !quaternion_is_finite(1.0, 0.0, f64::NAN, 0.0),
             "NaN in y should not be finite"
         );
     }
 
     #[test]
-    fn orientation_is_finite_nan_in_z_returns_false() {
+    fn quaternion_is_finite_nan_in_z_returns_false() {
         assert!(
-            !orientation_is_finite(1.0, 0.0, 0.0, f64::NAN),
+            !quaternion_is_finite(1.0, 0.0, 0.0, f64::NAN),
             "NaN in z should not be finite"
         );
     }
 
     #[test]
-    fn orientation_is_finite_pos_inf_returns_false() {
+    fn quaternion_is_finite_pos_inf_returns_false() {
         assert!(
-            !orientation_is_finite(f64::INFINITY, 0.0, 0.0, 0.0),
+            !quaternion_is_finite(f64::INFINITY, 0.0, 0.0, 0.0),
             "+Inf in w should not be finite"
         );
     }
 
     #[test]
-    fn orientation_is_finite_neg_inf_returns_false() {
+    fn quaternion_is_finite_neg_inf_returns_false() {
         assert!(
-            !orientation_is_finite(0.0, f64::NEG_INFINITY, 0.0, 0.0),
+            !quaternion_is_finite(0.0, f64::NEG_INFINITY, 0.0, 0.0),
             "-Inf in x should not be finite"
         );
     }
 
     #[test]
-    fn orientation_is_finite_all_non_finite_returns_false() {
+    fn quaternion_is_finite_all_non_finite_returns_false() {
         assert!(
-            !orientation_is_finite(f64::NAN, f64::NAN, f64::INFINITY, f64::NEG_INFINITY),
+            !quaternion_is_finite(f64::NAN, f64::NAN, f64::INFINITY, f64::NEG_INFINITY),
             "all-non-finite quaternion should not be finite"
         );
     }
