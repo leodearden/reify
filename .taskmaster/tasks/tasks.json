@@ -33928,11 +33928,11 @@
         "description": "Follow-up from Task 1622 review triage (esc-1622-16, S1+S2+S5).\n\nThree related gaps in the meta-test `ignore_reason_strings_have_no_stale_plan_pointers` at crates/reify-expr/tests/field_calculus_tests.rs:~3906-3962:\n\n1. **Docstring overstates positive-invariant coverage (S1, line ~3915-3917).** The docstring claims `starts_with(\"known bug:\")` \"catches stale pointers of any form (`see plan.md`, `step-3 of plan`, `analysis in step-7`, …)\". That is only true when the stale pointer REPLACES the `known bug:` prefix. A reason like `#[ignore = \"known bug: see plan.md step-3\"]` passes the positive check and would only be caught by the sentinel if it happened to contain the literal `plan step-` substring. Variants like `plan-step`, `plan.md`, `step-3 of plan`, or `analysis in step-7` slip past both guards.\n   Fix: either (a) tighten the docstring to say honestly \"rejects reasons that don't start with `known bug:`, plus a sentinel for the original `plan step-` substring; other stale-pointer wordings inside compliant prefixes are not caught\", or (b) strengthen the negative check to a small regex set like `(?i)(plan[\\s\\-_.]?step|plan[\\s\\-_.]?doc|see\\s+(plan|step)|analysis in step)`.\n\n2. **Bare `#[ignore]` silently exempt (S2, line ~3935-3948).** The walk loop only inspects what follows `#[ignore = \"`. A bare `#[ignore]` (no reason string) bypasses the check entirely, even though the docstring says \"every #[ignore] reason string\". If someone drops the reason string, the guard will not flag it and the convention silently regresses.\n   Fix: either explicitly forbid bare `#[ignore]` in this file (assert zero matches of `#[ignore]` not followed by ` = \"`), or narrow the docstring to \"every `#[ignore = \"...\"]` reason string\".\n\n3. **Runtime-assembled marker is obscure (S5, line ~3935).** The clever `[\"#[ignore\", \" = \\\"\"].concat()` and `[\"plan\", \" step-\"].concat()` are easy to accidentally inline back, which would cause the meta-test to self-trigger and fail confusingly. The function docstring mentions this but there is no inline warning at the assembly site.\n   Fix: add a brief inline comment at both concat sites like `// DO NOT inline — must avoid literal #[ignore = \" appearing in this source file or this test will match itself`.\n\nAll three fixes touch the same function and are small. Keep the scope narrow: only the meta-test, no behavioral changes to the placeholder tests.\n\nmemory_hints:\n- Task 1622 introduced this meta-test; see its commits (5f0db11ae, 8219f5c91) for rationale.\n- The convention is \"#[ignore] reasons in this file must begin with `known bug:`\".\n\nModules: crates/reify-expr/tests",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-13T23:54:56.935Z",
+        "updatedAt": "2026-04-14T04:06:52.365Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -34116,7 +34116,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T04:06:41.705Z",
+      "lastModified": "2026-04-14T04:06:52.365Z",
       "taskCount": 1652,
       "completedCount": 1320,
       "tags": [
