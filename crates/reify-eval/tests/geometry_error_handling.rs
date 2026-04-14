@@ -1537,11 +1537,11 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
 /// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
 ///    called for the Revolve op).
 ///
-/// Although stress_sweep_degenerate.rs already has a revolve_zero_angle test,
-/// this test lives in geometry_error_handling.rs alongside the other
-/// build_*_emits_diagnostic tests and follows the stricter assertion pattern
-/// (kernel-ops count + specific Warning + compile Error + no kernel error),
-/// ensuring the angle-check site at lib.rs:3710 is guarded by this file's suite.
+/// This is the canonical guard for the angle-degenerate check at lib.rs:3710.
+/// The weaker revolve_zero_angle test that previously existed in
+/// stress_sweep_degenerate.rs has been removed — this test supersedes it with
+/// stricter assertions (kernel-ops count + specific Warning + compile Error +
+/// no kernel error).
 #[test]
 fn build_revolve_zero_angle_emits_diagnostic() {
     use reify_compiler::SweepKind;
