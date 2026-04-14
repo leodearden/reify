@@ -9858,8 +9858,8 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-eval/src/lib.rs",
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-eval/tests/recursive_unfold.rs"
+            "crates/reify-eval/tests/recursive_unfold.rs",
+            "crates/reify-compiler/tests/recursive_detection_tests.rs"
           ],
           "modules": [
             "crates/reify-eval",
