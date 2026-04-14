@@ -27300,7 +27300,7 @@
         "updatedAt": "2026-04-13T18:30:15.851Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs"
@@ -27320,7 +27320,7 @@
         "updatedAt": "2026-04-14T07:04:21.699Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/tests/trait_merge_tests.rs"
