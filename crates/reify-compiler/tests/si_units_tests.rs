@@ -825,3 +825,45 @@ fn si_prefix_bases_restricted_entries_only_generate_specified_prefixes() {
         .count();
     assert_eq!(rad_count, 3, "rad must emit exactly 3 prefixed units (m, u, n); got {}", rad_count);
 }
+
+// ── PrefixSet field on SiDerivedUnit ─────────────────────────────────────────
+
+#[test]
+fn si_derived_units_use_prefix_set_only() {
+    // (1) Every entry in SI_DERIVED_UNITS must use PrefixSet::Only (never All).
+    for unit in si_units::SI_DERIVED_UNITS {
+        assert!(
+            matches!(unit.prefix_combos, si_units::PrefixSet::Only(_)),
+            "derived unit `{}` must use PrefixSet::Only, got {:?}",
+            unit.name,
+            unit.prefix_combos
+        );
+    }
+
+    // (2) Units with no prefixed variants must have PrefixSet::Only(&[]).
+    for name in &["lm", "lx", "Bq", "bar", "mbar", "rpm", "rad_per_s", "Pa_s", "sr"] {
+        let unit = si_units::SI_DERIVED_UNITS
+            .iter()
+            .find(|u| u.name == *name)
+            .unwrap_or_else(|| panic!("derived unit `{}` missing", name));
+        assert_eq!(
+            unit.prefix_combos,
+            si_units::PrefixSet::Only(&[]),
+            "unit `{}` should have PrefixSet::Only(&[]), got {:?}",
+            name,
+            unit.prefix_combos
+        );
+    }
+
+    // (3) Spot-check: N has PrefixSet::Only(&["k", "M", "G"]).
+    let n = si_units::SI_DERIVED_UNITS
+        .iter()
+        .find(|u| u.name == "N")
+        .expect("N missing from SI_DERIVED_UNITS");
+    assert_eq!(
+        n.prefix_combos,
+        si_units::PrefixSet::Only(&["k", "M", "G"]),
+        "N should have PrefixSet::Only(&[\"k\", \"M\", \"G\"]), got {:?}",
+        n.prefix_combos
+    );
+}
