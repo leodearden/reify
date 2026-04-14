@@ -174,6 +174,38 @@ mod tests {
         }
     }
 
+    /// Negative test: a constraint that is definitively false should produce
+    /// `Satisfaction::Violated` under `SimpleConstraintChecker`, differentiating
+    /// it from `MockConstraintChecker` (which only tracks, never really evaluates).
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_make_simple_engine_violated_constraint() {
+        use reify_types::Satisfaction;
+
+        let source = r#"structure Bad {
+            param a: Real = 1.0
+            constraint a > 2.0
+        }"#;
+
+        let result = super::check_source(source);
+
+        // Must produce exactly 1 constraint result
+        assert_eq!(
+            result.constraint_results.len(),
+            1,
+            "expected exactly 1 constraint result, got {}",
+            result.constraint_results.len()
+        );
+
+        // That constraint must be Violated (1.0 > 2.0 is false)
+        assert_eq!(
+            result.constraint_results[0].satisfaction,
+            Satisfaction::Violated,
+            "constraint should be Violated (1.0 > 2.0 is false), got {:?}",
+            result.constraint_results[0].satisfaction
+        );
+    }
+
     #[test]
     fn test_parse_compile_expect_err_detects_error() {
         // Source with an undefined reference should produce a compile error.
