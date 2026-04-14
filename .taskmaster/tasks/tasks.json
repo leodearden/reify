@@ -28920,7 +28920,10 @@
         "updatedAt": "2026-04-09T21:08:53.542Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/silent_defaults_tests.rs"
           ]
         }
       },
@@ -29005,7 +29008,10 @@
         "updatedAt": "2026-04-09T21:10:26.026Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval/src"
+            "crates/reify-eval"
+          ],
+          "files": [
+            "crates/reify-eval/src/deps.rs"
           ]
         }
       },
