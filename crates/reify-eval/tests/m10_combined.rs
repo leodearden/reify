@@ -64,9 +64,69 @@ fn constraint_count(engine: &Engine) -> usize {
 /// Asserts assembly has exactly 1 connection, connector_sub is present,
 /// port_mappings contains diameter→diameter and flow_rate→flow_rate,
 /// and the compatibility constraint is Satisfied.
+///
+/// Note: `connector_sub` stores an auto-generated name like `__connector_0`,
+/// not the connector type name (BoltSet). We assert `.is_some()` rather than
+/// comparing to a string — if the identifier didn't resolve, compilation would error.
 #[test]
 fn assembly_connect_has_connector_and_explicit_mapping() {
-    todo!("step-14 impl: assert connection connector_sub, port_mappings, compat constraint")
+    let compiled = parse_and_compile_with_stdlib(&source());
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly template should exist");
+
+    // Exactly one connection (supply -> demand : BoltSet)
+    assert_eq!(
+        assembly.connections.len(),
+        1,
+        "Assembly should have exactly 1 connection, got {}",
+        assembly.connections.len()
+    );
+
+    let conn = &assembly.connections[0];
+
+    // (a) Connector sub is present (the `: BoltSet` produced a connector sub)
+    assert!(
+        conn.connector_sub.is_some(),
+        "connection should have a connector_sub (from `: BoltSet`)"
+    );
+
+    // (b) Explicit port mappings contain diameter→diameter and flow_rate→flow_rate
+    assert!(
+        conn.port_mappings.len() >= 2,
+        "expected >= 2 port mappings (diameter, flow_rate), got {}",
+        conn.port_mappings.len()
+    );
+    assert!(
+        conn.port_mappings
+            .iter()
+            .any(|(from, to)| from == "diameter" && to == "diameter"),
+        "port_mappings should contain (diameter, diameter); got {:?}",
+        conn.port_mappings
+    );
+    assert!(
+        conn.port_mappings
+            .iter()
+            .any(|(from, to)| from == "flow_rate" && to == "flow_rate"),
+        "port_mappings should contain (flow_rate, flow_rate); got {:?}",
+        conn.port_mappings
+    );
+
+    // (c) Compatibility constraint is Satisfied
+    let compat_id = &conn.compatibility_constraint;
+    let check_result = check_source(&source());
+    let compat_entry = check_result
+        .constraint_results
+        .iter()
+        .find(|e| &e.id == compat_id)
+        .unwrap_or_else(|| panic!("compatibility constraint {compat_id} not found in check results"));
+    assert_eq!(
+        compat_entry.satisfaction,
+        Satisfaction::Satisfied,
+        "compatibility constraint should be Satisfied"
+    );
 }
 
 // ── Test 6: frame/transform lets and port frames present ─────────────────────
