@@ -34050,6 +34050,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1649,
+        "title": "Split phase_zero_complex_returns_undef into positive-zero and signed-zero tests",
+        "description": "In crates/reify-expr/src/complex.rs around line 502, phase_zero_complex_returns_undef bundles two assertions in a single #[test]: (0.0, 0.0) and the IEEE-754 signed-zero variant (-0.0, -0.0). If the first assertion fires, the second is never run, so a regression in only the signed-zero path would be masked. Split into two independent #[test] functions — e.g. phase_zero_complex_returns_undef for (0.0, 0.0) and phase_signed_zero_complex_returns_undef for (-0.0, -0.0) — so each gives an independent failure signal. This matches the one-behavior-per-test convention already used in this file (cf. phase_inf_re_returns_undef vs phase_inf_im_returns_undef). Preserve the current explanatory comments on each test.",
+        "details": "Source: post-merge review of Task 953 (esc-953-22, suggestion S2, reviewer_comprehensive). Location: crates/reify-expr/src/complex.rs:502. Category: test_organization.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -34062,7 +34073,7 @@
       ],
       "created": "2026-04-14T00:14:27.701Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-14T00:14:27.724Z"
+      "updated": "2026-04-14T00:15:30.024Z"
     }
   }
 }
