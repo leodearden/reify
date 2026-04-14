@@ -35010,15 +35010,42 @@
         "subtasks": []
       },
       {
-        "id": 1680,
+        "id": "1680",
         "title": "Restore Fillet needle and generalize assert_rejected_at_compile",
-        "description": "From esc-1628-28. Two fixes in geometry_error_handling.rs.",
-        "details": "",
-        "testStrategy": "",
+        "description": "From esc-1628-28. Two fixes in geometry_error_handling.rs. S1: Restore 'Fillet' needle in build_modify_missing_arg_no_kernel_error. S2: Generalize assert_rejected_at_compile to accept Option for primitive check.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "details": "S1: The 'Fillet' needle was dropped during refactoring. Restore it in the warning_needles array: &[\"missing required geometry argument\", \"radius\", \"Fillet\"]. Update the corresponding doc comment to reflect this change.\n\nS2: Modify the assert_rejected_at_compile helper to accept an Option<fn(&GeometryOp)->bool>. None indicates zero operations are expected, while Some(f) indicates one operation matching the function f. This allows build_primitive_missing_arg_no_kernel_error to utilize the helper effectively.",
+        "testStrategy": "Ensure that the 'Fillet' needle is correctly restored by running tests that check for missing geometry arguments. Verify the generalized assert_rejected_at_compile by testing both scenarios: with None and Some(f) options, ensuring correct behavior in each case.",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Restore 'Fillet' needle",
+            "description": "Add 'Fillet' back to warning_needles in build_modify_missing_arg_no_kernel_error and update the doc comment.",
+            "dependencies": [],
+            "details": "Update the warning_needles array to include 'Fillet' and ensure the doc comment reflects this change.",
+            "status": "pending",
+            "testStrategy": "Run tests to confirm the presence of 'Fillet' in error messages for missing geometry arguments."
+          },
+          {
+            "id": 2,
+            "title": "Generalize assert_rejected_at_compile",
+            "description": "Modify the helper to accept Option for primitive check.",
+            "dependencies": [],
+            "details": "Change the function signature to accept Option<fn(&GeometryOp)->bool> and update its usage in build_primitive_missing_arg_no_kernel_error.",
+            "status": "pending",
+            "testStrategy": "Test the helper with both None and Some(f) to ensure correct operation handling."
+          }
+        ],
+        "metadata": {
+          "source": "steward-triage",
+          "spawn_context": "steward-triage",
+          "spawned_from": "1628",
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       }
     ],
     "metadata": {
