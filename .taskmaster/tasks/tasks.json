@@ -33296,7 +33296,7 @@
         "updatedAt": "2026-04-10T20:32:44.364Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ],
           "files": [
             "crates/reify-eval/tests/collection_sub_eval.rs"
@@ -33340,8 +33340,8 @@
         "updatedAt": "2026-04-14T07:04:27.786Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
-            "crates/reify-compiler"
+            "crates/reify-eval/tests",
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-eval/tests/connect_eval.rs",
