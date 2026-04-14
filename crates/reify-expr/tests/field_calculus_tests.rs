@@ -4253,3 +4253,70 @@ fn ignore_reason_strings_have_no_stale_plan_pointers() {
          laplacian_sample_mixed_length_to_real_placeholder."
     );
 }
+
+// ── check_ignore_reasons unit tests ──────────────────────────────────────────
+// These five tests exercise the check_ignore_reasons helper introduced in
+// Task 1641.  All synthetic source strings use runtime concatenation so this
+// test file does not contain the literal sequences "#[ignore" or "plan step-"
+// as adjacent characters — preserving the non-self-trigger invariant.
+
+#[test]
+fn check_ignore_reasons_rejects_bare_ignore_in_code() {
+    // A bare #[ignore] attribute (no reason string) in non-comment code must
+    // be rejected outright.  Source assembled at runtime to avoid the literal
+    // "#[ignore" sequence in this file.
+    let src = ["#[", "ignore]\n#[test]\nfn foo() {}"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_err(),
+        "expected bare-ignore attribute (no reason string) to be rejected",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_allows_bare_ignore_mentioned_in_doc_comments() {
+    // A bare #[ignore] that appears only inside a `///` doc-comment line must
+    // NOT trigger a rejection — doc-comment lines are skipped by the scanner.
+    // Source assembled at runtime to avoid the literal sequence in this file.
+    let src = ["/// example: ", "#[", "ignore] is load-bearing\n"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_ok(),
+        "expected bare-ignore inside a doc comment to be allowed",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_accepts_compliant_source() {
+    // A reason string beginning with "known bug:" complies with the Task 1622
+    // convention and must be accepted.  Source assembled at runtime.
+    let src = ["#[", "ignore = \"known bug: placeholder summary\"]"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_ok(),
+        "expected a compliant \"known bug:\" reason string to be accepted",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_rejects_non_known_bug_reason() {
+    // A reason string that does NOT begin with "known bug:" must be rejected
+    // by the positive-invariant guard.  The reason deliberately does not
+    // contain the stale-pointer needle so only the positive guard fires.
+    // Source assembled at runtime.
+    let src = ["#[", "ignore = \"some other prefix here\"]"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_err(),
+        "expected a non-\"known bug:\" reason string to be rejected",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_rejects_stale_plan_step_needle() {
+    // A source containing the stale-pointer needle (assembled at runtime)
+    // must be rejected by the belt-and-suspenders negative sentinel.
+    // Needle and source assembled at runtime so this file does not contain
+    // the literal sequence as adjacent characters.
+    let src = ["# source containing the needle: ", "plan", " step-", "5\n"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_err(),
+        "expected source containing the stale-pointer needle to be rejected",
+    );
+}
