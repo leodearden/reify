@@ -29155,11 +29155,11 @@
         "description": "Two related documentation issues around sub_member_types after Task 1365's landing:\n\n1. crates/reify-compiler/src/scope.rs:36 — the doc comment reads \"Member types for non-collection sub-components\" but entity.rs:417-429 populates sub_member_types for ALL subs unconditionally (no is_collection guard). Update to: \"Member types for all sub-components: sub_name → { member_name → Type }. Populated for ALL subs (collection and non-collection) for self.sub.member resolution.\" This aligns with the new comment already in expr.rs:1506 (\"sub_member_types covers ALL subs\").\n\n2. crates/reify-compiler/src/expr.rs:1512-1517 — the `.or_else(|| ... collection_sub_member_types ...)` fallback branch is unreachable because sub_member_types is a superset of collection_sub_member_types (entity.rs:417 populates for all subs; entity.rs:431 populates for collection subs only). Add a brief comment like \"// Defensive: sub_member_types is a superset, but fall back just in case.\" to explain why the branch exists and prevent future confusion. Do NOT remove the fallback — keep it as defensive coding.\n\nBoth are documentation-only changes, no behavior change. Source: reviewer_comprehensive on Task 1365.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:48.957Z",
+        "updatedAt": "2026-04-14T12:30:24.826Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -31196,11 +31196,11 @@
         "description": "Fix 6 review suggestions from Task 220's M9 integration tests:\n\n1. **Two-engine pattern** (m9_integration.rs:615-622): Replace two separate Engine instances (eval_engine, check_engine) with a single engine — `engine.eval()` then `engine.check()` on the same instance, matching codebase conventions.\n\n2. **assert_ne → assert_eq Violated** (m9_integration.rs:158-167): In `constraint_def_with_determinacy_violated`, replace `assert_ne!(satisfaction, Satisfied)` with `assert_eq!(satisfaction, Violated)` to catch erroneous Indeterminate returns.\n\n3. **assert_ne → assert_eq Violated** (m9_integration.rs:364-368): Same fix in `recursive_structure_determinacy_terminates_on_undetermined`.\n\n4. **Weak template count assertion** (m9_integration.rs:100-103): In `ri_file_parses_and_compiles`, assert expected template count (>= 4) and/or check that specific template names (Widget, Bracket, RecursiveChain, Plate) are present.\n\n5. **Bracket DeterminedInRange count** (m9_integration.rs:557-563): Change `bracket_dir0.len() >= 1` to `>= 2` to verify both DeterminedInRange invocations (size and length) produce results.\n\n6. **Doc comment inaccuracy** (examples/m9_integration.ri:17-18): Update Feature G description from 'determined(span) && depth > 0' to match actual implementation ('depth > 0' guard + per-level `constraint determined(span)`).\n\nmemory_hints: search(\"M9 integration test assertions\", project_id=\"reify\"); get_entity(\"m9_integration.rs\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:49.409Z",
+        "updatedAt": "2026-04-14T12:30:24.916Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests",
@@ -34460,7 +34460,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:30:24.707Z",
+      "lastModified": "2026-04-14T12:30:24.916Z",
       "taskCount": 1661,
       "completedCount": 1338,
       "tags": [
