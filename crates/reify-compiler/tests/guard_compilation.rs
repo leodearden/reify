@@ -578,6 +578,40 @@ structure S {
     );
 }
 
+/// Characterization test: `Port` inside a `where {}` block is silently ignored by
+/// `compile_guarded_members` — no error diagnostic is emitted.
+///
+/// This pins the current silent-drop behavior so future refactors (replacing the
+/// wildcard arm with explicit variant names) are verified behavior-preserving.
+/// The exhaustiveness guarantee (a future new `MemberDecl` variant must be
+/// explicitly handled) is provided by Rust's exhaustiveness checker.
+#[test]
+fn port_in_block_guard_silently_ignored() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    param active : Bool = true
+    where active {
+        port mount : out T { param d : Length = 5mm }
+    }
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for port in block guard \
+         (should be silently dropped), got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// Reference safety: a top-level constraint referencing a guarded param should
 /// produce a diagnostic. Currently the unguarded-reference check only walks
 /// value_cells, not top-level constraints.
