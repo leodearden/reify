@@ -58,6 +58,14 @@ fn constraint_count(engine: &Engine) -> usize {
         .len()
 }
 
+// ── Test 3: all constraints satisfied ────────────────────────────────────────
+
+/// Smoke test: file produces constraint results and all are Satisfied.
+#[test]
+fn all_constraints_satisfied() {
+    todo!("step-6 impl: assert all constraint results are Satisfied")
+}
+
 // ── Test 2: compiles with Assembly template ──────────────────────────────────
 
 /// Compile m10_combined.ri (with stdlib) and verify the compiled module contains
