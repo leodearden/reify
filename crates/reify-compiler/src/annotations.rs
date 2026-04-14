@@ -146,6 +146,27 @@ pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Op
     None
 }
 
+/// Extract the optimization target from a parsed annotation list.
+///
+/// Returns `Some(target)` if there is an `@optimized("target")` annotation with a
+/// `StringLiteral` first arg, or `None` otherwise (including `@optimized` with
+/// no args, a non-string arg, or no `@optimized` annotation at all). Mirrors
+/// `deprecation_message` in shape, but operates on parsed `reify_syntax::Annotation`s
+/// because the helper runs against `ConstraintDef.annotations` before lowering.
+pub(crate) fn optimized_target(annotations: &[reify_syntax::Annotation]) -> Option<String> {
+    for ann in annotations {
+        if ann.name == "optimized" {
+            if let Some(first) = ann.args.first() {
+                if let reify_syntax::ExprKind::StringLiteral(s) = &first.kind {
+                    return Some(s.clone());
+                }
+            }
+            return None;
+        }
+    }
+    None
+}
+
 /// Emit a deprecation warning for a use-site reference to a deprecated entity.
 ///
 /// Format: `use of deprecated <kind> '<name>': <message>` (with message)
