@@ -54,6 +54,8 @@ trait ElasticallyDeformable : Elastic {
 trait Plastic {
     param plastic_strain : Real
     param hardening_modulus : Real
+    constraint hardening_modulus > 0
+    constraint plastic_strain >= 0
 }
 
 // ── Thermal conductivity ────────────────────────────────────────────────────
