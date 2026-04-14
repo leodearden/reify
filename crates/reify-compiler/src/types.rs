@@ -362,6 +362,15 @@ pub struct CompiledConstraint {
     /// Optional pre-classified constraint domain. When `None`, the
     /// classifier determines the domain at solve time.
     pub domain: Option<ConstraintDomain>,
+    /// Optional optimization target extracted from the originating
+    /// `@optimized("target")` annotation on the source `constraint def`.
+    ///
+    /// When `Some`, the Engine's `dispatch_constraints` helper looks up the
+    /// target in its optimization registry and, if a matching `OptimizedImpl`
+    /// is registered, routes this constraint to that implementation instead
+    /// of the language-level `ConstraintChecker`. When `None` (the default),
+    /// the language-level checker handles the constraint as before.
+    pub optimized_target: Option<String>,
 }
 
 /// A realization declaration — specifies geometry to produce.

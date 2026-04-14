@@ -54,7 +54,7 @@ pub(crate) fn lower_annotations(
 ///
 /// Known annotations and their valid contexts:
 /// - `@test`: valid on structure, occurrence, function, constraint_def
-/// - `@optimized`: valid on structure, occurrence
+/// - `@optimized`: valid on structure, occurrence, constraint_def
 /// - `@solver_hint`: valid on structure, occurrence
 /// - `@deprecated`: valid on any context
 pub(crate) fn validate_annotations(
@@ -78,7 +78,7 @@ pub(crate) fn validate_annotations(
                 }
             }
             "optimized" => {
-                if !matches!(context, "structure" | "occurrence") {
+                if !matches!(context, "structure" | "occurrence" | "constraint_def") {
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "annotation @optimized is not valid on {context} declarations"

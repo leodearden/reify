@@ -719,6 +719,7 @@ pub(crate) fn compile_entity(
                         expr: compiled_expr,
                         span: constraint.span,
                         domain: None,
+                        optimized_target: None,
                     };
                     constraint_index += 1;
 
@@ -973,6 +974,7 @@ pub(crate) fn compile_entity(
                                 expr: compiled_expr,
                                 span: constraint.span,
                                 domain: None,
+                                optimized_target: None,
                             });
                             constraint_index += 1;
                         }
@@ -1145,6 +1147,7 @@ pub(crate) fn compile_entity(
                         expr: compiled_expr,
                         span: ci.span,
                         domain: None,
+                        optimized_target: None,
                     };
                     constraint_index += 1;
 

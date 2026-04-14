@@ -341,6 +341,7 @@ pub(crate) fn check_trait_conformance(
                         expr: compiled_expr,
                         span: default.span,
                         domain: None,
+                        optimized_target: None,
                     });
                 }
             }
