@@ -34714,14 +34714,14 @@
         "description": "Implement compiler-layer support for .geometric_params, .material_params, .sub_entities, .ports, .constraints on purpose reflective access. Task 258 only implemented .params at the compiler layer; Task 1638 added evaluator-layer equivalents. crates/reify-compiler has no references to these filter members (confirmed 2026-04-14, edge c6e61f5f). Resolve at elaboration time against the entity's TopologyTemplate.",
         "details": "Test strategy: compiler tests confirming each filter member compiles and produces correct filtered output against a schema query. memory_hints: entities [reify-compiler, TopologyTemplate, ParamDecl], search [Task 258 compiler params reflective access, Task 1638 evaluator filter members geometric_params done, compiler filter member gap c6e61f5f]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [
           "258",
           "1638"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:02:31.228Z",
+        "updatedAt": "2026-04-14T20:15:07.140Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/traits.rs",
@@ -34884,7 +34884,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T20:12:47.591Z",
+      "lastModified": "2026-04-14T20:15:07.140Z",
       "taskCount": 1673,
       "completedCount": 1401,
       "tags": [
