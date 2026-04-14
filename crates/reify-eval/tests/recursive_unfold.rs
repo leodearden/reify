@@ -1835,6 +1835,83 @@ fn non_recursive_child_guarded_sub_not_unfolded() {
     );
 }
 
+/// Phase 2 should NOT recursively unfold guarded subs of a non-recursive ROOT template.
+///
+/// This is the root-level counterpart to `non_recursive_child_guarded_sub_not_unfolded`.
+/// That test checks a non-recursive child nested inside a recursive parent; this test
+/// checks a non-recursive top-level template with no recursive ancestor at all.
+///
+/// Setup:
+///   Template S: is_recursive=false, param n: Int = 1, sub child = C(x: n) where n > 0
+///   Template C: param y: Int = 99
+///
+/// Evaluate (module-level evaluation picks S as root):
+///   S is NOT recursive, so Phase 2 must not recursively unfold S's guarded sub `child`.
+///
+/// Assert: (a) S.n == 1 (Phase 1 params work normally)
+///         (b) S.child.y does NOT exist (Phase 2 must be gated on is_recursive at the top frame)
+///
+/// Task 553 improvement #4: root-level variant of the is_recursive guard.
+/// If S.child.y materialises, escalate as design_concern — Phase 2 is ignoring
+/// is_recursive at the root frame.
+#[test]
+fn non_recursive_top_level_guarded_sub_not_unfolded() {
+    // guard: n > 0  (references S.n)
+    let guard_s = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+
+    // Template S: is_recursive=false, param n: Int = 1, sub child = C(x: n) where n > 0
+    let template_s = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        )
+        .is_recursive(false)
+        .sub_component_with_guard(
+            "child",
+            "C",
+            vec![("x".to_string(), value_ref_typed("S", "n", Type::Int))],
+            guard_s,
+        )
+        .build();
+
+    // Template C: param y: Int = 99
+    let template_c = TopologyTemplateBuilder::new("C")
+        .param(
+            "C",
+            "y",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(99), Type::Int)),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_s)
+        .template(template_c)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // (a) S.n should be 1 (Phase 1 param evaluation works)
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S", "n")),
+        Some(&Value::Int(1)),
+        "S.n should be 1 (Phase 1 param evaluation)"
+    );
+
+    // (b) KEY ASSERTION: S.child.y should NOT exist because S is not recursive,
+    // so Phase 2 should not recursively unfold S's guarded sub `child`.
+    assert!(
+        !result.values.contains(&ValueCellId::new("S.child", "y")),
+        "S.child.y should NOT exist: S is not recursive, so Phase 2 should not \
+         recursively unfold S's guarded sub 'child'. Got {:?}",
+        result.values.get(&ValueCellId::new("S.child", "y"))
+    );
+}
+
 // ─── Budget accounting: guard-false should not consume budget ──────────────
 
 /// Budget should NOT be decremented when a guard evaluates to false.
