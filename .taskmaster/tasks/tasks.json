@@ -17130,7 +17130,7 @@
             "crates/reify-eval/tests/recursive_unfold.rs"
           ],
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ],
           "bundled_from": [
             "788",
@@ -17903,8 +17903,8 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-types",
-            "crates/reify-compiler"
+            "crates/reify-types/src",
+            "crates/reify-compiler/src"
           ]
         },
         "updatedAt": "2026-04-14T07:04:03.185Z"
