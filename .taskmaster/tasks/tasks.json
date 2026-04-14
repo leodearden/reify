@@ -11040,9 +11040,9 @@
             "crates/reify-types/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval",
-            "crates/reify-types"
+            "crates/reify-compiler/src",
+            "crates/reify-eval/src",
+            "crates/reify-types/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
@@ -11064,8 +11064,8 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval",
-            "crates/reify-compiler"
+            "crates/reify-eval/src",
+            "crates/reify-compiler/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
