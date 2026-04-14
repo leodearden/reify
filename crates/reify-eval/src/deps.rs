@@ -466,6 +466,49 @@ mod tests {
         );
     }
 
+    /// Step 1c: Documents the duplicate-preservation contract of `extract_dependency_trace`
+    /// for a Conditional whose then- and else-branches reference the same `ValueCellId`
+    /// (e.g. `if flag { x } else { x }`).
+    ///
+    /// This combines the all-branches static extraction property (Step 2 below) with the
+    /// duplicate-preservation property (Step 1b above): even when both arms refer to the
+    /// same cell, `extract_dependency_trace` preserves all occurrences without deduping.
+    /// That gives `reads.len() == 3` (flag + x + x), pinning the exact multiplicity so
+    /// callers know whether downstream deduplication is needed.
+    #[test]
+    fn extract_dependency_trace_preserves_duplicate_reads_for_same_cell_in_conditional() {
+        let flag = ValueCellId::new("A", "flag");
+        let x = ValueCellId::new("A", "x");
+        let condition = CompiledExpr::value_ref(flag.clone(), Type::Bool);
+        let then_branch = CompiledExpr::value_ref(x.clone(), Type::Real);
+        let else_branch = CompiledExpr::value_ref(x.clone(), Type::Real);
+        let expr = reify_test_support::builders::expr::conditional_expr(
+            condition,
+            then_branch,
+            else_branch,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert_eq!(
+            trace.reads.len(),
+            3,
+            "extract_dependency_trace preserves duplicates: conditional(flag, x, x) \
+             should yield 3 reads (flag + x + x), got {:?}",
+            trace.reads
+        );
+        assert_eq!(
+            trace.reads.iter().filter(|id| *id == &flag).count(),
+            1,
+            "reads should contain flag exactly once, got: {:?}",
+            trace.reads
+        );
+        assert_eq!(
+            trace.reads.iter().filter(|id| *id == &x).count(),
+            2,
+            "reads should contain x exactly twice (once per branch), got: {:?}",
+            trace.reads
+        );
+    }
+
     /// Step 2: Verify extract_dependency_trace handles nested Conditional expressions —
     /// condition, then-branch, and else-branch all contribute ValueRef reads.
     ///
