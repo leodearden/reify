@@ -28291,11 +28291,11 @@
         "description": "The auto_free extraction pattern `param.default.as_ref().and_then(|expr| if let ExprKind::Auto { free } = &expr.kind { Some(*free) } else { None })` is copy-pasted identically in three locations: crates/reify-compiler/src/entity.rs lines 528-535, entity.rs lines 859-866, and crates/reify-compiler/src/guards.rs lines 274-281. Each occurrence has identical surrounding logic for constructing ValueCellDecl. This is a maintenance hazard — if the Auto variant changes again, three sites must be updated.",
         "details": "Extract a helper such as `fn extract_auto_free(default: Option<&reify_syntax::Expr>) -> Option<bool>` into a shared location (e.g. a new `auto_helpers` module in reify-compiler, or as an `impl Expr` method in reify-syntax). Consider a second helper that builds the full `ValueCellDecl` given auto_free, id, cell_type, and span. Update all 3 sites. Ensure existing tests in crates/reify-compiler/tests/boundary2_producer.rs (the `compile_auto_free_*` tests) still pass.\n\nSource: review triage of task 159 (auto(free) grammar + compiler threading).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:29.869Z",
+        "updatedAt": "2026-04-14T12:30:24.398Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -28329,13 +28329,13 @@
         "description": "Two minor test-quality improvements for the auto(free) work landed in task 159: (a) add a negative-path parse test that `auto(constrained)` (or any unrecognized modifier) fails to parse, documenting the grammar's hard-coded 'free' literal as a regression guard; (b) tighten `compile_auto_free_in_port_param` at crates/reify-compiler/tests/boundary2_producer.rs:501-552 which currently uses a loose `foo.id.member.contains(\"mount.foo\")` assertion — switch to an exact `assert_eq!(foo.id, ValueCellId::new(\"S\", \"mount.foo\"))` to match the pattern used elsewhere in the same file.",
         "details": "Scope:\n1. Add parse-error test in crates/reify-syntax/tests/boundary1_producer.rs that feeds `param x: Scalar = auto(constrained)` and asserts the parse fails (or produces an error expression). This documents the expected behavior so future grammar changes must explicitly consider whether to accept other modifiers.\n2. In crates/reify-compiler/tests/boundary2_producer.rs, locate `compile_auto_free_in_port_param` (around lines 501-552) and replace the `contains(\"mount.foo\")` assertion with an exact `ValueCellId::new(...)` equality check, consistent with sibling tests in the same file.\n\nSource: review triage of task 159 (auto(free) grammar + compiler threading).\n<info added on 2026-04-10T07:11:07.629Z>\nTask 159 has been merged to main (commit 792e012ac), unblocking this task. The auto(free) grammar and compiler work is now available on the main branch, allowing the addition of the negative-path parse test and the tightening of `compile_auto_free_in_port_param` assertions to proceed.\n</info added on 2026-04-10T07:11:07.629Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "159"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:46.476Z",
+        "updatedAt": "2026-04-14T12:30:24.500Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -34460,7 +34460,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:30:24.318Z",
+      "lastModified": "2026-04-14T12:30:24.500Z",
       "taskCount": 1661,
       "completedCount": 1338,
       "tags": [
