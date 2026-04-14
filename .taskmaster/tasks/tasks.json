@@ -6970,7 +6970,7 @@
           "milestone": "stdlib-M8.3",
           "modules": [
             "examples",
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -7088,14 +7088,14 @@
           "milestone": "stdlib-M8.4",
           "modules": [
             "crates/reify-stdlib",
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-expr",
+            "crates/reify-compiler"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-stdlib/src/lib.rs",
-            "crates/reify-compiler/src/stdlib_loader.rs",
-            "crates/reify-eval/src/lib.rs"
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-compiler/src/stdlib_loader.rs"
           ]
         },
         "subtasks": [],
