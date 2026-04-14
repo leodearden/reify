@@ -34049,11 +34049,11 @@
         "description": "In crates/reify-expr/src/complex.rs around line 41, the comment on the is_finite pre-guard says \"sanitize_value cannot detect NaN/Inf inputs from these outputs alone\". That is accurate for Inf inputs (atan2 collapses ±Inf to finite quadrant boundaries like 0, ±π, ±π/2), but NOT for NaN inputs — NaN propagates through atan2 and would be caught downstream by sanitize_value. The is_finite pre-guard is strictly necessary only for Inf; for NaN it is defense-in-depth for stylistic parity. Reword to make this precise. Suggested: \"sanitize_value cannot detect Inf inputs from these outputs alone (NaN inputs would propagate through atan2 and be caught downstream, but for stylistic parity and defense-in-depth we reject both up-front).\" Comment-only change, no behaviour change, no new tests needed.",
         "details": "Source: post-merge review of Task 953 (esc-953-22, suggestion S1, reviewer_comprehensive). Location: crates/reify-expr/src/complex.rs:41. Category: documentation_precision.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T04:35:59.416Z",
+        "updatedAt": "2026-04-14T04:36:09.810Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src"
@@ -34158,7 +34158,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T04:35:59.416Z",
+      "lastModified": "2026-04-14T04:36:09.810Z",
       "taskCount": 1653,
       "completedCount": 1322,
       "tags": [
