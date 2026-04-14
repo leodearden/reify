@@ -217,6 +217,42 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
     result
 }
 
+/// Walk `workspace_root` for test `.rs` files and collect every stale
+/// transient-plan-doc pointer found in `#[ignore]` reason strings.
+///
+/// Combines `walk_test_rs_files` + `find_stale_plan_pointers_in_source` into a
+/// single reusable helper so callers (integration tests, CI scripts) don't need
+/// to inline the walk-read-detect loop.
+///
+/// Each returned `String` has the form `"<relative/path>: <violation>"`, where
+/// the relative path is stripped of `workspace_root` as a prefix and the
+/// violation is produced by `find_stale_plan_pointers_in_source` (e.g.
+/// `"line 12: \"known bug: see plan step-3\""`).
+///
+/// I/O errors on individual files are silently skipped — the same policy as
+/// the integration test — so a file deleted mid-walk during a concurrent build
+/// does not produce a spurious violation.
+pub fn collect_workspace_stale_pointers(workspace_root: &Path) -> Vec<String> {
+    let test_files = walk_test_rs_files(workspace_root);
+    let mut all_violations = Vec::new();
+    for path in &test_files {
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let violations = find_stale_plan_pointers_in_source(&source);
+        for violation in violations {
+            let rel = path
+                .strip_prefix(workspace_root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            all_violations.push(format!("{rel}: {violation}"));
+        }
+    }
+    all_violations
+}
+
 /// Returns true when `path` (relative to `workspace_root`) contains at least
 /// one directory component whose name is exactly `"tests"`.
 fn has_tests_component(path: &Path, workspace_root: &Path) -> bool {
