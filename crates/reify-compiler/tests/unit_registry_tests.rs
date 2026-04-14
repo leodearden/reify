@@ -1699,7 +1699,17 @@ fn cross_module_user_unit_collision_blames_source_module() {
         dup_diag.message
     );
 
-    // (c) No label should have SourceSpan::empty(0)
+    // (c) Exactly one label — the user-module branch emits only the duplicate
+    // decl span and omits the original's SourceSpan::empty(0) to avoid a
+    // misleading byte-0 label.
+    assert_eq!(
+        dup_diag.labels.len(),
+        1,
+        "user-module unit collision should emit exactly one label on the user's duplicate decl, got {:?}",
+        dup_diag.labels
+    );
+
+    // (c) … and that single label must not use SourceSpan::empty(0).
     let empty_span = SourceSpan::empty(0);
     for label in &dup_diag.labels {
         assert_ne!(
