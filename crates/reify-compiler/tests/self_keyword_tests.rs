@@ -321,11 +321,30 @@ fn self_error_in_fn_body() {
             !errors.is_empty(),
             "expected error diagnostic for `self` in fn body"
         );
-    } else {
-        // Parser correctly rejects `self` in fn body — at least one error produced
+        let mentions_self = errors.iter().any(|d| {
+            let msg = d.message.to_lowercase();
+            msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|tok| tok == "self")
+        });
         assert!(
-            !parsed.errors.is_empty(),
-            "expected at least one parse error for `self` in fn body"
+            mentions_self,
+            "expected a compile error mentioning `self` for `self` in fn body, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    } else {
+        // Parser rejected the source — at least one parse error produced.
+        // The parse error message embeds the source snippet, which includes `self`;
+        // verify the error references `self` as a whole word to guard against
+        // unrelated syntax regressions being mistaken for a self-rejection.
+        let mentions_self = parsed.errors.iter().any(|e| {
+            let msg = e.message.to_lowercase();
+            msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|tok| tok == "self")
+        });
+        assert!(
+            mentions_self,
+            "expected a parse error mentioning `self` for `self` in fn body, got: {:?}",
+            parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
     }
 }
@@ -637,7 +656,8 @@ fn self_inside_lambda_in_fn_body_errors() {
         );
         let mentions_self = errors.iter().any(|d| {
             let msg = d.message.to_lowercase();
-            msg.contains("self")
+            msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|tok| tok == "self")
         });
         assert!(
             mentions_self,
@@ -645,17 +665,14 @@ fn self_inside_lambda_in_fn_body_errors() {
             errors.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     } else {
-        // Parser correctly rejects `self` in fn body — assert the parser error specifically
-        // calls out `self` (not just any parse error, which would hide regressions from
-        // unrelated syntax breakage).
-        //
-        // NOTE: As of tree-sitter-reify's current grammar, `self` is lowered as a plain
-        // identifier and this branch is effectively dead (parsed.errors is always empty for
-        // this source). It is kept as defensive future-proofing for a stricter grammar that
-        // may eventually reserve `self` as a keyword.
+        // Parser rejected the source — at least one parse error produced.
+        // The parse error message embeds the source snippet, which includes `self`;
+        // verify the error references `self` as a whole word to guard against
+        // unrelated syntax regressions being mistaken for a self-rejection.
         let mentions_self = parsed.errors.iter().any(|e| {
             let msg = e.message.to_lowercase();
-            msg.contains("self")
+            msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|tok| tok == "self")
         });
         assert!(
             mentions_self,
