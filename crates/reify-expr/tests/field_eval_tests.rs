@@ -266,16 +266,18 @@ fn sample_one_param_lambda_binds_entire_point_as_single_value() {
     );
 }
 
-/// Sampling any multi-param lambda returns Undef because sample() never unpacks
-/// the input value into multiple lambda arguments.
+/// Sampling a multi-param lambda with a **scalar** (non-Point) input returns Undef
+/// because sample() only unpacks `Value::Point` inputs; scalar inputs are always
+/// forwarded as a single argument.
 ///
 /// # Contract pinned
 ///
-/// sample()'s analytical path always forwards the entire input as a **single**
-/// element to apply_lambda (`&evaluated_args[1..]` is a 1-element slice),
-/// regardless of whether the input is a scalar, Point2, or Point3. Any lambda
-/// with more than one parameter hits the arity check in apply_lambda at
-/// `crates/reify-expr/src/lib.rs:586`:
+/// sample()'s unpacking path only fires when the second argument is `Value::Point`
+/// **and** `params.len() > 1` **and** `params.len() == items.len()`. When the input
+/// is a scalar (`Value::Real`, `Value::Int`, `Value::Scalar`, etc.) it is always
+/// forwarded as a single-element slice to apply_lambda
+/// (`&evaluated_args[1..]` has length 1). A lambda with more than one parameter
+/// then hits the arity check in apply_lambda at `crates/reify-expr/src/lib.rs`:
 ///
 /// ```rust
 /// if args.len() != params.len() {
@@ -289,17 +291,19 @@ fn sample_one_param_lambda_binds_entire_point_as_single_value() {
 /// and matches the idiomatic 3-param pattern from
 /// `sample_gradient_of_constant_field_near_zero`.
 ///
-/// This test uses a scalar input with a 3-param lambda, but the same Undef
-/// would result for any input (scalar or Point) paired with any lambda having
-/// more than one parameter.
-///
 /// # Cross-reference
 ///
 /// `gradient_wrong_size_tensor_point_returns_undef` in `gradient_tests.rs`
-/// pins the same `apply_lambda` arity contract via the gradient
-/// path: it passes a 2-component `Value::Tensor` as a single arg to a 3-param
-/// lambda, also triggering `lib.rs:586`. Both tests enforce the same no-unpack
-/// invariant from different entry points.
+/// pins the same `apply_lambda` arity contract via the gradient path.
+///
+/// For the case where a matching-arity `Value::Point` **is** provided and the
+/// lambda has `params.len() > 1`, see
+/// `sample_multi_param_lambda_binds_unpacked_point_components` — that test pins
+/// the successful unpacking path.
+///
+/// For the case where a 1-param lambda receives a `Value::Point`, see
+/// `sample_one_param_lambda_binds_entire_point_as_single_value` — the whole
+/// Point is bound to the single parameter (no unpacking).
 ///
 /// # Intentional type-incoherence
 ///
@@ -309,7 +313,7 @@ fn sample_one_param_lambda_binds_entire_point_as_single_value() {
 /// requiring a Point input. `sample()`'s analytical dispatch does not consult
 /// the type metadata; the arity check fires on argument count alone.
 #[test]
-fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
+fn sample_multi_param_lambda_with_scalar_input_returns_undef() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -338,7 +342,8 @@ fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
     };
 
     // sample(field, Real(1.0)) -> Undef
-    // apply_lambda sees 1 arg vs 3 params -> arity check fires -> Undef.
+    // Scalar input is forwarded as a single arg; apply_lambda sees 1 arg vs
+    // 3 params -> arity check fires -> Undef (unpacking only fires for Point).
     let sample_expr = make_function_call(
         "sample",
         vec![
@@ -353,8 +358,9 @@ fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
     assert_eq!(
         sample_result,
         Value::Undef,
-        "sample() never unpacks input; multi-param lambda always hits \
-         apply_lambda arity check (1 forwarded arg vs 3 params)"
+        "sample() forwards scalar (non-Point) inputs as a single arg; \
+         multi-param lambda with scalar input must hit the apply_lambda \
+         arity check (1 forwarded arg vs 3 params) and return Undef"
     );
     // Positive control: the identical constant body IS reachable via a 1-param
     // lambda (arity matches).  This proves that Undef above is caused solely by
