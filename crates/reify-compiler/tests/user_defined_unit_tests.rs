@@ -80,11 +80,17 @@ fn user_unit_in_let_binding() {
         .iter()
         .find(|c| c.id.member == "w_thou")
         .expect("w_thou value cell not found");
-    // Walk default_expr → BinOp → right operand → Scalar si_value
+    // Walk default_expr → BinOp → right operand → Scalar si_value + dimension
     if let Some(expr) = &w_thou.default_expr {
-        if let reify_types::CompiledExprKind::BinOp { right, .. } = &expr.kind {
+        if let reify_types::CompiledExprKind::BinOp { op, right, .. } = &expr.kind {
+            assert!(
+                matches!(op, reify_types::BinOp::Add),
+                "expected Add op for w + 5thou, got {:?}",
+                op
+            );
             if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
                 si_value,
+                dimension,
                 ..
             }) = &right.kind
             {
@@ -95,6 +101,12 @@ fn user_unit_in_let_binding() {
                      (a hardcoded-mm fallback regression would yield ≈0.005)",
                     expected,
                     si_value
+                );
+                assert_eq!(
+                    *dimension,
+                    reify_types::DimensionVector::LENGTH,
+                    "expected Length dimension for 5thou, got {:?}",
+                    dimension
                 );
             } else {
                 panic!(
