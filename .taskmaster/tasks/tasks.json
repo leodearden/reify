@@ -5400,11 +5400,22 @@
         "dependencies": [
           "265"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-types/src"
+            "crates/reify-compiler/src/annotations.rs",
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/guards.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/solver_hint_tests.rs",
+            "crates/reify-eval/tests/guard_eval.rs",
+            "crates/reify-eval/tests/meta_eval_integration.rs",
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-syntax/src/ts_parser.rs",
+            "crates/reify-syntax/tests/annotation_tests.rs",
+            "crates/reify-test-support/src/builders",
+            "tree-sitter-reify/grammar.js"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
@@ -5428,7 +5439,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:26.886Z"
+        "updatedAt": "2026-04-14T12:40:58.900Z"
       },
       {
         "id": "276",
@@ -34558,7 +34569,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:40:21.675Z",
+      "lastModified": "2026-04-14T12:40:58.900Z",
       "taskCount": 1661,
       "completedCount": 1377,
       "tags": [
