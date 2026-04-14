@@ -8,8 +8,14 @@
 //   Mass:    mg (1e-6 kg), kg (1.0 kg), Mg (1e3 kg)
 //   Time:    ns (1e-9 s), us (1e-6 s), ms (1e-3 s), ks (1e3 s)
 //
-// Imperial lets (step-18) and cross-system arithmetic (step-20) are added
-// incrementally by subsequent implementation steps.
+// Imperial (step-18):
+//   Length:  in (0.0254 m), ft (0.3048 m), yd (0.9144 m)
+//   Mass:    lb (0.45359237 kg)
+//   Force:   lbf (4.4482216152605 N)
+//   Pressure: psi (6894.757293168361 Pa)
+//   Volume:  gal (0.003785411784 m³)
+//
+// Cross-system arithmetic (step-20) is added in a subsequent implementation step.
 
 structure def UnitShowcase {
     // ── SI-prefix length ────────────────────────────────────────────────────────
@@ -29,4 +35,21 @@ structure def UnitShowcase {
     let time_us = 1us
     let time_ms = 1ms
     let time_ks = 1ks
+
+    // ── Imperial length (step-18) ────────────────────────────────────────────────
+    let len_in = 1in
+    let len_ft = 1ft
+    let len_yd = 1yd
+
+    // ── Imperial mass (step-18) ──────────────────────────────────────────────────
+    let mass_lb = 1lb
+
+    // ── Imperial force (step-18) ─────────────────────────────────────────────────
+    let force_lbf = 1lbf
+
+    // ── Imperial pressure (step-18) ──────────────────────────────────────────────
+    let pressure_psi = 1psi
+
+    // ── Imperial volume (step-18) ────────────────────────────────────────────────
+    let volume_gal = 1gal
 }
