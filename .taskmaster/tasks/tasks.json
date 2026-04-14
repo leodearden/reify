@@ -34285,7 +34285,7 @@
         "updatedAt": "2026-04-14T05:10:19.103Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/src"
           ],
           "files": [
             "crates/reify-eval/src/lib.rs"
@@ -34305,11 +34305,10 @@
         "updatedAt": "2026-04-14T07:04:34.814Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr"
+            "crates/reify-expr/tests"
           ],
           "files": [
-            "crates/reify-expr/tests/field_eval_tests.rs",
-            "crates/reify-expr/tests/gradient_tests.rs"
+            "crates/reify-expr/tests/field_eval_tests.rs"
           ]
         }
       },
