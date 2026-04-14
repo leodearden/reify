@@ -104,9 +104,30 @@ fn make_field_with_source_builds_field_with_given_source() {
     let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
+    // Compile-time exhaustiveness guard: adding a new FieldSourceKind variant
+    // will make this match non-exhaustive, forcing an update to the match arms
+    // below — a visual reminder to also extend the iteration array above.
+    fn _assert_all_source_kinds_covered(k: FieldSourceKind) {
+        match k {
+            FieldSourceKind::Analytical
+            | FieldSourceKind::Sampled
+            | FieldSourceKind::Composed
+            | FieldSourceKind::Imported
+            | FieldSourceKind::Gradient
+            | FieldSourceKind::Divergence
+            | FieldSourceKind::Curl
+            | FieldSourceKind::Laplacian => {}
+        }
+    }
+
     for source_kind in [
         FieldSourceKind::Analytical,
+        FieldSourceKind::Sampled,
         FieldSourceKind::Composed,
+        FieldSourceKind::Imported,
+        FieldSourceKind::Gradient,
+        FieldSourceKind::Divergence,
+        FieldSourceKind::Curl,
         FieldSourceKind::Laplacian,
     ] {
         let (field, field_type) = make_field_with_source(
@@ -4175,23 +4196,121 @@ fn sample_point_enum_correctness() {
     }
 }
 
-/// Meta-test: assert all `#[ignore]` reason strings in this file are
-/// self-contained inline summaries starting with `"known bug:"`.  The two placeholder
-/// tests (`divergence_sample_mixed_length_to_real_placeholder` and
-/// `laplacian_sample_mixed_length_to_real_placeholder`) previously had a trailing
-/// breadcrumb pointing at a transient plan document step, but that plan file goes stale.
-/// Reason strings must be self-contained inline summaries so they remain meaningful after
-/// the plan doc is gone.  (Task 1622 rationale: option (a) — inline failure-mode summary.)
+/// Scans `source` (a Rust source file as a string) and verifies every
+/// `#[ignore = "..."]` attribute complies with the Task 1622 convention.
 ///
-/// Two guards are applied:
-/// 1. **Positive invariant** — every `#[ignore]` reason string must begin with
-///    `"known bug:"`.  This catches stale pointers of any form (`see plan.md`,
-///    `step-3 of plan`, `analysis in step-7`, …) without enumerating all bad patterns.
-/// 2. **Negative sentinel** — the specific original stale-pointer substring (assembled
-///    at runtime to avoid self-triggering) is also checked directly as belt-and-suspenders.
+/// Three guards are applied in order:
 ///
-/// The marker and needle strings are assembled at runtime so this meta-test does not
-/// contain the literal substrings and accidentally trigger its own assertions.
+/// 1. **Bare-ignore rejection** — a `#[ignore]` attribute without a reason
+///    string is rejected outright.
+/// 2. **Positive invariant** — every reason string must begin with
+///    `"known bug:"`.  This rejects wholly-replaced prefixes but does NOT
+///    catch stale wordings *appended inside* an otherwise-compliant prefix
+///    (e.g. `"known bug: see plan.md step-3"` would pass guard 2 and would
+///    only trip guard 3 if it happened to contain the specific sentinel).
+/// 3. **Negative sentinel** — the specific historical stale-pointer substring
+///    is also checked whole-file as belt-and-suspenders.
+///
+/// Lines whose trimmed start is `///` or `//!` are skipped so prose mentions
+/// of `#[ignore]` in doc comments do not generate false positives.
+///
+/// All scanner constants are assembled at runtime via `.concat()` so the
+/// source file does not contain the guarded sequences as adjacent characters.
+fn check_ignore_reasons(source: &str) -> Result<(), String> {
+    // DO NOT inline — split at boundary ["#[", "ignore"] keeps the guarded
+    // 8-char sequence from appearing adjacent in this source file; inlining
+    // would cause the scanner to self-trigger on this very line.
+    let ignore_prefix = ["#[", "ignore"].concat();
+
+    for (line_idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        // Skip doc-comment lines (`///`, `//!`) — they may mention the
+        // bare-ignore form in prose without it being an actual attribute.
+        // NOTE: regular `//` line comments and `/* */` block comments are NOT
+        // skipped.  The file currently has no bare-ignore forms in regular
+        // comments; if a future bare-ignore example inside a `//` comment
+        // causes a spurious meta-test failure, rewrite it as a `///` doc
+        // comment instead (doc comments ARE skipped).
+        if trimmed.starts_with("///") || trimmed.starts_with("//!") {
+            continue;
+        }
+
+        let mut rest = line;
+        while let Some(pos) = rest.find(ignore_prefix.as_str()) {
+            let after = &rest[pos + ignore_prefix.len()..];
+            if after.starts_with(']') {
+                return Err(format!(
+                    "bare {} attribute found at line {} \
+                     — reason string required (Task 1622/1641 convention): {line:?}",
+                    ["#[", "ignore]"].concat(),
+                    line_idx + 1,
+                ));
+            } else if after.starts_with(" = \"") {
+                let reason_start = &after[4..];
+                let preview: String = reason_start.chars().take(80).collect();
+                if !reason_start.starts_with("known bug:") {
+                    return Err(format!(
+                        "An {} reason string at line {} does not begin with \
+                         \"known bug:\":\n  {preview:?}\nReason strings must be \
+                         self-contained inline summaries (Task 1622 convention).",
+                        ["#[", "ignore]"].concat(),
+                        line_idx + 1,
+                    ));
+                }
+            }
+            // Neither `]` nor ` = "` — advance past this match and continue
+            // (e.g. the guarded sequence inside a string literal in source code).
+            rest = &rest[pos + 1..];
+        }
+    }
+
+    // Belt-and-suspenders negative check for the specific original stale-pointer pattern.
+    // DO NOT inline — split at boundary ["plan", " step-"] keeps the guarded
+    // sequence from appearing adjacent in this source file.
+    let stale_needle = ["plan", " step-"].concat();
+    if source.contains(&stale_needle) {
+        return Err(format!(
+            "Found stale-pointer substring in source. \
+             Update any affected {} reason string to a self-contained inline summary \
+             (e.g. \"known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
+             losing the 1/Length result dimension; expected Value::Scalar{{1/Length}}\").",
+            ["#[", "ignore]"].concat(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Meta-test: asserts that every `#[ignore = "..."]` attribute in this file
+/// complies with the Task 1622 convention — reason strings must be
+/// self-contained inline summaries beginning with `"known bug:"`.  The two
+/// placeholder tests (`divergence_sample_mixed_length_to_real_placeholder` and
+/// `laplacian_sample_mixed_length_to_real_placeholder`) previously had trailing
+/// breadcrumbs pointing at a transient plan document step, but plan files go
+/// stale.  Bare `#[ignore]` attributes (no reason string) are also forbidden.
+/// (Task 1622: introduced convention and first two guards.
+///  Task 1641: added bare-ignore guard and extracted `check_ignore_reasons`.)
+///
+/// Three guards are enforced (see `check_ignore_reasons` for implementation):
+///
+/// 1. **Bare-ignore rejection** — a `#[ignore]` attribute without a reason
+///    string is rejected outright.
+/// 2. **Positive invariant** — every reason string must begin with
+///    `"known bug:"`.  This rejects wholly-replaced prefixes but does NOT
+///    catch stale wordings appended inside an otherwise-compliant prefix
+///    (e.g. `"known bug: see plan.md step-3"` would pass this guard and would
+///    only trip guard 3 if it happened to contain the specific sentinel).
+/// 3. **Belt-and-suspenders negative sentinel** — the specific historical
+///    stale-pointer substring (assembled at runtime to avoid self-triggering)
+///    is also checked whole-file as belt-and-suspenders.
+///
+/// Doc-comment lines (`///`, `//!`) are skipped so prose mentions of
+/// `#[ignore]` — e.g. `` "`#[ignore]` is load-bearing" `` — do not generate
+/// false positives.
+///
+/// All scanner constants are assembled at runtime via `.concat()` so this file
+/// does not contain the guarded sequences as adjacent characters and cannot
+/// accidentally self-trigger.
 #[test]
 fn ignore_reason_strings_have_no_stale_plan_pointers() {
     let path = concat!(
@@ -4200,35 +4319,131 @@ fn ignore_reason_strings_have_no_stale_plan_pointers() {
     );
     let source = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("failed to read {path} for meta-inspection: {e}"));
-
-    // Positive invariant: every #[ignore] reason string must begin with "known bug:".
-    // Catches any stale-pointer form without enumerating all bad patterns.
-    // Marker assembled at runtime so this test does not contain the literal substring.
-    let marker = ["#[ignore", " = \""].concat();
-    let mut remaining = source.as_str();
-    while let Some(pos) = remaining.find(marker.as_str()) {
-        let reason_start = &remaining[pos + marker.len()..];
-        let preview: String = reason_start.chars().take(80).collect();
-        assert!(
-            reason_start.starts_with("known bug:"),
-            "An #[ignore] reason string does not begin with \"known bug:\":\n  {preview:?}\n\
-             Reason strings must be self-contained inline summaries (Task 1622 convention).\n\
-             Affected tests: divergence_sample_mixed_length_to_real_placeholder, \
+    check_ignore_reasons(&source).unwrap_or_else(|msg| {
+        panic!(
+            "{msg}\nAffected tests in this file: \
+             divergence_sample_mixed_length_to_real_placeholder, \
              laplacian_sample_mixed_length_to_real_placeholder."
-        );
-        remaining = &remaining[pos + 1..];
-    }
+        )
+    });
+}
 
-    // Belt-and-suspenders negative check for the specific original stale-pointer pattern.
-    // Assembled at runtime so this test does not contain the literal substring.
-    let needle = ["plan", " step-"].concat();
+// ── check_ignore_reasons unit tests ──────────────────────────────────────────
+// These five tests exercise the check_ignore_reasons helper introduced in
+// Task 1641.  All synthetic source strings use runtime concatenation so this
+// test file does not contain the literal adjacent sequences that the meta-test
+// guards against (see check_ignore_reasons below for the invariant).
+
+#[test]
+fn check_ignore_reasons_rejects_bare_ignore_in_code() {
+    // A bare-ignore attribute (no reason string) in non-comment code must be
+    // rejected outright.  Source assembled at runtime so this file does not
+    // contain the guarded adjacent sequences.  The error must mention "bare"
+    // so we can tell the bare-ignore guard fired (not the positive-invariant
+    // guard or the stale-pointer sentinel).
+    let src = ["#[", "ignore]\n#[test]\nfn foo() {}"].concat();
+    let err = check_ignore_reasons(&src)
+        .expect_err("expected bare-ignore attribute (no reason string) to be rejected");
     assert!(
-        !source.contains(&needle),
-        "Found stale plan-step pointer in an #[ignore] reason string. \
-         Update the reason to a self-contained inline summary \
-         (e.g. \"known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
-         losing the 1/Length result dimension; expected Value::Scalar{{1/Length}}\"). \
-         Affected tests: divergence_sample_mixed_length_to_real_placeholder, \
-         laplacian_sample_mixed_length_to_real_placeholder."
+        err.contains("bare"),
+        "expected error message to identify the bare-ignore guard: {err:?}",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_allows_bare_ignore_mentioned_in_doc_comments() {
+    // A bare-ignore form that appears only inside a `///` doc-comment line
+    // must NOT trigger a rejection — doc-comment lines are skipped.
+    // Source assembled at runtime so this file does not contain the guarded
+    // adjacent sequences.
+    let src = ["/// example: ", "#[", "ignore] is load-bearing\n"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_ok(),
+        "expected bare-ignore inside a doc comment to be allowed",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_accepts_compliant_source() {
+    // A reason string beginning with "known bug:" complies with the Task 1622
+    // convention and must be accepted.  Source assembled at runtime.
+    let src = ["#[", "ignore = \"known bug: placeholder summary\"]"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_ok(),
+        "expected a compliant \"known bug:\" reason string to be accepted",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_rejects_non_known_bug_reason() {
+    // A reason string that does NOT begin with "known bug:" must be rejected
+    // by the positive-invariant guard.  The reason deliberately does not
+    // contain the stale-pointer needle so only the positive guard fires.
+    // The error must mention "known bug:" so we can tell the positive-invariant
+    // guard fired (not the bare-ignore guard or the stale-pointer sentinel).
+    // Source assembled at runtime.
+    let src = ["#[", "ignore = \"some other prefix here\"]"].concat();
+    let err = check_ignore_reasons(&src)
+        .expect_err("expected a non-\"known bug:\" reason string to be rejected");
+    assert!(
+        err.contains("known bug:"),
+        "expected error message to identify the positive-invariant guard: {err:?}",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_rejects_stale_plan_step_needle() {
+    // A source containing the stale-pointer needle (assembled at runtime)
+    // must be rejected by the belt-and-suspenders negative sentinel.
+    // The error must mention "stale-pointer" so we can tell the negative
+    // sentinel fired (not the bare-ignore guard or the positive-invariant
+    // guard).  Needle and source assembled at runtime so this file does not
+    // contain the literal sequence as adjacent characters.
+    let src = ["# source containing the needle: ", "plan", " step-", "5\n"].concat();
+    let err = check_ignore_reasons(&src)
+        .expect_err("expected source containing the stale-pointer needle to be rejected");
+    assert!(
+        err.contains("stale-pointer"),
+        "expected error message to identify the negative-sentinel guard: {err:?}",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_allows_bare_ignore_in_inner_doc_comment() {
+    // A bare-ignore form that appears only inside a `//!` inner-doc-comment
+    // line must NOT trigger a rejection — `//!` lines are skipped alongside
+    // `///` lines.  This complements the outer-doc-comment test above and
+    // pins the `//!` branch of the skip logic separately so neither branch
+    // can be removed silently.  Source assembled at runtime.
+    let src = ["//! example: ", "#[", "ignore] is load-bearing\n"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_ok(),
+        "expected bare-ignore inside an inner doc comment (//!) to be allowed",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_regular_comment_is_not_skipped() {
+    // Regular `//` line comments are NOT skipped — only `///` and `//!` are.
+    // This pins the documented limitation so a future refactor that
+    // accidentally starts skipping `//` is caught immediately.
+    // Source assembled at runtime to avoid self-triggering.
+    let src = ["// regular comment: ", "#[", "ignore]\n"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_err(),
+        "expected bare-ignore inside a regular // comment to be rejected \
+         (// comments are not skipped; only /// and //! are)",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_accepts_source_with_no_ignore_attributes() {
+    // A source string containing no ignore attributes at all must be accepted,
+    // pinning the empty-input / no-match contract.  If the loop logic ever
+    // regressed (e.g. find always returning Some), this test would catch it.
+    let src = "fn main() {}\nstruct Foo;\nfn bar() -> i32 { 42 }\n";
+    assert!(
+        check_ignore_reasons(src).is_ok(),
+        "expected source with no ignore attributes to be accepted",
     );
 }

@@ -37,7 +37,7 @@ mod tests {
 
     use super::*;
 
-    // SYNC: sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync
+    // SYNC: sanitize_value tests mirrored in reify-stdlib::helpers tests — keep in sync
 
     // ── sanitize_value direct unit tests ─────────────────────────────────────
 
@@ -463,13 +463,31 @@ mod tests {
     #[test]
     fn sanitize_wildcard_variants_passthrough() {
         // Smoke test: representative `_ => v` variants pass through bit-identical.
-        // Bool(true/false), Int, and String sample three of ~25 variants that all
-        // hit the wildcard arm; the *_finite_passthrough tests above cover the rest.
+        // Bool(true/false), Int, String, Vector, and Frame sample five of ~25 variants
+        // that all hit the wildcard arm. Container/struct payloads intentionally carry
+        // NaN components as a non-recursion tripwire: if sanitize_value were changed to
+        // recurse into children, the inner NaN would become Undef and the assert_eq!
+        // below would fail. (Value::PartialEq uses to_bits(), so NaN == NaN here.)
+        // The *_finite_passthrough tests above cover the guarded arms.
         let cases = [
             Value::Bool(true),
             Value::Bool(false),
             Value::Int(0),
             Value::String("x".to_string()),
+            Value::Vector(vec![Value::Real(f64::NAN)]),
+            Value::Frame {
+                origin: Box::new(Value::Point(vec![
+                    Value::Real(f64::NAN),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ])),
+                basis: Box::new(Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+            },
         ];
         for v in &cases {
             assert_eq!(

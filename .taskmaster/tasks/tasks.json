@@ -5083,16 +5083,27 @@
         "status": "in-progress",
         "metadata": {
           "modules": [
-            "examples"
+            "crates/reify-eval/tests",
+            "examples/m10_combined.ri"
           ],
           "milestone": "M10",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "examples/m10_combined.ri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "examples/m10_combined.ri"
+            ],
+            "queries": [
+              "M10 combined ri example geometric params purpose port connect",
+              "M10 milestone example tasks 239 252 256 260 completed",
+              "m10_combined.ri assertions geometric types Frame Transform purpose"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T00:19:23.850Z"
+        "updatedAt": "2026-04-14T05:05:37.526Z"
       },
       {
         "id": "263",
@@ -5331,7 +5342,7 @@
         "dependencies": [
           "265"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -5352,13 +5363,13 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T00:01:24.528Z"
+        "updatedAt": "2026-04-14T05:05:31.743Z"
       },
       {
         "id": "274",
         "title": "@optimized: tests",
         "description": ">=6 tests: annotation stored on compiled entity, registered optimized impl used, fallback to language-level when not registered, optimized impl produces same result as language-level (semantics preserved).",
-        "details": "",
+        "details": "<info added on 2026-04-14T05:02:26.936Z>\nEval side (crates/reify-eval/tests/optimized_registry_tests.rs):\n- Multi-target batch: Register two distinct optimized targets (e.g., `target_a`, `target_b`) plus one unannotated fallback in a single batch; assert all three results land at the correct input indices and that deterministic BTreeMap dispatch order is exercised.\n- Interleaved-order test: Put a PlainEq (fallback) constraint first and the optimized one second in the entries vector to exercise the merge-by-original-index weaving path. The existing mixed test puts the optimized constraint first, which a buggy \"sort by group\" implementation would still pass.\n- `unregister_optimized_impl` returning true (registered) and false (not registered) round-trips.\n- `#[should_panic]` test for the \"OptimizedImpl returned X results for Y constraints\" assertion on contract violation (wrong result count).\n- Determinacy snapshot threading: Assert the `determinacy` passed into `dispatch_constraints` reaches `OptimizedImplInput.determinacy`.\n\nCompiler side (crates/reify-compiler/tests/optimized_annotation_tests.rs):\n- `multiple_optimized_annotations_warn` should additionally assert `CompiledConstraint::optimized_target == Some(\"new_target\".to_string())` to lock in first-wins precedence.\n- `optimized_without_string_target_warns` should additionally assert `optimized_target == None` on the compiled constraint.\n\nThese are end-to-end precedence/coverage guards, not just new unit tests — they catch the extractor/validator asymmetry noted in esc-273-83 suggestion #2.\n</info added on 2026-04-14T05:02:26.936Z>",
         "testStrategy": ">=6 tests.",
         "priority": "high",
         "dependencies": [
@@ -5894,7 +5905,7 @@
           "266",
           "280"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -5906,7 +5917,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:45:52.000Z"
+        "updatedAt": "2026-04-14T05:05:38.213Z"
       },
       {
         "id": "295",
@@ -6105,7 +6116,7 @@
         "testStrategy": "cargo test -p reify-kernel-occt -- cone && cargo test -p reify-eval -- cone",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-M8.1",
           "modules": [
@@ -6133,7 +6144,7 @@
           "bundle_key": "K"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:44:49.000Z"
+        "updatedAt": "2026-04-14T05:19:11.291Z"
       },
       {
         "id": "304",
@@ -7141,7 +7152,7 @@
           "260",
           "326"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.4",
           "modules": [
@@ -7153,10 +7164,16 @@
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-eval/src/lib.rs",
             "crates/reify-compiler/src/stdlib_loader.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib: AllParamsDetermined, AllGeometryDetermined, design_review, simulation_ready"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-14T05:11:43.093Z"
       },
       {
         "id": "344",
@@ -16915,7 +16932,7 @@
         "description": "Add durable tests for sample() when lambda parameter count doesn't match point dimension count. apply_lambda explicitly checks evaluated_args.len() != params.len() and returns Value::Undef — this behavioral contract should be pinned.\n\nTests to add in crates/reify-expr/tests/field_eval_tests.rs:\n1. Build a field with 1-param lambda (|x|), call sample(field, point_3d) with 3-element point → assert Undef\n2. Build a field with 3-param lambda (|x,y,z|), call sample(field, scalar) with 1-element point → assert Undef\n\nmemory_hints: search \"apply_lambda arity check\" and \"sample field eval\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16927,7 +16944,7 @@
             "crates/reify-expr/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-14T05:16:46.927Z"
       },
       {
         "id": "775",
@@ -33908,7 +33925,7 @@
         "id": "1640",
         "title": "Extend make_field_with_source round-trip test to cover all FieldSourceKind variants",
         "description": "Follow-up from Task 1612 review triage (esc-1612-15, S1).\n\nIn crates/reify-expr/tests/field_calculus_tests.rs, the `make_field_with_source_builds_field_with_given_source` test (~lines 102-144) iterates over only 3 of the 8 current `FieldSourceKind` variants: Analytical, Composed, Laplacian. The unchecked variants are Sampled, Imported, Gradient, Divergence, and Curl.\n\nSince the loop already iterates and the per-iteration assertions are constant, extending the array to all variants is essentially free and would protect against future enum additions silently bypassing the helper (the `[...]` array is not an exhaustive match, so new variants would not force an update here).\n\nPreferred fix: iterate over the full FieldSourceKind enum (all 8 current variants). Alternative: add a brief comment explaining why these three are representative.\n\nVerification: `cargo test -p reify-expr --test field_calculus_tests make_field_with_source_builds_field_with_given_source`.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "Add memory_hints: See Task 1612 review triage (esc-1612-15, S1) for original finding; search: 'FieldSourceKind variants make_field_with_source round-trip test'.",
@@ -33920,7 +33937,7 @@
           ],
           "memory_hints": "See Task 1612 review triage (esc-1612-15, S1) for original finding; search: 'FieldSourceKind variants make_field_with_source round-trip test field_calculus_tests.rs ~lines 102-144'"
         },
-        "updatedAt": "2026-04-14T00:10:05.842Z"
+        "updatedAt": "2026-04-14T04:06:41.705Z"
       },
       {
         "id": "1641",
@@ -33928,11 +33945,11 @@
         "description": "Follow-up from Task 1622 review triage (esc-1622-16, S1+S2+S5).\n\nThree related gaps in the meta-test `ignore_reason_strings_have_no_stale_plan_pointers` at crates/reify-expr/tests/field_calculus_tests.rs:~3906-3962:\n\n1. **Docstring overstates positive-invariant coverage (S1, line ~3915-3917).** The docstring claims `starts_with(\"known bug:\")` \"catches stale pointers of any form (`see plan.md`, `step-3 of plan`, `analysis in step-7`, …)\". That is only true when the stale pointer REPLACES the `known bug:` prefix. A reason like `#[ignore = \"known bug: see plan.md step-3\"]` passes the positive check and would only be caught by the sentinel if it happened to contain the literal `plan step-` substring. Variants like `plan-step`, `plan.md`, `step-3 of plan`, or `analysis in step-7` slip past both guards.\n   Fix: either (a) tighten the docstring to say honestly \"rejects reasons that don't start with `known bug:`, plus a sentinel for the original `plan step-` substring; other stale-pointer wordings inside compliant prefixes are not caught\", or (b) strengthen the negative check to a small regex set like `(?i)(plan[\\s\\-_.]?step|plan[\\s\\-_.]?doc|see\\s+(plan|step)|analysis in step)`.\n\n2. **Bare `#[ignore]` silently exempt (S2, line ~3935-3948).** The walk loop only inspects what follows `#[ignore = \"`. A bare `#[ignore]` (no reason string) bypasses the check entirely, even though the docstring says \"every #[ignore] reason string\". If someone drops the reason string, the guard will not flag it and the convention silently regresses.\n   Fix: either explicitly forbid bare `#[ignore]` in this file (assert zero matches of `#[ignore]` not followed by ` = \"`), or narrow the docstring to \"every `#[ignore = \"...\"]` reason string\".\n\n3. **Runtime-assembled marker is obscure (S5, line ~3935).** The clever `[\"#[ignore\", \" = \\\"\"].concat()` and `[\"plan\", \" step-\"].concat()` are easy to accidentally inline back, which would cause the meta-test to self-trigger and fail confusingly. The function docstring mentions this but there is no inline warning at the assembly site.\n   Fix: add a brief inline comment at both concat sites like `// DO NOT inline — must avoid literal #[ignore = \" appearing in this source file or this test will match itself`.\n\nAll three fixes touch the same function and are small. Keep the scope narrow: only the meta-test, no behavioral changes to the placeholder tests.\n\nmemory_hints:\n- Task 1622 introduced this meta-test; see its commits (5f0db11ae, 8219f5c91) for rationale.\n- The convention is \"#[ignore] reasons in this file must begin with `known bug:`\".\n\nModules: crates/reify-expr/tests",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-13T23:54:56.935Z",
+        "updatedAt": "2026-04-14T04:47:11.421Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -33945,13 +33962,15 @@
         "description": "Follow-up from Task 1622 review triage (esc-1622-16, S3).\n\nThe meta-test `ignore_reason_strings_have_no_stale_plan_pointers` in crates/reify-expr/tests/field_calculus_tests.rs only protects that one file. The convention \"reason strings should not point at transient plan docs\" is presumably repo-wide, but a sibling test file with `#[ignore = \"see plan step-7\"]` in any other crate would not be caught.\n\nFix: promote the check to a workspace-wide guard. Options:\n- Small `xtask` that walks `**/tests/**/*.rs` and asserts the same convention.\n- A dedicated `tests/` integration test in a workspace-scoped crate that does the walk.\n- Alternatively, if workspace promotion is too heavy, add a comment on the existing narrow test acknowledging the one-file scope so future authors know to extend it when adding ignored tests elsewhere.\n\nThe reviewer (esc-1622-16, reviewer_comprehensive) explicitly noted: \"No action required for Task 1622 itself\" — this is pure follow-up scope expansion.\n\nmemory_hints:\n- Original narrow test: crates/reify-expr/tests/field_calculus_tests.rs ~line 3923\n- Task 1622 established the \"known bug:\" prefix convention for ignore reasons.\n- Check for existing xtask infrastructure before creating a new crate.\n\nModules: xtask, crates/reify-expr/tests",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-13T23:54:42.477Z",
+        "updatedAt": "2026-04-14T05:16:48.481Z",
         "metadata": {
           "modules": [
+            "crates/reify-expr/tests",
+            "crates/reify-test-support/Cargo.toml",
             "crates/reify-test-support/src",
             "crates/reify-test-support/tests"
           ]
@@ -33961,7 +33980,7 @@
         "id": "1643",
         "title": "Fix asymmetric SYNC comment in reify-expr sanitize.rs",
         "description": "The SYNC comment at crates/reify-expr/src/sanitize.rs:40 still reads 'sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync', but task 892 consolidated all sanitize_value tests from reify-stdlib/src/complex.rs into reify-stdlib/src/helpers.rs. The companion comment in helpers.rs:459 was updated ('sanitize_value tests mirrored in reify-expr::sanitize tests — keep in sync'), but reify-expr's side was missed — leaving the two ends of the mirror asymmetric and pointing future maintainers to a file that no longer holds the mirrored tests.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "Update crates/reify-expr/src/sanitize.rs:40 from:\n\n    // SYNC: sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync\n\nto:\n\n    // SYNC: sanitize_value tests mirrored in reify-stdlib::helpers tests — keep in sync\n\nso both ends of the mirror agree. One-line doc fix. No behavior changes, no new tests. Run `cargo check -p reify-expr` to confirm nothing broke and verify sync_comments_test.sh (if it gates this comment) still passes.\n\nMemory hints: search \"sanitize_value SYNC comment reify-expr reify-stdlib\", search \"task 892 sanitize_value consolidation complex.rs helpers.rs\", search: 'sanitize.rs SYNC comment complex helpers consolidation Task 892'",
@@ -33973,13 +33992,13 @@
           ],
           "memory_hints": "Task 892 consolidated complex.rs tests into helpers.rs (see task 892 for commit); search: 'sanitize.rs SYNC comment consolidation Task 892 complex helpers'; file: crates/reify-expr/src/sanitize.rs line ~40 vs crates/reify-expr/tests/helpers.rs line ~459"
         },
-        "updatedAt": "2026-04-14T00:27:25.127Z"
+        "updatedAt": "2026-04-14T04:09:40.233Z"
       },
       {
         "id": "1644",
         "title": "Broaden sanitize_wildcard_variants_passthrough with container/struct Value variants",
         "description": "sanitize_wildcard_variants_passthrough in both crates/reify-expr/src/sanitize.rs (~line 464) and crates/reify-stdlib/src/helpers.rs (~line 885) currently covers only Bool/Int/String out of ~25 wildcard-arm Value variants. Variants that own non-trivial payloads (Vector, Tensor, Map, Lambda, Frame, Transform, etc.) never get even a smoke check — and those are the shapes most likely to break if a future guarded arm accidentally moves out of `v`. The cost of adding two or three variants is trivial and meaningfully widens the safety net.",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "In both crates/reify-expr/src/sanitize.rs (sanitize_wildcard_variants_passthrough) and crates/reify-stdlib/src/helpers.rs (the mirrored test), extend the `cases` array to include at least one container variant and one struct-shaped variant, e.g.:\n\n- Value::Vector(vec![Value::Real(1.0)])\n- Value::Frame { .. }  or  Value::Transform { .. }\n\nKeep the tests mirrored per the SYNC contract — add the same cases in both crates in the same commit. Verify with:\n\n    cargo test -p reify-expr sanitize_wildcard_variants_passthrough\n    cargo test -p reify-stdlib sanitize_wildcard_variants_passthrough\n\nMemory hints: search \"sanitize_value wildcard variants reify-expr reify-stdlib\", search \"task 892 sanitize_value consolidation\". Additional memory hints: search: 'sanitize_wildcard_variants_passthrough Value variants Bool Int String coverage'; related: Task 1643 (asymmetric SYNC comment in same area).",
@@ -33991,7 +34010,8 @@
             "crates/reify-stdlib/src"
           ],
           "memory_hints": "search: 'sanitize_wildcard_variants_passthrough Value variants wildcard arm coverage'; related Task 1643 (asymmetric SYNC comment in same area); files: crates/reify-expr/src/sanitize.rs ~line 464, crates/reify-expr/tests/helpers.rs ~line 885"
-        }
+        },
+        "updatedAt": "2026-04-14T04:25:17.824Z"
       },
       {
         "id": "1645",
@@ -34009,7 +34029,18 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "crates/reify-eval/tests/purpose_activation.rs",
+              "crates/reify-compiler/src/traits.rs"
+            ],
+            "queries": [
+              "purpose_activation tests Task 260 reviewer_comprehensive esc-260-17",
+              "remap_entity path activate_purpose coverage minimize objective",
+              "purpose param injected constraint entity format purpose:name@entity"
+            ]
+          }
         }
       },
       {
@@ -34026,7 +34057,17 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "crates/reify-compiler/tests/imperial_units_tests.rs"
+            ],
+            "queries": [
+              "imperial units task 335 reviewer follow-up esc-335-19",
+              "cross-relationship tests imperial units lbf psi ksi gal fl_oz",
+              "units.ri imperial unit constants LBF_SI PSI_SI KSI_SI"
+            ]
+          }
         }
       },
       {
@@ -34047,11 +34088,22 @@
         "description": "In crates/reify-expr/src/complex.rs around line 41, the comment on the is_finite pre-guard says \"sanitize_value cannot detect NaN/Inf inputs from these outputs alone\". That is accurate for Inf inputs (atan2 collapses ±Inf to finite quadrant boundaries like 0, ±π, ±π/2), but NOT for NaN inputs — NaN propagates through atan2 and would be caught downstream by sanitize_value. The is_finite pre-guard is strictly necessary only for Inf; for NaN it is defense-in-depth for stylistic parity. Reword to make this precise. Suggested: \"sanitize_value cannot detect Inf inputs from these outputs alone (NaN inputs would propagate through atan2 and be caught downstream, but for stylistic parity and defense-in-depth we reject both up-front).\" Comment-only change, no behaviour change, no new tests needed.",
         "details": "Source: post-merge review of Task 953 (esc-953-22, suggestion S1, reviewer_comprehensive). Location: crates/reify-expr/src/complex.rs:41. Category: documentation_precision.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T00:19:24.659Z"
+        "updatedAt": "2026-04-14T05:02:19.005Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Tighten phase pre-guard comment: NaN vs Inf precision in complex.rs"
+            ]
+          }
+        }
       },
       {
         "id": "1649",
@@ -34059,11 +34111,11 @@
         "description": "In crates/reify-expr/src/complex.rs around line 502, phase_zero_complex_returns_undef bundles two assertions in a single #[test]: (0.0, 0.0) and the IEEE-754 signed-zero variant (-0.0, -0.0). If the first assertion fires, the second is never run, so a regression in only the signed-zero path would be masked. Split into two independent #[test] functions — e.g. phase_zero_complex_returns_undef for (0.0, 0.0) and phase_signed_zero_complex_returns_undef for (-0.0, -0.0) — so each gives an independent failure signal. This matches the one-behavior-per-test convention already used in this file (cf. phase_inf_re_returns_undef vs phase_inf_im_returns_undef). Preserve the current explanatory comments on each test.",
         "details": "Source: post-merge review of Task 953 (esc-953-22, suggestion S2, reviewer_comprehensive). Location: crates/reify-expr/src/complex.rs:502. Category: test_organization.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T04:02:46.693Z",
+        "updatedAt": "2026-04-14T04:45:15.228Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src"
@@ -34074,13 +34126,28 @@
         "id": "1650",
         "title": "Complex phase: fix comment and add missing test coverage",
         "description": "In crates/reify-expr/src/complex.rs: (1) Reword the comment at line ~41 to accurately distinguish NaN propagation (caught by sanitize_value downstream) from Inf collapse (requires the is_finite pre-guard), explaining the guard is defense-in-depth for NaN but strictly necessary for Inf. (2) Split phase_zero_complex_returns_undef into two separate #[test] functions — one for (0.0, 0.0) and one for (-0.0, -0.0) — so signed-zero regression is never masked. (3) Add at least one dimensioned NaN/Inf phase test (e.g. phase_nan_im_dimensioned_returns_undef) to match the coverage pattern used by re/im/magnitude dimensioned tests.",
-        "details": "",
-        "testStrategy": "",
         "status": "in-progress",
         "dependencies": [],
         "priority": "low",
+        "details": "<info added on 2026-04-14T05:02:19Z>\nTask 1648 (comment reword, S1) is currently PENDING. Include S1 in this task's implementation unless Task 1648 completes first. If Task 1648 completes before this task starts, skip S1 and proceed to S2 (split signed-zero test) and S3 (add dimensioned NaN/Inf phase test) only. Task 1651 was cancelled (2026-04-14T04:55:48Z) as an exact duplicate of this task.\n</info added on 2026-04-14T05:02:19Z>",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-14T04:02:49.561Z"
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src"
+          ],
+          "memory_hints": {
+            "entities": [
+              "crates/reify-expr/src/complex.rs"
+            ],
+            "queries": [
+              "task 953 esc-953-22 complex phase pre-guard NaN Inf comment",
+              "phase_zero_complex_returns_undef signed zero split test",
+              "sanitize_value NaN Inf phase dimensioned test coverage complex.rs"
+            ]
+          },
+          "_causation_id": "91407cd1-10a9-4c67-b5e2-98b304848f08"
+        }
       },
       {
         "id": "1651",
@@ -34088,10 +34155,16 @@
         "description": "In crates/reify-expr/src/complex.rs: (1) Reword the comment at line ~41 to accurately distinguish NaN propagation (caught by sanitize_value downstream) from Inf collapse (requires the is_finite pre-guard), explaining the guard is defense-in-depth for NaN but strictly necessary for Inf. (2) Split phase_zero_complex_returns_undef into two separate #[test] functions — one for (0.0, 0.0) and one for (-0.0, -0.0) — so signed-zero regression is never masked. (3) Add at least one dimensioned NaN/Inf phase test (e.g. phase_nan_im_dimensioned_returns_undef) to match the coverage pattern used by re/im/magnitude dimensioned tests.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-14T04:55:48.421Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src"
+          ]
+        }
       },
       {
         "id": "1652",
@@ -34099,20 +34172,150 @@
         "description": "Task 1638 completed evaluator-layer support for all five non-params filter members (geometric_params, material_params, sub_entities, ports, constraints), but reify-compiler only covers the 'params' reflective query kind. There are no references to material_params or geometric_params in crates/reify-compiler, and compiler tests cover only 'params'. This means queries using non-params filter members receive no compile-time validation — errors surface only at eval time. Investigate whether this gap is intentional (the 'geometry check deferred to eval time' pattern covers forall-variable geometry, but the scope of that deferral is unclear) or an omission. If the deferral is intentional for all non-params kinds, document the design decision. If not, implement compile-time validation for each missing kind, mirroring how 'params' is handled in crates/reify-compiler/src/traits.rs.",
         "details": "## Investigation steps\n1. Read crates/reify-compiler/src/traits.rs (and compile_reflective_query / related entry points) to understand how 'params' is validated statically.\n2. Check the 'geometry check deferred to eval time' design decision (memory: \"geometry check for forall variable members is deferred to eval time because the compiler can't statically determine the sub-component's geometry\") — determine if this rationale applies to all non-params query kinds or just forall+geometry.\n3. For each non-params kind (geometric_params, material_params, sub_entities, ports, constraints):\n   - Can the compiler statically validate it? (type/membership available at compile time?)\n   - If yes, implement compile-time validation and add compiler tests in crates/reify-compiler/tests/.\n   - If no, add a doc comment or internal note confirming intentional deferral to eval time.\n4. Update compiler tests to cover at least one case per kind that can be validated statically.\n\n## Verification\n- `cargo test -p reify-compiler` green.\n- At least one compiler test per newly supported query kind.\n\n## Memory hints\n- Search: \"reify-compiler reflective query params compile-time validation traits.rs\"\n- Search: \"geometry check deferred eval time forall sub-component\"\n- Search: \"Task 1638 geometric_params material_params evaluator layer completion\"\n- Entity: crates/reify-compiler/src/traits.rs\n- Compiler tests only cover 'params' reflective query kind (Graphiti edge 79092d4a)\n- No references to material_params in reify-compiler (Graphiti edge 7a7b8dae)",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1638"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T04:02:48.046Z"
+        "updatedAt": "2026-04-14T04:14:31.890Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ],
+          "memory_hints": {
+            "entities": [
+              "crates/reify-compiler/src/traits.rs",
+              "crates/reify-compiler/tests"
+            ],
+            "queries": [
+              "reify-compiler reflective query params compile-time validation traits.rs compile_reflective_query",
+              "geometry check deferred eval time forall sub-component variable",
+              "task 1638 geometric_params material_params evaluator layer completion",
+              "no references to material_params in reify-compiler compiler tests only cover params"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1653",
+        "title": "Extend sanitize_wildcard_variants_passthrough with List and Transform cases",
+        "description": "Further widen the non-recursion tripwire in sanitize_wildcard_variants_passthrough by adding List and Transform cases to the mirrored tests in crates/reify-expr/src/sanitize.rs (~line 472) and crates/reify-stdlib/src/helpers.rs (~line 893). Task 1644 already broadened the sample from Bool/Int/String to include Vector and Frame; this follow-up extends coverage to two more container/struct wildcard variants that share the same risk profile.",
+        "details": "Append the following two cases to the `cases` array in both crates/reify-expr/src/sanitize.rs (sanitize_wildcard_variants_passthrough, ~line 472) and crates/reify-stdlib/src/helpers.rs (mirrored test, ~line 893):\n\n- Value::List(vec![Value::Real(f64::NAN)])\n- Value::Transform {\n      rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),\n      translation: Box::new(Value::Vector(vec![\n          Value::Real(f64::NAN),\n          Value::Real(0.0),\n          Value::Real(0.0),\n      ])),\n  }\n\nBoth cases deliberately carry NaN payloads so the existing non-recursion tripwire semantics continue to hold: if sanitize_value were ever refactored to recurse into children, the inner NaN would become Undef and the assert_eq! would fail (Value::PartialEq uses to_bits(), so NaN == NaN here).\n\nSYNC contract: the two copies of this test MUST remain in step — add identical cases in both files in the same commit. Update the doc comment (\"five of ~25\") in both crates to reflect the new count.\n\nVerify with:\n    cargo test -p reify-expr sanitize_wildcard_variants_passthrough\n    cargo test -p reify-stdlib sanitize_wildcard_variants_passthrough\n\nMemory hints: search \"sanitize_wildcard_variants_passthrough task 1644 Vector Frame\"; search \"task 892 sanitize_value consolidation\"; related: Task 1643 (asymmetric SYNC comment in same area).\n\nConfirm that Value::List and Value::Transform variants actually exist in crates/reify-expr/src/value.rs with the expected shape before coding — if the Transform variant shape differs (e.g., uses different field names or a non-Box inner value), adjust accordingly while preserving the NaN tripwire intent.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-14T04:28:37.407Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src",
+            "crates/reify-stdlib/src"
+          ],
+          "memory_hints": {
+            "entities": [
+              "crates/reify-expr/src/sanitize.rs",
+              "crates/reify-stdlib/src/helpers.rs"
+            ],
+            "queries": [
+              "sanitize_wildcard_variants_passthrough task 1644 Vector Frame NaN tripwire",
+              "task 892 sanitize_value consolidation complex.rs helpers.rs",
+              "Value::List Value::Transform variants reify-expr value.rs shape"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1654",
+        "title": "Tighten check_ignore_reasons helper and its unit tests in field_calculus_tests.rs",
+        "description": "Follow-up from Task 1641 review triage (esc-1641-27). Four small tightening fixes in `crates/reify-expr/tests/field_calculus_tests.rs`, all scoped to the `check_ignore_reasons` helper and its unit tests. No behavioral changes.\n\n**S1 — Section banner count is stale (~line 4332).** The comment reads \"These five tests exercise the check_ignore_reasons helper\" but eight unit tests now exist (rejects_bare_ignore_in_code, allows_bare_ignore_mentioned_in_doc_comments, accepts_compliant_source, rejects_non_known_bug_reason, rejects_stale_plan_step_needle, allows_bare_ignore_in_inner_doc_comment, regular_comment_is_not_skipped, accepts_source_with_no_ignore_attributes). Update to \"These eight tests\" or \"These tests\".\n\n**S2 — `rejects_non_known_bug_reason` assertion does not discriminate guards (~line 4378).** The test asserts `err.contains(\"known bug:\")` to verify the positive-invariant guard fired — but the stale-pointer error message (`check_ignore_reasons`, ~line 4275) also literally contains `\"known bug: dim_quotient_type...\"` inside its example phrase. So the assertion does not actually discriminate guard 2 (positive invariant) from guard 3 (stale-pointer sentinel). Today it still passes because the synthetic source does not contain the stale needle and guard 2 returns early. A future refactor swapping guard order or error wording could regress silently.\nFix: assert on a substring unique to the positive-invariant error format, e.g. `err.contains(\"does not begin with\")` or `err.contains(\"Task 1622 convention\")` (the stale-pointer error uses \"Found stale-pointer substring\" instead).\n\n**S3 — `regular_comment_is_not_skipped` does not pin which guard fired (~line 4426).** The test only asserts `.is_err()`. If a future refactor accidentally rejected all `//` lines via the stale-pointer path or any other unrelated guard, this test would still pass while no longer pinning the documented \"`//` is not skipped\" semantics.\nFix: add `assert!(err.contains(\"bare\"))` (or `\"line 1\"`) so the bare-ignore guard is confirmed as the one that fired, mirroring `rejects_bare_ignore_in_code`.\n\n**S4 — Scanner silently ignores non-canonical `#[ignore=\"...\"]` form (~line 4248).** The scanner recognises only the rustfmt-canonical `#[ignore = \"...\"]` (space-equals-space-quote). A non-canonical `#[ignore=\"...\"]` would fall through both guards silently: `after.starts_with(']')` is false, `after.starts_with(\" = \\\"\")` is false, the loop advances. Rustfmt currently enforces the canonical form so this is latent, not an active bug, but it is undocumented and has no unit test pinning the assumption.\nFix (preferred, cheapest): document the rustfmt assumption in the `check_ignore_reasons` docstring — e.g. \"assumes canonical `#[ignore = \\\"...\\\"]` formatting; non-canonical forms are silently ignored\". Optionally strip ASCII whitespace after \"ignore\" before matching `=`/`\"` — but docstring-only is sufficient and matches the meta-test's intent.\n\nAll four fixes touch the same function / its sibling unit tests. Keep scope narrow: no changes outside `check_ignore_reasons` and its eight unit tests. Run `cargo test -p reify-expr --test field_calculus_tests check_ignore_reasons` plus `ignore_reason_strings_have_no_stale_plan_pointers` to verify.\n\nmemory_hints:\n- Task 1622 introduced the meta-test; Task 1641 extracted `check_ignore_reasons` and added the bare-ignore guard.\n- Convention: `#[ignore]` reasons in this file must begin with \"known bug:\".\n- Be careful of self-triggering: synthetic sources and scanner constants are assembled via `.concat()` so this file does not contain the literal guarded sequences.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-14T04:51:09.819Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/tests"
+          ]
+        }
+      },
+      {
+        "id": "1655",
+        "title": "dispatch_constraints: fast path when optimization_registry is empty",
+        "description": "Add an early-return fast path at the top of Engine::dispatch_constraints in crates/reify-eval/src/lib.rs (~line 400) that short-circuits the bucketing/merging machinery when self.optimization_registry.is_empty() — the overwhelmingly common case. Build a ConstraintInput directly from entries (dropping the Option<&str> target field) and return self.constraint_checker.check(&input) with no BTreeMap, no Vec<Option<ConstraintResult>> scratch, no unzip, no rebuild. Behavior must remain identical; goal is to eliminate the 4-5 extra allocations per batch that Task 273 introduced on every check / edit_check / eval_cached hot-path call site, restoring pre-273 performance when no optimized impls are registered.",
+        "details": "Source: esc-273-83 suggestion from reviewer_comprehensive (performance, hot path regression).\n\nCurrent state: dispatch_constraints is called from five constraint-checking sites and unconditionally allocates a results Vec<Option<_>>, a BTreeMap, a fallback Vec<(usize, _)>, then unzips into two more Vecs. Pre-Task-273 was a single self.constraint_checker.check(&input).\n\nFix shape:\n```rust\nfn dispatch_constraints(...) -> Vec<ConstraintResult> {\n    if entries.is_empty() { return Vec::new(); }\n    if self.optimization_registry.is_empty() {\n        let (_targets_dropped, constraints): (Vec<_>, Vec<_>) = entries\n            .into_iter()\n            .map(|(id, expr, _)| ((), (id, expr)))\n            .unzip();\n        let input = ConstraintInput { constraints, values, functions, determinacy };\n        return self.constraint_checker.check(&input);\n    }\n    // ... existing bucketing path ...\n}\n```\n(Or cleaner: collect directly into Vec<(ConstraintNodeId, &CompiledExpr)> in one pass.)\n\nVerify with a microbenchmark or existing constraint-heavy test (e.g. a large frame_constraint batch) that allocation counts drop back to pre-273 levels. All existing dispatch tests must continue to pass.\n\nModules: crates/reify-eval/src",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-14T05:12:07.562Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests"
+          ]
+        }
+      },
+      {
+        "id": "1656",
+        "title": "@optimized annotation: fix extractor/validator asymmetry and narrow missing-target warning",
+        "description": "Two related cleanups in crates/reify-compiler/src/annotations.rs:\n\n1. optimized_target (lines 196-208) short-circuits on the first @optimized annotation and returns None if that first one is malformed — silently dropping any later valid @optimized(\"kernel::foo\"). This contradicts validate_annotations' \"first wins, rest are duplicates\" rule: a user with `@optimized` then `@optimized(\"valid\")` gets two warnings AND loses the valid target. Fix: continue scanning for a string-literal @optimized when the first is malformed, bringing the extractor into agreement with the validator's precedence.\n\n2. validate_annotations' \"missing string-literal target\" warning (lines 80-106) fires for @optimized on structure and occurrence contexts even though the target is only consumed in constraint_def. Users on structures/occurrences see a warning telling them to add a string that nothing reads. Fix: narrow the missing-target warning to `context == \"constraint_def\"` only, and update the inline comment to match (it currently already says \"constraint_def is the only context where this target is actually consumed, but we warn regardless for consistency\" — remove the \"consistency\" justification since it actually misleads users).",
+        "details": "Source: esc-273-83 suggestions #2 (robustness) and #6 (design_coherence) from reviewer_comprehensive.\n\nBoth touch the same file and both concern the @optimized annotation's compiler-side contract, so bundling is appropriate.\n\nFor (1), update the for-loop in optimized_target to continue past malformed entries:\n```rust\nfor ann in annotations {\n    if ann.name == \"optimized\"\n        && let Some(first) = ann.args.first()\n        && let reify_syntax::ExprKind::StringLiteral(s) = &first.kind\n    {\n        return Some(s.clone());\n    }\n}\nNone\n```\nThen add/update tests in crates/reify-compiler/tests/optimized_annotation_tests.rs asserting that `@optimized` followed by `@optimized(\"valid\")` still resolves to Some(\"valid\").\n\nFor (2), in validate_annotations' \"optimized\" arm, move the missing-target warning inside a `context == \"constraint_def\"` guard.\n\nCoordinate with Task 274 test-coverage followups (compiler-side assertions on CompiledConstraint::optimized_target).\n\nModules: crates/reify-compiler/src, crates/reify-compiler/tests",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-14T05:08:29.022Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1657",
+        "title": "OptimizedImpl contract violation: diagnostic + fallback instead of engine panic",
+        "description": "In crates/reify-eval/src/lib.rs dispatch_constraints (lines 456-463), convert the `assert_eq!` that checks `output.results.len() == indices.len()` for a registered OptimizedImpl into a soft failure: emit a Diagnostic::error naming the target and per-constraint ids, and reroute the affected constraints to the language-level self.constraint_checker fallback instead of panicking. The registry is a third-party extension point intended to support hot-reload and external impls, so a single buggy plugin should not crash the engine. Keep the internal ConstraintChecker result-count assertion (lines 481-487) as a debug_assert — that path is in-tree and far less likely to fire in production, but we still want the safety net during dev.",
+        "details": "Source: esc-273-83 suggestion #5 (robustness) from reviewer_comprehensive.\n\nDesign trade-off: panicking is simpler and catches plugin bugs loudly, but for a user-extension point it converts a plugin defect into a process crash. Graceful degradation (diagnostic + fallback) is the right default.\n\nFlow:\n- On contract violation, push a Diagnostic::error with context like \"OptimizedImpl for target {:?} returned {} results for {} constraints — falling back to language-level checker for this batch\".\n- Rebuild a ConstraintInput from the bucket's (ConstraintNodeId, &CompiledExpr) pairs and dispatch through self.constraint_checker.check(...).\n- Weave those results into the `results` vec via the original indices as today.\n- The engine needs a handle to emit diagnostics from dispatch_constraints. Check whether the current call sites thread a diagnostic sink — if not, this task may need to collect violations and return them alongside ConstraintResult, or store them on the Engine for the caller to drain.\n\nTests to add:\n- A #[should_panic] test removed in favor of a test that registers a MockOptimizedImpl returning the wrong result count and asserts (a) a diagnostic is emitted, (b) all N constraints still get a ConstraintResult via the fallback.\n\nConvert the internal-path assertion to `debug_assert_eq!` in the same patch.\n\nModules: crates/reify-eval/src, crates/reify-eval/tests",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-14T05:10:19.103Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests"
+          ]
+        }
+      },
+      {
+        "id": "1658",
+        "title": "Tighten sample() arity-mismatch tests: discriminating body, redundancy cross-ref, type-coherence docs",
+        "description": "Post-merge review of Task 774 identified three test-quality improvements in `crates/reify-expr/tests/field_eval_tests.rs` for the two arity-mismatch tests added there. All three target the same file and complementary concerns; address them together.\n\n1. **Make one-param test discriminating (lines 184-270).** `sample_one_param_lambda_with_three_element_point_returns_undef` currently asserts end-state Undef with an inline `negate_value(Point) → Undef` body_check. But a hypothetical failure mode where sample() decomposed the Point into 3 args (triggering apply_lambda's arity check: 3 args vs 1 param → Undef) would still make the assertion pass, defeating the stated \"binds the entire Point as a single value\" contract. Fix: use a body that observably depends on what `x` is bound to — e.g., `count(x)` returning 3 iff x is bound to the whole Point, or a String codomain body that lets you assert on a Point-shaped result. Goal: make the binding observable rather than inferred from a shared Undef sink.\n\n2. **Address redundancy with gradient_tests.rs:262-299 (lines 259-346).** `sample_multi_param_lambda_returns_undef_due_to_no_unpacking` hits the same apply_lambda arity check (lib.rs:586) that `wrong_size_point` in gradient_tests.rs already pins (passes a 2-elt Tensor as 1 arg to a 3-param lambda → Undef). Prefer: add a cross-reference comment pointing to gradient_tests.rs so maintainers see both pin the same contract, AND extend the assertion to also verify the constant body `42.0` is NOT observed (e.g., `assert_ne!(result, Value::Real(42.0))`) to make the \"unreachable body\" claim explicit. Alternative: drop the test in favor of gradient_tests.rs coverage.\n\n3. **Document intentional type-incoherence (lines 309-310 and 244).** The multi-param test's Field has `domain_type: Type::Real` but its lambda has 3 params — a type-incoherent Field the compiler would never produce. Add a sentence to the doc comment acknowledging this is intentionally synthetic to exercise the runtime defensive path and noting that sample()'s analytical dispatch does not consult the type metadata. Likewise, in the one-param test, `field_type` uses `Type::point3(Type::length())` but the runtime Point uses plain `Value::Real(...)` — consider using `Value::Scalar { dimension: LENGTH }` components to match the type (see `sample_gradient_of_constant_field_near_zero` at ~line 408 for the idiomatic pattern).\n\nmemory_hints: search \"apply_lambda arity check\", read crates/reify-expr/tests/field_eval_tests.rs:184-346 and crates/reify-expr/tests/gradient_tests.rs:260-299 before starting.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-14T05:16:48.862Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T04:02:49.562Z",
-      "taskCount": 1652,
-      "completedCount": 1319,
+      "lastModified": "2026-04-14T05:19:11.291Z",
+      "taskCount": 1658,
+      "completedCount": 1327,
       "tags": [
         "master"
       ]

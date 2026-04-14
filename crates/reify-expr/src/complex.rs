@@ -557,18 +557,30 @@ mod tests {
     #[test]
     fn phase_signed_zero_complex_returns_undef() {
         // Complex{re:-0.0, im:-0.0, DIMENSIONLESS}.phase → Undef
+        // (plus both mixed-sign variants: (0.0,-0.0) and (-0.0,0.0))
         //
         // This is a separate #[test] from phase_zero_complex_returns_undef so that
         // the signed-zero path is independently asserted: if the first test fails the
         // test runner still executes this one, making signed-zero regressions visible.
         //
         // IEEE-754 guarantees -0.0 == 0.0, so the zero-vector guard (`*re == 0.0 &&
-        // *im == 0.0`) in phase() catches -0.0 today. A future refactor that swapped
-        // `==` for a bit-pattern check (e.g. `to_bits() == 0`) would break this path
-        // and be caught by this test.
+        // *im == 0.0`) in phase() catches all signed-zero variants today. This test
+        // locks all three mixed/negative-sign combinations against a future refactor
+        // that swapped `==` for a bit-pattern check (e.g. `to_bits() == 0`), which
+        // would silently break mixed-sign cases.
         assert!(
             call_complex_method(-0.0, -0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
             "z.phase with signed-zero vector (-0.0,-0.0) should return Undef \
+             (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
+        );
+        assert!(
+            call_complex_method(0.0, -0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            "z.phase with mixed-sign zero vector (0.0,-0.0) should return Undef \
+             (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
+        );
+        assert!(
+            call_complex_method(-0.0, 0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            "z.phase with mixed-sign zero vector (-0.0,0.0) should return Undef \
              (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
         );
     }
