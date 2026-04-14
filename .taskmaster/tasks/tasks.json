@@ -33908,7 +33908,7 @@
         "id": "1640",
         "title": "Extend make_field_with_source round-trip test to cover all FieldSourceKind variants",
         "description": "Follow-up from Task 1612 review triage (esc-1612-15, S1).\n\nIn crates/reify-expr/tests/field_calculus_tests.rs, the `make_field_with_source_builds_field_with_given_source` test (~lines 102-144) iterates over only 3 of the 8 current `FieldSourceKind` variants: Analytical, Composed, Laplacian. The unchecked variants are Sampled, Imported, Gradient, Divergence, and Curl.\n\nSince the loop already iterates and the per-iteration assertions are constant, extending the array to all variants is essentially free and would protect against future enum additions silently bypassing the helper (the `[...]` array is not an exhaustive match, so new variants would not force an update here).\n\nPreferred fix: iterate over the full FieldSourceKind enum (all 8 current variants). Alternative: add a brief comment explaining why these three are representative.\n\nVerification: `cargo test -p reify-expr --test field_calculus_tests make_field_with_source_builds_field_with_given_source`.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "details": "Add memory_hints: See Task 1612 review triage (esc-1612-15, S1) for original finding; search: 'FieldSourceKind variants make_field_with_source round-trip test'.",
@@ -33919,7 +33919,8 @@
             "crates/reify-expr/tests"
           ],
           "memory_hints": "See Task 1612 review triage (esc-1612-15, S1) for original finding; search: 'FieldSourceKind variants make_field_with_source round-trip test field_calculus_tests.rs ~lines 102-144'"
-        }
+        },
+        "updatedAt": "2026-04-14T00:10:05.842Z"
       },
       {
         "id": "1641",
@@ -34042,7 +34043,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T00:09:44.876Z",
+      "lastModified": "2026-04-14T00:10:05.842Z",
       "taskCount": 1647,
       "completedCount": 1317,
       "tags": [
