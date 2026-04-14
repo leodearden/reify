@@ -32,13 +32,18 @@ pub fn find_stale_plan_pointers_in_source(source: &str) -> Vec<String> {
 
     while let Some(rel_pos) = remaining.find(marker.as_str()) {
         let abs_pos = byte_offset + rel_pos;
-        let line_num = source[..abs_pos].bytes().filter(|&b| b == b'\n').count() + 1;
 
         // Locate the bounds of the line that contains the marker, then check
         // whether it is a doc-comment line.  The check is on the MARKER's line,
         // not on any `\`-continuation lines, so multi-line reason support is
         // preserved (test g).
+        //
+        // line_start is computed first via rfind (one O(abs_pos) scan);
+        // line_num is then derived from source[..line_start] (a strictly
+        // smaller scan, O(line_start) ≤ O(abs_pos)) to avoid a redundant
+        // full-range scan that would make the inner loop O(M·N) for M markers.
         let line_start = source[..abs_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let line_num = source[..line_start].bytes().filter(|&b| b == b'\n').count() + 1;
         let line_end = source[abs_pos..]
             .find('\n')
             .map(|p| abs_pos + p)
@@ -81,7 +86,14 @@ pub fn find_stale_plan_pointers_in_source(source: &str) -> Vec<String> {
 ///    (e.g. `"known bug: see plan.md step-3"` would pass guard 2 and would
 ///    only trip guard 3 if it happened to contain the specific sentinel).
 /// 3. **Negative sentinel** — the specific historical stale-pointer substring
-///    is also checked whole-file as belt-and-suspenders.
+///    is also checked as belt-and-suspenders.  Guard 3 now scans
+///    line-by-line so it agrees with guards 1+2 on which lines are
+///    doc-comment prose to skip.  **Limitation:** because the check is
+///    line-local, a stale needle that straddles a `\` + newline
+///    string-literal continuation *across* a line boundary would be missed.
+///    Guards 1+2 still catch that case via `after_marker`'s cross-line scan.
+///    This asymmetry is not a realistic risk for current test files, but is
+///    documented here so future callers are aware.
 ///
 /// Lines where `is_doc_comment_line` returns true (`///` or `//!`, after
 /// `trim_start`) are skipped — prose mentions of `#[ignore]` in doc comments
@@ -529,6 +541,24 @@ mod tests {
         assert!(
             check_ignore_reasons(src).is_ok(),
             "expected source with no ignore attributes to be accepted",
+        );
+    }
+
+    /// Guard 3 (negative sentinel) isolation: a `///` doc-comment line that
+    /// contains ONLY the stale needle — without any `#[ignore]` marker — must
+    /// be accepted.  This pins guard 3's doc-skip filter independently of
+    /// guards 1+2, which would have already returned early on a marker.
+    /// If a future refactor drops the `filter(|l| !is_doc_comment_line(l))`
+    /// clause from guard 3 while keeping it on guards 1+2, this test fails.
+    #[test]
+    fn check_ignore_reasons_guard3_skips_doc_comment_lines() {
+        let needle = ["plan", " step-"].concat();
+        // Source has no #[ignore] marker — only a doc-comment line with the needle.
+        // Guards 1+2 will not fire; only guard 3 can reject or accept.
+        let src = format!("/// contains needle: {needle}3\n");
+        assert!(
+            check_ignore_reasons(&src).is_ok(),
+            "guard 3 should skip a stale needle that lives on a /// doc-comment line",
         );
     }
 
