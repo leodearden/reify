@@ -1305,6 +1305,22 @@ fn unfold_mutual_recursion_heterogeneous_members() {
          If Undef, BFS projection in elaborate_child_lets_only iterates A's value_cells \
          for entity A.b (a B instance), missing B-specific members like 'height'."
     );
+
+    // Depth-2 alternation: A.b.a = A(n=0, width=5) — guard fires (n=1 > 0), creating
+    // A.b.a with n = B.n - 1 = 1 - 1 = 0. Then A.b.a's guard (0 > 0) is false → leaf.
+    // This verifies template lookup at depth 2: B's sub 'a' uses Template A, not Template B.
+    // Task 553 improvement #5: extends coverage from depth-1 to depth-2 alternation.
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b.a", "n")),
+        Some(&Value::Int(0)),
+        "A.b.a.n should be 0 (B(n=1).sub a = A(n=1-1=0))"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b.a", "width")),
+        Some(&Value::Int(5)),
+        "A.b.a.width should be 5 (A's default). \
+         If absent, depth-2 template alternation (B→A lookup) is broken."
+    );
 }
 
 // ─── step-39: cyclic let-binding dependency detection ─────────────────────────
