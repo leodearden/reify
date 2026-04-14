@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 // --- Compilation context ---
 
@@ -31,7 +32,9 @@ pub(crate) struct CompilationScope<'u> {
     pub(crate) is_entity_scope: bool,
     /// Member types for all sub-components: sub_name → { member_name → Type }.
     /// Populated for ALL subs (collection and non-collection) for self.sub.member resolution.
-    pub(crate) sub_member_types: HashMap<String, HashMap<String, Type>>,
+    /// Inner map is BTreeMap so iteration order is lexicographic — this makes bare
+    /// collection-sub identifier resolution (expr.rs: members.iter().next()) deterministic.
+    pub(crate) sub_member_types: HashMap<String, BTreeMap<String, Type>>,
     /// Whether the current structure has at least one geometry declaration (realize block).
     /// Used to gate @face/@edge selectors at compile time.
     pub(crate) has_geometry: bool,

@@ -465,7 +465,9 @@ fn compile_indexed_member_access_multi_member_child() {
         }
         other => panic!("expected ValueRef(S.bolts[0].grade), got {:?}", other),
     }
-    // grade is declared as Scalar — in the Reify type system Scalar means a length-dimension scalar
+    // Note: `Scalar` keyword always maps to Type::length() regardless of physical meaning —
+    // this tests the type-system mapping, not dimensional analysis.
+    // (grade 8.8 is dimensionless in the physical world but Scalar → length() in Reify's type system.)
     assert_eq!(
         expr.result_type,
         reify_types::Type::length(),
@@ -564,18 +566,19 @@ fn compile_collection_identifier_after_noncollection_sub() {
         .as_ref()
         .expect("gs should have an expression");
 
-    // Should resolve to a ValueRef to the first member's per-member list __list_bolts__diameter
+    // Should resolve to a ValueRef to the lexicographically-first member's per-member list.
+    // Bolt has one member (diameter), so the result is __list_bolts__diameter.
+    // sub_member_types uses BTreeMap internally, so this is deterministic.
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
             assert_eq!(id.entity, "S", "entity should be S");
-            assert!(
-                id.member.starts_with("__list_bolts__"),
-                "member should be a __list_bolts__<member> synthetic cell, got: {}",
-                id.member
+            assert_eq!(
+                id.member, "__list_bolts__diameter",
+                "member should be __list_bolts__diameter (lex-first member of Bolt)"
             );
         }
         other => panic!(
-            "expected ValueRef(__list_bolts__...) for bare collection sub 'bolts', got {:?}",
+            "expected ValueRef(S.__list_bolts__diameter) for bare collection sub 'bolts', got {:?}",
             other
         ),
     }

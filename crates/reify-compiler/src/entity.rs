@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 /// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
 pub(crate) struct EntityDefRef<'a> {
@@ -420,7 +421,7 @@ pub(crate) fn compile_entity(
                     .iter()
                     .find(|t| t.name == sub.structure_name)
                 {
-                    let member_types: HashMap<String, Type> = child_tmpl
+                    let member_types: BTreeMap<String, Type> = child_tmpl
                         .value_cells
                         .iter()
                         .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))

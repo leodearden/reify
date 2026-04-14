@@ -126,7 +126,8 @@ pub(crate) fn compile_expr_guarded(
                     if scope.collection_sub_names.contains(name.as_str()) {
                         if let Some(members) = scope.sub_member_types.get(name.as_str())
                         {
-                            // Resolve to the first member's per-member list
+                            // Resolve to the lexicographically-first member's per-member list.
+                            // sub_member_types inner map is BTreeMap, so iteration order is deterministic.
                             if let Some((first_member, member_ty)) = members.iter().next() {
                                 let list_id = ValueCellId::new(
                                     &scope.entity_name,
