@@ -28828,7 +28828,10 @@
         "updatedAt": "2026-04-09T20:11:52.984Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/self_keyword_tests.rs"
           ]
         }
       },
@@ -28875,8 +28878,11 @@
         "updatedAt": "2026-04-09T21:11:08.558Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
           ]
         }
       },
