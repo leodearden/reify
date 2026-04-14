@@ -21149,7 +21149,8 @@
         "updatedAt": "2026-04-11T07:44:49.000Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
           ],
           "memory_hints": {
             "entities": [],
@@ -21759,8 +21760,8 @@
             "crates/reify-expr/src/calculus.rs"
           ],
           "modules": [
-            "crates/reify-types",
-            "crates/reify-expr"
+            "crates/reify-types/src",
+            "crates/reify-expr/src"
           ]
         },
         "updatedAt": "2026-04-14T07:04:17.845Z"
