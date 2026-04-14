@@ -35000,7 +35000,19 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:21:09.790Z"
+        "updatedAt": "2026-04-14T20:21:09.790Z",
+        "metadata": {
+          "memory_hints": {
+            "entity_refs": [
+              "SiPrefixBase",
+              "SiDerivedUnit"
+            ],
+            "search_queries": [
+              "SiPrefixBase prefix_combos semantics empty slice",
+              "si_units prefix_combos field semantics disambiguation"
+            ]
+          }
+        }
       },
       {
         "id": 1677,
