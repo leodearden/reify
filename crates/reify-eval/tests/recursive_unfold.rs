@@ -2109,9 +2109,11 @@ fn budget_not_consumed_when_depth_limit_hit() {
 ///
 /// Assertions:
 ///   (1) At least one Error diagnostic with "total node budget exhausted"
-///   (2) S.left.n == 9  (created within budget)
-///   (3) S.left.right does NOT exist  (budget==0 when it would be created)
-///   (4) S.left.left.right does NOT exist  (budget==0 at that point too)
+///   (2) S.left.n == 9        (created when budget was 3→2)
+///   (3) S.left.left.n == 8   (created when budget was 2→1)
+///   (4) S.left.left.left.n == 7 (created when budget was 1→0)
+///   (5) S.left.right does NOT exist  (budget==0 when it would be created)
+///   (6) S.left.left.right does NOT exist  (budget==0 at that point too)
 #[test]
 fn unfold_recursive_node_budget_exhaustion() {
     // guard: n > 0
@@ -2161,14 +2163,28 @@ fn unfold_recursive_node_budget_exhaustion() {
         result.diagnostics
     );
 
-    // (2) S.left should exist with n=9 (first node created, within budget)
+    // (2) S.left should exist with n=9 (first node created, when budget was 3→2)
     assert_eq!(
         result.values.get(&ValueCellId::new("S.left", "n")),
         Some(&Value::Int(9)),
         "S.left.n should be 9 (created when budget was 3→2)"
     );
 
-    // (3) S.left.right must NOT exist: when unfolding S.left's "right" sub, budget==0
+    // (3) S.left.left should exist with n=8 (second node created, when budget was 2→1)
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left.left", "n")),
+        Some(&Value::Int(8)),
+        "S.left.left.n should be 8 (created when budget was 2→1)"
+    );
+
+    // (4) S.left.left.left should exist with n=7 (third node created, when budget was 1→0)
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left.left.left", "n")),
+        Some(&Value::Int(7)),
+        "S.left.left.left.n should be 7 (created when budget was 1→0)"
+    );
+
+    // (5) S.left.right must NOT exist: when unfolding S.left's "right" sub, budget==0
     assert!(
         !result
             .values
@@ -2177,7 +2193,7 @@ fn unfold_recursive_node_budget_exhaustion() {
          If present, budget was not properly exhausted depth-first."
     );
 
-    // (4) S.left.left.right must NOT exist: budget==0 when processing S.left.left's "right" sub
+    // (6) S.left.left.right must NOT exist: budget==0 when processing S.left.left's "right" sub
     assert!(
         !result
             .values
