@@ -66,6 +66,27 @@ fn units_module() -> &'static CompiledModule {
         .expect("std/units module not found")
 }
 
+/// Assert that a named unit in `std/units` has the expected dimension, factor
+/// (within `rel_tol` relative tolerance), and no offset.
+fn assert_simple_unit(name: &str, expected_dim: DimensionVector, expected_factor: f64, rel_tol: f64) {
+    let module = units_module();
+    let u = module
+        .units
+        .iter()
+        .find(|u| u.name == name)
+        .unwrap_or_else(|| panic!("unit '{}' not found in std/units", name));
+    assert_eq!(u.dimension, expected_dim, "unit '{}' dimension wrong", name);
+    assert!(
+        (u.factor - expected_factor).abs() < expected_factor.abs() * rel_tol,
+        "unit '{}' factor should be {} (rel_tol {}), got {}",
+        name,
+        expected_factor,
+        rel_tol,
+        u.factor
+    );
+    assert!(u.offset.is_none(), "unit '{}' should have no offset", name);
+}
+
 // ─── step-1/2: yd — Length ────────────────────────────────────────────────────
 
 #[test]
@@ -81,21 +102,7 @@ fn stdlib_yd_resolves_to_length_0p9144() {
 
 #[test]
 fn stdlib_units_module_contains_yd_with_no_offset() {
-    let units_module = units_module();
-
-    let yd = units_module
-        .units
-        .iter()
-        .find(|u| u.name == "yd")
-        .expect("unit 'yd' not found in std/units");
-
-    assert_eq!(yd.dimension, DimensionVector::LENGTH, "yd dimension wrong");
-    assert!(
-        (yd.factor - 0.9144).abs() < 1e-12,
-        "yd factor should be 0.9144, got {}",
-        yd.factor
-    );
-    assert!(yd.offset.is_none(), "yd should have no offset");
+    assert_simple_unit("yd", DimensionVector::LENGTH, 0.9144, 1e-12);
 }
 
 // ─── step-3/4: lbf — Force ────────────────────────────────────────────────────
@@ -117,22 +124,7 @@ fn stdlib_lbf_resolves_to_force_4p4482216152605() {
 
 #[test]
 fn stdlib_units_module_contains_lbf_with_force_dimension() {
-    let units_module = units_module();
-
-    let lbf = units_module
-        .units
-        .iter()
-        .find(|u| u.name == "lbf")
-        .expect("unit 'lbf' not found in std/units");
-
-    assert_eq!(lbf.dimension, DimensionVector::FORCE, "lbf dimension wrong");
-    assert!(
-        (lbf.factor - LBF_SI).abs() < 1e-9,
-        "lbf factor should be {}, got {}",
-        LBF_SI,
-        lbf.factor
-    );
-    assert!(lbf.offset.is_none(), "lbf should have no offset");
+    assert_simple_unit("lbf", DimensionVector::FORCE, LBF_SI, 1e-9);
 }
 
 // ─── step-5/6: psi and ksi — Pressure ────────────────────────────────────────
@@ -170,33 +162,8 @@ fn stdlib_ksi_resolves_to_pressure_6894757p293168361() {
 
 #[test]
 fn stdlib_units_module_contains_psi_and_ksi_with_pressure_dimension() {
-    let units_module = units_module();
-
-    let psi = units_module
-        .units
-        .iter()
-        .find(|u| u.name == "psi")
-        .expect("unit 'psi' not found in std/units");
-    assert_eq!(psi.dimension, DimensionVector::PRESSURE, "psi dimension wrong");
-    assert!(
-        (psi.factor - PSI_SI).abs() < PSI_SI * 1e-9,
-        "psi factor wrong: {}",
-        psi.factor
-    );
-    assert!(psi.offset.is_none(), "psi should have no offset");
-
-    let ksi = units_module
-        .units
-        .iter()
-        .find(|u| u.name == "ksi")
-        .expect("unit 'ksi' not found in std/units");
-    assert_eq!(ksi.dimension, DimensionVector::PRESSURE, "ksi dimension wrong");
-    assert!(
-        (ksi.factor - KSI_SI).abs() < KSI_SI * 1e-9,
-        "ksi factor wrong: {}",
-        ksi.factor
-    );
-    assert!(ksi.offset.is_none(), "ksi should have no offset");
+    assert_simple_unit("psi", DimensionVector::PRESSURE, PSI_SI, 1e-9);
+    assert_simple_unit("ksi", DimensionVector::PRESSURE, KSI_SI, 1e-9);
 }
 
 // ─── step-7/8: fl_oz and gal — Volume (US customary) ─────────────────────────
@@ -232,33 +199,8 @@ fn stdlib_gal_resolves_to_volume_3p785e_minus3() {
 
 #[test]
 fn stdlib_units_module_contains_fl_oz_and_gal_with_volume_dimension() {
-    let units_module = units_module();
-
-    let fl_oz = units_module
-        .units
-        .iter()
-        .find(|u| u.name == "fl_oz")
-        .expect("unit 'fl_oz' not found in std/units");
-    assert_eq!(fl_oz.dimension, DimensionVector::VOLUME, "fl_oz dimension wrong");
-    assert!(
-        (fl_oz.factor - FL_OZ_SI).abs() < 1e-15,
-        "fl_oz factor wrong: {}",
-        fl_oz.factor
-    );
-    assert!(fl_oz.offset.is_none(), "fl_oz should have no offset");
-
-    let gal = units_module
-        .units
-        .iter()
-        .find(|u| u.name == "gal")
-        .expect("unit 'gal' not found in std/units");
-    assert_eq!(gal.dimension, DimensionVector::VOLUME, "gal dimension wrong");
-    assert!(
-        (gal.factor - GAL_SI).abs() < 1e-15,
-        "gal factor wrong: {}",
-        gal.factor
-    );
-    assert!(gal.offset.is_none(), "gal should have no offset");
+    assert_simple_unit("fl_oz", DimensionVector::VOLUME, FL_OZ_SI, 1e-9);
+    assert_simple_unit("gal", DimensionVector::VOLUME, GAL_SI, 1e-9);
 }
 
 // ─── cross-relationships: dimensional identities across imperial units ────────
