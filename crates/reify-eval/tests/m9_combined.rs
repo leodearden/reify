@@ -17,16 +17,16 @@ const EXAMPLE_PATH: &str = concat!(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Read and return the contents of the m9_combined.ri example file.
+/// Read and return the contents of the m9_combined.ri example file as a `&'static str`.
 /// The file is read only once per test process (cached in a `OnceLock`);
-/// each caller receives an owned clone.
-fn source() -> String {
+/// each caller receives a reference to the single cached copy — no cloning.
+fn source() -> &'static str {
     static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     S.get_or_init(|| {
         std::fs::read_to_string(EXAMPLE_PATH)
             .expect("examples/m9_combined.ri should exist")
     })
-    .clone()
+    .as_str()
 }
 
 /// Parse, compile, eval with SimpleConstraintChecker, return EvalResult.
@@ -53,7 +53,7 @@ fn check_source(src: &str) -> reify_eval::CheckResult {
 #[test]
 fn m9_combined_ri_parses() {
     let src = source();
-    let parsed = reify_syntax::parse(&src, ModulePath::single("test"));
+    let parsed = reify_syntax::parse(src, ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -67,7 +67,7 @@ fn m9_combined_ri_parses() {
 /// Also confirms at least one template exists (structures are present).
 #[test]
 fn m9_combined_compiles_no_errors() {
-    let compiled = parse_and_compile(&source());
+    let compiled = parse_and_compile(source());
 
     // Must have at least one template (structure)
     assert!(
@@ -82,7 +82,7 @@ fn m9_combined_compiles_no_errors() {
 /// Complements `total_constraint_count`, which additionally asserts count >= 15.
 #[test]
 fn all_constraints_satisfied() {
-    let check_result = check_source(&source());
+    let check_result = check_source(source());
 
     // Must have at least some constraint results (file has active constraints)
     assert!(
@@ -109,7 +109,7 @@ fn all_constraints_satisfied() {
 /// Confirms multi-trait inheritance and trait let binding propagation.
 #[test]
 fn trait_values() {
-    let result = eval_source(&source());
+    let result = eval_source(source());
 
     // Bracket.length = 100mm = 0.1 SI
     let length_id = ValueCellId::new("Bracket", "length");
@@ -166,7 +166,7 @@ fn trait_values() {
 /// Confirms empty-body structure receives trait defaults.
 #[test]
 fn default_injection() {
-    let result = eval_source(&source());
+    let result = eval_source(source());
 
     // Plate.mass = 1kg = 1.0 SI (injected from Weighted trait default)
     let mass_id = ValueCellId::new("Plate", "mass");
@@ -193,7 +193,7 @@ fn default_injection() {
 /// indexing ever changes.
 #[test]
 fn constraint_def_labels() {
-    let check_result = check_source(&source());
+    let check_result = check_source(source());
 
     // Collect all Bracket InRange constraints
     let inrange_constraints: Vec<_> = check_result
@@ -251,7 +251,7 @@ fn constraint_def_labels() {
 /// Confirms the custom unit mil resolves correctly in param defaults.
 #[test]
 fn custom_unit_value() {
-    let result = eval_source(&source());
+    let result = eval_source(source());
 
     // Bracket.clearance = 500mil = 500 * 0.0000254m = 0.0127 SI
     let clearance_id = ValueCellId::new("Bracket", "clearance");
@@ -276,7 +276,7 @@ fn custom_unit_value() {
 /// Confirms meta block keys are accessible in let bindings.
 #[test]
 fn meta_access_values() {
-    let result = eval_source(&source());
+    let result = eval_source(source());
 
     // Bracket.label = "steel" (from meta.material)
     let label_id = ValueCellId::new("Bracket", "label");
@@ -311,7 +311,7 @@ fn meta_access_values() {
 /// Confirms recursive unfolding with depth-gate termination.
 #[test]
 fn recursive_unfold_depth() {
-    let result = eval_source(&source());
+    let result = eval_source(source());
 
     // BracketTree.child.span = 200mm/2 = 100mm = 0.1 SI
     let child_span_id = ValueCellId::new("BracketTree.child", "span");
@@ -362,7 +362,7 @@ fn recursive_unfold_depth() {
 /// This is the >=15 assertions requirement from the task description.
 #[test]
 fn total_constraint_count() {
-    let check_result = check_source(&source());
+    let check_result = check_source(source());
 
     assert!(
         check_result.constraint_results.len() >= 15,
@@ -426,5 +426,40 @@ fn violated_constraint_detected() {
         "expected at least one Violated constraint after raising clearance above width, \
          got {} results with no violations",
         check_result.constraint_results.len()
+    );
+
+    // The violation must correspond specifically to the `clearance < width` constraint
+    // on entity Bracket (not some unrelated or cascade failure).  Inline constraints
+    // have label=None so we cannot match by label directly; instead assert exactly one
+    // Bracket violation — any more would indicate an unexpected regression.
+    let bracket_violation_count = violations.iter().filter(|e| e.id.entity == "Bracket").count();
+    assert_eq!(
+        bracket_violation_count,
+        1,
+        "expected exactly 1 Bracket violation (clearance < width), \
+         but found {} Bracket violations among: {:?}",
+        bracket_violation_count,
+        violations.iter().map(|e| &e.id).collect::<Vec<_>>()
+    );
+
+    // Other previously-passing Bracket constraints must remain Satisfied — guards against
+    // cascade-failure regressions masking the real bug.  The violating source produces
+    // 12 total Bracket constraint results (verified empirically): 11 Satisfied and 1
+    // Violated (`clearance < width`).  The threshold is set to 9 (out of 11 actual)
+    // to meaningfully catch regressions while tolerating minor example-file evolution.
+    // Breakdown of Satisfied constraints: 2 trait constraints (length>0mm, mass>0kg),
+    // 4 InRange predicates (label InRange[0]/InRange[1] × 2 invocations), 3 determined
+    // predicates (length, width, mass), plus `width<length` and `clearance>0mm`.
+    let bracket_still_satisfied: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.id.entity == "Bracket" && e.satisfaction == Satisfaction::Satisfied)
+        .collect();
+    assert!(
+        bracket_still_satisfied.len() >= 9,
+        "expected at least 9 Bracket constraints still Satisfied after raising clearance \
+         (actual healthy count is 11 — InRange×4, determined×3, trait×2, width<length, \
+         clearance>0mm), got {}",
+        bracket_still_satisfied.len()
     );
 }
