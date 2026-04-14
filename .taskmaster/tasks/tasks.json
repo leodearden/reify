@@ -9033,7 +9033,7 @@
             "crates/reify-compiler/tests/recursive_detection_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ]
         }
       },
@@ -9249,7 +9249,7 @@
             "crates/reify-eval/tests/m9_trait_conformance.rs"
           ],
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ]
         }
       },
