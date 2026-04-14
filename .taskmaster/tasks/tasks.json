@@ -34063,7 +34063,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T00:19:25.163Z"
+        "updatedAt": "2026-04-14T00:19:25.163Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src"
+          ]
+        }
       },
       {
         "id": 1650,
