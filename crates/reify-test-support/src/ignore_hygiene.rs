@@ -217,6 +217,87 @@ mod tests {
         );
     }
 
+    // ── find_stale_plan_pointers_in_source — doc-comment skipping ────────────
+
+    /// (h) A `///` outer-doc-comment line containing the marker AND the stale
+    /// needle must produce zero violations — doc-comment lines are skipped.
+    #[test]
+    fn fspp_skips_outer_doc_comment_marker_with_stale_needle() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let src = format!("/// {marker}{needle}3 reference\"]\n");
+        let violations = find_stale_plan_pointers_in_source(&src);
+        assert!(
+            violations.is_empty(),
+            "expected marker on a /// line to be skipped, got: {violations:?}"
+        );
+    }
+
+    /// (i) A `//!` inner-doc-comment line containing the marker AND the stale
+    /// needle must produce zero violations — pins the `//!` arm separately.
+    #[test]
+    fn fspp_skips_inner_doc_comment_marker_with_stale_needle() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let src = format!("//! {marker}{needle}3 reference\"]\n");
+        let violations = find_stale_plan_pointers_in_source(&src);
+        assert!(
+            violations.is_empty(),
+            "expected marker on a //! line to be skipped, got: {violations:?}"
+        );
+    }
+
+    /// (j) A `///` line with leading whitespace before the `///` must still be
+    /// detected as a doc-comment line (verifies `trim_start()` semantics).
+    #[test]
+    fn fspp_skips_indented_doc_comment_marker_with_stale_needle() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let src = format!("    /// {marker}{needle}3 reference\"]\n");
+        let violations = find_stale_plan_pointers_in_source(&src);
+        assert!(
+            violations.is_empty(),
+            "expected marker on an indented /// line to be skipped, got: {violations:?}"
+        );
+    }
+
+    /// (k) A regular `//` line (NOT `///` or `//!`) containing the marker AND
+    /// the stale needle must STILL produce a violation.  Locks the documented
+    /// limitation that only `///` and `//!` are skipped, not plain `//`.
+    #[test]
+    fn fspp_does_not_skip_regular_double_slash_comment_with_marker_and_needle() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let src = format!("// {marker}{needle}3 reference\"]\n");
+        let violations = find_stale_plan_pointers_in_source(&src);
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected marker on a // (non-doc) comment line to NOT be skipped, got: {violations:?}"
+        );
+    }
+
+    // ── lock-step agreement between both scanners ─────────────────────────────
+
+    /// Lock-step test: both `find_stale_plan_pointers_in_source` and
+    /// `check_ignore_reasons` must agree that a `///` doc-comment line
+    /// containing the marker + stale needle produces zero violations.
+    /// This test fails to compile until `check_ignore_reasons` is promoted
+    /// to this module — that compile failure is the expected RED state.
+    #[test]
+    fn lock_step_doc_comment_skipping_in_both_scanners() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let src = format!("/// {marker}{needle}3 reference\"]\n");
+        let fspp_result = find_stale_plan_pointers_in_source(&src);
+        let cir_result = check_ignore_reasons(&src);
+        assert!(
+            fspp_result.is_empty() && cir_result.is_ok(),
+            "both scanners must agree on doc-comment skipping: \
+             fspp={fspp_result:?}, cir={cir_result:?}"
+        );
+    }
+
     // ── walk_test_rs_files ────────────────────────────────────────────────────
 
     /// Build a synthetic workspace tree using tempfile::tempdir() and verify that
