@@ -354,4 +354,55 @@ mod tests {
         let result = eval_analysis("max_shear", &[tensor]).unwrap();
         assert_scalar_approx!(result, 0.0, DimensionVector::PRESSURE);
     }
+
+    #[test]
+    fn eigenvalues_uniaxial_debug() {
+        // Direct test of eigenvalue helper for uniaxial case
+        let d = [200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let eigs = compute_eigenvalues_3x3(&d)
+            .expect("eigenvalues should compute for uniaxial matrix");
+        assert!(
+            (eigs[2] - 200.0).abs() < 1e-9,
+            "largest eigenvalue should be 200, got {}",
+            eigs[2]
+        );
+        assert!(
+            eigs[0].abs() < 1e-9,
+            "smallest eigenvalue should be ~0, got {}",
+            eigs[0]
+        );
+    }
+
+    #[test]
+    fn max_shear_uniaxial() {
+        // Uniaxial [[σ,0,0],[0,0,0],[0,0,0]] → max_shear = σ/2
+        // Use small values to keep within absolute tolerance of assert macros
+        let sigma = 200.0;
+        let tensor = make_dimensioned_matrix(
+            &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("max_shear", &[tensor]).unwrap();
+        assert_scalar_approx!(result, sigma / 2.0, DimensionVector::PRESSURE);
+    }
+
+    #[test]
+    fn max_shear_biaxial() {
+        // Biaxial [[σ,0,0],[0,-σ,0],[0,0,0]] → max_shear = σ
+        let sigma = 100.0;
+        let tensor = make_dimensioned_matrix(
+            &[&[sigma, 0.0, 0.0], &[0.0, -sigma, 0.0], &[0.0, 0.0, 0.0]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("max_shear", &[tensor]).unwrap();
+        assert_scalar_approx!(result, sigma, DimensionVector::PRESSURE);
+    }
+
+    #[test]
+    fn max_shear_wrong_args_return_undef() {
+        assert!(eval_analysis("max_shear", &[]).unwrap().is_undef());
+        assert!(eval_analysis("max_shear", &[Value::Real(1.0)])
+            .unwrap()
+            .is_undef());
+    }
 }
