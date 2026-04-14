@@ -514,6 +514,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn phase_neg_inf_im_dimensioned_returns_undef() {
+        // Complex{re:1.0, im:-Inf, LENGTH}.phase → Undef
+        //
+        // atan2(-Inf, 1.0) = -π/2 which is finite, so sanitize_value alone cannot
+        // catch this -Inf input (and phase() doesn't wrap its output in sanitize_value
+        // anyway). The is_finite pre-guard is what correctly rejects it, dimension-
+        // agnostic. This test mirrors im_neg_inf_dimensioned_returns_undef and
+        // re_neg_inf_dimensioned_returns_undef, bringing phase coverage to parity with
+        // re/im/magnitude for the dimensioned NaN and NEG_INFINITY variants.
+        assert!(
+            call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()).is_undef(),
+            "z.phase with -Inf imaginary part (dimensioned) should return Undef"
+        );
+    }
+
     // ── method: phase (zero-vector edge case) ─────────────────────────────────
 
     #[test]
