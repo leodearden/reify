@@ -90,3 +90,68 @@ structure S {
     // compile error if the field is removed or renamed.
     let _target: &Option<String> = &cc.optimized_target;
 }
+
+// ── Step 5: @optimized target flows through to CompiledConstraint ───────────
+
+#[test]
+fn optimized_target_flows_from_constraint_def_to_compiled_constraint() {
+    let source = r#"
+@optimized("geo::coincident")
+constraint def Coincident {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure S {
+    param x: Real
+    param y: Real
+    constraint Coincident(a: x, b: y)
+}
+"#;
+    let module = compile_module(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let tmpl = template_named(&module, "S");
+    assert_eq!(
+        tmpl.constraints.len(),
+        1,
+        "expected 1 compiled constraint in S, got {}",
+        tmpl.constraints.len()
+    );
+    let cc: &CompiledConstraint = &tmpl.constraints[0];
+    assert_eq!(
+        cc.optimized_target,
+        Some("geo::coincident".to_string()),
+        "expected optimized_target to be propagated from the constraint def's @optimized annotation"
+    );
+}
+
+#[test]
+fn constraint_def_without_optimized_has_none_target() {
+    let source = r#"
+constraint def Plain {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure S {
+    param x: Real
+    param y: Real
+    constraint Plain(a: x, b: y)
+}
+"#;
+    let module = compile_module(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let tmpl = template_named(&module, "S");
+    assert_eq!(tmpl.constraints.len(), 1);
+    let cc: &CompiledConstraint = &tmpl.constraints[0];
+    assert_eq!(
+        cc.optimized_target, None,
+        "un-annotated constraint def should yield optimized_target=None"
+    );
+}
