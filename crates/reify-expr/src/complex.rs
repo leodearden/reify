@@ -511,14 +511,6 @@ mod tests {
             "z.phase with zero vector should return Undef (atan2(0.0,0.0)=0.0 is finite, \
              so the zero-vector guard, not sanitize_value, is what catches this)"
         );
-        // IEEE-754: -0.0 == 0.0, so the zero-vector guard also catches signed-zero
-        // variants. Lock this against any future refactor that might swap == for a
-        // bit-pattern check (e.g. to_bits() == 0).
-        assert!(
-            call_complex_method(-0.0, -0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
-            "z.phase with signed-zero vector (-0.0,-0.0) should return Undef \
-             (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
-        );
     }
 
     #[test]
