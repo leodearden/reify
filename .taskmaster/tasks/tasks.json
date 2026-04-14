@@ -8244,7 +8244,7 @@
         "testStrategy": "",
         "priority": "medium",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -8261,7 +8261,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:35.462Z"
+        "updatedAt": "2026-04-14T12:30:22.661Z"
       },
       {
         "id": "393",
@@ -9244,11 +9244,11 @@
         "description": "In crates/reify-eval/tests/m9_trait_conformance.rs: rename qualified_access_disambiguation to per_structure_constraint_counts. Update docstring to reflect it verifies constraint counts per structure, not qualified access disambiguation. Add TODO for when qualified access syntax is available. (Review followup from task 194)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:58.129Z",
+        "updatedAt": "2026-04-14T12:30:22.749Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -34460,7 +34460,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:30:22.581Z",
+      "lastModified": "2026-04-14T12:30:22.749Z",
       "taskCount": 1661,
       "completedCount": 1338,
       "tags": [
