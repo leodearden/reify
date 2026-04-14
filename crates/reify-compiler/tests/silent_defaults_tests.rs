@@ -543,9 +543,10 @@ fn stdlib_fn_no_args_emits_type_inference_warning() {
 /// Calling a stdlib-style function with one argument must NOT produce a
 /// "zero-arg function" type-inference warning.
 ///
-/// expr.rs:594-597 takes the `compiled_args.first().map(...)` path when args
-/// are present, so `unwrap_or_else` (which emits the warning) is never reached.
-/// This test prevents regressions where the warning is emitted unconditionally.
+/// The NoUserFunctions overload branch infers the return type from the first
+/// compiled arg when present, so the `unwrap_or_else` (which emits the warning)
+/// is never reached. This test prevents regressions where the warning is emitted
+/// unconditionally.
 #[test]
 fn stdlib_fn_single_arg_no_zero_arg_warning() {
     let source = r#"
