@@ -23625,13 +23625,12 @@
         "updatedAt": "2026-04-08T20:50:37.300Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/entity.rs",
-            "crates/reify-compiler/tests/port_compile_tests.rs",
-            "crates/reify-compiler/tests/guard_compilation.rs"
+            "crates/reify-compiler/tests/qualified_access_compile_tests.rs"
           ]
         }
       },
@@ -23796,7 +23795,8 @@
         "updatedAt": "2026-04-08T20:43:25.347Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests",
+            "crates/reify-compiler/src"
           ],
           "files": [
             "crates/reify-compiler/tests/qualified_access_compile_tests.rs",
