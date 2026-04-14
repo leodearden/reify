@@ -29342,11 +29342,11 @@
         "updatedAt": "2026-04-10T00:01:25.659Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/units.rs",
             "crates/reify-compiler/tests/user_defined_unit_tests.rs"
           ]
         }
@@ -29381,7 +29381,7 @@
         "updatedAt": "2026-04-09T22:26:43.121Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/tests/user_defined_unit_tests.rs"
