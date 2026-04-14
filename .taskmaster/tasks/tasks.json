@@ -8522,7 +8522,7 @@
             "crates/reify-compiler/tests/trait_conformance_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ]
         }
       },
