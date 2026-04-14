@@ -12,7 +12,7 @@
 //! Uses `examples/m9_integration.ri` as the capstone source file and inline source
 //! strings for focused per-scenario assertions.
 
-use reify_test_support::make_simple_engine;
+use reify_test_support::{make_simple_engine, parse_and_compile};
 use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the integration example file, resolved at compile time from crate root.
@@ -22,25 +22,6 @@ const EXAMPLE_PATH: &str = concat!(
 );
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Parse source, assert no parse errors, compile, assert no compile errors.
-/// Returns the compiled module ready for eval or check.
-fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-    compiled
-}
 
 /// Parse, compile, eval with SimpleConstraintChecker, return EvalResult.
 /// Use when asserting on values (SI scalars, strings, booleans).
