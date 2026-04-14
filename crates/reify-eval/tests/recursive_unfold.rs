@@ -1310,30 +1310,33 @@ fn unfold_mutual_recursion_heterogeneous_members() {
 // ─── step-39: cyclic let-binding dependency detection ─────────────────────────
 
 /// Recursive template S with mutually-dependent let-bindings:
-///   S { param n: Int = 2; let a: Int = b + 1; let b: Int = a + 1;
+///   S { param n: Int = 2; let count_x: Int = count_y + 1; let count_y: Int = count_x + 1;
 ///       sub child = S(n: n-1) where n > 0; is_recursive = true }
 ///
-/// The let-bindings `a` and `b` form a circular dependency: a depends on b,
-/// b depends on a. `topological_sort` (Kahn's algorithm) silently drops nodes
-/// in cycles — they never appear in the sorted output.
+/// The let-bindings `count_x` and `count_y` form a circular dependency: count_x
+/// depends on count_y and count_y depends on count_x. `topological_sort` (Kahn's
+/// algorithm) silently drops nodes in cycles — they never appear in the sorted output.
 ///
-/// Currently `elaborate_child_lets_only` has no cycle detection, so a and b
-/// remain `Value::Undef` with no diagnostic. This test asserts that:
+/// Bindings renamed from `a`/`b` to `count_x`/`count_y` (task 553 improvement #3)
+/// so the diagnostic substring check cannot pass incidentally via unrelated words
+/// like "circular", "binding", "label", or "debug" that happen to contain 'a' or 'b'.
+///
+/// This test asserts that:
 /// 1. An error-level diagnostic is emitted containing 'circular' or 'cycle'
-///    and naming both `a` and `b`.
-/// 2. S.a and S.b are Value::Undef (they can't be evaluated).
+///    and naming both `count_x` and `count_y`.
+/// 2. S.count_x and S.count_y are absent or Value::Undef (they can't be evaluated).
 #[test]
 fn cyclic_let_bindings_emit_diagnostic() {
-    // let a = b + 1 (depends on S.b)
-    let a_expr = binop(
+    // let count_x = count_y + 1 (depends on S.count_y)
+    let count_x_expr = binop(
         BinOp::Add,
-        value_ref_typed("S", "b", Type::Int),
+        value_ref_typed("S", "count_y", Type::Int),
         literal(Value::Int(1)),
     );
-    // let b = a + 1 (depends on S.a)
-    let b_expr = binop(
+    // let count_y = count_x + 1 (depends on S.count_x)
+    let count_y_expr = binop(
         BinOp::Add,
-        value_ref_typed("S", "a", Type::Int),
+        value_ref_typed("S", "count_x", Type::Int),
         literal(Value::Int(1)),
     );
 
@@ -1351,8 +1354,8 @@ fn cyclic_let_bindings_emit_diagnostic() {
             Type::Int,
             Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
         )
-        .let_binding("S", "a", Type::Int, a_expr)
-        .let_binding("S", "b", Type::Int, b_expr)
+        .let_binding("S", "count_x", Type::Int, count_x_expr)
+        .let_binding("S", "count_y", Type::Int, count_y_expr)
         .is_recursive(true)
         .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
         .build();
@@ -1363,30 +1366,32 @@ fn cyclic_let_bindings_emit_diagnostic() {
     // omits nodes in cycles). They may be absent (None) or Undef depending on whether
     // the cycle detection writes Undef explicitly. Either is acceptable — the key is the
     // diagnostic.
-    let a_val = result.values.get(&ValueCellId::new("S", "a"));
+    let count_x_val = result.values.get(&ValueCellId::new("S", "count_x"));
     assert!(
-        a_val.is_none() || a_val == Some(&Value::Undef),
-        "S.a should be absent or Undef (circular dependency), got {:?}",
-        a_val,
+        count_x_val.is_none() || count_x_val == Some(&Value::Undef),
+        "S.count_x should be absent or Undef (circular dependency), got {:?}",
+        count_x_val,
     );
-    let b_val = result.values.get(&ValueCellId::new("S", "b"));
+    let count_y_val = result.values.get(&ValueCellId::new("S", "count_y"));
     assert!(
-        b_val.is_none() || b_val == Some(&Value::Undef),
-        "S.b should be absent or Undef (circular dependency), got {:?}",
-        b_val,
+        count_y_val.is_none() || count_y_val == Some(&Value::Undef),
+        "S.count_y should be absent or Undef (circular dependency), got {:?}",
+        count_y_val,
     );
 
-    // An error diagnostic should be emitted about the circular dependency.
+    // An error diagnostic should be emitted about the circular dependency,
+    // naming both `count_x` and `count_y` — tokens that cannot appear incidentally
+    // in unrelated diagnostic text.
     let has_cycle_error = result.diagnostics.iter().any(|d| {
         d.severity == Severity::Error
             && (d.message.contains("circular") || d.message.contains("cycle"))
-            && d.message.contains("a")
-            && d.message.contains("b")
+            && d.message.contains("count_x")
+            && d.message.contains("count_y")
     });
     assert!(
         has_cycle_error,
-        "Expected an error diagnostic about circular let-binding dependency naming 'a' and 'b', \
-         got: {:?}",
+        "Expected an error diagnostic about circular let-binding dependency \
+         naming 'count_x' and 'count_y', got: {:?}",
         result.diagnostics
     );
 }
@@ -1558,24 +1563,27 @@ fn missing_template_ref_emits_error_diagnostic() {
 // ─── Cycle diagnostic UX: template name in message ──────────────────────────
 
 /// The cyclic let-binding diagnostic should include the template name, not just
-/// the entity path. Format: 'in template S (entity S.child): [a, b]' to match
-/// the termination-check diagnostic style.
+/// the entity path. Format: 'in template S (entity S.child): [count_x, count_y]'
+/// to match the termination-check diagnostic style.
 ///
-/// This is a separate test from `cyclic_let_bindings_emit_diagnostic` which only
-/// checks for 'circular', 'a', and 'b'. This test specifically verifies the
-/// template name appears in the message.
+/// This is a separate test from `cyclic_let_bindings_emit_diagnostic` which checks
+/// for 'circular'/'cycle' and names 'count_x'/'count_y'. This test specifically
+/// verifies the template name appears in the message.
+///
+/// Binding names updated to count_x/count_y for consistency with the companion
+/// test (task 553 improvement #3).
 #[test]
 fn cyclic_let_binding_diagnostic_includes_template_name() {
-    // let a = b + 1 (depends on S.b)
-    let a_expr = binop(
+    // let count_x = count_y + 1 (depends on S.count_y)
+    let count_x_expr = binop(
         BinOp::Add,
-        value_ref_typed("S", "b", Type::Int),
+        value_ref_typed("S", "count_y", Type::Int),
         literal(Value::Int(1)),
     );
-    // let b = a + 1 (depends on S.a)
-    let b_expr = binop(
+    // let count_y = count_x + 1 (depends on S.count_x)
+    let count_y_expr = binop(
         BinOp::Add,
-        value_ref_typed("S", "a", Type::Int),
+        value_ref_typed("S", "count_x", Type::Int),
         literal(Value::Int(1)),
     );
 
@@ -1593,8 +1601,8 @@ fn cyclic_let_binding_diagnostic_includes_template_name() {
             Type::Int,
             Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
         )
-        .let_binding("S", "a", Type::Int, a_expr)
-        .let_binding("S", "b", Type::Int, b_expr)
+        .let_binding("S", "count_x", Type::Int, count_x_expr)
+        .let_binding("S", "count_y", Type::Int, count_y_expr)
         .is_recursive(true)
         .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
         .build();
