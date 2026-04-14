@@ -33938,10 +33938,12 @@
         "updatedAt": "2026-04-14T07:04:29.062Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr"
+            "crates/reify-expr/tests",
+            "crates/reify-test-support/src"
           ],
           "files": [
-            "crates/reify-expr/tests/field_calculus_tests.rs"
+            "crates/reify-expr/tests/field_calculus_tests.rs",
+            "crates/reify-test-support/src/ignore_hygiene.rs"
           ]
         }
       },
@@ -33997,7 +33999,7 @@
         "updatedAt": "2026-04-14T07:04:29.815Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ],
           "memory_hints": {
             "entities": [
