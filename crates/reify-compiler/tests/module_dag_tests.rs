@@ -566,7 +566,7 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
 
-    // There must be a duplicate-unit error mentioning 'myunit'
+    // (a) There must be a duplicate-unit error mentioning 'myunit'
     let dup_diag = errors
         .iter()
         .find(|d| d.message.contains("duplicate") && d.message.contains("myunit"));
@@ -577,21 +577,30 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
     );
     let dup_diag = dup_diag.unwrap();
 
-    // (b) The message must say 'stdlib prelude'
+    // (b) The message must say 'stdlib prelude' …
     assert!(
         dup_diag.message.contains("stdlib prelude"),
         "expected 'stdlib prelude' in diagnostic message, got: {:?}",
         dup_diag.message
     );
 
-    // (a) Must NOT use the user-module phrasing ("already defined in module '…'")
+    // (b) … and must NOT use the user-module phrasing ("already defined in module '…'")
     assert!(
         !dup_diag.message.contains("already defined in module '"),
         "diagnostic should NOT use user-module phrasing for stdlib collision, got: {:?}",
         dup_diag.message
     );
 
-    // (c) No label should have SourceSpan::empty(0)
+    // (c) Exactly one label — the implementation omits the misleading
+    // SourceSpan::empty(0) prelude label and emits only the user's dup span.
+    assert_eq!(
+        dup_diag.labels.len(),
+        1,
+        "stdlib collision should emit a single label on the user's duplicate decl, got {:?}",
+        dup_diag.labels
+    );
+
+    // (c) … and that single label must not use SourceSpan::empty(0).
     let empty_span = reify_types::SourceSpan::empty(0);
     for label in &dup_diag.labels {
         assert_ne!(
