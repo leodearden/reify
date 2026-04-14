@@ -1,10 +1,12 @@
 //! Static dependency extraction for evaluation graph nodes.
 //!
 //! Each node's dependencies are extracted once at graph-build time by walking
-//! the compiled expression tree. This is correct for Reify expressions because
-//! they are pure: the set of cells an expression *can* read is exactly the set
-//! it *will* read, regardless of runtime values. There is no benefit to runtime
-//! (Adapton-style) tracing in a pure language.
+//! the compiled expression tree. This is a safe over-approximation for Reify
+//! expressions: because they are pure, the set of cells an expression *can*
+//! read is a superset of (or equal to) the set it *will* read on any given
+//! evaluation — conditional branches may short-circuit at runtime, but the
+//! statically collected reads cover every reachable ValueRef. There is no
+//! benefit to runtime (Adapton-style) tracing in a pure language.
 
 use reify_types::{CompiledExpr, ValueCellId};
 
@@ -431,6 +433,38 @@ mod tests {
         assert!(trace.reads.contains(&b), "reads should contain 'y'");
     }
 
+    /// Documents the de-duplication contract of `extract_dependency_trace` for a
+    /// BinOp whose operands reference the same `ValueCellId` (e.g. `x + x`).
+    ///
+    /// `extract_dependency_trace` is a thin wrapper over
+    /// `CompiledExpr::collect_value_refs`, which *preserves duplicates* (it pushes
+    /// each `ValueRef` without deduping). The higher-level `extract_value_deps`
+    /// wrapper is responsible for deduplication and sorting. This test pins that
+    /// behavior so callers know whether they need to dedupe downstream.
+    #[test]
+    fn extract_dependency_trace_preserves_duplicate_reads_for_same_cell_in_binop() {
+        let x = ValueCellId::new("A", "x");
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            Type::Real,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert_eq!(
+            trace.reads.len(),
+            2,
+            "extract_dependency_trace preserves duplicates: x+x should yield 2 reads, \
+             got {:?}",
+            trace.reads
+        );
+        assert!(
+            trace.reads.iter().all(|id| id == &x),
+            "both reads should refer to x, got: {:?}",
+            trace.reads
+        );
+    }
+
     /// Step 2: Verify extract_dependency_trace handles nested Conditional expressions —
     /// condition, then-branch, and else-branch all contribute ValueRef reads.
     ///
@@ -474,7 +508,7 @@ mod tests {
         );
     }
 
-    /// Step 6: Verify DependencyTrace::default() has empty reads.
+    /// Step 4: Verify DependencyTrace::default() has empty reads.
     ///
     /// Documents the contract used throughout lib.rs: params and root nodes pass
     /// `DependencyTrace::default()` to `record_evaluation()`, signalling that they
@@ -488,11 +522,17 @@ mod tests {
         );
     }
 
-    /// Step 7: Verify CacheStore.invalidate_dependents uses the DependencyTrace.reads stored
+    /// Step 5: Verify CacheStore.invalidate_dependents uses the DependencyTrace.reads stored
     /// in cached entries (the statically extracted trace, not a separate runtime trace).
     ///
     /// This documents the end-to-end path: static extraction → stored in cache via
     /// record_evaluation() → used for invalidation by invalidate_dependents().
+    ///
+    /// NOTE: This is an intentional cross-module integration test. It lives alongside
+    /// the `extract_dependency_trace` unit tests (rather than in `cache.rs`) because
+    /// it asserts the contract *between* static dependency extraction here and the
+    /// `CacheStore` invalidation path in `crate::cache`. Moving it would split the
+    /// two halves of that contract across files and obscure the end-to-end guarantee.
     #[test]
     fn invalidate_dependents_uses_static_dependency_trace_reads() {
         use crate::cache::{CacheStore, CachedResult};
