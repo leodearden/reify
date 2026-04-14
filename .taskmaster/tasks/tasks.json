@@ -33826,8 +33826,8 @@
         "updatedAt": "2026-04-11T21:41:17.782Z",
         "metadata": {
           "modules": [
-            "crates/reify-test-support",
-            "crates/reify-eval"
+            "crates/reify-test-support/src",
+            "crates/reify-eval/tests"
           ],
           "files": [
             "crates/reify-test-support/src/lib.rs",
