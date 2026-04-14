@@ -33427,8 +33427,11 @@
         "updatedAt": "2026-04-14T19:16:01.008Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-eval/src"
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/guards.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/let_scope_tests.rs"
           ],
           "files": [
             "crates/reify-compiler/src/geometry.rs",
