@@ -140,12 +140,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 // == 1) always receives the whole Point unchanged (no unpacking),
                                 // preserving the single-param binding contract.
                                 // See also: calculus.rs:detect_single_point_param (line 526).
-                                if params.len() > 1 {
-                                    if let Value::Point(items) = &evaluated_args[1] {
-                                        if params.len() == items.len() {
-                                            return apply_lambda(lambda, items.as_slice(), ctx);
-                                        }
-                                    }
+                                if params.len() > 1
+                                    && let Value::Point(items) = &evaluated_args[1]
+                                    && params.len() == items.len()
+                                {
+                                    return apply_lambda(lambda, items.as_slice(), ctx);
                                 }
                                 apply_lambda(lambda, &evaluated_args[1..], ctx)
                             }
