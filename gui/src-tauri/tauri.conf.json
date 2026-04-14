@@ -3,8 +3,10 @@
   "version": "0.1.0",
   "identifier": "dev.reify.app",
   "build": {
+    "beforeDevCommand": "npm run dev -- --port 1420",
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420"
+    "devUrl": "http://localhost:1420",
+    "features": ["gui"]
   },
   "app": {
     "windows": [
@@ -18,12 +20,7 @@
   },
   "plugins": {
     "shell": {
-      "sidecar": true,
-      "scope": [
-        {
-          "name": "sidecar/reify-sidecar"
-        }
-      ]
+      "open": true
     }
   },
   "bundle": {
