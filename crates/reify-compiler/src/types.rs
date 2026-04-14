@@ -370,6 +370,14 @@ pub struct CompiledConstraint {
     /// is registered, routes this constraint to that implementation instead
     /// of the language-level `ConstraintChecker`. When `None` (the default),
     /// the language-level checker handles the constraint as before.
+    ///
+    /// **Scope (Task 273):** this field is consumed only by the Engine's
+    /// *checker* path (`dispatch_constraints`). The *solver* path
+    /// (`ConstraintSolver::solve`, driven by `Engine::resolve`) currently
+    /// feeds every constraint through the ordinary language-level solver,
+    /// including `@optimized`-annotated ones — it does not yet branch on
+    /// this field. A follow-up will extend the solver seam to route through
+    /// an `OptimizedImpl` as well.
     pub optimized_target: Option<String>,
 }
 

@@ -166,6 +166,18 @@ pub struct OptimizedImplOutput {
 /// carried an `@optimized("target")` annotation. Lives in reify-types so that
 /// reify-eval can own a trait object without a direct dependency on any concrete
 /// optimizer crate.
+///
+/// # Scope
+///
+/// This trait is currently consumed **only** on the *checker* path — the
+/// Engine's `dispatch_constraints` helper routes annotated constraints to a
+/// registered impl during `Engine::check` / `check_snapshot` /
+/// `build_snapshot` / `edit_check`. The *solver* path (`Engine::resolve`,
+/// which drives auto-param resolution via `ConstraintSolver`) still feeds
+/// every constraint — including `@optimized`-annotated ones — through the
+/// ordinary language-level solver, with no opportunity for an `OptimizedImpl`
+/// to participate. Extending solver dispatch to route through
+/// `OptimizedImpl` is a follow-up; see `CompiledConstraint::optimized_target`.
 pub trait OptimizedImpl: Send + Sync {
     /// Evaluate a batch of constraints routed to this implementation.
     fn check(&self, input: &OptimizedImplInput) -> OptimizedImplOutput;

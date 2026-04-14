@@ -233,3 +233,126 @@ fn optimized_on_unsupported_context_still_warns() {
         module.diagnostics
     );
 }
+
+// ── Malformed-annotation diagnostics (reviewer suggestion S4) ───────────────
+
+/// `@optimized` with no string-literal first arg silently routes to the
+/// language-level checker; warn the user so they don't spend an afternoon
+/// wondering why their registered impl isn't being called.
+#[test]
+fn optimized_without_string_target_warns() {
+    let module = compile_module(
+        r#"
+@optimized()
+constraint def Plain {
+    param a: Real
+    param b: Real
+    a == b
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let relevant: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .collect();
+    assert!(
+        !relevant.is_empty(),
+        "expected a missing-target warning, got none; all diags: {:?}",
+        module.diagnostics
+    );
+}
+
+/// `@optimized(123)` (non-string first arg) should trip the same warning.
+#[test]
+fn optimized_with_non_string_target_warns() {
+    let module = compile_module(
+        r#"
+@optimized(123)
+constraint def Plain {
+    param a: Real
+    param b: Real
+    a == b
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let relevant: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .collect();
+    assert!(
+        !relevant.is_empty(),
+        "expected a missing-target warning for non-string arg, got none; all diags: {:?}",
+        module.diagnostics
+    );
+}
+
+/// Multiple `@optimized` annotations on the same decl: only the first wins in
+/// `optimized_target`, so warn on every duplicate past the first.
+#[test]
+fn multiple_optimized_annotations_warn() {
+    let module = compile_module(
+        r#"
+@optimized("new_target")
+@optimized("legacy_target")
+constraint def Plain {
+    param a: Real
+    param b: Real
+    a == b
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let relevant: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("multiple @optimized annotations"))
+        .collect();
+    assert_eq!(
+        relevant.len(),
+        1,
+        "expected exactly one duplicate-@optimized warning (for the shadowed second annotation), got: {:?}",
+        relevant
+    );
+}
+
+/// A valid single `@optimized("target")` must NOT trip any of the new
+/// malformed-annotation warnings.
+#[test]
+fn well_formed_optimized_has_no_malformed_warnings() {
+    let module = compile_module(
+        r#"
+@optimized("kernel::foo")
+constraint def Plain {
+    param a: Real
+    param b: Real
+    a == b
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    for d in warning_diags(&module.diagnostics) {
+        assert!(
+            !d.message.contains("@optimized requires a string literal target"),
+            "well-formed @optimized should not trip missing-target warning: {:?}",
+            d
+        );
+        assert!(
+            !d.message.contains("multiple @optimized annotations"),
+            "well-formed @optimized should not trip duplicate warning: {:?}",
+            d
+        );
+    }
+}

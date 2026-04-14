@@ -85,6 +85,23 @@ pub(crate) fn validate_annotations(
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
                     );
+                } else if !matches!(
+                    ann.args.first(),
+                    Some(reify_types::AnnotationArg::String(_))
+                ) {
+                    // @optimized without a string-literal target silently
+                    // routes to the language-level checker, which confuses
+                    // users who think they wired up an optimized impl. Warn
+                    // explicitly. Constraint_def is the only context where
+                    // this target is actually consumed (Task 273), but we
+                    // warn regardless for consistency.
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "annotation @optimized requires a string literal target, e.g. @optimized(\"kernel::foo\")"
+                                .to_string(),
+                        )
+                        .with_label(DiagnosticLabel::new(ann.span, "@optimized missing target")),
+                    );
                 }
             }
             "solver_hint" => {
@@ -103,6 +120,29 @@ pub(crate) fn validate_annotations(
                         .with_label(DiagnosticLabel::new(ann.span, "unknown annotation")),
                 );
             }
+        }
+    }
+
+    // Duplicate-annotation checks. `optimized_target` (the extractor used by
+    // the compiler to stamp `CompiledConstraint::optimized_target`) returns
+    // the *first* @optimized annotation and silently ignores the rest, which
+    // would hide a user typo like:
+    //   @optimized("new_target")
+    //   @optimized("legacy_target")   // ← shadowed, never used
+    // Warn explicitly on every duplicate past the first.
+    let mut seen_optimized = false;
+    for ann in annotations {
+        if ann.name == "optimized" {
+            if seen_optimized {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "multiple @optimized annotations on the same declaration — only the first is used"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(ann.span, "duplicate @optimized")),
+                );
+            }
+            seen_optimized = true;
         }
     }
 }
