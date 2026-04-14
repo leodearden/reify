@@ -34349,6 +34349,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1660,
+        "title": "Harden ignore_reason_hygiene integration test and document walk skip policy",
+        "description": "Follow-up from esc-1642-57 S3+S4+S5 (reviewer_comprehensive). Three small hardening items in crates/reify-test-support: (a) S3: In tests/ignore_reason_hygiene.rs, after collecting test_files, add assert!(test_files.len() > 50, ...) or assert a sentinel path (crates/reify-expr/tests/field_calculus_tests.rs) is in the set — guards against silent walker breakage. (b) S4: In src/ignore_hygiene.rs walk_test_rs_files, either add node_modules and vendor to the skip list or document the conservative skip-only-build/VCS-noise policy. (c) S5: In src/ignore_hygiene.rs ~line 199 test fspp_multiline_reason, add assert!(violations[0].starts_with(\"line 1:\")) to lock in attribute-line (not needle-line) reporting semantics.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -34361,7 +34372,7 @@
       ],
       "created": "2026-04-14T09:41:05.118Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-14T09:41:05.133Z"
+      "updated": "2026-04-14T09:41:38.257Z"
     }
   }
 }
