@@ -562,6 +562,63 @@ mod tests {
         );
     }
 
+    // ── check_ignore_reasons guard-3 delegation (RED tests) ─────────────────
+
+    /// RED-1: guard 3 error must cite the line number of the offending
+    /// `#[ignore]` attribute.  Source has a compliant `known bug:` prefix
+    /// that also contains the stale needle, placed on line 3 (after two blank
+    /// lines).  The current guard 3 produces a static error message with no
+    /// line information — this test is expected to fail (RED) until guard 3
+    /// delegates to `find_stale_plan_pointers_in_source`.
+    #[test]
+    fn check_ignore_reasons_guard3_error_cites_line_number() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        // Two blank lines place the attribute on line 3.
+        let src = format!("\n\n{marker}known bug: see {needle}3 reference\"]");
+        let err = check_ignore_reasons(&src)
+            .expect_err("expected stale-pointer in #[ignore] reason to be rejected");
+        assert!(
+            err.contains("line 3"),
+            "expected error to cite the offending line number (\"line 3\"): {err:?}"
+        );
+    }
+
+    /// RED-2: guard 3 must delegate to `find_stale_plan_pointers_in_source`
+    /// so that the error message contains the same violation preview as the
+    /// dedicated scanner.  Uses the test-(g) fixture: `\` + newline
+    /// continuation with the stale needle on the second line.  The current
+    /// guard 3 uses a line-level scan whose static error message does NOT
+    /// include any preview from `find_stale_plan_pointers_in_source` — this
+    /// test is expected to fail (RED) until guard 3 delegates.
+    #[test]
+    fn check_ignore_reasons_delegates_guard3_to_find_stale_plan_pointers() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        // `\` + newline continuation; stale needle appears on the second line.
+        let src = format!("{marker}known bug: see \\\n{needle}3 reference\"]");
+
+        // (a) find_stale_plan_pointers_in_source must detect exactly one violation.
+        let violations = find_stale_plan_pointers_in_source(&src);
+        assert_eq!(
+            violations.len(),
+            1,
+            "find_stale_plan_pointers_in_source should detect one violation: {violations:?}"
+        );
+
+        // (b) check_ignore_reasons must reject the source AND its error message
+        // must contain the violation preview produced by
+        // find_stale_plan_pointers_in_source.  This pins that guard 3 is
+        // sourced from the same scanner.
+        let err = check_ignore_reasons(&src)
+            .expect_err("expected stale-pointer in #[ignore] reason to be rejected");
+        assert!(
+            err.contains(&violations[0]),
+            "expected check_ignore_reasons error to contain the violation preview {:?}: {err:?}",
+            violations[0]
+        );
+    }
+
     // ── walk_test_rs_files ────────────────────────────────────────────────────
 
     /// Build a synthetic workspace tree using tempfile::tempdir() and verify that
