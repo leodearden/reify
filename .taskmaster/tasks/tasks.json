@@ -26546,21 +26546,15 @@
         "updatedAt": "2026-04-11T07:44:49.000Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests",
-            "crates/reify-eval/src",
-            "crates/reify-syntax/src",
-            "crates/reify-syntax/tests",
-            "crates/reify-test-support/src",
-            "crates/reify-types/src",
+            "crates/reify-types",
             "crates/reify-compiler",
-            "crates/reify-types"
+            "crates/reify-eval"
           ],
           "files": [
+            "crates/reify-types/src/lib.rs",
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-syntax/src/lib.rs",
-            "crates/reify-test-support/src/builders/topology.rs",
-            "crates/reify-types/src/lib.rs"
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/test_runner.rs"
           ],
           "bundled_from": [
             "1252",
