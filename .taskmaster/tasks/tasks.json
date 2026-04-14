@@ -34030,7 +34030,7 @@
         "updatedAt": "2026-04-14T07:04:30.084Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "memory_hints": {
             "entities": [
@@ -34159,7 +34159,7 @@
         "updatedAt": "2026-04-14T04:14:31.890Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "memory_hints": {
             "entities": [
@@ -34175,8 +34175,7 @@
           },
           "files": [
             "crates/reify-compiler/src/traits.rs",
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/trait_conformance_tests.rs"
+            "crates/reify-compiler/src/lib.rs"
           ]
         }
       },
