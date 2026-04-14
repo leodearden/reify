@@ -6688,7 +6688,7 @@
           "milestone": "stdlib-M8.2",
           "modules": [
             "examples",
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -6871,9 +6871,8 @@
         "metadata": {
           "milestone": "stdlib-M8.3",
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/stdlib",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler",
+            "crates/reify-stdlib"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
