@@ -33745,7 +33745,7 @@
         "description": "Three follow-ups from esc-1213-65 reviewer_comprehensive: (1) Extract `assert_compile_rejection(result, ops_ref, expected_primitive, warning_keywords: &[&str])` helper in crates/reify-eval/tests/geometry_error_handling.rs and refactor the four ~130-line build_*_emits_diagnostic tests (build_scale_negative_factor_emits_diagnostic, build_extrude_nonfinite_distance_emits_diagnostic, build_revolve_degenerate_axis_emits_diagnostic, build_revolve_zero_angle_emits_diagnostic) to call it — currently ~520 LOC of duplicated 5-check assertion scaffolding. (2) Strengthen `build_extrude_nonfinite_distance_emits_diagnostic` (line 1321-1396) by adding `d.message.contains(\"NaN\")` to the Warning assertion. Currently vacuously true for its stated intent: lib.rs:3667-3678 routes both non-finite and near-zero into the same Some(v) arm with identical message, so the existing zero-distance test already covers the current assertion — a regression swapping `v.is_finite()` for `true` would not be caught. (3) Delete `revolve_zero_angle` test from crates/reify-eval/tests/stress_sweep_degenerate.rs now that `build_revolve_zero_angle_emits_diagnostic` in geometry_error_handling.rs is a strict superset (same code path at lib.rs:3710 but with stricter assertions — exact kernel-ops count, no generic \"geometry error\", compile Error). Docstring at geometry_error_handling.rs:1636-1640 already concedes the duplication.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -33764,7 +33764,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-14T12:30:48.912Z"
+        "updatedAt": "2026-04-14T12:35:57.880Z"
       },
       {
         "id": "1628",
@@ -34558,9 +34558,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:35:57.071Z",
+      "lastModified": "2026-04-14T12:35:57.880Z",
       "taskCount": 1661,
-      "completedCount": 1363,
+      "completedCount": 1364,
       "tags": [
         "master"
       ]
