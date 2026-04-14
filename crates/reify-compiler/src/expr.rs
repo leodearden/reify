@@ -1657,19 +1657,13 @@ pub(crate) fn compile_expr_guarded(
             let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
             let id = ValueCellId::new(&scoped_entity, &member);
             // Infer member type from the sub's structure member types if available.
-            // sub_member_types covers ALL subs (collection and non-collection);
-            // collection_sub_member_types covers only collection subs.  Check the broader map first.
+            // sub_member_types covers ALL subs (collection and non-collection), so it is
+            // the authoritative source here.  If a sub exists but the member is missing,
+            // the invariant is violated and the ICE branch below is the correct outcome.
             let ty = scope
                 .sub_member_types
                 .get(&sub_name)
                 .and_then(|m| m.get(&member))
-                // Defensive: sub_member_types is a superset, but fall back just in case.
-                .or_else(|| {
-                    scope
-                        .collection_sub_member_types
-                        .get(&sub_name)
-                        .and_then(|m| m.get(&member))
-                })
                 .cloned()
                 .unwrap_or_else(|| {
                     diagnostics.push(
