@@ -1,6 +1,6 @@
 //! Stress analysis builtins: von_mises, principal_stresses, max_shear, safety_factor.
 
-use reify_types::Value;
+use reify_types::{DimensionVector, Value};
 
 use crate::helpers::{sanitize_value, unary};
 use crate::matrix::matrix_components_f64;
@@ -12,7 +12,8 @@ use crate::matrix::matrix_components_f64;
 pub(crate) fn eval_analysis(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "von_mises" => von_mises(args),
-        "principal_stresses" | "max_shear" | "safety_factor" => {
+        "principal_stresses" => principal_stresses(args),
+        "max_shear" | "safety_factor" => {
             let _ = args;
             Value::Undef // stub — implementations added in subsequent steps
         }
@@ -51,6 +52,68 @@ fn von_mises(args: &[Value]) -> Value {
         .sqrt();
 
         sanitize_value(Value::from_component(vm, dim))
+    })
+}
+
+/// Compute eigenvalues of a 3×3 matrix via Cardano's cubic formula.
+///
+/// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending, or `None` for degenerate cases
+/// (e.g. complex eigenvalues). Reuses the same algorithm as matrix.rs eigenvalues.
+fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
+    let (a, b, c) = (d[0], d[1], d[2]);
+    let (dd, e, f) = (d[3], d[4], d[5]);
+    let (g, h, i) = (d[6], d[7], d[8]);
+
+    let p = a + e + i; // trace
+    let q = (a * e - b * dd) + (a * i - c * g) + (e * i - f * h);
+    let r = a * (e * i - f * h) - b * (dd * i - f * g) + c * (dd * h - e * g);
+
+    let p3 = p / 3.0;
+    let alpha = q - p * p / 3.0;
+    let beta = -2.0 * p * p * p / 27.0 + p * q / 3.0 - r;
+
+    if alpha >= 0.0 {
+        if alpha == 0.0 && beta == 0.0 {
+            // Triple root
+            return Some([p3, p3, p3]);
+        }
+        // Complex eigenvalues or degenerate
+        return None;
+    }
+
+    let neg_alpha = -alpha;
+    let m = (neg_alpha / 3.0).sqrt();
+    let cos_arg = (-beta / (2.0 * m * m * m)).clamp(-1.0, 1.0);
+    let theta = cos_arg.acos();
+    let two_m = 2.0 * m;
+
+    let mut eigs = [
+        two_m * (theta / 3.0).cos() + p3,
+        two_m * ((theta + 2.0 * std::f64::consts::PI) / 3.0).cos() + p3,
+        two_m * ((theta + 4.0 * std::f64::consts::PI) / 3.0).cos() + p3,
+    ];
+    eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(eigs)
+}
+
+/// Compute principal stresses (eigenvalues) of a 3×3 stress tensor.
+///
+/// Returns a sorted `Value::List` of 3 scalars (ascending order).
+fn principal_stresses(args: &[Value]) -> Value {
+    unary(args, |tensor| {
+        let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
+            Some(v) if v.0 == 3 && v.1 == 3 => v,
+            _ => return Value::Undef,
+        };
+        let _ = (nrows, ncols);
+
+        let eigs = match compute_eigenvalues_3x3(&d) {
+            Some(e) => e,
+            None => return Value::Undef,
+        };
+
+        let make_val = |x: f64| sanitize_value(Value::from_component(x, dim));
+        Value::List(eigs.iter().map(|&e| make_val(e)).collect())
     })
 }
 
