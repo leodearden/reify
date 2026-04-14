@@ -34,23 +34,42 @@ pub const SI_PREFIXES: &[(&str, f64)] = &[
     ("Q", 1e30),
 ];
 
-/// SI base units that receive the full 20-prefix set, paired with their
-/// dimension name. Excludes unprefixed bases themselves — those live in
-/// `stdlib/units.ri` (m, kg, s, rad, K).
+/// One SI base-unit entry for the prefix-expansion generator.
 ///
-/// Note: `g` is used as the mass prefix base (not `kg`) because prefixes
-/// can't stack, and `kg` is already the SI base unit. The generator
-/// multiplies gram-prefix factors by 1e-3 and skips the `k` prefix to
-/// avoid re-declaring `kg`.
-pub const SI_PREFIX_BASES: &[(&str, &str)] = &[
-    ("m", "Length"),
-    ("g", "Mass"),
-    ("s", "Time"),
-    ("A", "Current"),
-    ("K", "Temperature"),
-    ("mol", "AmountOfSubstance"),
-    ("cd", "LuminousIntensity"),
-    ("rad", "Angle"),
+/// - `name` — base symbol (e.g. `"m"`, `"g"`, `"K"`).
+/// - `dimension` — PascalCase dimension name.
+/// - `prefix_combos` — SI prefix symbols to generate for this base.
+///   Empty (`&[]`) means "emit all 20 prefixes" (backward-compatible default).
+///   Non-empty restricts generation to the listed prefixes only, omitting
+///   nonsensical large/small-scale combinations (e.g. quettakelvin, quectokelvin).
+pub struct SiPrefixBase {
+    pub name: &'static str,
+    pub dimension: &'static str,
+    pub prefix_combos: &'static [&'static str],
+}
+
+/// SI base units used by the prefix-expansion generator. Excludes unprefixed
+/// bases themselves — those live in `stdlib/units.ri` (m, kg, s, rad, K).
+///
+/// Note: `g` is the mass prefix base (not `kg`) because SI prefixes can't
+/// stack. The generator multiplies gram-prefix factors by 1e-3 and skips `k`
+/// to avoid re-declaring `kg`.
+///
+/// `prefix_combos` is the engineering-relevant subset per base:
+///   - Empty → all 20 SI prefixes (m, g, s, A, mol have no practical upper/lower limit).
+///   - Non-empty → restrict to listed prefixes only (K, cd, rad have practical ranges).
+pub const SI_PREFIX_BASES: &[SiPrefixBase] = &[
+    SiPrefixBase { name: "m",   dimension: "Length",           prefix_combos: &[] },
+    SiPrefixBase { name: "g",   dimension: "Mass",             prefix_combos: &[] },
+    SiPrefixBase { name: "s",   dimension: "Time",             prefix_combos: &[] },
+    SiPrefixBase { name: "A",   dimension: "Current",          prefix_combos: &[] },
+    // Kelvin: cryogenics/quantum use nK/uK/mK; QK/qK are nonsensical.
+    SiPrefixBase { name: "K",   dimension: "Temperature",      prefix_combos: &["n", "u", "m"] },
+    SiPrefixBase { name: "mol", dimension: "AmountOfSubstance", prefix_combos: &[] },
+    // Candela: mcd/ucd used in photometry; sub-micro or super-kilo are unused.
+    SiPrefixBase { name: "cd",  dimension: "LuminousIntensity", prefix_combos: &["m", "u"] },
+    // Radian: mrad/urad/nrad for optics/precision; Qrad/qrad nonsensical.
+    SiPrefixBase { name: "rad", dimension: "Angle",            prefix_combos: &["m", "u", "n"] },
 ];
 
 /// One SI (or SI-factor-derived) derived-unit entry.
@@ -263,15 +282,23 @@ pub fn build_si_units_source() -> String {
 
     // Section 1: prefixed base units.
     out.push_str("// ── SI-prefixed base units ────────────────────────────\n");
-    for (base, dim) in SI_PREFIX_BASES {
+    for base_entry in SI_PREFIX_BASES {
+        let base = base_entry.name;
+        let dim = base_entry.dimension;
         // Gram is special: kg is the SI base, so each gram-prefix factor
         // must be multiplied by 1e-3 (since g = 0.001 kg), and the `k`
         // prefix must be skipped to avoid re-declaring kg.
-        let base_factor_exp: i32 = if *base == "g" { -3 } else { 0 };
+        let base_factor_exp: i32 = if base == "g" { -3 } else { 0 };
 
         for (prefix, prefix_factor) in SI_PREFIXES {
             // Skip `k` + `g` → would produce kg (already SI base).
-            if *base == "g" && *prefix == "k" {
+            if base == "g" && *prefix == "k" {
+                continue;
+            }
+            // If prefix_combos is non-empty, only emit allowed prefixes.
+            if !base_entry.prefix_combos.is_empty()
+                && !base_entry.prefix_combos.contains(prefix)
+            {
                 continue;
             }
             let prefix_exp = prefix_factor.log10().round() as i32;
@@ -505,6 +532,26 @@ mod tests {
                     known.contains(prefix),
                     "SI_DERIVED_UNITS entry `{}` has unknown prefix `{}` in prefix_combos",
                     unit.name,
+                    prefix
+                );
+            }
+        }
+    }
+
+    /// Defensive check that every `prefix_combos` entry in `SI_PREFIX_BASES`
+    /// references a symbol that actually exists in `SI_PREFIXES`. A typo here
+    /// would cause the generator to silently skip that prefix at `load_stdlib()`
+    /// time, producing a subtly incomplete unit set.
+    #[test]
+    fn all_prefix_base_prefix_combos_are_valid_si_prefix_symbols() {
+        let known: std::collections::HashSet<&str> =
+            SI_PREFIXES.iter().map(|(sym, _)| *sym).collect();
+        for base in SI_PREFIX_BASES {
+            for prefix in base.prefix_combos {
+                assert!(
+                    known.contains(prefix),
+                    "SI_PREFIX_BASES entry `{}` has unknown prefix `{}` in prefix_combos",
+                    base.name,
                     prefix
                 );
             }
