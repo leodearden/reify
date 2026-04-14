@@ -700,3 +700,45 @@ fn units_si_prefix_coverage() {
     assert_scalar_cell(&result, e, "time_ks", 1e3,    1e-6,  t);
 }
 
+// ── step-17: units_imperial_conversions ──────────────────────────────────────
+
+/// Asserts that imperial unit literals resolve to the expected SI values and
+/// dimensions in the eval result. Expected conversion factors:
+///   1in  → LENGTH  0.0254 m
+///   1ft  → LENGTH  0.3048 m
+///   1yd  → LENGTH  0.9144 m
+///   1lb  → MASS    0.45359237 kg
+///   1lbf → FORCE   4.4482216152605 N
+///   1psi → PRESSURE 6894.757293168361 Pa
+///   1gal → VOLUME   0.003785411784 m³
+///
+/// Values live in UnitShowcase as `let len_in = 1in`, `let mass_lb = 1lb`, etc.
+/// Cross-checks with the exact factors from `crates/reify-compiler/stdlib/units.ri`.
+#[test]
+fn units_imperial_conversions() {
+    let result = eval_ri_file(PATH_UNITS, "m8_units");
+    let e = "UnitShowcase";
+    let l = DimensionVector::LENGTH;
+    let m = DimensionVector::MASS;
+    let f = DimensionVector::FORCE;
+    let p = DimensionVector::PRESSURE;
+    let v = DimensionVector::VOLUME;
+
+    // ── Length ────────────────────────────────────────────────────────────────
+    assert_scalar_cell(&result, e, "len_in",  0.0254,        1e-13, l);
+    assert_scalar_cell(&result, e, "len_ft",  0.3048,        1e-12, l);
+    assert_scalar_cell(&result, e, "len_yd",  0.9144,        1e-12, l);
+
+    // ── Mass ──────────────────────────────────────────────────────────────────
+    assert_scalar_cell(&result, e, "mass_lb", LB_SI,         1e-12, m);
+
+    // ── Force ─────────────────────────────────────────────────────────────────
+    assert_scalar_cell(&result, e, "force_lbf", LBF_SI,      1e-10, f);
+
+    // ── Pressure ──────────────────────────────────────────────────────────────
+    assert_scalar_cell(&result, e, "pressure_psi", PSI_SI,   1e-6,  p);
+
+    // ── Volume ────────────────────────────────────────────────────────────────
+    assert_scalar_cell(&result, e, "volume_gal", GAL_SI,     1e-13, v);
+}
+
