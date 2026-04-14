@@ -626,3 +626,77 @@ fn m8_units_smoke() {
     );
 }
 
+// ── step-15: units_si_prefix_coverage ────────────────────────────────────────
+
+/// Helper: fetch a Scalar cell from the eval result and assert si_value + dimension.
+fn assert_scalar_cell(
+    result: &reify_eval::EvalResult,
+    entity: &str,
+    member: &str,
+    expected_si: f64,
+    tolerance: f64,
+    expected_dim: DimensionVector,
+) {
+    let id = ValueCellId::new(entity, member);
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("{}.{} not found in eval result", entity, member));
+    match val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - expected_si).abs() < tolerance,
+                "{}.{}: expected si_value ≈{}, got {}",
+                entity, member, expected_si, si_value
+            );
+            assert_eq!(
+                *dimension, expected_dim,
+                "{}.{}: wrong dimension",
+                entity, member
+            );
+        }
+        other => panic!(
+            "{}.{} should be Value::Scalar, got {:?}",
+            entity, member, other
+        ),
+    }
+}
+
+/// Asserts that SI-prefix literals for length, mass, and time all resolve to
+/// the correct si_value (in the SI base unit) and dimension in the eval result.
+///
+/// Length prefix coverage (SI base = metre):
+///   1nm → 1e-9 m, 1um → 1e-6 m, 1mm → 1e-3 m, 1km → 1e3 m, 1Mm → 1e6 m
+///
+/// Mass prefix coverage (SI base = kilogram):
+///   1mg → 1e-6 kg, 1kg → 1.0 kg, 1Mg → 1e3 kg
+///
+/// Time prefix coverage (SI base = second):
+///   1ns → 1e-9 s, 1us → 1e-6 s, 1ms → 1e-3 s, 1ks → 1e3 s
+#[test]
+fn units_si_prefix_coverage() {
+    let result = eval_ri_file(PATH_UNITS, "m8_units");
+    let e = "UnitShowcase";
+    let l = DimensionVector::LENGTH;
+    let m = DimensionVector::MASS;
+    let t = DimensionVector::TIME;
+
+    // ── Length ────────────────────────────────────────────────────────────────
+    assert_scalar_cell(&result, e, "len_nm", 1e-9,    1e-20, l);
+    assert_scalar_cell(&result, e, "len_um", 1e-6,    1e-17, l);
+    assert_scalar_cell(&result, e, "len_mm", 1e-3,    1e-14, l);
+    assert_scalar_cell(&result, e, "len_km", 1e3,     1e-6,  l);
+    assert_scalar_cell(&result, e, "len_Mm", 1e6,     1e-3,  l);
+
+    // ── Mass ──────────────────────────────────────────────────────────────────
+    assert_scalar_cell(&result, e, "mass_mg", 1e-6,   1e-17, m);
+    assert_scalar_cell(&result, e, "mass_kg", 1.0,    1e-9,  m);
+    assert_scalar_cell(&result, e, "mass_Mg", 1e3,    1e-6,  m);
+
+    // ── Time ──────────────────────────────────────────────────────────────────
+    assert_scalar_cell(&result, e, "time_ns", 1e-9,   1e-20, t);
+    assert_scalar_cell(&result, e, "time_us", 1e-6,   1e-17, t);
+    assert_scalar_cell(&result, e, "time_ms", 1e-3,   1e-14, t);
+    assert_scalar_cell(&result, e, "time_ks", 1e3,    1e-6,  t);
+}
+
