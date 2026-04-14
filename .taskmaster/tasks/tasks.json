@@ -8241,20 +8241,18 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/tests/common/mod.rs",
-            "crates/reify-compiler/tests/connect_compile_tests.rs",
-            "crates/reify-compiler/tests/field_compile_tests.rs",
-            "crates/reify-compiler/tests/meta_compile_tests.rs",
-            "crates/reify-compiler/tests/purpose_compile_tests.rs",
             "crates/reify-compiler/tests/trait_conformance_tests.rs",
             "crates/reify-compiler/tests/trait_merge_tests.rs",
             "crates/reify-compiler/tests/determinacy_compile_tests.rs",
-            "crates/reify-compiler/tests/unit_registry_tests.rs",
-            "crates/reify-compiler/tests/recursive_detection_tests.rs"
+            "crates/reify-compiler/tests/annotation_compile_tests.rs",
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs",
+            "crates/reify-compiler/tests/recursive_detection_tests.rs",
+            "crates/reify-compiler/tests/termination_check_tests.rs"
           ]
         },
         "subtasks": [],
@@ -8275,8 +8273,8 @@
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/connect.rs",
+            "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/tests/connect_compile_tests.rs"
           ]
         },
