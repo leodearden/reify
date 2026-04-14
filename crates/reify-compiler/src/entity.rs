@@ -549,15 +549,7 @@ pub(crate) fn compile_entity(
                         Type::Real
                     });
 
-                // Check if the default is ExprKind::Auto and extract the free flag
-                let auto_free: Option<bool> =
-                    param.default.as_ref().and_then(|expr| {
-                        if let reify_syntax::ExprKind::Auto { free } = &expr.kind {
-                            Some(*free)
-                        } else {
-                            None
-                        }
-                    });
+                let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
                 let decl = if let Some(free) = auto_free {
                     ValueCellDecl {
@@ -894,14 +886,7 @@ pub(crate) fn compile_entity(
                                     Type::Real
                                 });
 
-                            let auto_free: Option<bool> =
-                                param.default.as_ref().and_then(|expr| {
-                                    if let reify_syntax::ExprKind::Auto { free } = &expr.kind {
-                                        Some(*free)
-                                    } else {
-                                        None
-                                    }
-                                });
+                            let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
                             let decl = if let Some(free) = auto_free {
                                 ValueCellDecl {

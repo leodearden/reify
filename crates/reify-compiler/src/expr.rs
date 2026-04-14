@@ -1,5 +1,17 @@
 use super::*;
 
+/// Extract the `free` flag from an `ExprKind::Auto` expression.
+///
+/// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
+/// Used to detect auto-solved parameters and build `ValueCellKind::Auto` declarations.
+pub(crate) fn extract_auto_free(expr: &reify_syntax::Expr) -> Option<bool> {
+    if let reify_syntax::ExprKind::Auto { free } = &expr.kind {
+        Some(*free)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn compile_expr(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
