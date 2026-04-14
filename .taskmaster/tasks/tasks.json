@@ -7178,14 +7178,14 @@
           "milestone": "stdlib-M8.4",
           "modules": [
             "examples",
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "examples/linalg.ri",
+            "examples/linalg_integration.ri",
             "examples/fields_analysis.ri",
             "examples/io_export.ri",
-            "crates/reify-eval/tests/m8_stdlib_integration.rs"
+            "crates/reify-eval/tests/m8_4_stdlib_integration.rs"
           ]
         },
         "subtasks": [],
