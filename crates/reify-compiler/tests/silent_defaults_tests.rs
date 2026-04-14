@@ -578,6 +578,50 @@ fn sub_member_type_resolves_without_ice() {
     );
 }
 
+// ── task-1442: non-collection sub-member access — green path ───────────────
+
+/// Sub-member qualified access on a **non-collection** sub compiles without ICE.
+///
+/// Regression guard for expr.rs `InstanceQualifiedAccess` — previously the
+/// type lookup only consulted `scope.collection_sub_member_types`, which is
+/// only populated for `List<T>` subs.  Accessing `part.(Trait::member)` on a
+/// singular (non-collection) sub therefore hit the fallback and emitted an
+/// "internal compiler error" diagnostic.
+///
+/// The fix switched the lookup to `scope.sub_member_types`, which is populated
+/// for ALL sub-components — collection and non-collection alike.  This test
+/// exercises the non-collection form (`sub part = Inner()`) to lock the fix
+/// in place.  The collection form is covered by `sub_member_type_resolves_without_ice`.
+#[test]
+fn non_collection_sub_member_type_resolves_without_ice() {
+    let source = r#"
+        trait MechTrait {
+            param diameter : Length
+        }
+        structure Inner : MechTrait {
+            param diameter : Length = 5mm
+        }
+        structure Outer {
+            sub part = Inner()
+            let d = part.(MechTrait::diameter)
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on non-collection sub-member access, got: {:?}",
+        errors
+    );
+    assert!(
+        errors.is_empty(),
+        "expected no errors on non-collection sub-member access, got: {:?}",
+        errors
+    );
+}
+
 /// Match with no arms (ICE-path documentation / parse-guard).
 ///
 /// expr.rs:1046 has `.unwrap_or(Type::Real)` on `compiled_arms.first()`.
