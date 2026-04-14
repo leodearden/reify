@@ -7252,14 +7252,12 @@
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
-            "examples",
-            "crates/reify-eval/tests"
+            "examples"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "examples/pattern_composition.ri",
-            "examples/large_assembly.ri",
-            "crates/reify-eval/tests/stress_error_messages.rs"
+            "examples/large_assembly.ri"
           ]
         },
         "subtasks": [],
