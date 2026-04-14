@@ -65,7 +65,29 @@ fn constraint_count(engine: &Engine) -> usize {
 /// are present in the eval result as non-Undef values.
 #[test]
 fn geometric_let_bindings_determined() {
-    todo!("step-10 impl: assert geometric let bindings are present and non-Undef")
+    let result = eval_source(&source());
+
+    let assert_determined = |name: &str| {
+        let id = ValueCellId::new("Assembly", name);
+        let v = result
+            .values
+            .get(&id)
+            .unwrap_or_else(|| panic!("Assembly.{name} not found in eval result"));
+        assert!(
+            !matches!(v, Value::Undef),
+            "Assembly.{name} should not be Undef (expected a concrete geometric value)"
+        );
+    };
+
+    // Feature 1: geometric values constructed via stdlib (point3 / vec3)
+    assert_determined("origin");
+    assert_determined("target");
+    assert_determined("offset");
+
+    // Feature 2: arithmetic results (Point - Point → Vector, Point + Vector → Point, Vector + Vector → Vector)
+    assert_determined("displacement");
+    assert_determined("shifted");
+    assert_determined("total_offset");
 }
 
 // ── Test 4: total constraint count meets threshold ───────────────────────────
