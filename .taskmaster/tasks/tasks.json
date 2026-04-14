@@ -20270,12 +20270,12 @@
         "updatedAt": "2026-04-13T23:12:36.690Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler",
+            "crates/reify-types"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/conformance.rs"
+            "crates/reify-types/src/ty.rs"
           ],
           "memory_hints": [
             {
