@@ -377,6 +377,7 @@ fn si_derived_units_table_defines_newtons_pascals_joules() {
         ("rpm", "AngularVelocity", std::f64::consts::PI / 30.0),
         ("rad_per_s", "AngularVelocity", 1.0),
         ("Pa_s", "DynamicViscosity", 1.0),
+        ("sr", "SolidAngle", 1.0),
     ];
 
     assert_eq!(
@@ -477,6 +478,8 @@ fn task_test_derived_units_and_prefixed_resolve_via_stdlib() {
         ),
         // Dynamic viscosity.
         ("DynamicViscosity", "1Pa_s", 1.0, DimensionVector::DYNAMIC_VISCOSITY),
+        // Solid angle.
+        ("SolidAngle", "1sr", 1.0, DimensionVector::SOLID_ANGLE),
     ];
 
     for (ptype, literal, expected, expected_dim) in cases {
@@ -533,6 +536,7 @@ fn all_derived_units_have_correct_dimension_vectors() {
         ("Pressure", "1bar", DimensionVector::PRESSURE),
         ("Pressure", "1mbar", DimensionVector::PRESSURE),
         ("Charge", "1C", DimensionVector::CHARGE),
+        ("SolidAngle", "1sr", DimensionVector::SOLID_ANGLE),
     ];
 
     for (ptype, literal, expected_dim) in cases {
