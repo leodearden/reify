@@ -124,4 +124,64 @@ mod tests {
             "expected no violations for bare #[ignore] with no reason string"
         );
     }
+
+    // ── walk_test_rs_files ────────────────────────────────────────────────────
+
+    /// Build a synthetic workspace tree using tempfile::tempdir() and verify that
+    /// walk_test_rs_files returns exactly the files whose path contains a `tests`
+    /// directory component, skipping `target`, dot-dirs, and `src/` files.
+    #[test]
+    fn walk_includes_tests_dir_files_and_excludes_others() {
+        use tempfile::TempDir;
+
+        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path();
+
+        // Files that SHOULD be returned (path has "tests" component)
+        let included = [
+            "crates/foo/tests/bar.rs",
+            "crates/foo/src/tests/inner.rs",
+            "tree-sitter-reify/tests/build.rs",
+        ];
+        // Files that should NOT be returned
+        let excluded = [
+            "crates/foo/src/lib.rs",       // no "tests" component
+            "target/tests/skipme.rs",       // "target" dir excluded
+            ".git/tests/skip.rs",           // dot-dir excluded
+        ];
+
+        for rel in included.iter().chain(excluded.iter()) {
+            let full = root.join(rel);
+            std::fs::create_dir_all(full.parent().unwrap())
+                .expect("create parent dirs");
+            std::fs::write(&full, b"// synthetic\n").expect("write file");
+        }
+
+        let found = walk_test_rs_files(root);
+
+        // Convert to relative paths for easy comparison
+        let found_rel: std::collections::HashSet<String> = found
+            .iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .replace('\\', "/")
+            })
+            .collect();
+
+        for rel in &included {
+            assert!(
+                found_rel.contains(*rel),
+                "expected {rel:?} to be returned by walk_test_rs_files, got: {found_rel:?}"
+            );
+        }
+        for rel in &excluded {
+            assert!(
+                !found_rel.contains(*rel),
+                "expected {rel:?} to be excluded by walk_test_rs_files, got: {found_rel:?}"
+            );
+        }
+    }
 }
