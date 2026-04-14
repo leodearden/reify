@@ -87,3 +87,28 @@ fn solver_hint_on_let_compiles() {
     assert_eq!(let_cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
     assert_eq!(let_cell.solver_hints[0].collection, "gauges");
 }
+
+// ── Step 13: invalid solver hint kind emits warning ────────────────────────
+
+#[test]
+fn solver_hint_invalid_kind_warns() {
+    let source =
+        r#"structure S { @solver_hint("invalid_kind", collection) param length : Length = auto }"#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let template = &module.templates[0];
+    let cell = &template.value_cells[0];
+    assert!(
+        cell.solver_hints.is_empty(),
+        "expected no solver hints for invalid kind, got {:?}",
+        cell.solver_hints
+    );
+
+    let warns = warnings_only(&module);
+    assert!(
+        warns.iter().any(|d| d.message.contains("unknown solver hint kind")),
+        "expected warning about unknown solver hint kind, got: {:?}",
+        warns.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
