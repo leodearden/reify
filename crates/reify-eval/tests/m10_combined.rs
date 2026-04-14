@@ -123,6 +123,17 @@ fn geom_ready_purpose_compiled_and_activatable() {
     );
 }
 
+// ── Test 9: where-block nested constraints present and satisfied ──────────────
+
+/// Feature 7 (reference safety in where blocks).
+/// Asserts that the two nested constraints inside
+/// `where determined(origin) { constraint determined(shifted); constraint determined(displacement) }`
+/// are present in the check results and both Satisfied.
+#[test]
+fn where_block_nested_constraints_present_and_satisfied() {
+    todo!("step-18 impl: verify where-block constraints appear in check results as Satisfied")
+}
+
 // ── Test 7: assembly connect has connector and explicit port mapping ──────────
 
 /// Feature 4 (connect with connector type + explicit port mapping).
