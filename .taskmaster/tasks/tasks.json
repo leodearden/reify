@@ -5977,15 +5977,12 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-cli",
-            "examples"
+            "crates/reify-cli/src"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-cli/src/main.rs",
-            "examples/integration_full_v01.ri",
-            "examples/m11_annotations.ri"
+            "crates/reify-cli/src/main.rs"
           ]
         },
         "subtasks": [],
@@ -6005,16 +6002,15 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-lsp"
+            "crates/reify-lsp/src"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-lsp/src/analysis.rs",
-            "crates/reify-lsp/src/hover.rs",
             "crates/reify-lsp/src/goto_def.rs",
-            "crates/reify-lsp/src/completion.rs",
-            "crates/reify-lsp/tests/in_process_bridge.rs"
+            "crates/reify-lsp/src/hover.rs",
+            "crates/reify-lsp/src/completion.rs"
           ]
         },
         "subtasks": [],
