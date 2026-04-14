@@ -77,7 +77,7 @@ impl PrefixSet {
 pub struct SiPrefixBase {
     pub name: &'static str,
     pub dimension: &'static str,
-    pub prefix_combos: &'static [&'static str],
+    pub prefix_combos: PrefixSet,
 }
 
 /// SI base units used by the prefix-expansion generator. Excludes unprefixed
@@ -88,20 +88,22 @@ pub struct SiPrefixBase {
 /// to avoid re-declaring `kg`.
 ///
 /// `prefix_combos` is the engineering-relevant subset per base:
-///   - Empty → all 20 SI prefixes (m, g, s, A, mol have no practical upper/lower limit).
-///   - Non-empty → restrict to listed prefixes only (K, cd, rad have practical ranges).
+///   - `PrefixSet::All` — emit all 20 SI prefixes (m, g, s, A, mol have no
+///     practical upper/lower limit in engineering use).
+///   - `PrefixSet::Only(list)` — restrict to listed prefixes only
+///     (K, cd, rad have practical ranges; larger/smaller combos are nonsensical).
 pub const SI_PREFIX_BASES: &[SiPrefixBase] = &[
-    SiPrefixBase { name: "m",   dimension: "Length",           prefix_combos: &[] },
-    SiPrefixBase { name: "g",   dimension: "Mass",             prefix_combos: &[] },
-    SiPrefixBase { name: "s",   dimension: "Time",             prefix_combos: &[] },
-    SiPrefixBase { name: "A",   dimension: "Current",          prefix_combos: &[] },
+    SiPrefixBase { name: "m",   dimension: "Length",           prefix_combos: PrefixSet::All },
+    SiPrefixBase { name: "g",   dimension: "Mass",             prefix_combos: PrefixSet::All },
+    SiPrefixBase { name: "s",   dimension: "Time",             prefix_combos: PrefixSet::All },
+    SiPrefixBase { name: "A",   dimension: "Current",          prefix_combos: PrefixSet::All },
     // Kelvin: cryogenics/quantum use nK/uK/mK; QK/qK are nonsensical.
-    SiPrefixBase { name: "K",   dimension: "Temperature",      prefix_combos: &["n", "u", "m"] },
-    SiPrefixBase { name: "mol", dimension: "AmountOfSubstance", prefix_combos: &[] },
+    SiPrefixBase { name: "K",   dimension: "Temperature",      prefix_combos: PrefixSet::Only(&["n", "u", "m"]) },
+    SiPrefixBase { name: "mol", dimension: "AmountOfSubstance", prefix_combos: PrefixSet::All },
     // Candela: mcd/ucd used in photometry; sub-micro or super-kilo are unused.
-    SiPrefixBase { name: "cd",  dimension: "LuminousIntensity", prefix_combos: &["m", "u"] },
+    SiPrefixBase { name: "cd",  dimension: "LuminousIntensity", prefix_combos: PrefixSet::Only(&["m", "u"]) },
     // Radian: mrad/urad/nrad for optics/precision; Qrad/qrad nonsensical.
-    SiPrefixBase { name: "rad", dimension: "Angle",            prefix_combos: &["m", "u", "n"] },
+    SiPrefixBase { name: "rad", dimension: "Angle",            prefix_combos: PrefixSet::Only(&["m", "u", "n"]) },
 ];
 
 /// One SI (or SI-factor-derived) derived-unit entry.
@@ -327,10 +329,8 @@ pub fn build_si_units_source() -> String {
             if base == "g" && *prefix == "k" {
                 continue;
             }
-            // If prefix_combos is non-empty, only emit allowed prefixes.
-            if !base_entry.prefix_combos.is_empty()
-                && !base_entry.prefix_combos.contains(prefix)
-            {
+            // Only emit this prefix if the base's PrefixSet includes it.
+            if !base_entry.prefix_combos.includes(prefix) {
                 continue;
             }
             let prefix_exp = prefix_factor.log10().round() as i32;
@@ -574,18 +574,23 @@ mod tests {
     /// references a symbol that actually exists in `SI_PREFIXES`. A typo here
     /// would cause the generator to silently skip that prefix at `load_stdlib()`
     /// time, producing a subtly incomplete unit set.
+    ///
+    /// `PrefixSet::All` has no list to validate (uses all SI_PREFIXES by construction).
+    /// `PrefixSet::Only(list)` validates each symbol in the list.
     #[test]
     fn all_prefix_base_prefix_combos_are_valid_si_prefix_symbols() {
         let known: std::collections::HashSet<&str> =
             SI_PREFIXES.iter().map(|(sym, _)| *sym).collect();
         for base in SI_PREFIX_BASES {
-            for prefix in base.prefix_combos {
-                assert!(
-                    known.contains(prefix),
-                    "SI_PREFIX_BASES entry `{}` has unknown prefix `{}` in prefix_combos",
-                    base.name,
-                    prefix
-                );
+            if let PrefixSet::Only(list) = base.prefix_combos {
+                for prefix in list {
+                    assert!(
+                        known.contains(prefix),
+                        "SI_PREFIX_BASES entry `{}` has unknown prefix `{}` in prefix_combos",
+                        base.name,
+                        prefix
+                    );
+                }
             }
         }
     }
