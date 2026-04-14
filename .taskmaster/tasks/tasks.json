@@ -20251,11 +20251,11 @@
         "description": "In tolerancing_tests.rs: assert material_condition resolved to Type::Enum not Type::Real in gdt_structure_conforms test. In boundary1_consumer.rs: add focused test for compile_entity enum param resolution. Add test with wrong enum name to confirm error diagnostic.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:41.451Z",
+        "updatedAt": "2026-04-14T12:30:23.729Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -23199,11 +23199,11 @@
         "description": "The prelude-collection block in module_dag.rs:239-257 (compile_project) is a copy of lines 168-178 (compile_module). Both call sites use identical logic to filter Declaration::Import and clone matching CompiledModules.\n\nExtract a helper function, e.g. `fn collect_preludes(parsed: &ParsedModule, modules: &HashMap<String, CompiledModule>) -> Vec<CompiledModule>`, and call it from both compile_module and compile_project. This localizes the import filter and cloning policy, preventing drift if prelude collection ever needs to handle qualified/glob/aliased imports.\n\nmemory_hints: search \"compile_module compile_project prelude collection\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:41.845Z",
+        "updatedAt": "2026-04-14T12:30:23.815Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -34460,7 +34460,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:30:23.619Z",
+      "lastModified": "2026-04-14T12:30:23.815Z",
       "taskCount": 1661,
       "completedCount": 1338,
       "tags": [
