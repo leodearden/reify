@@ -560,4 +560,14 @@ fn edit_param_count_to_undef_removes_all_instances() {
         "zero bolt instances should remain when count is Undef, got {}",
         bolt_instance_count
     );
+
+    // Count cell itself should reflect the Undef edit — symmetric with the
+    // Int→Int sibling tests above. Catches a regression where instances are
+    // removed via another path while the count cell is not updated.
+    let count_id = ValueCellId::new("Parent", "__count_bolts");
+    assert_eq!(
+        result.values.get(&count_id),
+        Some(&Value::Undef),
+        "count cell should be Undef after edit to Undef"
+    );
 }
