@@ -12504,7 +12504,7 @@
             "crates/reify-eval/tests/geometry_error_handling.rs"
           ],
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
