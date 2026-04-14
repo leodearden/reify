@@ -91,11 +91,21 @@ fn ri_file_parses_and_compiles() {
         errors
     );
 
-    // Step C: at least one template (structures are present)
+    // Step C: at least 4 templates (Widget, Bracket, RecursiveChain, Plate)
     assert!(
-        !compiled.templates.is_empty(),
-        "expected at least one template in m9_integration.ri, got none"
+        compiled.templates.len() >= 4,
+        "expected >= 4 templates in m9_integration.ri, got {}",
+        compiled.templates.len()
     );
+    let template_names: Vec<&str> = compiled.templates.iter().map(|t| t.name.as_str()).collect();
+    for expected_name in &["Widget", "Bracket", "RecursiveChain", "Plate"] {
+        assert!(
+            template_names.contains(expected_name),
+            "expected template '{}' in m9_integration.ri, got: {:?}",
+            expected_name,
+            template_names
+        );
+    }
 }
 
 // ── Step 3: constraint def with determinacy — satisfied case ─────────────────
@@ -174,10 +184,10 @@ structure S {
         entry.label
     );
     // determined(size) evaluates to Bool(false) when size is Undetermined → Violated
-    assert_ne!(
+    assert_eq!(
         entry.satisfaction,
-        Satisfaction::Satisfied,
-        "RequireDetermined[0] should NOT be Satisfied when param is undetermined, got: {:?}",
+        Satisfaction::Violated,
+        "RequireDetermined[0] should be Violated when param is undetermined, got: {:?}",
         entry.satisfaction
     );
 }
@@ -459,10 +469,10 @@ structure def TermTree {
         .iter()
         .find(|e| e.id.entity == "TermTree")
         .expect("expected constraint result for TermTree (determined(next_value))");
-    assert_ne!(
+    assert_eq!(
         det_constraint.satisfaction,
-        Satisfaction::Satisfied,
-        "determined(next_value) should NOT be Satisfied when next_value has no default"
+        Satisfaction::Violated,
+        "determined(next_value) should be Violated when next_value has no default"
     );
 }
 
@@ -614,12 +624,9 @@ fn full_pipeline_cross_feature_values() {
 
     let compiled = parse_and_compile(&source);
     let checker = SimpleConstraintChecker;
-    let mut eval_engine = reify_eval::Engine::new(Box::new(checker), None);
-    let eval_result = eval_engine.eval(&compiled);
-
-    let checker2 = SimpleConstraintChecker;
-    let mut check_engine = reify_eval::Engine::new(Box::new(checker2), None);
-    let check_result = check_engine.check(&compiled);
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let eval_result = engine.eval(&compiled);
+    let check_result = engine.check(&compiled);
 
     // 1. Widget.size = 30mm = 0.03 SI (default from structure, implements Measurable)
     let widget_size_id = ValueCellId::new("Widget", "size");
@@ -646,10 +653,11 @@ fn full_pipeline_cross_feature_values() {
             e.id.entity == "Bracket" && e.label == Some("DeterminedInRange[0]".to_string())
         })
         .collect();
-    // Two DeterminedInRange invocations → two [0] entries
+    // Two DeterminedInRange invocations (size and length) → two [0] entries
     assert!(
-        !bracket_dir0.is_empty(),
-        "expected at least one DeterminedInRange[0] for Bracket, got 0"
+        bracket_dir0.len() >= 2,
+        "expected >= 2 DeterminedInRange[0] for Bracket (size and length invocations), got {}",
+        bracket_dir0.len()
     );
     for e in &bracket_dir0 {
         assert_eq!(
