@@ -539,7 +539,7 @@ structure S {
 ///
 /// This test pins the current silent-drop behavior so the wildcard→explicit-arm refactor
 /// in `compile_guarded_members` is verified behavior-preserving. The real compile-time
-/// guarantee (a future 14th `MemberDecl` variant must be explicitly handled) is provided
+/// guarantee (a future new `MemberDecl` variant must be explicitly handled) is provided
 /// by Rust's exhaustiveness checker after the `_ => {}` wildcard is replaced by explicit
 /// variant names.
 #[test]
