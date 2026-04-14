@@ -34,13 +34,45 @@ pub const SI_PREFIXES: &[(&str, f64)] = &[
     ("Q", 1e30),
 ];
 
+/// Discriminates which SI prefixes should be emitted for a unit or base.
+///
+/// - `All` — emit all 20 SI prefixes. Use for bases with no practical upper/lower
+///   limit (e.g. metre, gram, second, ampere, mole).
+/// - `Only(list)` — emit only the listed prefix symbols. Use for restricted bases
+///   (e.g. kelvin → `&["n", "u", "m"]`) or for derived units where `&[]` means
+///   "emit the unprefixed form only, no prefixed variants".
+///
+/// The empty-slice convention is therefore universal: `Only(&[])` unambiguously
+/// means "no prefixed variants", which eliminates the prior inversion where `&[]`
+/// on `SiPrefixBase` meant "all" and `&[]` on `SiDerivedUnit` meant "none".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefixSet {
+    /// Emit all 20 SI prefixes.
+    All,
+    /// Emit only the listed prefix symbols (empty slice ⇒ no prefixed variants).
+    Only(&'static [&'static str]),
+}
+
+impl PrefixSet {
+    /// Returns `true` if `sym` should be emitted for this `PrefixSet`.
+    ///
+    /// - `All` → always `true`.
+    /// - `Only(list)` → `list.contains(&sym)`.
+    pub fn includes(&self, sym: &str) -> bool {
+        match self {
+            PrefixSet::All => true,
+            PrefixSet::Only(list) => list.contains(&sym),
+        }
+    }
+}
+
 /// One SI base-unit entry for the prefix-expansion generator.
 ///
 /// - `name` — base symbol (e.g. `"m"`, `"g"`, `"K"`).
 /// - `dimension` — PascalCase dimension name.
-/// - `prefix_combos` — SI prefix symbols to generate for this base.
-///   Empty (`&[]`) means "emit all 20 prefixes" (backward-compatible default).
-///   Non-empty restricts generation to the listed prefixes only, omitting
+/// - `prefix_combos` — which SI prefixes to generate for this base.
+///   `PrefixSet::All` means "emit all 20 prefixes" (unrestricted bases like m, g, s).
+///   `PrefixSet::Only(list)` restricts generation to the listed prefixes, omitting
 ///   nonsensical large/small-scale combinations (e.g. quettakelvin, quectokelvin).
 pub struct SiPrefixBase {
     pub name: &'static str,
