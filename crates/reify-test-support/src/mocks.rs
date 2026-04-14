@@ -643,6 +643,89 @@ mod tests {
         assert_eq!(results[0].satisfaction, Satisfaction::Violated);
     }
 
+    // step-7 (Task 273 — @optimized plumbing): failing tests for MockOptimizedImpl.
+    //
+    // MockOptimizedImpl mirrors MockConstraintChecker but also records every
+    // constraint id it was invoked with, so tests can assert that dispatch
+    // actually routed a constraint through the optimized path instead of the
+    // language-level checker.
+    #[test]
+    fn mock_optimized_impl_returns_default_satisfaction() {
+        let cnid = ConstraintNodeId::new("S", 0);
+        let imp = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
+
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let input = reify_types::OptimizedImplInput {
+            constraints: vec![(cnid.clone(), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let output = imp.check(&input);
+        assert_eq!(output.results.len(), 1);
+        assert_eq!(output.results[0].id, cnid);
+        assert_eq!(output.results[0].satisfaction, Satisfaction::Violated);
+    }
+
+    #[test]
+    fn mock_optimized_impl_returns_per_id_result() {
+        let a = ConstraintNodeId::new("S", 0);
+        let b = ConstraintNodeId::new("S", 1);
+        let imp = MockOptimizedImpl::new()
+            .with_default(Satisfaction::Satisfied)
+            .with_result(a.clone(), Satisfaction::Violated);
+
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let input = reify_types::OptimizedImplInput {
+            constraints: vec![(a.clone(), &expr), (b.clone(), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let output = imp.check(&input);
+        assert_eq!(output.results.len(), 2);
+        assert_eq!(output.results[0].id, a);
+        assert_eq!(output.results[0].satisfaction, Satisfaction::Violated);
+        assert_eq!(output.results[1].id, b);
+        assert_eq!(output.results[1].satisfaction, Satisfaction::Satisfied);
+    }
+
+    #[test]
+    fn mock_optimized_impl_records_calls() {
+        let a = ConstraintNodeId::new("S", 0);
+        let b = ConstraintNodeId::new("S", 1);
+        let imp = MockOptimizedImpl::new();
+
+        assert!(imp.calls().is_empty(), "no calls yet");
+
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let input = reify_types::OptimizedImplInput {
+            constraints: vec![(a.clone(), &expr), (b.clone(), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let _ = imp.check(&input);
+        let calls = imp.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], a);
+        assert_eq!(calls[1], b);
+    }
+
+    #[test]
+    fn mock_optimized_impl_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockOptimizedImpl>();
+
+        let _boxed: Box<dyn reify_types::OptimizedImpl> = Box::new(MockOptimizedImpl::new());
+    }
+
     #[test]
     fn mock_geometry_kernel_tracks_ops() {
         let mut kernel = MockGeometryKernel::new();
