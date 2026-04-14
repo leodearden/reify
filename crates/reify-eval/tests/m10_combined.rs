@@ -129,9 +129,58 @@ fn geom_ready_purpose_compiled_and_activatable() {
 /// Asserts that the two nested constraints inside
 /// `where determined(origin) { constraint determined(shifted); constraint determined(displacement) }`
 /// are present in the check results and both Satisfied.
+///
+/// Implementation strategy: extract the guarded-group constraint IDs from the compiled
+/// template (canonical source of truth), then look them up in check_source results.
+/// Since `determined(origin)` is satisfied (origin evaluates to a concrete Point3),
+/// the where-block is active and both nested constraints should be checked.
 #[test]
 fn where_block_nested_constraints_present_and_satisfied() {
-    todo!("step-18 impl: verify where-block constraints appear in check results as Satisfied")
+    let compiled = parse_and_compile_with_stdlib(&source());
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly template should exist");
+
+    // The where-block should produce exactly 1 guarded group with 2 constraints
+    assert_eq!(
+        assembly.guarded_groups.len(),
+        1,
+        "Assembly should have exactly 1 guarded group (the where determined(origin) block)"
+    );
+    let group = &assembly.guarded_groups[0];
+    assert_eq!(
+        group.constraints.len(),
+        2,
+        "where-block should have exactly 2 constraints (determined(shifted), determined(displacement))"
+    );
+
+    // Extract the IDs of the guarded constraints
+    let guarded_ids: Vec<_> = group.constraints.iter().map(|c| &c.id).collect();
+
+    // Verify both appear in check_source results as Satisfied
+    let check_result = check_source(&source());
+    for guarded_id in &guarded_ids {
+        let entry = check_result
+            .constraint_results
+            .iter()
+            .find(|e| &&e.id == guarded_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "where-block constraint {} not found in check results; all ids: {:?}",
+                    guarded_id,
+                    check_result.constraint_results.iter().map(|e| &e.id).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "where-block constraint {} should be Satisfied, got {:?}",
+            guarded_id,
+            entry.satisfaction
+        );
+    }
 }
 
 // ── Test 7: assembly connect has connector and explicit port mapping ──────────
