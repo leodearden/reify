@@ -38,7 +38,13 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
                     //
                     //   • is_finite guard: atan2(y, ±Inf) = 0.0 or ±π, and
                     //     atan2(±Inf, x) = ±π/2 — all finite. sanitize_value cannot
-                    //     detect NaN/Inf inputs from these outputs alone.
+                    //     detect Inf inputs from these outputs alone. NaN inputs would
+                    //     propagate through atan2 to a NaN output, which a hypothetical
+                    //     sanitize_value wrap on the result would catch — but phase()
+                    //     does not currently wrap its output, so the pre-guard is the
+                    //     sole NaN guard. We use the pre-guard for both NaN and Inf so
+                    //     a single check handles both, matching the conjugate/re/im
+                    //     pattern.
                     //
                     //   • zero-vector guard: atan2(0.0, 0.0) = 0.0 which is
                     //     also finite, so sanitize_value cannot distinguish the
@@ -496,6 +502,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn phase_nan_im_dimensioned_returns_undef() {
+        // Complex{re:1.0, im:NaN, LENGTH}.phase → Undef
+        //
+        // phase() ignores the Complex's dimension field — Value::Complex { re, im, .. }
+        // drops it before the is_finite pre-guard runs, so dimensionless and dimensioned
+        // inputs take the same code path through phase(). This test does not exercise a
+        // distinct branch; it locks the invariant that phase() ignores dimension: if a
+        // future refactor introduced a dimensioned fast/slow split and accidentally
+        // omitted the pre-guard on one branch, this test would catch the regression.
+        // Mirrors re_nan_dimensioned_returns_undef for parity across complex methods.
+        assert!(
+            call_complex_method(1.0, f64::NAN, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()).is_undef(),
+            "z.phase with NaN imaginary part (dimensioned) should return Undef"
+        );
+    }
+
+    #[test]
+    fn phase_neg_inf_im_dimensioned_returns_undef() {
+        // Complex{re:1.0, im:-Inf, LENGTH}.phase → Undef
+        //
+        // atan2(-Inf, 1.0) = -π/2 which is finite, so sanitize_value alone cannot
+        // catch this -Inf input (and phase() doesn't wrap its output in sanitize_value
+        // anyway). Like the NaN variant above, phase() ignores the Complex's dimension
+        // field — dimensionless and dimensioned inputs take the same code path. This
+        // test locks the invariant that phase() ignores dimension for NEG_INFINITY
+        // inputs: not a distinct branch, but a guard against a future dimensioned
+        // fast/slow split accidentally omitting the pre-guard. Mirrors
+        // im_neg_inf_dimensioned_returns_undef and re_neg_inf_dimensioned_returns_undef.
+        assert!(
+            call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()).is_undef(),
+            "z.phase with -Inf imaginary part (dimensioned) should return Undef"
+        );
+    }
+
     // ── method: phase (zero-vector edge case) ─────────────────────────────────
 
     #[test]
@@ -515,10 +556,18 @@ mod tests {
 
     #[test]
     fn phase_signed_zero_complex_returns_undef() {
-        // IEEE-754: -0.0 == 0.0, so the zero-vector guard also catches all
-        // signed-zero variants. Lock all three mixed/negative-sign combinations
-        // against any future refactor that might swap == for a bit-pattern check
-        // (e.g. to_bits() == 0), which would silently break mixed-sign cases.
+        // Complex{re:-0.0, im:-0.0, DIMENSIONLESS}.phase → Undef
+        // (plus both mixed-sign variants: (0.0,-0.0) and (-0.0,0.0))
+        //
+        // This is a separate #[test] from phase_zero_complex_returns_undef so that
+        // the signed-zero path is independently asserted: if the first test fails the
+        // test runner still executes this one, making signed-zero regressions visible.
+        //
+        // IEEE-754 guarantees -0.0 == 0.0, so the zero-vector guard (`*re == 0.0 &&
+        // *im == 0.0`) in phase() catches all signed-zero variants today. This test
+        // locks all three mixed/negative-sign combinations against a future refactor
+        // that swapped `==` for a bit-pattern check (e.g. `to_bits() == 0`), which
+        // would silently break mixed-sign cases.
         assert!(
             call_complex_method(-0.0, -0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
             "z.phase with signed-zero vector (-0.0,-0.0) should return Undef \
