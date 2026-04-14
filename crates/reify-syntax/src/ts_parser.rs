@@ -1233,14 +1233,44 @@ impl<'a> Lowering<'a> {
     fn lower_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
         let mut members = Vec::new();
         let mut pragmas = Vec::new();
+        let mut pending_annotations: Vec<Annotation> = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "pragma" {
-                if let Some(pragma) = self.lower_pragma(child) {
-                    pragmas.push(pragma);
+            match child.kind() {
+                "annotation" => {
+                    if let Some(annotation) = self.lower_annotation(child) {
+                        pending_annotations.push(annotation);
+                    }
                 }
-            } else if let Some(member) = self.lower_member(child) {
-                members.push(member);
+                "pragma" => {
+                    if let Some(pragma) = self.lower_pragma(child) {
+                        pragmas.push(pragma);
+                    }
+                }
+                "ERROR" => {
+                    // Consume pending annotations so they don't leak past a syntax error.
+                    let _ = std::mem::take(&mut pending_annotations);
+                    self.push_error(
+                        format!("syntax error: {}", self.node_text(child)),
+                        self.span(child),
+                    );
+                }
+                _ => {
+                    // Drain pending annotations before lowering the member.
+                    // If lowering fails (returns None), annotations are still consumed.
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut member) = self.lower_member(child) {
+                        match &mut member {
+                            MemberDecl::Param(p) => p.annotations = annotations,
+                            MemberDecl::Let(l) => l.annotations = annotations,
+                            _ => {
+                                // Annotations on non-param/non-let members are
+                                // silently dropped — no defined semantics yet.
+                            }
+                        }
+                        members.push(member);
+                    }
+                }
             }
         }
         (members, pragmas)
