@@ -34752,15 +34752,16 @@
         "description": "The whole-word token-matching closure for checking if error messages mention a keyword is copy-pasted 4 times in self_keyword_tests.rs (lines 324-332, 340-348, 657-665, 673-681). The pattern `msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|tok| tok == \"self\")` is identical in all four locations.\n\nExtract a helper function, e.g. `fn mentions_word(messages: impl Iterator<Item = &str>, word: &str) -> bool`, into the test module or the existing `common/mod.rs` utilities, and call it from all four sites.\n\nmemory_hints: search \"self keyword test error assertion helper\" in reify project; get_entity for self_keyword_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-14T19:34:01.114Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T19:33:52.684Z",
+      "lastModified": "2026-04-14T19:34:01.114Z",
       "taskCount": 1667,
       "completedCount": 1390,
       "tags": [
