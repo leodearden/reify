@@ -131,14 +131,16 @@ pub const SI_DERIVED_UNITS: &[SiDerivedUnit] = &[
         name: "S",
         dimension: "Conductance",
         factor: 1.0,
-        // nS/uS/mS are common in electronics (sensor datasheets, PCB design).
-        prefix_combos: &["n", "u", "m"],
+        // nS/uS/mS common in electronics; pS/fS used in RF design and
+        // leakage characterisation.
+        prefix_combos: &["f", "p", "n", "u", "m"],
     },
     SiDerivedUnit {
         name: "F",
         dimension: "Capacitance",
         factor: 1.0,
-        prefix_combos: &["p", "n", "u", "m"],
+        // fF (femtofarad) standard in RF/IC design (parasitic caps, MEMS).
+        prefix_combos: &["f", "p", "n", "u", "m"],
     },
     SiDerivedUnit {
         name: "H",
