@@ -386,10 +386,11 @@ constraint def Plain {
 /// a constraint_def must resolve to `Some("kernel::foo")` — the extractor must
 /// continue scanning past the malformed first entry rather than returning None.
 ///
-/// The user still sees:
-///   - a missing-target warning on the first (malformed) @optimized
-///   - a duplicate-@optimized warning on the second
-/// so the annotation is not silently condoned, but the valid target is plumbed through.
+/// The user sees a missing-target warning on the malformed first @optimized, but
+/// NOT a duplicate-@optimized warning on the second: the malformed entry doesn't
+/// count as "first valid", so the valid second annotation is treated as the sole
+/// well-formed @optimized rather than a duplicate. This avoids the contradictory
+/// signal of "entry #1 is malformed" + "entry #2 is shadowed by entry #1".
 #[test]
 fn malformed_then_valid_optimized_resolves_to_valid_target() {
     let source = r#"
@@ -433,15 +434,121 @@ structure S {
         module.diagnostics
     );
 
-    // The duplicate-@optimized warning must also fire (on the second @optimized).
+    // No duplicate-@optimized warning: the malformed entry doesn't count as
+    // "seen valid", so the second (valid) annotation is the first valid one,
+    // not a duplicate.
     let duplicate_warnings: Vec<_> = warning_diags(&module.diagnostics)
         .into_iter()
         .filter(|d| d.message.contains("multiple @optimized annotations"))
         .collect();
     assert!(
-        !duplicate_warnings.is_empty(),
-        "expected a duplicate-@optimized warning for the second annotation, got none; all diags: {:?}",
-        module.diagnostics
+        duplicate_warnings.is_empty(),
+        "a malformed @optimized() before a valid one must not trigger duplicate warning; got: {:?}",
+        duplicate_warnings
+    );
+}
+
+/// `@optimized("foo")` followed by `@optimized()` (malformed) on a constraint_def
+/// must still return `Some("foo")` — the valid first entry wins and the malformed
+/// second is not a duplicate-eligible entry.
+///
+/// The malformed second `@optimized()` fires a missing-target warning (it's on a
+/// constraint_def without a string arg), but NOT a duplicate warning, because the
+/// duplicate check only counts *valid* entries.
+#[test]
+fn valid_then_malformed_optimized_keeps_valid_target() {
+    let source = r#"
+@optimized("kernel::foo")
+@optimized()
+constraint def PlainC {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure S {
+    param x: Real
+    param y: Real
+    constraint PlainC(a: x, b: y)
+}
+"#;
+    let module = compile_module(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // The valid first @optimized target must be preserved.
+    let tmpl = template_named(&module, "S");
+    assert_eq!(tmpl.constraints.len(), 1);
+    let cc: &CompiledConstraint = &tmpl.constraints[0];
+    assert_eq!(
+        cc.optimized_target,
+        Some("kernel::foo".to_string()),
+        "expected valid first @optimized target to be preserved; got: {:?}",
+        cc.optimized_target
+    );
+
+    // The malformed second @optimized() does NOT count as a valid duplicate,
+    // so no duplicate warning should fire.
+    let duplicate_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("multiple @optimized annotations"))
+        .collect();
+    assert!(
+        duplicate_warnings.is_empty(),
+        "a malformed @optimized() after a valid one must not trigger duplicate warning; got: {:?}",
+        duplicate_warnings
+    );
+}
+
+/// `@optimized(123)` (non-string first arg) followed by `@optimized("kernel::foo")`
+/// on a constraint_def must resolve to `Some("kernel::foo")`. This exercises the
+/// non-string-arg branch of the StringLiteral match in `optimized_target` — distinct
+/// from the no-args case tested in `malformed_then_valid_optimized_resolves_to_valid_target`.
+///
+/// Same duplicate-warning contract: the non-string first entry is not counted as a
+/// valid @optimized, so the valid second one is the sole well-formed annotation.
+#[test]
+fn nonstring_then_valid_optimized_resolves_to_valid_target() {
+    let source = r#"
+@optimized(123)
+@optimized("kernel::foo")
+constraint def PlainC {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure S {
+    param x: Real
+    param y: Real
+    constraint PlainC(a: x, b: y)
+}
+"#;
+    let module = compile_module(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // The valid second @optimized target must be returned.
+    let tmpl = template_named(&module, "S");
+    assert_eq!(tmpl.constraints.len(), 1);
+    let cc: &CompiledConstraint = &tmpl.constraints[0];
+    assert_eq!(
+        cc.optimized_target,
+        Some("kernel::foo".to_string()),
+        "expected extractor to skip non-string @optimized(123) and return the valid target; got: {:?}",
+        cc.optimized_target
+    );
+
+    // No duplicate warning: the non-string first annotation is not a valid
+    // @optimized entry, so the valid second one is not a duplicate.
+    let duplicate_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("multiple @optimized annotations"))
+        .collect();
+    assert!(
+        duplicate_warnings.is_empty(),
+        "a non-string @optimized before a valid one must not trigger duplicate warning; got: {:?}",
+        duplicate_warnings
     );
 }
 

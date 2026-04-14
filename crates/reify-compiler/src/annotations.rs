@@ -78,6 +78,12 @@ pub(crate) fn validate_annotations(
                 }
             }
             "optimized" => {
+                // @optimized is accepted on structure and occurrence even though
+                // optimized_target is only consumed in constraint_def context
+                // (entity.rs reads it when lowering a ConstraintDef to a
+                // CompiledConstraint). Those two contexts remain in the allow-list
+                // to avoid a breaking change; a follow-up may add a distinct
+                // 'annotation has no effect here' warning or remove them entirely.
                 if !matches!(context, "structure" | "occurrence" | "constraint_def") {
                     diagnostics.push(
                         Diagnostic::warning(format!(
@@ -129,25 +135,34 @@ pub(crate) fn validate_annotations(
     }
 
     // Duplicate-annotation checks. `optimized_target` (the extractor used by
-    // the compiler to stamp `CompiledConstraint::optimized_target`) returns
-    // the *first* @optimized annotation and silently ignores the rest, which
-    // would hide a user typo like:
+    // the compiler to stamp `CompiledConstraint::optimized_target`) uses
+    // first-valid-wins semantics: it skips malformed @optimized entries (those
+    // without a string-literal arg) and returns the first well-formed one.
+    // Warn on every *valid* @optimized past the first valid one so the user
+    // knows their shadowed entry is ignored:
     //   @optimized("new_target")
-    //   @optimized("legacy_target")   // ← shadowed, never used
-    // Warn explicitly on every duplicate past the first.
-    let mut seen_optimized = false;
+    //   @optimized("legacy_target")   // ← valid but shadowed; warn here
+    //
+    // Malformed entries are intentionally excluded from the "seen" count.
+    // They already generate a separate missing-target warning, and counting
+    // them here would produce contradictory diagnostics: e.g. warning that
+    // annotation #1 is malformed and then warning that annotation #2 is
+    // shadowed by annotation #1.
+    let mut seen_valid_optimized = false;
     for ann in annotations {
-        if ann.name == "optimized" {
-            if seen_optimized {
+        if ann.name == "optimized"
+            && matches!(ann.args.first(), Some(reify_types::AnnotationArg::String(_)))
+        {
+            if seen_valid_optimized {
                 diagnostics.push(
                     Diagnostic::warning(
-                        "multiple @optimized annotations on the same declaration — only the first is used"
+                        "multiple @optimized annotations on the same declaration — only the first well-formed one is used"
                             .to_string(),
                     )
                     .with_label(DiagnosticLabel::new(ann.span, "duplicate @optimized")),
                 );
             }
-            seen_optimized = true;
+            seen_valid_optimized = true;
         }
     }
 }
