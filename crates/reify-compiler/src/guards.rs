@@ -298,6 +298,7 @@ pub(crate) fn compile_guarded_members(
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
+                        solver_hints: Vec::new(),
                         span: param.span,
                     }
                 } else {
@@ -319,6 +320,7 @@ pub(crate) fn compile_guarded_members(
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr,
+                        solver_hints: Vec::new(),
                         span: param.span,
                     }
                 };
@@ -355,6 +357,7 @@ pub(crate) fn compile_guarded_members(
                     visibility,
                     cell_type,
                     default_expr: Some(compiled_expr),
+                    solver_hints: Vec::new(),
                     span: let_decl.span,
                 });
             }

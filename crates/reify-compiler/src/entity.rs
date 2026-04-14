@@ -545,6 +545,7 @@ pub(crate) fn compile_entity(
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
+                        solver_hints: Vec::new(),
                         span: param.span,
                     }
                 } else {
@@ -567,6 +568,7 @@ pub(crate) fn compile_entity(
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr,
+                        solver_hints: Vec::new(),
                         span: param.span,
                     }
                 };
@@ -630,6 +632,7 @@ pub(crate) fn compile_entity(
                     visibility,
                     cell_type,
                     default_expr: Some(compiled_expr),
+                    solver_hints: Vec::new(),
                     span: let_decl.span,
                 };
 
@@ -666,6 +669,7 @@ pub(crate) fn compile_entity(
                         visibility: Visibility::Private,
                         cell_type: Type::Int,
                         default_expr: Some(compiled_rhs),
+                        solver_hints: Vec::new(),
                         span: constraint.span,
                     });
                     structure_controlling.insert(count_id.clone());
@@ -882,6 +886,7 @@ pub(crate) fn compile_entity(
                                     visibility: Visibility::Public,
                                     cell_type,
                                     default_expr: None,
+                                    solver_hints: Vec::new(),
                                     span: param.span,
                                 }
                             } else {
@@ -895,6 +900,7 @@ pub(crate) fn compile_entity(
                                     visibility: Visibility::Public,
                                     cell_type,
                                     default_expr,
+                                    solver_hints: Vec::new(),
                                     span: param.span,
                                 }
                             };
@@ -928,6 +934,7 @@ pub(crate) fn compile_entity(
                                 visibility,
                                 cell_type,
                                 default_expr: Some(compiled_expr),
+                                solver_hints: Vec::new(),
                                 span: let_decl.span,
                             });
                         }

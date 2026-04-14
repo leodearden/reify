@@ -100,6 +100,7 @@ impl TopologyTemplateBuilder {
             visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: default,
+            solver_hints: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -112,6 +113,7 @@ impl TopologyTemplateBuilder {
             visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: None,
+            solver_hints: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -124,6 +126,7 @@ impl TopologyTemplateBuilder {
             visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: None,
+            solver_hints: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -142,6 +145,7 @@ impl TopologyTemplateBuilder {
             visibility: reify_compiler::Visibility::Private,
             cell_type,
             default_expr: Some(expr),
+            solver_hints: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
