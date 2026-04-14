@@ -12125,11 +12125,11 @@
         "description": "Five of eight traits (Flexible, Plastic, ThermallyConductive, ElectricallyConductive, Sealed) only tested for name presence. Need member, type, constraint, and conformance tests.",
         "details": "Add per-trait tests covering: (a) required_member names and types, (b) conforming structure compiles without errors, (c) constraints injected correctly. Add missing-member negative tests for Rigid (moment_of_inertia) and ElasticallyDeformable (max_elastic_strain). Add centroid_y/z assertions to rigid_cross_module_three_level_refinement_chain.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:36.206Z",
+        "updatedAt": "2026-04-14T15:39:00.416Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -28973,11 +28973,11 @@
         "description": "The `self_inside_lambda_in_fn_body_errors` test in `self_keyword_tests.rs` has two assertion quality issues:\n\n1. **Tautological else branch (lines 636-640):** The else branch is entered only when `parsed.errors.is_empty()` is false, so `assert!(!parsed.errors.is_empty(), ...)` can never fail — it's dead validation code. Replace with an assertion on error content, e.g. check that at least one error message mentions `self`.\n\n2. **Weak if-branch assertion (lines 617-635):** The if branch only asserts that at least one Error diagnostic exists, without checking that the error is specifically about `self` usage. A future regression introducing a different compile error (e.g. type mismatch) would still pass. Assert on the diagnostic message content.\n\nFix: In both branches, assert that error messages mention `self` or `unresolved`, not just that errors exist.\n\nmemory_hints: search \"self keyword test error assertion\" in reify project; get_entity for self_keyword_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:39:59.695Z",
+        "updatedAt": "2026-04-14T15:39:00.503Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -34637,7 +34637,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T15:39:00.308Z",
+      "lastModified": "2026-04-14T15:39:00.503Z",
       "taskCount": 1661,
       "completedCount": 1383,
       "tags": [
