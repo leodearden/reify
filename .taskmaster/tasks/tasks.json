@@ -6421,7 +6421,7 @@
         "dependencies": [
           "314"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6436,7 +6436,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T05:35:52.985Z"
+        "updatedAt": "2026-04-14T07:04:05.654Z"
       },
       {
         "id": "316",
@@ -34340,7 +34340,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T07:04:05.172Z",
+      "lastModified": "2026-04-14T07:04:05.654Z",
       "taskCount": 1658,
       "completedCount": 1331,
       "tags": [
