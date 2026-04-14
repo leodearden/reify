@@ -5481,14 +5481,16 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-eval/tests"
+            "crates/reify-compiler",
+            "crates/reify-eval"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/tests/annotation_compile_tests.rs",
-            "crates/reify-eval/tests/constraint_def_eval.rs"
+            "crates/reify-compiler/tests/solver_hint_tests.rs",
+            "crates/reify-eval/tests/solver_hint_eval_tests.rs",
+            "crates/reify-compiler/src/annotations.rs",
+            "crates/reify-compiler/src/lib.rs"
           ]
         },
         "subtasks": [],
