@@ -1433,15 +1433,16 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
         "expected geometry_output to be None when Extrude distance is NaN"
     );
 
-    // (3) Warning: 'extrude dropped' and 'degenerate'
+    // (3) Warning: 'extrude dropped', 'degenerate', and 'NaN' (pins the non-finite arm)
     let has_extrude_warning = result.diagnostics.iter().any(|d| {
         d.severity == reify_types::Severity::Warning
             && d.message.contains("extrude dropped")
             && d.message.contains("degenerate")
+            && d.message.contains("NaN")
     });
     assert!(
         has_extrude_warning,
-        "expected a Warning diagnostic containing 'extrude dropped' and 'degenerate', got: {:?}",
+        "expected a Warning diagnostic containing 'extrude dropped', 'degenerate', and 'NaN', got: {:?}",
         result
             .diagnostics
             .iter()
