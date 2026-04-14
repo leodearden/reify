@@ -1,4 +1,5 @@
 pub mod builders;
+pub mod ignore_hygiene;
 pub mod fixtures;
 pub mod helpers;
 pub mod lsp_fixtures;
