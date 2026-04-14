@@ -16693,11 +16693,11 @@
         "description": "Four test coverage gaps identified in the unit registry tests:\n\n1. **degF offset unit**: `degF` has a non-trivial offset (5/9, offset 255.3722...) but zero test coverage. Add test: `32degF → 273.15K`, `212degF → 373.15K`.\n\n2. **Private prelude units excluded**: The `if cu.is_pub` guard ensures private units aren't seeded, but no test verifies it. Add test: compile prelude with one pub + one private unit, verify private is inaccessible.\n\n3. **Bare compile() negative test**: No test verifies that bare `compile()` does NOT resolve `1mm`. Add test: compile with bare compile(), assert unknown-unit error for mm.\n\n4. **thou via stdlib**: `thou` is a chain unit (references mm), but no integration test verifies it resolves via stdlib prelude. Add test: `10thou → 0.000254`.\n\nLocation: crates/reify-compiler/tests/unit_registry_tests.rs.\n\nmemory_hints: search \"unit registry tests\" for current test patterns.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T03:10:24.677Z",
+        "updatedAt": "2026-04-14T09:52:40.258Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -20220,11 +20220,11 @@
         "description": "In tolerancing_tests.rs: assert material_condition resolved to Type::Enum not Type::Real in gdt_structure_conforms test. In boundary1_consumer.rs: add focused test for compile_entity enum param resolution. Add test with wrong enum name to confirm error diagnostic.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:24.250Z",
+        "updatedAt": "2026-04-14T09:52:41.451Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -34379,7 +34379,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T09:52:39.791Z",
+      "lastModified": "2026-04-14T09:52:41.451Z",
       "taskCount": 1661,
       "completedCount": 1334,
       "tags": [
