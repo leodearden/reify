@@ -5478,7 +5478,7 @@
         "dependencies": [
           "276"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests",
@@ -5498,7 +5498,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:27.365Z"
+        "updatedAt": "2026-04-14T12:35:39.657Z"
       },
       {
         "id": "278",
@@ -20293,11 +20293,11 @@
         "description": "In tolerancing_tests.rs: assert material_condition resolved to Type::Enum not Type::Real in gdt_structure_conforms test. In boundary1_consumer.rs: add focused test for compile_entity enum param resolution. Add test with wrong enum name to confirm error diagnostic.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:39.344Z",
+        "updatedAt": "2026-04-14T12:35:39.376Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -34558,9 +34558,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:35:37.448Z",
+      "lastModified": "2026-04-14T12:35:39.657Z",
       "taskCount": 1661,
-      "completedCount": 1351,
+      "completedCount": 1353,
       "tags": [
         "master"
       ]
