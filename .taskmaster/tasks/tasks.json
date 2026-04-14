@@ -34249,7 +34249,10 @@
         "updatedAt": "2026-04-14T04:51:09.819Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr/tests"
+            "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/tests/field_calculus_tests.rs"
           ]
         }
       },
@@ -34266,8 +34269,10 @@
         "updatedAt": "2026-04-14T05:12:07.562Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
+          ],
+          "files": [
+            "crates/reify-eval/src/lib.rs"
           ]
         }
       },
@@ -34284,8 +34289,10 @@
         "updatedAt": "2026-04-14T05:08:29.022Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/annotations.rs"
           ]
         }
       },
