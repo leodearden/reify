@@ -34783,11 +34783,11 @@
         "description": "Three refinements in crates/reify-eval/src/deps.rs from task 1374 review:\n\n1. **Lines 441-443**: Doc comment says `extract_value_deps` is \"the deduplicating variant\" but it also sorts (see lines 588-594). Change to: \"the deduplicating-and-sorting variant\".\n\n2. **Lines 4-9**: Module doc says \"conditional branches and match arms may short-circuit at runtime\" — misleading for pure Reify expressions where a Conditional evaluates its condition and exactly one branch. Rephrase to: \"conditional branches and match arms include every reachable ValueRef across all arms, even though only one arm is taken at runtime — so the static set is a superset of the runtime-read set.\"\n\n3. **Line 446 area**: Add a companion test using `conditional_expr(flag, x, x)` (same ValueCellId in both arms) that asserts `trace.reads.len() == 3` (flag + x + x) and that two copies of `x` are present. This directly ties the duplicate-preservation contract to the \"all branches\" property documented at lines 4-9.\n\nmemory_hints:\n- search: \"deps.rs extract_dependency_trace duplicate preservation\"\n- entity: \"extract_value_deps\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T19:26:50.642Z"
+        "updatedAt": "2026-04-14T20:25:51.532Z"
       },
       {
         "id": "1665",
@@ -35057,9 +35057,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T20:24:33.251Z",
+      "lastModified": "2026-04-14T20:25:51.532Z",
       "taskCount": 1680,
-      "completedCount": 1410,
+      "completedCount": 1411,
       "tags": [
         "master"
       ]
