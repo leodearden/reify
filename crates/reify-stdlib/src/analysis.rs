@@ -13,7 +13,8 @@ pub(crate) fn eval_analysis(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "von_mises" => von_mises(args),
         "principal_stresses" => principal_stresses(args),
-        "max_shear" | "safety_factor" => {
+        "max_shear" => max_shear(args),
+        "safety_factor" => {
             let _ = args;
             Value::Undef // stub — implementations added in subsequent steps
         }
@@ -114,6 +115,28 @@ fn principal_stresses(args: &[Value]) -> Value {
 
         let make_val = |x: f64| sanitize_value(Value::from_component(x, dim));
         Value::List(eigs.iter().map(|&e| make_val(e)).collect())
+    })
+}
+
+/// Compute maximum shear stress from a 3×3 stress tensor.
+///
+/// max_shear = (σ₁ − σ₃) / 2 where σ₁ and σ₃ are the max and min principal stresses.
+fn max_shear(args: &[Value]) -> Value {
+    unary(args, |tensor| {
+        let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
+            Some(v) if v.0 == 3 && v.1 == 3 => v,
+            _ => return Value::Undef,
+        };
+        let _ = (nrows, ncols);
+
+        let eigs = match compute_eigenvalues_3x3(&d) {
+            Some(e) => e,
+            None => return Value::Undef,
+        };
+
+        // eigs is sorted ascending: [σ₃, σ₂, σ₁]
+        let tau_max = (eigs[2] - eigs[0]) / 2.0;
+        sanitize_value(Value::from_component(tau_max, dim))
     })
 }
 
