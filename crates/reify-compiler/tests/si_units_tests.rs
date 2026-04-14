@@ -666,6 +666,40 @@ fn existing_units_ri_still_has_m_kg_s_rad_deg_degC_degF_imperial() {
     assert!((v - 0.001).abs() < 1e-12, "1g wrong: {}", v);
 }
 
+// ── PrefixSet enum semantics ─────────────────────────────────────────────────
+
+#[test]
+fn prefix_set_all_includes_any_symbol() {
+    // PrefixSet::All must return true for every known SI prefix symbol.
+    assert!(si_units::PrefixSet::All.includes("k"));
+    assert!(si_units::PrefixSet::All.includes("M"));
+    assert!(si_units::PrefixSet::All.includes("n"));
+    assert!(si_units::PrefixSet::All.includes("q"));
+    assert!(si_units::PrefixSet::All.includes("Q"));
+}
+
+#[test]
+fn prefix_set_only_includes_listed_symbol() {
+    let ps = si_units::PrefixSet::Only(&["k", "M"]);
+    assert!(ps.includes("k"));
+    assert!(ps.includes("M"));
+}
+
+#[test]
+fn prefix_set_only_excludes_unlisted_symbol() {
+    let ps = si_units::PrefixSet::Only(&["k", "M"]);
+    assert!(!ps.includes("G"));
+    assert!(!ps.includes("n"));
+}
+
+#[test]
+fn prefix_set_only_empty_excludes_all() {
+    let ps = si_units::PrefixSet::Only(&[]);
+    assert!(!ps.includes("k"));
+    assert!(!ps.includes("m"));
+    assert!(!ps.includes("n"));
+}
+
 // ─── S4: SI_PREFIX_BASES restricted prefix filtering ─────────────────────────
 
 /// Once SI_PREFIX_BASES supports per-base prefix_combos filtering, the generator
