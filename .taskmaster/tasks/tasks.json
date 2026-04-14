@@ -8252,7 +8252,13 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/tests/common/mod.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract shared compiler test helpers into common module"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-14T09:52:35.462Z"
@@ -8623,11 +8629,11 @@
         "description": "Add tests to crates/reify-compiler/tests/termination_check_tests.rs:\n\n1. Assert no errors in sub_where_clause_compiles_to_guard_expr (currently discards diagnostics).\n2. Add test asserting template.is_recursive == true for a known recursive structure.\n3. Add test asserting the cycle detection warning diagnostic ('recursive structure cycle detected: ...') is emitted.\n4. Add test for undef in recursive sub args WITHOUT a guard (existing test only covers undef WITH guard).\n5. Add documenting test for the BinOp::Add false negative (n+1 with guard n>0 accepted but non-terminating).\n\nSource: review suggestions from esc-204-20 (task 204).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:05:28.258Z",
+        "updatedAt": "2026-04-14T12:12:12.094Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10038,7 +10044,13 @@
           ],
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add missing MetaAccess test coverage for guard branches and concurrent path"
+            ]
+          }
         }
       },
       {
@@ -10833,7 +10845,13 @@
           "modules": [
             "crates/reify-compiler/tests",
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen stdlib/prelude test coverage"
+            ]
+          }
         },
         "updatedAt": "2026-04-14T09:52:35.743Z"
       },
@@ -12030,7 +12048,13 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/tests/structural_physical_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add missing test coverage for under-tested stdlib traits"
+            ]
+          }
         }
       },
       {
@@ -15987,7 +16011,13 @@
           ],
           "modules": [
             "crates/reify-types/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Include type_args in TypeParam bound hash and add edge-case tests"
+            ]
+          }
         },
         "updatedAt": "2026-04-14T09:52:39.791Z"
       },
@@ -16461,7 +16491,13 @@
           ],
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add per-template resolution failure-mode and cross-template test coverage"
+            ]
+          }
         },
         "updatedAt": "2026-04-14T09:53:00.703Z"
       },
@@ -18099,14 +18135,9 @@
             "crates/reify-constraints/src/solver.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "SolveResult",
-              "NoProgressKind"
-            ],
+            "entities": [],
             "queries": [
-              "SolveResult NoProgressKind enum precondition failure solver stall variants",
-              "task 772 NoProgressKind structured enum implementation done",
-              "NoProgress variant semantics precondition vs iteration-limit"
+              "resolution for: Clarify SolveResult semantics: distinguish precondition failure from solver stall"
             ]
           }
         }
@@ -20232,7 +20263,13 @@
           "files": [
             "crates/reify-compiler/tests/tolerancing_tests.rs",
             "crates/reify-compiler/tests/boundary1_consumer.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add focused enum resolution tests and strengthen tolerancing conformance assertions"
+            ]
+          }
         }
       },
       {
@@ -23173,7 +23210,13 @@
           ],
           "files": [
             "crates/reify-compiler/src/module_dag.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract collect_preludes helper to deduplicate prelude collection logic"
+            ]
+          }
         }
       },
       {
@@ -26991,16 +27034,12 @@
           "files": [
             "crates/reify-eval/src/tests_runner.rs"
           ],
-          "memory_hints": [
-            {
-              "type": "search",
-              "value": "run_tests CompiledModule clone optimization per-test performance"
-            },
-            {
-              "type": "search",
-              "value": "CompiledModule clone reify-eval test runner memory overhead"
-            }
-          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Optimize run_tests to avoid per-test full CompiledModule clone"
+            ]
+          },
           "_causation_id": "e9029562-837c-4b6e-8162-51e471faa708"
         },
         "updatedAt": "2026-04-14T09:52:43.557Z"
@@ -27324,7 +27363,13 @@
           ],
           "files": [
             "crates/reify-compiler/tests/trait_merge_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Trait merge test hardening: richer assertions + diamond inheritance"
+            ]
+          }
         }
       },
       {
@@ -27813,7 +27858,13 @@
           ],
           "files": [
             "crates/reify-compiler/tests/termination_check_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Rename misleading test recursive_sub_inside_block_guard_no_error"
+            ]
+          }
         }
       },
       {
@@ -27882,7 +27933,13 @@
           ],
           "files": [
             "crates/reify-compiler/tests/purpose_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen SI value assertions in purpose_compile_tests.rs"
+            ]
+          }
         }
       },
       {
@@ -29110,7 +29167,13 @@
           "files": [
             "crates/reify-compiler/src/scope.rs",
             "crates/reify-compiler/src/expr.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: docs(compiler): clarify sub_member_types vs collection_sub_member_types in scope/expr"
+            ]
+          }
         }
       },
       {
@@ -31146,7 +31209,13 @@
           "files": [
             "crates/reify-eval/tests/m9_integration.rs",
             "examples/m9_integration.ri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Tighten M9 integration test assertions and fix consistency issues"
+            ]
+          }
         }
       },
       {
@@ -32538,7 +32607,13 @@
           ],
           "files": [
             "crates/reify-compiler/tests/user_defined_unit_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add compile_project-level test for stdlib unit collision path"
+            ]
+          }
         }
       },
       {
@@ -33591,7 +33666,13 @@
           ],
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Tighten task 1213 geometry-error-handling regression tests"
+            ]
+          }
         },
         "updatedAt": "2026-04-14T09:52:52.695Z"
       },
@@ -33751,12 +33832,9 @@
             "crates/reify-eval/tests"
           ],
           "memory_hints": {
-            "entities": [
-              "reify-eval"
-            ],
+            "entities": [],
             "queries": [
-              "test_runner.rs violation diagnostic assertion formatting rustfmt",
-              "task 1424 review suggestions follow-up reify-eval tests"
+              "resolution for: test_runner.rs: drop redundant inner parens and rustfmt the violation-diagnostic assertion"
             ]
           },
           "files": [
@@ -34009,14 +34087,9 @@
             "crates/reify-eval/tests"
           ],
           "memory_hints": {
-            "entities": [
-              "crates/reify-eval/tests/purpose_activation.rs",
-              "crates/reify-compiler/src/traits.rs"
-            ],
+            "entities": [],
             "queries": [
-              "purpose_activation tests Task 260 reviewer_comprehensive esc-260-17",
-              "remap_entity path activate_purpose coverage minimize objective",
-              "purpose param injected constraint entity format purpose:name@entity"
+              "resolution for: Tighten purpose_activation tests: rename S1, fix S2 comment, S3/S5 exact asserts, add S4 remap_entity coverage"
             ]
           },
           "files": [
@@ -34203,14 +34276,9 @@
             "crates/reify-stdlib/src"
           ],
           "memory_hints": {
-            "entities": [
-              "crates/reify-expr/src/sanitize.rs",
-              "crates/reify-stdlib/src/helpers.rs"
-            ],
+            "entities": [],
             "queries": [
-              "sanitize_wildcard_variants_passthrough task 1644 Vector Frame NaN tripwire",
-              "task 892 sanitize_value consolidation complex.rs helpers.rs",
-              "Value::List Value::Transform variants reify-expr value.rs shape"
+              "resolution for: Extend sanitize_wildcard_variants_passthrough with List and Transform cases"
             ]
           },
           "files": [
@@ -34316,7 +34384,13 @@
           ],
           "files": [
             "crates/reify-expr/tests/field_eval_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Tighten sample() arity-mismatch tests: discriminating body, redundancy cross-ref, type-coherence docs"
+            ]
+          }
         }
       },
       {
@@ -34386,9 +34460,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T09:57:06.731Z",
+      "lastModified": "2026-04-14T12:12:12.094Z",
       "taskCount": 1661,
-      "completedCount": 1334,
+      "completedCount": 1335,
       "tags": [
         "master"
       ]
