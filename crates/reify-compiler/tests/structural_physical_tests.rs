@@ -471,6 +471,37 @@ structure def Incomplete : Physical {
     );
 }
 
+// ─── task-558 step-1: Plastic trait has constraint defaults ──────────────────
+
+/// Plastic trait should have exactly 2 constraint defaults:
+/// `hardening_modulus > 0` and `plastic_strain >= 0`.
+/// FAILS before constraints are added to structural_physical.ri.
+#[test]
+fn plastic_trait_has_constraint_defaults() {
+    let module = load_stdlib_module();
+
+    let plastic = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Plastic")
+        .expect("expected 'Plastic' trait in compiled module");
+
+    let constraint_defaults: Vec<_> = plastic
+        .defaults
+        .iter()
+        .filter(|d| matches!(d.kind, DefaultKind::Constraint(_)))
+        .collect();
+
+    assert_eq!(
+        constraint_defaults.len(),
+        2,
+        "Plastic trait should have exactly 2 constraint defaults \
+         (hardening_modulus > 0 and plastic_strain >= 0), got {} defaults: {:?}",
+        constraint_defaults.len(),
+        plastic.defaults.iter().map(|d| &d.kind).collect::<Vec<_>>()
+    );
+}
+
 // ─── step-21: load_stdlib_module uses production path (wrong code path) ──────
 
 /// Step 21: Regression test for review issue [wrong_code_path_under_test].
