@@ -33363,8 +33363,12 @@
         "updatedAt": "2026-04-10T22:14:29.488Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-eval/tests"
+            "crates/reify-eval",
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-eval/tests/connect_eval.rs",
+            "crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs"
           ]
         }
       },
@@ -33383,7 +33387,7 @@
             "crates/reify-eval/tests/collection_sub_eval.rs"
           ],
           "modules": [
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ]
         }
       },
