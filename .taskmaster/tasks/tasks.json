@@ -34503,7 +34503,13 @@
           "modules": [
             "crates/reify-test-support/src",
             "crates/reify-expr/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Unify ignore-hygiene scanners and skip doc-comment lines workspace-wide"
+            ]
+          }
         },
         "updatedAt": "2026-04-14T12:30:31.350Z"
       },
