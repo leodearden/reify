@@ -11833,7 +11833,7 @@
         "description": "Track when poison recovery occurs during concurrent evaluation so callers can detect potentially corrupt results, rather than silently propagating values computed from partially-updated state.",
         "details": "In crates/reify-runtime/src/concurrent_eval.rs:\n\nProblem: When evaluate() recovers a poisoned values lock, the current_values map may contain partial state from the panicked task. The expression is evaluated against this corrupt input, and the result is written to both values and snapshot_values as normal. Additionally, values and snapshot_values locks are acquired in separate scopes — if one is poisoned and the other isn't, they can become inconsistent. All of this happens silently.\n\nSolution:\n1. Add `tainted: Arc<AtomicBool>` field to ConcurrentEvalAdapter (initialized to false)\n2. Set tainted to true whenever any poison recovery occurs (in the lock helper methods from the companion task)\n3. Add `tainted: bool` field to ConcurrentEditResult\n4. In build_result_shared() and into_result(), set result.tainted = self.tainted.load(Ordering::Relaxed)\n5. Callers (edit_param_concurrent) can log a warning or take corrective action when tainted=true\n\nThis addresses review suggestions about silent corruption propagation and invariant violations between lock acquisitions (reviewer_robustness).\n\nmemory_hints:\n  search: \"ConcurrentEvalAdapter tainted poison corruption\"\n  entities: [\"ConcurrentEvalAdapter\", \"ConcurrentEditResult\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11855,7 +11855,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-13T18:14:01.786Z"
+        "updatedAt": "2026-04-14T06:17:08.370Z"
       },
       {
         "id": "544",
@@ -13280,7 +13280,7 @@
         "description": "Review suggestions from task 437. Test gaps: (1) analysis.rs guarded-group tests assert only info.name/info.kind but not info.span or info.cell_type — span is the thing that was broken. (2) goto_def tests check only line number, not character offset. (3) No direct unit tests for find_named_member_span on hand-constructed MemberDecl slices (edge cases: empty slice, name in else_members only, depth-2 match). (4) No regression test for refactored find_parsed_member_span_and_doc (top-level members still resolve). (5) Revolve missing-arg test only exercises missing 'ox', not other required fields.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13303,7 +13303,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-13T18:05:49.271Z"
+        "updatedAt": "2026-04-14T06:17:10.254Z"
       },
       {
         "id": "604",
@@ -34324,7 +34324,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T06:17:07.288Z",
+      "lastModified": "2026-04-14T06:17:10.254Z",
       "taskCount": 1658,
       "completedCount": 1328,
       "tags": [
