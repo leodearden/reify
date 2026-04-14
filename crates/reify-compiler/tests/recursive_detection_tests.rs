@@ -410,8 +410,12 @@ structure S {
     );
 }
 
-/// A structure with a sub referencing an undefined structure should not crash
-/// and should not be tagged recursive (the reference produces no edge).
+/// A structure with a sub referencing an undefined structure should not crash,
+/// should still appear in the compiled templates, and must not be tagged recursive
+/// (the unresolved reference produces no dependency edge).
+///
+/// Tightened by task 553 improvement #1: assert S is present (hard check) rather
+/// than silently passing if the detection pass drops S on unknown refs.
 #[test]
 fn sub_referencing_unknown_structure_not_recursive() {
     let source = r#"
@@ -422,17 +426,21 @@ structure S {
 
     let (templates, diagnostics) = compile_all(source);
 
-    // S might not even compile successfully, but the detection phase should not panic.
-    // If S exists in the templates, it should not be recursive.
-    if let Some(s) = templates.iter().find(|t| t.name == "S") {
-        assert!(
-            !s.is_recursive,
-            "S referencing unknown structure should not be tagged recursive"
-        );
-    }
+    // S MUST be present in the compiled templates — the detection pass should not
+    // drop it just because it references an unknown structure.
+    let s = templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S should be present in compiled templates even when it references Unknown");
 
-    // The compilation might produce error diagnostics about 'Unknown', that's fine.
-    // What matters is no panic occurred.
+    // An unresolved reference produces no edge, so S must not be tagged recursive.
+    assert!(
+        !s.is_recursive,
+        "S referencing unknown structure should not be tagged recursive"
+    );
+
+    // The compilation may produce error diagnostics about 'Unknown', that's fine.
+    // What matters is no panic occurred and S is correctly classified.
     let _ = diagnostics;
 }
 
