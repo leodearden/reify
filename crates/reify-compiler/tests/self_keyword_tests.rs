@@ -637,24 +637,29 @@ fn self_inside_lambda_in_fn_body_errors() {
         );
         let mentions_self = errors.iter().any(|d| {
             let msg = d.message.to_lowercase();
-            msg.contains("self") || msg.contains("unresolved")
+            msg.contains("self")
         });
         assert!(
             mentions_self,
-            "expected a compile error mentioning `self` or `unresolved` for `self` inside lambda in fn body, got: {:?}",
+            "expected a compile error mentioning `self` for `self` inside lambda in fn body, got: {:?}",
             errors.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     } else {
         // Parser correctly rejects `self` in fn body — assert the parser error specifically
         // calls out `self` (not just any parse error, which would hide regressions from
         // unrelated syntax breakage).
+        //
+        // NOTE: As of tree-sitter-reify's current grammar, `self` is lowered as a plain
+        // identifier and this branch is effectively dead (parsed.errors is always empty for
+        // this source). It is kept as defensive future-proofing for a stricter grammar that
+        // may eventually reserve `self` as a keyword.
         let mentions_self = parsed.errors.iter().any(|e| {
             let msg = e.message.to_lowercase();
-            msg.contains("self") || msg.contains("unresolved")
+            msg.contains("self")
         });
         assert!(
             mentions_self,
-            "expected a parse error mentioning `self` or `unresolved` for `self` inside lambda in fn body, got: {:?}",
+            "expected a parse error mentioning `self` for `self` inside lambda in fn body, got: {:?}",
             parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
     }
