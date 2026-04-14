@@ -24167,8 +24167,7 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/scope.rs"
+            "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
             "crates/reify-compiler"
