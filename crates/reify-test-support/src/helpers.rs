@@ -182,6 +182,35 @@ mod tests {
         assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
     }
 
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_eval_source() {
+        let result = super::eval_source(bracket_source());
+        assert!(
+            !result.values.is_empty(),
+            "eval_source should produce non-empty values for bracket source"
+        );
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_check_source() {
+        use reify_types::Satisfaction;
+        let result = super::check_source(bracket_source());
+        assert!(
+            !result.constraint_results.is_empty(),
+            "check_source should produce non-empty constraint_results for bracket source"
+        );
+        for entry in &result.constraint_results {
+            assert_eq!(
+                entry.satisfaction,
+                Satisfaction::Satisfied,
+                "constraint {} should be Satisfied via check_source",
+                entry.id,
+            );
+        }
+    }
+
     #[test]
     fn test_parse_and_compile_valid() {
         let compiled = super::parse_and_compile(bracket_source());
