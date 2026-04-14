@@ -31205,7 +31205,16 @@
           ],
           "files": [
             "crates/reify-eval/src/tests_runner.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entity_refs": [
+              "build_isolated_module"
+            ],
+            "search_queries": [
+              "CompiledModule fields units imports pragmas module_path",
+              "build_isolated_module shared infrastructure contract"
+            ]
+          }
         }
       },
       {
