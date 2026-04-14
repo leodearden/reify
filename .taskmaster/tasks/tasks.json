@@ -8245,7 +8245,7 @@
         "testStrategy": "",
         "priority": "medium",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests",
@@ -8264,7 +8264,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:32.329Z"
+        "updatedAt": "2026-04-14T12:36:06.404Z"
       },
       {
         "id": "392",
@@ -34558,9 +34558,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:36:02.827Z",
+      "lastModified": "2026-04-14T12:36:06.404Z",
       "taskCount": 1661,
-      "completedCount": 1366,
+      "completedCount": 1367,
       "tags": [
         "master"
       ]
