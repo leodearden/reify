@@ -515,12 +515,23 @@ mod tests {
 
     #[test]
     fn phase_signed_zero_complex_returns_undef() {
-        // IEEE-754: -0.0 == 0.0, so the zero-vector guard also catches signed-zero
-        // variants. Lock this against any future refactor that might swap == for a
-        // bit-pattern check (e.g. to_bits() == 0).
+        // IEEE-754: -0.0 == 0.0, so the zero-vector guard also catches all
+        // signed-zero variants. Lock all three mixed/negative-sign combinations
+        // against any future refactor that might swap == for a bit-pattern check
+        // (e.g. to_bits() == 0), which would silently break mixed-sign cases.
         assert!(
             call_complex_method(-0.0, -0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
             "z.phase with signed-zero vector (-0.0,-0.0) should return Undef \
+             (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
+        );
+        assert!(
+            call_complex_method(0.0, -0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            "z.phase with mixed-sign zero vector (0.0,-0.0) should return Undef \
+             (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
+        );
+        assert!(
+            call_complex_method(-0.0, 0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            "z.phase with mixed-sign zero vector (-0.0,0.0) should return Undef \
              (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
         );
     }
