@@ -41,7 +41,8 @@ fn compute_status(results: &[ConstraintCheckEntry]) -> TestStatus {
 ///   resolve, but their constraints and objectives are stripped so only the
 ///   target test's constraints fire during `Engine::check`.
 /// - Shared infrastructure (functions, fields, types, units, traits, enum
-///   defs, constraint defs, imports, pragmas, module path) is preserved.
+///   defs, constraint defs, imports, pragmas, module path, compiled
+///   purposes) is preserved.
 fn build_isolated_module(module: &CompiledModule, target: &TopologyTemplate) -> CompiledModule {
     let mut isolated = module.clone();
     isolated.templates = module
@@ -276,8 +277,8 @@ mod tests {
         use super::build_isolated_module;
         // Rich source that populates every shared-infrastructure collection
         // (functions, fields, type_aliases, units, trait_defs, enum_defs,
-        // constraint_defs, imports, pragmas, module path) so equality assertions
-        // cannot trivially pass as 0==0.
+        // constraint_defs, imports, pragmas, module path, compiled_purposes)
+        // so equality assertions cannot trivially pass as 0==0.
         let source = r#"
 #precision(value=64)
 
@@ -294,6 +295,10 @@ type Alias = Real
 unit myunit : Length = 0.001
 
 import some.module
+
+purpose my_purpose(s : Structure) {
+    constraint 1 > 0
+}
 
 field def temp : Point3 -> Scalar { source = analytical { |p| p } }
 
@@ -328,6 +333,8 @@ constraint def Positive {
         assert!(!module.trait_defs.is_empty(), "trait_defs must be non-empty in source module");
         assert_eq!(isolated.trait_defs.len(), module.trait_defs.len(),
             "trait_defs must be preserved");
+        assert_eq!(module.path, reify_types::ModulePath::single("test_inline"),
+            "module path must be non-trivially set in source module");
         assert_eq!(isolated.path, module.path, "module path must be preserved");
         assert!(!module.units.is_empty(), "units must be non-empty in source module");
         assert_eq!(isolated.units.len(), module.units.len(), "units must be preserved");
@@ -335,6 +342,9 @@ constraint def Positive {
         assert_eq!(isolated.imports.len(), module.imports.len(), "imports must be preserved");
         assert!(!module.pragmas.is_empty(), "pragmas must be non-empty in source module");
         assert_eq!(isolated.pragmas.len(), module.pragmas.len(), "pragmas must be preserved");
+        assert!(!module.compiled_purposes.is_empty(), "compiled_purposes must be non-empty in source module");
+        assert_eq!(isolated.compiled_purposes.len(), module.compiled_purposes.len(),
+            "compiled_purposes must be preserved");
     }
 
     #[test]
