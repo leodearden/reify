@@ -488,6 +488,52 @@ structure B {
     );
 }
 
+/// A mutual-recursion cycle warning must contain the full closed-path string
+/// `A -> B -> A` (the cycle closes by repeating the start node). This tightens
+/// the companion `mutual_recursion_cycle_path_format` test which only checks for
+/// the ' -> ' separator and that both A and B appear, not the exact path format.
+///
+/// Task 553 improvement #2: verifies the exact multi-node path substring.
+/// Companion: `warning_diagnostic_emitted_for_cycle` (self-reference S -> S).
+#[test]
+fn warning_diagnostic_multi_node_cycle_path_format() {
+    let source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub a = A(n: n - 1) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let cycle_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("recursive structure cycle detected")
+        })
+        .collect();
+
+    assert_eq!(
+        cycle_warnings.len(),
+        1,
+        "expected exactly 1 cycle warning for A<->B mutual recursion, got {}: {:?}",
+        cycle_warnings.len(),
+        cycle_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let msg = &cycle_warnings[0].message;
+    // The full closed path must appear: cycle starts and ends at the same node.
+    assert!(
+        msg.contains("A -> B -> A") || msg.contains("B -> A -> B"),
+        "cycle warning should contain full path 'A -> B -> A' (or 'B -> A -> B'), got: {msg}"
+    );
+}
+
 /// A three-node cycle emits exactly one warning (one SCC) with ' -> ' separators.
 #[test]
 fn three_node_cycle_emits_exactly_one_warning() {
