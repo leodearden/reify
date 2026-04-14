@@ -36,11 +36,11 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
                     // Both pre-guards above are essential — they catch finite-output
                     // cases that would otherwise slip past sanitize_value:
                     //
-                    //   • is_finite guard (line 30): atan2(y, ±Inf) = 0.0 or ±π, and
+                    //   • is_finite guard: atan2(y, ±Inf) = 0.0 or ±π, and
                     //     atan2(±Inf, x) = ±π/2 — all finite. sanitize_value cannot
                     //     detect NaN/Inf inputs from these outputs alone.
                     //
-                    //   • zero-vector guard (line 33): atan2(0.0, 0.0) = 0.0 which is
+                    //   • zero-vector guard: atan2(0.0, 0.0) = 0.0 which is
                     //     also finite, so sanitize_value cannot distinguish the
                     //     mathematically-undefined zero-vector case from a legitimate
                     //     zero-angle result.
@@ -511,6 +511,14 @@ mod tests {
             "z.phase with zero vector should return Undef (atan2(0.0,0.0)=0.0 is finite, \
              so the zero-vector guard, not sanitize_value, is what catches this)"
         );
+        // IEEE-754: -0.0 == 0.0, so the zero-vector guard also catches signed-zero
+        // variants. Lock this against any future refactor that might swap == for a
+        // bit-pattern check (e.g. to_bits() == 0).
+        assert!(
+            call_complex_method(-0.0, -0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            "z.phase with signed-zero vector (-0.0,-0.0) should return Undef \
+             (IEEE-754: -0.0 == 0.0, so the zero-vector guard catches this too)"
+        );
     }
 
     // ── method regressions: finite phase values still work ────────────────────
@@ -580,6 +588,26 @@ mod tests {
                 assert_eq!(dimension, DimensionVector::ANGLE);
             }
             other => panic!("expected Scalar{{π, ANGLE}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn phase_finite_dimensioned_returns_angle() {
+        // Complex{re:1.0, im:1.0, LENGTH}.phase → Scalar{π/4, ANGLE}
+        // The phase method ignores the dimension of the Complex components and always
+        // returns a dimensionless angle — this test locks that contract.
+        match call_complex_method(1.0, 1.0, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()) {
+            Value::Scalar { si_value, dimension } => {
+                let expected = std::f64::consts::FRAC_PI_4;
+                assert!(
+                    (si_value - expected).abs() < 1e-12,
+                    "expected π/4 ≈ {}, got {}",
+                    expected,
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Scalar{{π/4, ANGLE}}, got {:?}", other),
         }
     }
 
