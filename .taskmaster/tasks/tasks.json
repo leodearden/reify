@@ -14338,7 +14338,14 @@
           ],
           "modules": [
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entity_refs": [],
+            "search_queries": [
+              "expected Bool guard unfold_recursive_sub",
+              "recursive sub guard non-Bool type error test"
+            ]
+          }
         },
         "updatedAt": "2026-04-14T20:19:50.138Z"
       },
