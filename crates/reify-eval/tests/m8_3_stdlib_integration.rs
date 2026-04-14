@@ -162,6 +162,50 @@ fn materials_bracket_mass_computed() {
     );
 }
 
+// ── step-5: materials_trait_conformance_checks ───────────────────────────────
+
+/// Asserts the compiled AluminumBracket template has trait_bounds including
+/// Physical, Elastic, and Strong (from the `: Physical + Elastic + Strong`
+/// declaration), and at least 2 constraints injected by trait refinement
+/// (Physical.volume > 0, Strong.uts >= yield_strength).
+#[test]
+fn materials_trait_conformance_checks() {
+    use reify_compiler::CompiledModule;
+    let compiled: CompiledModule = compiled_ri(PATH_MATERIALS, "m8_materials");
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "AluminumBracket")
+        .expect("AluminumBracket template should exist in compiled module");
+
+    // trait_bounds from the `: Physical + Elastic + Strong` header
+    assert!(
+        template.trait_bounds.contains(&"Physical".to_string()),
+        "AluminumBracket should have 'Physical' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+    assert!(
+        template.trait_bounds.contains(&"Elastic".to_string()),
+        "AluminumBracket should have 'Elastic' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+    assert!(
+        template.trait_bounds.contains(&"Strong".to_string()),
+        "AluminumBracket should have 'Strong' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+
+    // At least 2 constraints injected by trait refinement:
+    //   Physical: constraint volume > 0
+    //   Strong:   constraint uts >= yield_strength
+    assert!(
+        template.constraints.len() >= 2,
+        "AluminumBracket should have >= 2 constraints (from Physical + Strong trait refinements), got: {}",
+        template.constraints.len()
+    );
+}
+
 // ── Section 2: m8_ports.ri ───────────────────────────────────────────────────
 
 /// Smoke test: m8_ports.ri parses, compiles (stdlib), evals without errors,
