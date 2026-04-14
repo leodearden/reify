@@ -5403,14 +5403,14 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-types"
+            "crates/reify-compiler/src",
+            "crates/reify-types/src"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/annotations.rs",
             "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/annotations.rs",
             "crates/reify-types/src/lib.rs"
           ],
           "memory_hints": {
@@ -5481,16 +5481,14 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/tests/solver_hint_tests.rs",
-            "crates/reify-eval/tests/solver_hint_eval_tests.rs",
-            "crates/reify-compiler/src/annotations.rs",
-            "crates/reify-compiler/src/lib.rs"
+            "crates/reify-eval/tests/solver_hint_eval_tests.rs"
           ]
         },
         "subtasks": [],
