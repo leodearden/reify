@@ -4279,23 +4279,36 @@ fn check_ignore_reasons(source: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Meta-test: assert all `#[ignore]` reason strings in this file are
-/// self-contained inline summaries starting with `"known bug:"`.  The two placeholder
-/// tests (`divergence_sample_mixed_length_to_real_placeholder` and
-/// `laplacian_sample_mixed_length_to_real_placeholder`) previously had a trailing
-/// breadcrumb pointing at a transient plan document step, but that plan file goes stale.
-/// Reason strings must be self-contained inline summaries so they remain meaningful after
-/// the plan doc is gone.  (Task 1622 rationale: option (a) — inline failure-mode summary.)
+/// Meta-test: asserts that every `#[ignore = "..."]` attribute in this file
+/// complies with the Task 1622 convention — reason strings must be
+/// self-contained inline summaries beginning with `"known bug:"`.  The two
+/// placeholder tests (`divergence_sample_mixed_length_to_real_placeholder` and
+/// `laplacian_sample_mixed_length_to_real_placeholder`) previously had trailing
+/// breadcrumbs pointing at a transient plan document step, but plan files go
+/// stale.  Bare `#[ignore]` attributes (no reason string) are also forbidden.
+/// (Task 1622: introduced convention and first two guards.
+///  Task 1641: added bare-ignore guard and extracted `check_ignore_reasons`.)
 ///
-/// Two guards are applied:
-/// 1. **Positive invariant** — every `#[ignore]` reason string must begin with
-///    `"known bug:"`.  This catches stale pointers of any form (`see plan.md`,
-///    `step-3 of plan`, `analysis in step-7`, …) without enumerating all bad patterns.
-/// 2. **Negative sentinel** — the specific original stale-pointer substring (assembled
-///    at runtime to avoid self-triggering) is also checked directly as belt-and-suspenders.
+/// Three guards are enforced (see `check_ignore_reasons` for implementation):
 ///
-/// The marker and needle strings are assembled at runtime so this meta-test does not
-/// contain the literal substrings and accidentally trigger its own assertions.
+/// 1. **Bare-ignore rejection** — a `#[ignore]` attribute without a reason
+///    string is rejected outright.
+/// 2. **Positive invariant** — every reason string must begin with
+///    `"known bug:"`.  This rejects wholly-replaced prefixes but does NOT
+///    catch stale wordings appended inside an otherwise-compliant prefix
+///    (e.g. `"known bug: see plan.md step-3"` would pass this guard and would
+///    only trip guard 3 if it happened to contain the specific sentinel).
+/// 3. **Belt-and-suspenders negative sentinel** — the specific historical
+///    stale-pointer substring (assembled at runtime to avoid self-triggering)
+///    is also checked whole-file as belt-and-suspenders.
+///
+/// Doc-comment lines (`///`, `//!`) are skipped so prose mentions of
+/// `#[ignore]` — e.g. `` "`#[ignore]` is load-bearing" `` — do not generate
+/// false positives.
+///
+/// All scanner constants are assembled at runtime via `.concat()` so this file
+/// does not contain the guarded sequences as adjacent characters and cannot
+/// accidentally self-trigger.
 #[test]
 fn ignore_reason_strings_have_no_stale_plan_pointers() {
     let path = concat!(
