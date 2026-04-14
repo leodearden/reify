@@ -5090,7 +5090,17 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "examples/m10_combined.ri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "examples/m10_combined.ri"
+            ],
+            "queries": [
+              "M10 combined ri example geometric params purpose port connect",
+              "M10 milestone example tasks 239 252 256 260 completed",
+              "m10_combined.ri assertions geometric types Frame Transform purpose"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-14T04:10:33.588Z"
