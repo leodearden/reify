@@ -521,7 +521,7 @@ fn edit_param_count_int_undef_undef_int_transition() {
         .edit_param(n_id, Value::Int(2))
         .expect("edit to Int(2) should succeed");
 
-    // After Int(4)->Undef->Undef->Int(2): bolts[0..2) must exist with diameter = 10mm
+    // bolts[0..2) must exist with diameter = 10mm
     for i in 0..2 {
         let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         assert_eq!(
@@ -532,7 +532,7 @@ fn edit_param_count_int_undef_undef_int_transition() {
         );
     }
 
-    // bolts[2..4) must be absent — no stale leak from the original Int(4) eval
+    // bolts[2..4) must be absent
     for i in 2..4 {
         let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         assert!(
