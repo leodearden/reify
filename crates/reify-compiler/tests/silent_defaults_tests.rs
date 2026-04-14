@@ -510,7 +510,7 @@ fn range_valid_compiles_without_ice() {
 fn stdlib_fn_no_args_emits_type_inference_warning() {
     let source = r#"
         structure S {
-            let x = pi()
+            let x = __test_zero_arg_fn()
         }
     "#;
     let module = compile_module(source);
