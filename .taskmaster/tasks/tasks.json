@@ -8224,8 +8224,8 @@
         "status": "in-progress",
         "metadata": {
           "modules": [
-            "crates/reify-expr",
-            "crates/reify-compiler"
+            "crates/reify-expr/tests",
+            "crates/reify-compiler/tests"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8247,18 +8247,11 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/tests/common/mod.rs",
-            "crates/reify-compiler/tests/trait_conformance_tests.rs",
-            "crates/reify-compiler/tests/trait_merge_tests.rs",
-            "crates/reify-compiler/tests/determinacy_compile_tests.rs",
-            "crates/reify-compiler/tests/annotation_compile_tests.rs",
-            "crates/reify-compiler/tests/constraint_def_compile_tests.rs",
-            "crates/reify-compiler/tests/recursive_detection_tests.rs",
-            "crates/reify-compiler/tests/termination_check_tests.rs"
+            "crates/reify-compiler/tests/common/mod.rs"
           ]
         },
         "subtasks": [],
