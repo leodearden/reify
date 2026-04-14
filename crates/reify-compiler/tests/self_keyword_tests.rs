@@ -635,11 +635,27 @@ fn self_inside_lambda_in_fn_body_errors() {
             !errors.is_empty(),
             "expected error diagnostic for `self` inside lambda in fn body"
         );
-    } else {
-        // Parser correctly rejects `self` in fn body — at least one error produced.
+        let mentions_self = errors.iter().any(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("self") || msg.contains("unresolved")
+        });
         assert!(
-            !parsed.errors.is_empty(),
-            "expected at least one parse error for `self` inside lambda in fn body"
+            mentions_self,
+            "expected a compile error mentioning `self` or `unresolved` for `self` inside lambda in fn body, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    } else {
+        // Parser correctly rejects `self` in fn body — assert the parser error specifically
+        // calls out `self` (not just any parse error, which would hide regressions from
+        // unrelated syntax breakage).
+        let mentions_self = parsed.errors.iter().any(|e| {
+            let msg = e.message.to_lowercase();
+            msg.contains("self") || msg.contains("unresolved")
+        });
+        assert!(
+            mentions_self,
+            "expected a parse error mentioning `self` or `unresolved` for `self` inside lambda in fn body, got: {:?}",
+            parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
     }
 }
