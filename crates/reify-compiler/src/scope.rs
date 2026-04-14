@@ -33,8 +33,8 @@ pub(crate) struct CompilationScope<'u> {
     /// Whether this scope is an entity (structure/purpose) scope where `self` is valid.
     /// False for function scopes, where `self` must produce an "unresolved name" error.
     pub(crate) is_entity_scope: bool,
-    /// Member types for non-collection sub-components: sub_name → { member_name → Type }.
-    /// Used to resolve self.sub.member chains for non-collection subs.
+    /// Member types for all sub-components: sub_name → { member_name → Type }.
+    /// Populated for ALL subs (collection and non-collection) for self.sub.member resolution.
     pub(crate) sub_member_types: HashMap<String, HashMap<String, Type>>,
     /// Whether the current structure has at least one geometry declaration (realize block).
     /// Used to gate @face/@edge selectors at compile time.

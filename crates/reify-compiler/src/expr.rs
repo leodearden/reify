@@ -1663,6 +1663,7 @@ pub(crate) fn compile_expr_guarded(
                 .sub_member_types
                 .get(&sub_name)
                 .and_then(|m| m.get(&member))
+                // Defensive: sub_member_types is a superset, but fall back just in case.
                 .or_else(|| {
                     scope
                         .collection_sub_member_types
