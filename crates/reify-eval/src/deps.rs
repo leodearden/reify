@@ -4,7 +4,7 @@
 //! the compiled expression tree. This is a safe over-approximation for Reify
 //! expressions: because they are pure, the set of cells an expression *can*
 //! read is a superset of (or equal to) the set it *will* read on any given
-//! evaluation — conditional branches may short-circuit at runtime, but the
+//! evaluation — conditional branches and match arms may short-circuit at runtime, but the
 //! statically collected reads cover every reachable ValueRef. There is no
 //! benefit to runtime (Adapton-style) tracing in a pure language.
 
@@ -438,8 +438,8 @@ mod tests {
     ///
     /// `extract_dependency_trace` is a thin wrapper over
     /// `CompiledExpr::collect_value_refs`, which *preserves duplicates* (it pushes
-    /// each `ValueRef` without deduping). The sibling helper `extract_value_deps`
-    /// (defined below) is the deduplicating variant; `extract_dependency_trace`
+    /// each `ValueRef` without deduping). The sibling helper [`extract_value_deps`]
+    /// (defined later in this file) is the deduplicating variant; `extract_dependency_trace`
     /// intentionally keeps raw duplicates. This test pins that split so callers
     /// know whether they need to dedupe downstream.
     #[test]
