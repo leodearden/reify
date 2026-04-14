@@ -3,6 +3,7 @@
 //! Tests for evaluating collection sub-components (`sub bolts : List<Bolt>`),
 //! count-based elaboration, and count re-elaboration.
 
+use reify_compiler::TopologyTemplate;
 use reify_eval::Engine;
 use reify_eval::graph::EvaluationGraph;
 use reify_test_support::builders::value_ref_typed;
@@ -10,8 +11,8 @@ use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_types::*;
 
-/// Build the canonical Bolt + Parent (collection sub) fixture used by most
-/// tests in this file and return a ready-to-eval `(CompiledModule, Engine)`.
+/// Build the canonical Bolt + Parent (collection sub) templates and return
+/// `(parent, TopologyTemplate)` in `(parent, bolt)` order.
 ///
 /// - Bolt has a single `diameter: Scalar = 10mm` param.
 /// - Parent has `param n : Int` (default controlled by `n_default`), a
@@ -19,7 +20,11 @@ use reify_types::*;
 ///   cell, and a collection sub-component `bolts : List<Bolt>` whose count
 ///   tracks `__count_bolts`.
 /// - `n_default = Some(n)` gives `n` an Int default; `None` leaves it Undef.
-fn make_bolt_parent_engine(n_default: Option<i64>) -> (reify_compiler::CompiledModule, Engine) {
+///
+/// The return order `(parent, bolt)` matches the argument order expected by
+/// `EvaluationGraph::from_templates(&[parent, bolt])` and
+/// `CompiledModuleBuilder::template(parent).template(bolt)`.
+fn make_bolt_parent_templates(n_default: Option<i64>) -> (TopologyTemplate, TopologyTemplate) {
     let bolt = TopologyTemplateBuilder::new("Bolt")
         .param(
             "Bolt",
@@ -37,6 +42,15 @@ fn make_bolt_parent_engine(n_default: Option<i64>) -> (reify_compiler::CompiledM
         .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
         .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
         .build();
+
+    (parent, bolt)
+}
+
+/// Build the canonical Bolt + Parent fixture and return a ready-to-eval
+/// `(CompiledModule, Engine)`.  Template construction is delegated to
+/// [`make_bolt_parent_templates`].
+fn make_bolt_parent_engine(n_default: Option<i64>) -> (reify_compiler::CompiledModule, Engine) {
+    let (parent, bolt) = make_bolt_parent_templates(n_default);
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(parent)
