@@ -4,8 +4,7 @@
 //! parse → compile → eval/check → verify.
 //! Uses examples/m9_trait_conformance.ri as the source file.
 
-use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::parse_and_compile;
+use reify_test_support::{make_simple_engine, parse_and_compile};
 use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -47,8 +46,7 @@ fn trait_conformance_compiles_and_evals() {
     );
 
     // Eval
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
     // No eval-level errors
@@ -83,8 +81,7 @@ fn basic_trait_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
     // Check Box.size = 50mm = 0.05 SI (metres)
@@ -133,8 +130,7 @@ fn default_injection_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
     // Check Panel.thickness = 5mm = 0.005 SI (injected from trait default)
@@ -185,8 +181,7 @@ fn multi_trait_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
     // Check Part.size = 100mm = 0.1 SI
@@ -273,8 +268,7 @@ fn refinement_chain_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
     // Check Component.size = 200mm = 0.2 SI
@@ -371,8 +365,7 @@ fn diamond_merging_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
     // Check Merged.x = 10mm = 0.01 SI
@@ -426,8 +419,7 @@ fn total_constraint_count() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
     // No eval-level errors
@@ -466,8 +458,7 @@ fn qualified_access_disambiguation() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
     // No eval-level errors
