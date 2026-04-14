@@ -1,0 +1,35 @@
+// M8.3 Materials fixture
+//
+// Exercises the stdlib materials_mechanical.ri and structural_physical.ri
+// traits through the full parse → compile_with_stdlib → eval pipeline.
+//
+// AluminumBracket conforms to three stdlib traits:
+//   Physical : Material  — name, density, volume, centroid_*, computed mass = volume*density
+//   Elastic              — youngs_modulus, poissons_ratio, shear_modulus
+//   Strong               — yield_strength, uts, compressive_strength (+ constraint uts >= yield_strength)
+//
+// All dimensioned fields use Real (dimensionless raw SI numerics) per the
+// stdlib convention: density in kg/m³, moduli in Pa.
+// mass = volume * density = 0.0004 * 2700 = 1.08 (exact in f64).
+
+structure def AluminumBracket : Physical + Elastic + Strong {
+    // Material (via Physical) params
+    param name : String = "Aluminium 6061-T6"
+    param density : Real = 2700.0
+
+    // Physical params
+    param volume : Real = 0.0004
+    param centroid_x : Real = 0.0
+    param centroid_y : Real = 0.0
+    param centroid_z : Real = 0.0
+
+    // Elastic params (Young's modulus, Poisson's ratio, shear modulus — all in Pa)
+    param youngs_modulus : Real = 69000000000.0
+    param poissons_ratio : Real = 0.33
+    param shear_modulus : Real = 26000000000.0
+
+    // Strong params (in Pa; uts >= yield_strength satisfies the trait constraint)
+    param yield_strength : Real = 276000000.0
+    param uts : Real = 310000000.0
+    param compressive_strength : Real = 276000000.0
+}
