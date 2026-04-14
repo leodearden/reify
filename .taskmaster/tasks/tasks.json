@@ -34585,11 +34585,11 @@
         "description": "Follow-up from Task 1641 review triage (esc-1641-27). Four small tightening fixes in `crates/reify-expr/tests/field_calculus_tests.rs`, all scoped to the `check_ignore_reasons` helper and its unit tests. No behavioral changes.\n\n**S1 — Section banner count is stale (~line 4332).** The comment reads \"These five tests exercise the check_ignore_reasons helper\" but eight unit tests now exist (rejects_bare_ignore_in_code, allows_bare_ignore_mentioned_in_doc_comments, accepts_compliant_source, rejects_non_known_bug_reason, rejects_stale_plan_step_needle, allows_bare_ignore_in_inner_doc_comment, regular_comment_is_not_skipped, accepts_source_with_no_ignore_attributes). Update to \"These eight tests\" or \"These tests\".\n\n**S2 — `rejects_non_known_bug_reason` assertion does not discriminate guards (~line 4378).** The test asserts `err.contains(\"known bug:\")` to verify the positive-invariant guard fired — but the stale-pointer error message (`check_ignore_reasons`, ~line 4275) also literally contains `\"known bug: dim_quotient_type...\"` inside its example phrase. So the assertion does not actually discriminate guard 2 (positive invariant) from guard 3 (stale-pointer sentinel). Today it still passes because the synthetic source does not contain the stale needle and guard 2 returns early. A future refactor swapping guard order or error wording could regress silently.\nFix: assert on a substring unique to the positive-invariant error format, e.g. `err.contains(\"does not begin with\")` or `err.contains(\"Task 1622 convention\")` (the stale-pointer error uses \"Found stale-pointer substring\" instead).\n\n**S3 — `regular_comment_is_not_skipped` does not pin which guard fired (~line 4426).** The test only asserts `.is_err()`. If a future refactor accidentally rejected all `//` lines via the stale-pointer path or any other unrelated guard, this test would still pass while no longer pinning the documented \"`//` is not skipped\" semantics.\nFix: add `assert!(err.contains(\"bare\"))` (or `\"line 1\"`) so the bare-ignore guard is confirmed as the one that fired, mirroring `rejects_bare_ignore_in_code`.\n\n**S4 — Scanner silently ignores non-canonical `#[ignore=\"...\"]` form (~line 4248).** The scanner recognises only the rustfmt-canonical `#[ignore = \"...\"]` (space-equals-space-quote). A non-canonical `#[ignore=\"...\"]` would fall through both guards silently: `after.starts_with(']')` is false, `after.starts_with(\" = \\\"\")` is false, the loop advances. Rustfmt currently enforces the canonical form so this is latent, not an active bug, but it is undocumented and has no unit test pinning the assumption.\nFix (preferred, cheapest): document the rustfmt assumption in the `check_ignore_reasons` docstring — e.g. \"assumes canonical `#[ignore = \\\"...\\\"]` formatting; non-canonical forms are silently ignored\". Optionally strip ASCII whitespace after \"ignore\" before matching `=`/`\"` — but docstring-only is sufficient and matches the meta-test's intent.\n\nAll four fixes touch the same function / its sibling unit tests. Keep scope narrow: no changes outside `check_ignore_reasons` and its eight unit tests. Run `cargo test -p reify-expr --test field_calculus_tests check_ignore_reasons` plus `ignore_reason_strings_have_no_stale_plan_pointers` to verify.\n\nmemory_hints:\n- Task 1622 introduced the meta-test; Task 1641 extracted `check_ignore_reasons` and added the bare-ignore guard.\n- Convention: `#[ignore]` reasons in this file must begin with \"known bug:\".\n- Be careful of self-triggering: synthetic sources and scanner constants are assembled via `.concat()` so this file does not contain the literal guarded sequences.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T04:51:09.819Z",
+        "updatedAt": "2026-04-14T21:01:03.109Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -35187,7 +35187,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T21:01:01.711Z",
+      "lastModified": "2026-04-14T21:01:03.109Z",
       "taskCount": 1685,
       "completedCount": 1419,
       "tags": [
