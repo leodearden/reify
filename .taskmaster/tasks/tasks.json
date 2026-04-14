@@ -34186,11 +34186,11 @@
         "description": "Further widen the non-recursion tripwire in sanitize_wildcard_variants_passthrough by adding List and Transform cases to the mirrored tests in crates/reify-expr/src/sanitize.rs (~line 472) and crates/reify-stdlib/src/helpers.rs (~line 893). Task 1644 already broadened the sample from Bool/Int/String to include Vector and Frame; this follow-up extends coverage to two more container/struct wildcard variants that share the same risk profile.",
         "details": "Append the following two cases to the `cases` array in both crates/reify-expr/src/sanitize.rs (sanitize_wildcard_variants_passthrough, ~line 472) and crates/reify-stdlib/src/helpers.rs (mirrored test, ~line 893):\n\n- Value::List(vec![Value::Real(f64::NAN)])\n- Value::Transform {\n      rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),\n      translation: Box::new(Value::Vector(vec![\n          Value::Real(f64::NAN),\n          Value::Real(0.0),\n          Value::Real(0.0),\n      ])),\n  }\n\nBoth cases deliberately carry NaN payloads so the existing non-recursion tripwire semantics continue to hold: if sanitize_value were ever refactored to recurse into children, the inner NaN would become Undef and the assert_eq! would fail (Value::PartialEq uses to_bits(), so NaN == NaN here).\n\nSYNC contract: the two copies of this test MUST remain in step — add identical cases in both files in the same commit. Update the doc comment (\"five of ~25\") in both crates to reflect the new count.\n\nVerify with:\n    cargo test -p reify-expr sanitize_wildcard_variants_passthrough\n    cargo test -p reify-stdlib sanitize_wildcard_variants_passthrough\n\nMemory hints: search \"sanitize_wildcard_variants_passthrough task 1644 Vector Frame\"; search \"task 892 sanitize_value consolidation\"; related: Task 1643 (asymmetric SYNC comment in same area).\n\nConfirm that Value::List and Value::Transform variants actually exist in crates/reify-expr/src/value.rs with the expected shape before coding — if the Transform variant shape differs (e.g., uses different field names or a non-Box inner value), adjust accordingly while preserving the NaN tripwire intent.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:26.312Z",
+        "updatedAt": "2026-04-14T09:52:55.997Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src",
@@ -34299,11 +34299,11 @@
         "description": "Post-merge review of Task 774 identified three test-quality improvements in `crates/reify-expr/tests/field_eval_tests.rs` for the two arity-mismatch tests added there. All three target the same file and complementary concerns; address them together.\n\n1. **Make one-param test discriminating (lines 184-270).** `sample_one_param_lambda_with_three_element_point_returns_undef` currently asserts end-state Undef with an inline `negate_value(Point) → Undef` body_check. But a hypothetical failure mode where sample() decomposed the Point into 3 args (triggering apply_lambda's arity check: 3 args vs 1 param → Undef) would still make the assertion pass, defeating the stated \"binds the entire Point as a single value\" contract. Fix: use a body that observably depends on what `x` is bound to — e.g., `count(x)` returning 3 iff x is bound to the whole Point, or a String codomain body that lets you assert on a Point-shaped result. Goal: make the binding observable rather than inferred from a shared Undef sink.\n\n2. **Address redundancy with gradient_tests.rs:262-299 (lines 259-346).** `sample_multi_param_lambda_returns_undef_due_to_no_unpacking` hits the same apply_lambda arity check (lib.rs:586) that `wrong_size_point` in gradient_tests.rs already pins (passes a 2-elt Tensor as 1 arg to a 3-param lambda → Undef). Prefer: add a cross-reference comment pointing to gradient_tests.rs so maintainers see both pin the same contract, AND extend the assertion to also verify the constant body `42.0` is NOT observed (e.g., `assert_ne!(result, Value::Real(42.0))`) to make the \"unreachable body\" claim explicit. Alternative: drop the test in favor of gradient_tests.rs coverage.\n\n3. **Document intentional type-incoherence (lines 309-310 and 244).** The multi-param test's Field has `domain_type: Type::Real` but its lambda has 3 params — a type-incoherent Field the compiler would never produce. Add a sentence to the doc comment acknowledging this is intentionally synthetic to exercise the runtime defensive path and noting that sample()'s analytical dispatch does not consult the type metadata. Likewise, in the one-param test, `field_type` uses `Type::point3(Type::length())` but the runtime Point uses plain `Value::Real(...)` — consider using `Value::Scalar { dimension: LENGTH }` components to match the type (see `sample_gradient_of_constant_field_near_zero` at ~line 408 for the idiomatic pattern).\n\nmemory_hints: search \"apply_lambda arity check\", read crates/reify-expr/tests/field_eval_tests.rs:184-346 and crates/reify-expr/tests/gradient_tests.rs:260-299 before starting.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:26.408Z",
+        "updatedAt": "2026-04-14T09:52:57.137Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -34380,7 +34380,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T09:52:55.350Z",
+      "lastModified": "2026-04-14T09:52:57.137Z",
       "taskCount": 1661,
       "completedCount": 1334,
       "tags": [
