@@ -16523,7 +16523,7 @@
         "description": "Task 491 added 5 tests for per-template resolution but left several coverage gaps identified by review:\n\n**Failure-mode isolation (high):**\n- Add test `eval_infeasible_in_one_template_does_not_suppress_other`: provide Infeasible result for Bracket and Solved for Bolt, assert Bolt's auto param is resolved correctly, diagnostics contain only Bracket's infeasibility info, Bolt's value is present\n\n**Cross-template wave2 propagation (medium):**\n- Add test with a derived value node whose default_expr references auto params from both Bracket and Bolt templates. After eval(), assert the derived node is re-evaluated to the correct combined value, confirming the unified wave2 propagation works\n\n**Missing output assertions (medium):**\n- concurrent_edit_resolves_per_template_not_cross_template (line 1287-1320): add assertions on result.values and result.resolved_params to verify bracket_thickness=mm(6.0) was actually written back\n\n**Missing call count assertion (low):**\n- edit_param_matches_eval_for_multi_template_module (line 1324-1456): uses SequencedMockConstraintSolver directly without asserting call count. Switch to MultiCallSpyConstraintSolver or add call_count check to detect spurious extra solver calls\n\n**Memory hints:** search for \"per-template resolution tests\", \"MultiCallSpyConstraintSolver\"; entity names: resolve_concurrent_edit, edit_param, SolveResult::Infeasible",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16541,7 +16541,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-14T12:30:58.017Z"
+        "updatedAt": "2026-04-14T12:35:08.643Z"
       },
       {
         "id": "756",
@@ -16771,11 +16771,11 @@
         "description": "Four test coverage gaps identified in the unit registry tests:\n\n1. **degF offset unit**: `degF` has a non-trivial offset (5/9, offset 255.3722...) but zero test coverage. Add test: `32degF → 273.15K`, `212degF → 373.15K`.\n\n2. **Private prelude units excluded**: The `if cu.is_pub` guard ensures private units aren't seeded, but no test verifies it. Add test: compile prelude with one pub + one private unit, verify private is inaccessible.\n\n3. **Bare compile() negative test**: No test verifies that bare `compile()` does NOT resolve `1mm`. Add test: compile with bare compile(), assert unknown-unit error for mm.\n\n4. **thou via stdlib**: `thou` is a chain unit (references mm), but no integration test verifies it resolves via stdlib prelude. Add test: `10thou → 0.000254`.\n\nLocation: crates/reify-compiler/tests/unit_registry_tests.rs.\n\nmemory_hints: search \"unit registry tests\" for current test patterns.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:38.424Z",
+        "updatedAt": "2026-04-14T12:35:09.030Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -34558,9 +34558,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:35:06.313Z",
+      "lastModified": "2026-04-14T12:35:09.030Z",
       "taskCount": 1661,
-      "completedCount": 1340,
+      "completedCount": 1342,
       "tags": [
         "master"
       ]
