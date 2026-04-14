@@ -16916,7 +16916,7 @@
         "description": "Add durable tests for sample() when lambda parameter count doesn't match point dimension count. apply_lambda explicitly checks evaluated_args.len() != params.len() and returns Value::Undef — this behavioral contract should be pinned.\n\nTests to add in crates/reify-expr/tests/field_eval_tests.rs:\n1. Build a field with 1-param lambda (|x|), call sample(field, point_3d) with 3-element point → assert Undef\n2. Build a field with 3-param lambda (|x,y,z|), call sample(field, scalar) with 1-element point → assert Undef\n\nmemory_hints: search \"apply_lambda arity check\" and \"sample field eval\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16928,7 +16928,7 @@
             "crates/reify-expr/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-14T04:47:26.413Z"
       },
       {
         "id": "775",
@@ -34170,7 +34170,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T04:47:26.046Z",
+      "lastModified": "2026-04-14T04:47:26.413Z",
       "taskCount": 1654,
       "completedCount": 1324,
       "tags": [
