@@ -33333,11 +33333,11 @@
         "description": "Two test-quality fixes for task 251's TDD specs: (1) In crates/reify-eval/tests/connect_eval.rs, eval_ad_hoc_port_in_forall_quantifier_evaluates_each_element (~line 870) iterates over an empty collection making the test vacuously pass — populate the fixture with concrete sub-component instances and add assert!(!result.constraint_results.is_empty()) before the loop. (2) In crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs, several error-path tests use overly broad substring matches (e.g., msg.contains(\"face\"), msg.contains(\"type\")) that could match unrelated diagnostics — tighten to more discriminating tokens that pin the diagnostic category. Note: boilerplate extraction across 17 tests deferred until task 249/250 lands.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:27.786Z",
+        "updatedAt": "2026-04-14T09:52:25.801Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests",
@@ -33705,11 +33705,11 @@
         "description": "Review follow-up from task 334 (escalation esc-334-7). Two related fixes to format_f64_as_decimal.",
         "details": "Both changes target the same function `format_f64_as_decimal` in crates/reify-compiler/src/si_units.rs and its call-sites in stdlib_loader.rs. Unified error-handling refactor is cleaner than two overlapping patches.\n\n**S3 — Guard large-magnitude inputs:**\nformat_f64_as_decimal (lines ~368-395) clamps precision to 0 via `(17-log-1).max(0)`, so for inputs with `log >= 17` (e.g. 1e18, 1e30) it emits the full decimal of the actual stored f64 — e.g. `1000000000000000019884624838656` for 1e30. Currently masked because SI_DERIVED_UNITS factors stay under 1e17, but SI_PREFIX_BASES-generated power-of-ten factors at Q/R/Y/Z scale should route through format_power_of_ten.\n- Option A: Add `debug_assert!(log < 16, \"format_f64_as_decimal large-value path untested for log={}\", log);`.\n- Option B: Route power-of-ten inputs through format_power_of_ten even when coming from the derived-unit path.\n(B is more robust.)\n\n**S6 — Surface bad factors as compile errors, not process panics:**\nLine ~369 uses `assert!` (not `debug_assert!`) at stdlib-init time inside OnceLock::get_or_init. If a non-finite or non-positive factor ever sneaks into SI_DERIVED_UNITS, every consumer of the compiler panics with no recovery path. A unit-registration failure should be an internal compile error on the synthetic `std.si_units` module. Aligns with the project's 'no silent defaults' norm.\n- Change format_f64_as_decimal signature to `Result<String, &'static str>` (or a richer error type).\n- Bubble errors up through stdlib_loader.rs to a `Diagnostic::error` attached to the synthetic std.si_units module.\n- Alternatively, strengthen the invariant by making `SiDerivedUnit.factor` a newtype that rejects non-positive values at construction.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:11.751Z",
+        "updatedAt": "2026-04-14T09:52:25.895Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -34378,7 +34378,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T09:52:25.727Z",
+      "lastModified": "2026-04-14T09:52:25.895Z",
       "taskCount": 1661,
       "completedCount": 1333,
       "tags": [
