@@ -496,6 +496,92 @@ fn sample_multi_param_lambda_binds_unpacked_point_components() {
     );
 }
 
+/// Sampling a multi-param lambda field with a Point whose length does NOT match
+/// `params.len()` must fall through the unpacking guard and return `Undef` via
+/// the apply_lambda arity check.
+///
+/// # Contract pinned
+///
+/// The unpacking guard in sample() fires only when **all three** conditions hold:
+/// 1. `evaluated_args[1]` is `Value::Point`,
+/// 2. `params.len() > 1`, and
+/// 3. `params.len() == items.len()` (arity matches).
+///
+/// When condition (3) fails — here a 3-param lambda receives a 2-element Point —
+/// the guard does NOT fire.  The fallback `apply_lambda(lambda, &evaluated_args[1..],
+/// ctx)` call forwards the whole Point as a single argument (arity 1 vs 3 params)
+/// and apply_lambda returns `Undef` due to the arity mismatch.
+///
+/// Contrast with:
+/// - `sample_multi_param_lambda_binds_unpacked_point_components` — matching arity
+///   (3-param + Point(3)) → unpacking fires → `Real(6.0)`.
+/// - `sample_multi_param_lambda_with_scalar_input_returns_undef` — scalar input
+///   (non-Point) + 3-param lambda → `Undef` because the Point-guard never fires.
+#[test]
+fn sample_multi_param_lambda_with_mismatched_point_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda body: (x + y) + z  — identical to the matching-arity test, body is
+    // irrelevant here because the arity check fires first.
+    let xy = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        xy,
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+
+    // 3-param lambda — params.len() == 3
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // Point has 2 elements but lambda expects 3 params → guard condition (3) fails.
+    // Fallback: apply_lambda sees 1 forwarded arg (the whole Point) vs 3 params → Undef.
+    let mismatched_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(mismatched_point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "sample() with 3-param lambda and a mismatched-length Point(2) must not unpack \
+         (params.len() != items.len()); the arity check in apply_lambda must return Undef"
+    );
+}
+
 // ── Transient: gradient stub tests (MUST be updated when gradient is implemented) ──
 
 /// Gradient of a constant field should yield near-zero components.

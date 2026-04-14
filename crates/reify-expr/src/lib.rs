@@ -139,7 +139,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 // check in apply_lambda passes.  A 1-param lambda (params.len()
                                 // == 1) always receives the whole Point unchanged (no unpacking),
                                 // preserving the single-param binding contract.
-                                // See also: calculus.rs:detect_single_point_param (line 526).
+                                // See also: calculus.rs::detect_single_point_param.
                                 if params.len() > 1
                                     && let Value::Point(items) = &evaluated_args[1]
                                     && params.len() == items.len()
