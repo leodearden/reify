@@ -35070,15 +35070,16 @@
         "description": "Two robustness improvements to the transitive pub-unit tests in crates/reify-compiler/tests/user_defined_unit_tests.rs (added by task 1396):\n\n1. **Positive one-hop assertion (around line 482-487):** The `transitive_pub_unit_not_visible_prelude` test checks that module B compiles without errors, but never verifies that B can actually *resolve* `mil`. Add a compile_with_prelude_helper call that uses `mil` in B (e.g. `structure T { param x : Length = 1mil }`) and assert it succeeds. This confirms the one-hop positive case holds, not just that B doesn't error on a no-op source.\n\n2. **Name-based module lookup (line 553):** `transitive_pub_unit_not_visible_via_compile_project` uses `modules.last()` to find the entry module (C), which implicitly depends on topological ordering. Replace with `modules.iter().find(|m| ...)` keyed on module name/path to make the test ordering-independent.\n\nmemory_hints: [\"search: transitive pub unit one-hop limitation\", \"entity: user_defined_unit_tests.rs\"]",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-14T20:29:51.486Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T20:29:47.925Z",
+      "lastModified": "2026-04-14T20:29:51.486Z",
       "taskCount": 1681,
       "completedCount": 1413,
       "tags": [
