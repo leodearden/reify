@@ -18926,19 +18926,13 @@
             ]
           },
           "modules": [
-            "crates/reify-compiler",
             "crates/reify-types",
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests",
-            "crates/reify-eval/tests"
+            "crates/reify-compiler"
           ],
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/module_dag.rs",
-            "crates/reify-types/src/lib.rs",
             "crates/reify-types/src/constraint.rs",
-            "crates/reify-compiler/tests/constraint_def_compile_tests.rs",
-            "crates/reify-eval/tests/m9_constraint_def.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
           ],
           "bundled_from": [
             "873",
