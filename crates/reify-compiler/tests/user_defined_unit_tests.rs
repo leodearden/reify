@@ -51,6 +51,36 @@ fn test_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// Write the three-module transitive chain used by one-hop limitation pinning tests:
+/// `a.ri` declares `pub unit mil`, `b.ri` imports a (no local units),
+/// `c.ri` imports b and tries to use `5mil`.
+fn write_transitive_unit_chain(dir: &std::path::Path) {
+    fs::write(dir.join("a.ri"), "pub unit mil : Length = 0.0000254").unwrap();
+    fs::write(dir.join("b.ri"), "import a").unwrap();
+    fs::write(
+        dir.join("c.ri"),
+        "import b\nstructure S { param w : Length = 5mil }",
+    )
+    .unwrap();
+}
+
+/// Assert that `errors` contains at least one diagnostic whose lowercased message
+/// contains both "unknown unit" and "mil". Used to pin the one-hop limitation.
+fn assert_unknown_unit_mil(errors: &[&reify_types::Diagnostic]) {
+    assert!(
+        !errors.is_empty(),
+        "expected 'unknown unit' error: `mil` should not be visible two hops away (one-hop limitation)"
+    );
+    assert!(
+        errors.iter().any(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("unknown unit") && msg.contains("mil")
+        }),
+        "error should mention 'unknown unit' and 'mil'; got: {:?}",
+        errors
+    );
+}
+
 // ─── step-1: user-declared unit works in a let binding expression ─────────────
 
 #[test]
@@ -401,6 +431,35 @@ fn compile_project_entry_does_not_see_imported_private_unit() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+// ─── step-15: local unit duplicating an imported pub unit produces error ──────
+
+#[test]
+fn local_unit_duplicating_imported_pub_unit_produces_error() {
+    // Prelude module exports pub unit `mil`.
+    let prelude_module = parse_and_compile("pub unit mil : Length = 0.0000254");
+    assert!(
+        errors_only(&prelude_module).is_empty(),
+        "prelude errors: {:?}",
+        errors_only(&prelude_module)
+    );
+
+    // User module tries to re-declare `mil` — the prelude-seeded entry
+    // occupies the registry, so register() returns Err (duplicate).
+    let module = compile_with_prelude_helper("unit mil : Length = 0.001", &[prelude_module]);
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected duplicate unit error when redeclaring an imported pub unit"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("duplicate") && d.message.contains("mil")),
+        "error should mention 'duplicate' and 'mil'; got: {:?}",
+        errors
+    );
+}
+
 // ─── step-17: transitive pub unit NOT visible two hops via compile_with_prelude ─
 
 #[test]
@@ -434,47 +493,7 @@ fn transitive_pub_unit_not_visible_via_compile_with_prelude() {
         &[module_b],
     );
     let errors = errors_only(&module_c);
-    assert!(
-        !errors.is_empty(),
-        "expected 'unknown unit' error: `mil` should not be visible two hops away (one-hop limitation)"
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|d| d.message.to_lowercase().contains("unknown unit")
-                && d.message.contains("mil")),
-        "error should mention 'unknown unit' and 'mil'; got: {:?}",
-        errors
-    );
-}
-
-// ─── step-15: local unit duplicating an imported pub unit produces error ──────
-
-#[test]
-fn local_unit_duplicating_imported_pub_unit_produces_error() {
-    // Prelude module exports pub unit `mil`.
-    let prelude_module = parse_and_compile("pub unit mil : Length = 0.0000254");
-    assert!(
-        errors_only(&prelude_module).is_empty(),
-        "prelude errors: {:?}",
-        errors_only(&prelude_module)
-    );
-
-    // User module tries to re-declare `mil` — the prelude-seeded entry
-    // occupies the registry, so register() returns Err (duplicate).
-    let module = compile_with_prelude_helper("unit mil : Length = 0.001", &[prelude_module]);
-    let errors = errors_only(&module);
-    assert!(
-        !errors.is_empty(),
-        "expected duplicate unit error when redeclaring an imported pub unit"
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("duplicate") && d.message.contains("mil")),
-        "error should mention 'duplicate' and 'mil'; got: {:?}",
-        errors
-    );
+    assert_unknown_unit_mil(&errors);
 }
 
 // ─── step-19: transitive pub unit NOT visible two hops via ModuleDag ──────────
@@ -488,14 +507,7 @@ fn transitive_pub_unit_not_visible_via_module_dag() {
     // is empty (B has no locally-declared units). When C is compiled, prelude-seeding
     // from B.units yields nothing, so `mil` is unknown in C.
     let dir = test_dir("transitive_pub_unit_module_dag");
-
-    fs::write(dir.join("a.ri"), "pub unit mil : Length = 0.0000254").unwrap();
-    fs::write(dir.join("b.ri"), "import a").unwrap();
-    fs::write(
-        dir.join("c.ri"),
-        "import b\nstructure S { param w : Length = 5mil }",
-    )
-    .unwrap();
+    write_transitive_unit_chain(&dir);
 
     let resolver =
         reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
@@ -510,18 +522,7 @@ fn transitive_pub_unit_not_visible_via_module_dag() {
 
     let module_c = dag.modules.get("c").expect("module c not in dag");
     let errors = errors_only(module_c);
-    assert!(
-        !errors.is_empty(),
-        "expected 'unknown unit' error: `mil` should not be visible two hops away (one-hop limitation)"
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|d| d.message.to_lowercase().contains("unknown unit")
-                && d.message.contains("mil")),
-        "error should mention 'unknown unit' and 'mil'; got: {:?}",
-        errors
-    );
+    assert_unknown_unit_mil(&errors);
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -535,14 +536,7 @@ fn transitive_pub_unit_not_visible_via_compile_project() {
     // C's entry-point compilation cannot see `mil` from A because B's
     // CompiledModule.units is empty (B has no locally-declared units).
     let dir = test_dir("transitive_pub_unit_compile_project");
-
-    fs::write(dir.join("a.ri"), "pub unit mil : Length = 0.0000254").unwrap();
-    fs::write(dir.join("b.ri"), "import a").unwrap();
-    fs::write(
-        dir.join("c.ri"),
-        "import b\nstructure S { param w : Length = 5mil }",
-    )
-    .unwrap();
+    write_transitive_unit_chain(&dir);
 
     let resolver =
         reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
@@ -558,18 +552,7 @@ fn transitive_pub_unit_not_visible_via_compile_project() {
     let modules = result.unwrap();
     let entry_module = modules.last().expect("no modules returned");
     let errors = errors_only(entry_module);
-    assert!(
-        !errors.is_empty(),
-        "expected 'unknown unit' error: `mil` should not be visible two hops away (one-hop limitation)"
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|d| d.message.to_lowercase().contains("unknown unit")
-                && d.message.contains("mil")),
-        "error should mention 'unknown unit' and 'mil'; got: {:?}",
-        errors
-    );
+    assert_unknown_unit_mil(&errors);
 
     let _ = fs::remove_dir_all(&dir);
 }
