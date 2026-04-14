@@ -35087,15 +35087,16 @@
         "description": "Two improvements to the guard_compilation.rs characterization test suite (follow-up from task 1669 review):\n\n1. **Missing variant coverage**: `compile_guarded_members` silently drops six variant types. Task 1669 added characterization tests for Port and Connect (alongside the existing ConstraintInst test), but Chain, AssociatedType, and MetaBlock remain untested. Add analogous characterization tests for all three, following the same pattern as the Port/Connect tests.\n\n2. **Assertion gap**: The `assert_no_error_diagnostics` helper (lines 30-40) only checks for `Severity::Error`. The characterization tests claim to pin \"silently ignored\" behavior, but a future change that emits `Severity::Warning` instead of an error would still pass. Add a stricter assertion (e.g. `assert_no_diagnostics` or `assert_silent_drop`) that verifies no Warning-level diagnostics are emitted either, for tests whose intent is truly \"no diagnostics at all.\"\n\nmemory_hints:\n- search: \"guard_compilation characterization test silent drop\"\n- search: \"compile_guarded_members silent drop variants\"\n- entity: \"MemberDecl\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-14T20:34:04.330Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T20:34:02.629Z",
+      "lastModified": "2026-04-14T20:34:04.330Z",
       "taskCount": 1682,
       "completedCount": 1414,
       "tags": [
