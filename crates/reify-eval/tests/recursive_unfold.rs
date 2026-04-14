@@ -2210,7 +2210,7 @@ fn unfold_recursive_node_budget_exhaustion() {
 ///   (1) emit an Error-severity diagnostic containing "expected Bool", and
 ///   (2) treat the result as termination (no child entity created).
 ///
-/// This tests the `other =>` arm in `unfold_recursive_sub` (lib.rs:4007-4013).
+/// This tests the `other =>` arm in `unfold_recursive_sub`'s guard-value match.
 #[test]
 fn unfold_recursive_guard_non_bool_type_emits_error() {
     // Guard expression that evaluates to Int(1), NOT a Bool.
@@ -2243,7 +2243,7 @@ fn unfold_recursive_guard_non_bool_type_emits_error() {
         result.values.get(&ValueCellId::new("S.child", "n"))
     );
 
-    // (2) Must have an Error-severity diagnostic containing "expected Bool".
+    // (2) Must have exactly one Error-severity diagnostic containing "expected Bool".
     let has_error = result
         .diagnostics
         .iter()
@@ -2252,6 +2252,18 @@ fn unfold_recursive_guard_non_bool_type_emits_error() {
         has_error,
         "Expected an Error-severity diagnostic containing 'expected Bool', \
          got: {:?}",
+        result.diagnostics
+    );
+    let error_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    assert_eq!(
+        error_count,
+        1,
+        "Expected exactly one Error-severity diagnostic, but got {}: {:?}",
+        error_count,
         result.diagnostics
     );
 }
