@@ -26825,11 +26825,11 @@
         "description": "Refactor crates/reify-compiler/tests/deprecated_use_tests.rs to eliminate the duplication introduced by the \"Task 272: five dedicated regression tests\" block. Four of the five new scenarios re-use identical source strings with pre-existing tests and add only exact-count and weak-substring assertions. The parallel \"Task 272\" section header also competes with the existing Step 1 / Step 3 / Step 5 organization, creating two organization schemes for the same behaviors.",
         "details": "Source: reviewer_comprehensive (8 suggestions) on commit that added tests around lines 333-555.\n\nApply these changes to crates/reify-compiler/tests/deprecated_use_tests.rs:\n\n1. Scenario (1) `task_272_deprecated_entity_emits_warning_on_use` (lines 337-383) vs. `deprecated_structure_used_as_sub_emits_warning` (lines 49-76): fold the new `assert_eq!(warns.len(), 1, ...)` and the use-site span check into the existing test, then delete the task_272 duplicate. Identical source strings will drift.\n\n2. Scenario (2) `task_272_no_warning_on_definition_alone` (lines 388-400): drop part (a) (structure) — it is already covered by `defining_deprecated_entity_without_using_produces_no_use_warning` (lines 231-252) AND `annotation_compile_tests_no_regression` (lines 316-331). Keep only parts (b) (fn-only) and (c) (trait-only), and rename to reflect that narrower scope (e.g. `deprecated_fn_and_trait_definition_alone_produce_no_warning`).\n\n3. Scenario (4) `task_272_deprecated_trait_emits_warning_when_implemented` (lines 485-517) vs. `deprecated_trait_used_as_trait_bound_emits_warning` (lines 144-170): fold the exact-count assertion into the existing test and delete the duplicate. The `msg.contains(\"trait\")` check is a no-op because `deprecation_warnings` already filters by the substring `OldTrait`.\n\n4. Also rename: the phrase `when_implemented` is misleading — in Reify terminology `structure S : OldTrait` is a trait bound, not a trait implementation (see lib.rs ~5381, ~5396). If any variant survives, use `when_used_as_trait_bound`, matching `deprecated_trait_used_as_trait_bound_emits_warning`.\n\n5. Scenario (5) `task_272_deprecated_fn_emits_warning_when_called` (lines 520-555) vs. `deprecated_function_called_emits_warning` (lines 111-140): fold the exact-count assertion into the existing test and delete the duplicate. `msg.contains(\"function\")` is a no-op for the same reason.\n\n6. Scenario (1) use-site span assertion (lines 373-382) is too loose — it only checks `span.start >= use_site_offset`, accepting any span that starts at or after `sub b`, including spans at EOF. Tighten to also assert `label.span.end as usize <= source.len()` and that `&source[label.span.start as usize .. label.span.end as usize]` contains `\"OldBolt\"`. (After consolidation, these assertions should live in the now-enriched `deprecated_structure_used_as_sub_emits_warning`.)\n\n7. Scenario (3) `task_272_message_includes_annotation_argument` (lines 477-481): the individual `contains` checks are redundant with the final `assert_eq!` on the exact message. Pick one style. Recommend keeping `assert_eq!` (contract test) and dropping the `contains` checks, plus add a one-line comment linking to `emit_deprecation_warning` in crates/reify-compiler/src/lib.rs (~line 4800) so future readers know where the contract is defined. This scenario is the only genuinely new coverage worth keeping under a `task_272_` name — or fold it into the file's \"message format\" section.\n\n8. Remove the `// ── Task 272: five dedicated regression tests ─────` section header (line 333). After consolidation, group tests by behavior (structure use, fn call, trait bound, trait refinement, definition-only, message format, span correctness) matching the existing Step 1 / Step 3 / Step 5 scheme — not by task number.\n\nVerify with `cargo test -p reify-compiler --test deprecated_use_tests` and `cargo fmt --check`.\n\nContext: Task 272 is the @deprecated test work. Dependencies: 271 (implementation).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:20.354Z",
+        "updatedAt": "2026-04-14T07:05:34.457Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -29124,11 +29124,11 @@
         "description": "Two related documentation issues around sub_member_types after Task 1365's landing:\n\n1. crates/reify-compiler/src/scope.rs:36 — the doc comment reads \"Member types for non-collection sub-components\" but entity.rs:417-429 populates sub_member_types for ALL subs unconditionally (no is_collection guard). Update to: \"Member types for all sub-components: sub_name → { member_name → Type }. Populated for ALL subs (collection and non-collection) for self.sub.member resolution.\" This aligns with the new comment already in expr.rs:1506 (\"sub_member_types covers ALL subs\").\n\n2. crates/reify-compiler/src/expr.rs:1512-1517 — the `.or_else(|| ... collection_sub_member_types ...)` fallback branch is unreachable because sub_member_types is a superset of collection_sub_member_types (entity.rs:417 populates for all subs; entity.rs:431 populates for collection subs only). Add a brief comment like \"// Defensive: sub_member_types is a superset, but fall back just in case.\" to explain why the branch exists and prevent future confusion. Do NOT remove the fallback — keep it as defensive coding.\n\nBoth are documentation-only changes, no behavior change. Source: reviewer_comprehensive on Task 1365.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:05:34.457Z",
+        "updatedAt": "2026-04-14T07:04:25.576Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -34342,7 +34342,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T07:05:34.466Z",
+      "lastModified": "2026-04-14T07:05:34.467Z",
       "taskCount": 1658,
       "completedCount": 1333,
       "tags": [
