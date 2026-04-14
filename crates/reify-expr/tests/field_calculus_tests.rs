@@ -104,9 +104,30 @@ fn make_field_with_source_builds_field_with_given_source() {
     let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
+    // Compile-time exhaustiveness guard: adding a new FieldSourceKind variant
+    // will make this match non-exhaustive, forcing an update to the match arms
+    // below — a visual reminder to also extend the iteration array above.
+    fn _assert_all_source_kinds_covered(k: FieldSourceKind) {
+        match k {
+            FieldSourceKind::Analytical
+            | FieldSourceKind::Sampled
+            | FieldSourceKind::Composed
+            | FieldSourceKind::Imported
+            | FieldSourceKind::Gradient
+            | FieldSourceKind::Divergence
+            | FieldSourceKind::Curl
+            | FieldSourceKind::Laplacian => {}
+        }
+    }
+
     for source_kind in [
         FieldSourceKind::Analytical,
+        FieldSourceKind::Sampled,
         FieldSourceKind::Composed,
+        FieldSourceKind::Imported,
+        FieldSourceKind::Gradient,
+        FieldSourceKind::Divergence,
+        FieldSourceKind::Curl,
         FieldSourceKind::Laplacian,
     ] {
         let (field, field_type) = make_field_with_source(
