@@ -5849,7 +5849,7 @@
           "262",
           "290"
         ],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "modules": [
             "examples"
@@ -5858,10 +5858,16 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "examples/integration_full_v01.ri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Integration: full v0.1 .ri file"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T13:43:47.964Z"
+        "updatedAt": "2026-04-14T13:48:20.736Z"
       },
       {
         "id": "292",
@@ -34614,9 +34620,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T13:43:47.979Z",
+      "lastModified": "2026-04-14T13:48:20.782Z",
       "taskCount": 1661,
-      "completedCount": 1380,
+      "completedCount": 1381,
       "tags": [
         "master"
       ]
