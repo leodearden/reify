@@ -401,6 +401,53 @@ fn compile_project_entry_does_not_see_imported_private_unit() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+// ─── step-17: transitive pub unit NOT visible two hops via compile_with_prelude ─
+
+#[test]
+fn transitive_pub_unit_not_visible_via_compile_with_prelude() {
+    // One-hop limitation pinning test.
+    // A declares `pub unit mil`, B is compiled with prelude=[A] (B has no local units),
+    // C is compiled with prelude=[B] and tries to use `5mil`.
+    // Since B.units is empty (no locally-declared units), the prelude-seeding loop
+    // for C finds nothing in B.units, so `mil` is invisible to C.
+    let module_a = parse_and_compile("pub unit mil : Length = 0.0000254");
+    assert!(
+        errors_only(&module_a).is_empty(),
+        "module_a errors: {:?}",
+        errors_only(&module_a)
+    );
+
+    // Module B: compiled with A as prelude, but B declares no units of its own.
+    // B can use `mil` (it's in B's registry via prelude seeding), but
+    // B's CompiledModule.units remains empty (only holds locally-declared units).
+    let module_b = compile_with_prelude_helper("// no local unit declarations", &[module_a]);
+    assert!(
+        errors_only(&module_b).is_empty(),
+        "module_b errors: {:?}",
+        errors_only(&module_b)
+    );
+
+    // Module C: compiled with B as prelude, tries to use `mil`.
+    // The prelude-seeding loop iterates B.units (empty), so `mil` is not seeded into C.
+    let module_c = compile_with_prelude_helper(
+        "structure S { param w : Length = 5mil }",
+        &[module_b],
+    );
+    let errors = errors_only(&module_c);
+    assert!(
+        !errors.is_empty(),
+        "expected 'unknown unit' error: `mil` should not be visible two hops away (one-hop limitation)"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.to_lowercase().contains("unknown unit")
+                && d.message.contains("mil")),
+        "error should mention 'unknown unit' and 'mil'; got: {:?}",
+        errors
+    );
+}
+
 // ─── step-15: local unit duplicating an imported pub unit produces error ──────
 
 #[test]
