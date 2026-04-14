@@ -34022,7 +34022,7 @@
         "updatedAt": "2026-04-14T00:08:46.004Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ],
           "memory_hints": {
             "entities": [
@@ -34034,7 +34034,10 @@
               "remap_entity path activate_purpose coverage minimize objective",
               "purpose param injected constraint entity format purpose:name@entity"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-eval/tests/purpose_activation.rs"
+          ]
         }
       },
       {
