@@ -480,12 +480,25 @@ fn edit_param_count_int_undef_undef_int_transition() {
     let _initial = engine.eval(&module);
 
     // Transition sequence: Int(4) → Undef → Undef → Int(2)
-    // Step 1: Int(4) → Undef removes all 4 instances (new_count=0 via `_ => 0`)
-    engine
+    // Int(4) → Undef must clear all bolt instances
+    let r1 = engine
         .edit_param(n_id.clone(), Value::Undef)
         .expect("first edit to Undef should succeed");
+    for i in 0..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            r1.values.get(&scoped_id).is_none(),
+            "bolts[{}].diameter must be absent after Int(4)->Undef",
+            i
+        );
+    }
+    assert_eq!(
+        count_bolt_diameter_instances(&r1.values),
+        0,
+        "no bolt diameter instances should exist after Int(4)->Undef"
+    );
 
-    // Step 2: Undef → Undef short-circuits via equality check (no-op)
+    // Undef → Undef must be a no-op
     engine
         .edit_param(n_id.clone(), Value::Undef)
         .expect("second edit to Undef should succeed");
