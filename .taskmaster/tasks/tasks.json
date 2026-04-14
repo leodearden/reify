@@ -21172,9 +21172,7 @@
         "updatedAt": "2026-04-11T07:44:49.000Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-compiler/tests",
-            "crates/reify-types"
+            "crates/reify-compiler"
           ],
           "memory_hints": {
             "entities": [],
@@ -21184,9 +21182,9 @@
             ]
           },
           "files": [
+            "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/scc.rs",
-            "crates/reify-compiler/tests/recursive_detection_tests.rs",
-            "crates/reify-types/src/lib.rs"
+            "crates/reify-compiler/tests/recursive_detection_tests.rs"
           ],
           "bundled_from": [
             "979",
@@ -21781,17 +21779,11 @@
         "metadata": {
           "files": [
             "crates/reify-types/src/value.rs",
-            "crates/reify-expr/src/lib.rs"
+            "crates/reify-expr/src/calculus.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-eval/tests",
-            "crates/reify-expr/src",
-            "crates/reify-expr/tests",
-            "crates/reify-stdlib/src",
-            "crates/reify-test-support/src",
-            "crates/reify-types/src",
-            "gui/src-tauri/src"
+            "crates/reify-types",
+            "crates/reify-expr"
           ]
         },
         "updatedAt": "2026-04-14T05:36:19.485Z"
