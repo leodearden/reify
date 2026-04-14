@@ -33683,7 +33683,7 @@
         "updatedAt": "2026-04-11T16:14:07.128Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "memory_hints": {
             "entities": [
