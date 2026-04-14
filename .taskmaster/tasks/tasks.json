@@ -6472,7 +6472,7 @@
         "dependencies": [
           "314"
         ],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6486,10 +6486,16 @@
             "crates/reify-kernel-occt/src/lib.rs",
             "crates/reify-eval/src/lib.rs",
             "crates/reify-compiler/src/geometry.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib: chamfer implementation (replace stub) + asymmetric"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T14:39:53.694Z"
+        "updatedAt": "2026-04-14T14:40:37.400Z"
       },
       {
         "id": "316",
@@ -34631,9 +34637,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T14:39:53.694Z",
+      "lastModified": "2026-04-14T14:40:37.400Z",
       "taskCount": 1661,
-      "completedCount": 1382,
+      "completedCount": 1383,
       "tags": [
         "master"
       ]
