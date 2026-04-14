@@ -625,12 +625,11 @@ fn full_pipeline_cross_feature_values() {
     let compiled = parse_and_compile(&source);
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let eval_result = engine.eval(&compiled);
     let check_result = engine.check(&compiled);
 
     // 1. Widget.size = 30mm = 0.03 SI (default from structure, implements Measurable)
     let widget_size_id = ValueCellId::new("Widget", "size");
-    let widget_size = eval_result
+    let widget_size = check_result
         .values
         .get(&widget_size_id)
         .expect("Widget.size should exist");
@@ -671,7 +670,7 @@ fn full_pipeline_cross_feature_values() {
     //    child.span = 100mm/2 = 50mm = 0.05 SI
     //    child.child.span = 50mm/2 = 25mm = 0.025 SI
     let child_span_id = ValueCellId::new("RecursiveChain.child", "span");
-    let child_span = eval_result
+    let child_span = check_result
         .values
         .get(&child_span_id)
         .expect("RecursiveChain.child.span should exist");
@@ -686,7 +685,7 @@ fn full_pipeline_cross_feature_values() {
     }
 
     let grandchild_span_id = ValueCellId::new("RecursiveChain.child.child", "span");
-    let grandchild_span = eval_result
+    let grandchild_span = check_result
         .values
         .get(&grandchild_span_id)
         .expect("RecursiveChain.child.child.span should exist");
@@ -705,7 +704,7 @@ fn full_pipeline_cross_feature_values() {
 
     // 4. Plate.length = 50mm = 0.05 SI (injected from Bounded trait, empty body structure)
     let plate_length_id = ValueCellId::new("Plate", "length");
-    let plate_length = eval_result
+    let plate_length = check_result
         .values
         .get(&plate_length_id)
         .expect("Plate.length should exist (injected from Bounded trait)");
