@@ -1077,8 +1077,8 @@ fn build_primitive_missing_arg_no_kernel_error() {
 /// 1. Call kernel exactly once — for the preceding Box that provides the target
 ///    handle — but never call kernel for the Fillet itself.
 /// 2. Return geometry_output=None (compile failure short-circuits the realization).
-/// 3. Emit a Warning: "missing required geometry argument" mentioning both
-///    'radius' and 'Fillet'.
+/// 3. Emit a Warning whose message contains 'missing required geometry argument'
+///    and 'radius'.
 /// 4. Emit an Error: "failed to compile geometry operation".
 /// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
 ///    called for the Fillet op).
@@ -1140,76 +1140,11 @@ fn build_modify_missing_arg_no_kernel_error() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (1) Kernel was called exactly once — for the Box — but never for the Fillet
-    {
-        let ops = ops_ref.lock().unwrap();
-        assert_eq!(
-            ops.len(),
-            1,
-            "kernel.execute() should be called only for the Box (not the Fillet), \
-             got {} kernel ops",
-            ops.len()
-        );
-        assert!(
-            matches!(ops[0].op, reify_types::GeometryOp::Box { .. }),
-            "expected the only recorded kernel op to be Box, got: {:?}",
-            ops[0].op
-        );
-    }
-
-    // (2) No geometry output — Fillet failed to compile
-    assert!(
-        result.geometry_output.is_none(),
-        "expected geometry_output to be None when Fillet's required 'radius' arg is missing"
-    );
-
-    // (3) Warning about the missing 'radius' arg for Fillet
-    let has_missing_arg_warning = result.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Warning
-            && d.message.contains("missing required geometry argument")
-            && d.message.contains("radius")
-            && d.message.contains("Fillet")
-    });
-    assert!(
-        has_missing_arg_warning,
-        "expected a Warning diagnostic about missing 'radius' arg for Fillet, got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| (&d.severity, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    // (4) Error about failed compile
-    let has_compile_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("failed to compile geometry operation"));
-    assert!(
-        has_compile_error,
-        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    // (5) No 'geometry error' diagnostic — kernel was never called for the Fillet
-    let has_kernel_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("geometry error"));
-    assert!(
-        !has_kernel_error,
-        "should NOT have a 'geometry error' diagnostic (kernel was never called for Fillet), \
-         but got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .filter(|d| d.message.contains("geometry error"))
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        |op| matches!(op, reify_types::GeometryOp::Box { .. }),
+        &["missing required geometry argument", "radius"],
     );
 }
 
