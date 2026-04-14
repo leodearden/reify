@@ -10466,12 +10466,11 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/geometry.rs"
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ]
         },
         "updatedAt": "2026-04-13T18:50:48.355Z"
@@ -10489,8 +10488,8 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/entity.rs"
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
             "crates/reify-compiler"
