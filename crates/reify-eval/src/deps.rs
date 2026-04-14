@@ -268,6 +268,7 @@ mod tests {
                     reify_types::Type::Bool,
                 ),
                 content_hash: ContentHash::of_str("c0"),
+                optimized_target: None,
             },
         );
 

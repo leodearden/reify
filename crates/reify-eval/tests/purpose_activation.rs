@@ -1,0 +1,626 @@
+//! Purpose activation lifecycle tests (Task 260).
+//!
+//! Exercises the full purpose activate/deactivate lifecycle against the Engine
+//! API delivered by Task 259:
+//!   - activate_purpose / deactivate_purpose / is_purpose_active
+//!   - Constraint injection and removal (snapshot.graph.constraints counts)
+//!   - Reflective .params inspection via CompiledPurpose.resolved_queries
+//!   - Optimization objective injection (minimize / maximize)
+//!   - Example-file integration (m10_purpose_activation.ri)
+//!
+//! This file subsumes `purpose_eval.rs` (removed in Task 260 amendment pass,
+//! reviewer suggestion S3). The unique test `eval_clears_stale_purpose_state`
+//! is preserved in §2 below.
+//!
+//! NOTE: Two feature categories are not yet implemented by Task 259:
+//!   - `.geometric_params` filtering
+//!   - `forall p in subject.params: determined(p)` evaluated at runtime
+//!
+//! A follow-up task should implement them and add tests here. See
+//! `crates/reify-compiler/src/traits.rs` (resolved_queries building loop).
+
+use reify_constraints::SimpleConstraintChecker;
+use reify_eval::Engine;
+use reify_test_support::{make_engine, parse_and_compile, parse_and_compile_with_stdlib};
+use reify_types::{ModulePath, OptimizationObjective, Satisfaction, Severity};
+
+const EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/m10_purpose_activation.ri"
+);
+
+// ─── Fixture sources ──────────────────────────────────────────────────────────
+
+/// Minimal Bracket + single-constraint purpose (lifecycle tests).
+const SIMPLE_MFG_SRC: &str = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint 1 > 0
+}
+"#;
+
+/// Bracket + purpose with 3 literal constraints.
+const MULTI_CONSTRAINT_SRC: &str = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint 80mm > 0mm
+    constraint 60mm > 0mm
+    constraint 5mm > 0mm
+}
+"#;
+
+/// Bracket + purpose with a minimize objective.
+const MINIMIZE_SRC: &str = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose lightweight(subject : Structure) {
+    minimize 80mm + 60mm
+}
+"#;
+
+/// Bracket + purpose with a maximize objective.
+const MAXIMIZE_SRC: &str = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose strong(subject : Structure) {
+    maximize 80mm * 2
+}
+"#;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Returns the constraint count from the current engine snapshot.
+fn constraint_count(engine: &Engine) -> usize {
+    engine
+        .snapshot()
+        .expect("snapshot should exist")
+        .graph
+        .constraints
+        .len()
+}
+
+// ── §1: Activate / deactivate lifecycle ──────────────────────────────────────
+
+#[test]
+fn activate_sets_is_purpose_active_true() {
+    let compiled = parse_and_compile(SIMPLE_MFG_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "purpose should be active after activate_purpose call"
+    );
+}
+
+#[test]
+fn deactivate_sets_is_purpose_active_false() {
+    let compiled = parse_and_compile(SIMPLE_MFG_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    engine.deactivate_purpose("mfg_ready");
+    assert!(
+        !engine.is_purpose_active("mfg_ready"),
+        "purpose should NOT be active after deactivate_purpose call"
+    );
+}
+
+#[test]
+fn activate_is_idempotent() {
+    let compiled = parse_and_compile(SIMPLE_MFG_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    let count_first = constraint_count(&engine);
+    // Second activate should be a no-op (lib.rs:412)
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert_eq!(
+        count_first,
+        constraint_count(&engine),
+        "second activate should be a no-op: constraint count must not change"
+    );
+}
+
+#[test]
+fn deactivate_inactive_purpose_is_noop() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+    constraint width > 0mm
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint 1 > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+    engine.deactivate_purpose("mfg_ready"); // never activated
+    assert_eq!(
+        before,
+        constraint_count(&engine),
+        "deactivating an inactive purpose must not change constraint count"
+    );
+    assert!(!engine.is_purpose_active("mfg_ready"), "purpose should not be active");
+}
+
+// ── §2: eval() clears stale purpose state (migrated from purpose_eval.rs) ────
+
+#[test]
+fn eval_clears_stale_purpose_state() {
+    let compiled = parse_and_compile(SIMPLE_MFG_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "purpose should be active after activation"
+    );
+    // Second eval — fresh snapshot; purpose state should be cleared (lib.rs:930-931)
+    engine.eval(&compiled);
+    assert!(
+        !engine.is_purpose_active("mfg_ready"),
+        "purpose should NOT be active after a fresh eval() call"
+    );
+    // Re-activation should work (not blocked by stale 'already active' guard)
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "purpose should be re-activatable after fresh eval()"
+    );
+}
+
+// ── §3: Constraint injection and removal ─────────────────────────────────────
+
+#[test]
+fn single_constraint_injection() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+    constraint width > 0mm
+}
+
+purpose ok_basic(subject : Structure) {
+    constraint 1 > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+    engine.activate_purpose("ok_basic", "Bracket");
+    assert_eq!(
+        constraint_count(&engine),
+        before + 1,
+        "activating a purpose with 1 constraint should grow count by 1"
+    );
+}
+
+#[test]
+fn multiple_constraint_injection() {
+    let compiled = parse_and_compile(MULTI_CONSTRAINT_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert_eq!(
+        constraint_count(&engine),
+        before + 3,
+        "purpose with 3 constraints should grow count by exactly 3"
+    );
+}
+
+#[test]
+fn constraint_removal_restores_count() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+    constraint width > 0mm
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint 80mm > 0mm
+    constraint 60mm > 0mm
+    constraint 5mm > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    engine.deactivate_purpose("mfg_ready");
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "deactivating purpose must restore constraint count"
+    );
+}
+
+#[test]
+fn injected_constraint_ids_have_purpose_prefix() {
+    let compiled = parse_and_compile(SIMPLE_MFG_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    let snapshot = engine.snapshot().expect("snapshot after activate");
+    // Per lib.rs:433: format!("purpose:{}@{}", purpose_name, entity_ref)
+    let has_prefix = snapshot
+        .graph
+        .constraints
+        .keys()
+        .any(|id| id.entity.starts_with("purpose:mfg_ready@Bracket"));
+    assert!(
+        has_prefix,
+        "at least one constraint id should start with 'purpose:mfg_ready@Bracket'; found: {:?}",
+        snapshot.graph.constraints.keys().collect::<Vec<_>>()
+    );
+}
+
+// ── §4: Reflective .params inspection ────────────────────────────────────────
+//
+// `resolved_queries` is populated by the compiler unconditionally for each
+// purpose parameter whose entity_kind matches a registered template (see
+// crates/reify-compiler/src/traits.rs:333-353). The purpose body does not
+// need to reference `subject.params` — the compiler always emits the query.
+
+#[test]
+fn compiler_always_emits_params_query_per_structure_purpose_param() {
+    let source = r#"
+structure Widget {
+    param width : Length = 80mm
+    param height : Length = 60mm
+    let area = width * height
+    constraint width > 0mm
+}
+
+purpose check_params(subject : Widget) {
+    constraint 1 > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert_eq!(compiled.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    let purpose = &compiled.compiled_purposes[0];
+    assert_eq!(purpose.name, "check_params");
+    assert_eq!(purpose.params[0].entity_kind, "Widget");
+    assert_eq!(
+        purpose.resolved_queries.len(),
+        1,
+        "expected 1 resolved schema query (the 'params' query for 'subject')"
+    );
+    let query = &purpose.resolved_queries[0];
+    assert_eq!(query.param_name, "subject");
+    assert_eq!(query.query_kind, "params");
+}
+
+#[test]
+fn compiler_params_query_excludes_let_bindings() {
+    let source = r#"
+structure Widget {
+    param width : Length = 80mm
+    param height : Length = 60mm
+    let area = width * height
+    constraint width > 0mm
+}
+
+purpose check_params(subject : Widget) {
+    constraint 1 > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let query = &compiled.compiled_purposes[0].resolved_queries[0];
+    assert_eq!(
+        query.resolved_ids.len(),
+        2,
+        "resolved_ids should contain only params (width, height), not lets (area): {:?}",
+        query.resolved_ids
+    );
+    let members: Vec<&str> = query.resolved_ids.iter().map(|id| id.member.as_str()).collect();
+    assert!(members.contains(&"width"), "should contain 'width'");
+    assert!(members.contains(&"height"), "should contain 'height'");
+    assert!(!members.contains(&"area"), "must NOT contain 'area' (a let binding)");
+}
+
+#[test]
+fn compiler_params_query_includes_auto_params() {
+    let source = r#"
+structure Widget {
+    param x : Length = 10mm
+    param y : Scalar = auto
+}
+
+purpose check_params(subject : Widget) {
+    constraint 1 > 0
+}
+"#;
+    let compiled = parse_and_compile(source);
+    assert_eq!(compiled.compiled_purposes.len(), 1, "expected 1 compiled purpose");
+    let query = &compiled.compiled_purposes[0].resolved_queries[0];
+    // Both Param and Auto value cells must be included (traits.rs:342)
+    assert_eq!(
+        query.resolved_ids.len(),
+        2,
+        "both explicit param and auto param should be included: {:?}",
+        query.resolved_ids
+    );
+    let members: Vec<&str> = query.resolved_ids.iter().map(|id| id.member.as_str()).collect();
+    assert!(members.contains(&"x"), "should contain 'x'");
+    assert!(members.contains(&"y"), "should contain 'y'");
+}
+
+// ── §5: Optimization objectives ──────────────────────────────────────────────
+
+#[test]
+fn minimize_objective_injected() {
+    let compiled = parse_and_compile(MINIMIZE_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("lightweight", "Bracket");
+    let objectives = engine.active_objectives();
+    assert_eq!(objectives.len(), 1, "should have 1 active objective");
+    assert!(
+        matches!(objectives[0], OptimizationObjective::Minimize(_)),
+        "objective should be Minimize, got {:?}",
+        objectives[0]
+    );
+}
+
+#[test]
+fn minimize_objective_removed_on_deactivate() {
+    let compiled = parse_and_compile(MINIMIZE_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("lightweight", "Bracket");
+    engine.deactivate_purpose("lightweight");
+    assert!(
+        engine.active_objectives().is_empty(),
+        "active_objectives should be empty after deactivation"
+    );
+}
+
+#[test]
+fn maximize_objective_injected() {
+    let compiled = parse_and_compile(MAXIMIZE_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("strong", "Bracket");
+    let objectives = engine.active_objectives();
+    assert_eq!(objectives.len(), 1, "should have 1 active objective");
+    assert!(
+        matches!(objectives[0], OptimizationObjective::Maximize(_)),
+        "objective should be Maximize, got {:?}",
+        objectives[0]
+    );
+}
+
+#[test]
+fn purpose_without_objective_keeps_active_objectives_empty() {
+    let compiled = parse_and_compile(SIMPLE_MFG_SRC);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    assert!(engine.active_objectives().is_empty(), "objectives should be empty before activation");
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert!(
+        engine.active_objectives().is_empty(),
+        "objectives should remain empty when purpose has no minimize/maximize"
+    );
+}
+
+#[test]
+fn multiple_purposes_multiple_objectives() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose lightweight(subject : Structure) {
+    minimize 80mm + 60mm
+}
+
+purpose strong(subject : Structure) {
+    minimize 5mm * 2
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("lightweight", "Bracket");
+    engine.activate_purpose("strong", "Bracket");
+    assert_eq!(engine.active_objectives().len(), 2, "both purposes: 2 objectives");
+    engine.deactivate_purpose("lightweight");
+    assert_eq!(engine.active_objectives().len(), 1, "after deactivating lightweight: 1 objective");
+    engine.deactivate_purpose("strong");
+    assert!(engine.active_objectives().is_empty(), "after deactivating both: 0 objectives");
+}
+
+// ── §6: Edge cases ────────────────────────────────────────────────────────────
+
+#[test]
+fn unknown_purpose_activation_is_noop() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+    constraint width > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+    engine.activate_purpose("does_not_exist", "Bracket"); // silently ignored (lib.rs:423)
+    assert_eq!(before, constraint_count(&engine), "unknown purpose should not change constraint count");
+    assert!(
+        !engine.is_purpose_active("does_not_exist"),
+        "unknown purpose should not register as active"
+    );
+    assert!(
+        engine.active_objectives().is_empty(),
+        "unknown purpose should not inject any objectives"
+    );
+}
+
+#[test]
+fn reactivation_after_deactivation() {
+    let source = r#"
+structure Bracket {
+    param width : Length = 80mm
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint 80mm > 0mm
+    constraint 60mm > 0mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    engine.activate_purpose("mfg_ready", "Bracket");
+    let count_after_first = constraint_count(&engine);
+    engine.deactivate_purpose("mfg_ready");
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert_eq!(
+        count_after_first,
+        constraint_count(&engine),
+        "re-activation should produce the same constraint count as first activation"
+    );
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "purpose should be active after re-activation"
+    );
+}
+
+// ── §7: Example-file integration ─────────────────────────────────────────────
+
+#[test]
+fn m10_purpose_activation_example_parses_and_compiles() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/m10_purpose_activation.ri should exist");
+    let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = parse_and_compile_with_stdlib(&source);
+    let bracket = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bracket")
+        .expect("should have a Bracket template");
+    assert!(!bracket.value_cells.is_empty(), "Bracket should have value cells");
+    assert!(
+        compiled.compiled_purposes.len() >= 5,
+        "expected >=5 purposes (ok_basic, mfg_ready, lightweight, strong, dimensionally_valid), got {}",
+        compiled.compiled_purposes.len()
+    );
+    let names: Vec<&str> = compiled.compiled_purposes.iter().map(|p| p.name.as_str()).collect();
+    for name in &["ok_basic", "mfg_ready", "lightweight", "strong", "dimensionally_valid"] {
+        assert!(names.contains(name), "expected purpose '{}' in {:?}", name, names);
+    }
+}
+
+#[test]
+fn m10_purpose_activation_example_constraints_satisfied() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/m10_purpose_activation.ri should exist");
+    let compiled = parse_and_compile_with_stdlib(&source);
+    // Use Engine::new with SimpleConstraintChecker directly (rather than make_engine())
+    // because this test needs a real checker to evaluate structural constraints to
+    // Satisfied. make_engine() uses MockConstraintChecker which returns Unchecked.
+    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+    let check = engine.check(&compiled);
+    assert!(
+        check.constraint_results.len() >= 8,
+        "expected >=8 constraint results, got {}",
+        check.constraint_results.len()
+    );
+    for entry in &check.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
+}
+
+#[test]
+fn m10_purpose_activation_example_activate_minimize_purpose() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/m10_purpose_activation.ri should exist");
+    let compiled = parse_and_compile_with_stdlib(&source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+    // lightweight has exactly 1 constraint + a minimize objective
+    engine.activate_purpose("lightweight", "Bracket");
+    assert_eq!(
+        constraint_count(&engine),
+        before + 1,
+        "lightweight has 1 constraint: count should grow by exactly 1"
+    );
+    assert!(
+        engine
+            .active_objectives()
+            .iter()
+            .any(|o| matches!(o, OptimizationObjective::Minimize(_))),
+        "lightweight should inject a Minimize objective"
+    );
+    engine.deactivate_purpose("lightweight");
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "deactivating lightweight must restore constraint count"
+    );
+    assert!(
+        engine.active_objectives().is_empty(),
+        "deactivating lightweight must clear objectives"
+    );
+}
+
+#[test]
+fn m10_purpose_activation_example_activate_multi_constraint_purpose() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("examples/m10_purpose_activation.ri should exist");
+    let compiled = parse_and_compile_with_stdlib(&source);
+    let mut engine = make_engine();
+    engine.eval(&compiled);
+    let before = constraint_count(&engine);
+    // mfg_ready has exactly 3 literal constraints
+    engine.activate_purpose("mfg_ready", "Bracket");
+    assert_eq!(
+        constraint_count(&engine),
+        before + 3,
+        "mfg_ready has 3 constraints: count should grow by exactly 3"
+    );
+    engine.deactivate_purpose("mfg_ready");
+    assert_eq!(
+        constraint_count(&engine),
+        before,
+        "deactivating mfg_ready must restore constraint count exactly"
+    );
+}
+
+// NOTE (suggestion S5): The reviewer requested a purpose body that references
+// `subject.<param>` (e.g., `minimize subject.width + subject.height`) to exercise
+// `expr.remap_entity`. This cannot be added yet — the compiler emits
+// "member access not yet supported: .width" for any MemberAccess in a purpose
+// body expression. A follow-up task should wire MemberAccess in purpose-body
+// compilation and then add a remap_entity integration test here.

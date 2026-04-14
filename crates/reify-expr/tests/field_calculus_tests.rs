@@ -47,18 +47,28 @@ fn make_value_lambda(
     }
 }
 
-/// Build an analytical `Value::Field` / `Type::Field` pair from typed components.
+/// Build a `Value::Field` / `Type::Field` pair with an explicit source kind.
 ///
-/// Returns `(Value::Field { domain_type, codomain_type, source: Analytical, lambda },
-///           Type::Field  { domain, codomain })`.
+/// The general variant underlying [`make_analytical_field`]: accepts any
+/// `FieldSourceKind` as an explicit parameter rather than hardcoding
+/// `FieldSourceKind::Analytical`.
+///
+/// Parameter order `(domain, codomain, source, lambda)` preserves the existing
+/// `(domain, codomain, …, lambda)` shape from `make_analytical_field` — a
+/// reader translating between the two helpers need only insert one argument.
 ///
 /// Call sites that need to retain `domain`/`codomain` after this call should
 /// `.clone()` before passing, matching the existing pattern throughout this file.
-fn make_analytical_field(domain: Type, codomain: Type, lambda: Value) -> (Value, Type) {
+fn make_field_with_source(
+    domain: Type,
+    codomain: Type,
+    source: FieldSourceKind,
+    lambda: Value,
+) -> (Value, Type) {
     let field = Value::Field {
         domain_type: domain.clone(),
         codomain_type: codomain.clone(),
-        source: FieldSourceKind::Analytical,
+        source,
         lambda: Box::new(lambda),
     };
     let field_type = Type::Field {
@@ -66,6 +76,92 @@ fn make_analytical_field(domain: Type, codomain: Type, lambda: Value) -> (Value,
         codomain: Box::new(codomain),
     };
     (field, field_type)
+}
+
+/// Build an analytical `Value::Field` / `Type::Field` pair from typed components.
+///
+/// Convenience wrapper over [`make_field_with_source`] that fixes the source to
+/// `FieldSourceKind::Analytical`.
+///
+/// Returns `(Value::Field { domain_type, codomain_type, source: Analytical, lambda },
+///           Type::Field  { domain, codomain })`.
+///
+/// Call sites that need to retain `domain`/`codomain` after this call should
+/// `.clone()` before passing, matching the existing pattern throughout this file.
+fn make_analytical_field(domain: Type, codomain: Type, lambda: Value) -> (Value, Type) {
+    make_field_with_source(domain, codomain, FieldSourceKind::Analytical, lambda)
+}
+
+/// Unit test for `make_field_with_source`: verifies that the returned
+/// `Value::Field` and `Type::Field` carry the source kind, domain type,
+/// codomain type, and lambda supplied by the caller.
+///
+/// The source kind is checked for multiple variants to confirm it round-trips
+/// correctly rather than being silently overridden.
+#[test]
+fn make_field_with_source_builds_field_with_given_source() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    // Compile-time exhaustiveness guard: adding a new FieldSourceKind variant
+    // will make this match non-exhaustive, forcing an update to the match arms
+    // below — a visual reminder to also extend the iteration array above.
+    fn _assert_all_source_kinds_covered(k: FieldSourceKind) {
+        match k {
+            FieldSourceKind::Analytical
+            | FieldSourceKind::Sampled
+            | FieldSourceKind::Composed
+            | FieldSourceKind::Imported
+            | FieldSourceKind::Gradient
+            | FieldSourceKind::Divergence
+            | FieldSourceKind::Curl
+            | FieldSourceKind::Laplacian => {}
+        }
+    }
+
+    for source_kind in [
+        FieldSourceKind::Analytical,
+        FieldSourceKind::Sampled,
+        FieldSourceKind::Composed,
+        FieldSourceKind::Imported,
+        FieldSourceKind::Gradient,
+        FieldSourceKind::Divergence,
+        FieldSourceKind::Curl,
+        FieldSourceKind::Laplacian,
+    ] {
+        let (field, field_type) = make_field_with_source(
+            Type::Real,
+            Type::Real,
+            source_kind.clone(),
+            lambda.clone(),
+        );
+
+        // Type::Field carries the supplied domain and codomain.
+        assert_eq!(
+            field_type,
+            Type::Field {
+                domain: Box::new(Type::Real),
+                codomain: Box::new(Type::Real),
+            }
+        );
+
+        // Destructure the Value::Field and assert each field.
+        let Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda: boxed_lambda,
+        } = field
+        else {
+            panic!("expected Value::Field");
+        };
+
+        assert_eq!(domain_type, Type::Real);
+        assert_eq!(codomain_type, Type::Real);
+        assert_eq!(source, source_kind);
+        assert_eq!(*boxed_lambda, lambda);
+    }
 }
 
 /// Result `Type::Field` for a `curl` operator: domain → Vec3(Real).
@@ -519,19 +615,9 @@ fn run_dim_metadata_test(
     let params: Vec<(&str, ValueCellId)> = names[..n].iter().copied().zip(ids).collect();
     let lambda = make_value_lambda(params, body, ValueMap::new());
 
-    // Wrap in Value::Field.
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source,
-        lambda: Box::new(lambda),
-    };
-
-    // Wrap in Type::Field.
-    let field_type = Type::Field {
-        domain: Box::new(domain_type),
-        codomain: Box::new(codomain_type.clone()),
-    };
+    // Build the (Value::Field, Type::Field) pair via the source-parameterised helper.
+    let (field, field_type) =
+        make_field_with_source(domain_type.clone(), codomain_type.clone(), source, lambda);
 
     // Build the function call.
     let expr = make_function_call(
@@ -626,15 +712,73 @@ fn make_sample_point_panics_when_point_arity_exceeds_three() {
     let _ = make_sample_point(&domain);
 }
 
+/// Returns the component type for a field codomain.
+///
+/// For a `Type::Vector { quantity, .. }` codomain, returns the inner `*quantity`
+/// (e.g., `Vec3(Scalar<Velocity>)` → `Scalar<Velocity>`).  For all other types
+/// (scalar, Real, etc.) the codomain itself is returned unchanged, since non-vector
+/// codomains are already their own component type.
+fn codomain_component_type(codomain: &Type) -> Type {
+    match codomain {
+        Type::Vector { quantity, .. } => (**quantity).clone(),
+        other => other.clone(),
+    }
+}
+
+/// Build the standard analytical lambda body for `eval_field_op`.
+///
+/// Stamps every `value_ref` and intermediate node with the codomain's component
+/// type (see `codomain_component_type`):
+///  - Vector codomain `Vec{n}(Q)` → each arg is stamped with `Q`; the outer
+///    `FunctionCall` result_type is the full codomain.
+///  - Scalar / Real / other codomain → value_refs and every intermediate
+///    `BinOp::Add` node are stamped with the codomain itself (since for non-Vector
+///    codomains `codomain_component_type` returns the codomain unchanged).
+///
+/// This ensures the body's static type annotations are consistent with the declared
+/// field codomain — the invariant exercised by the Case B regression guards
+/// (`divergence_sample_mixed_real_to_velocity_returns_scalar` and
+/// `laplacian_sample_mixed_real_to_temperature_returns_scalar`).
+fn build_eval_field_op_body(ids: &[ValueCellId], codomain: &Type) -> CompiledExpr {
+    let component_ty = codomain_component_type(codomain);
+    match codomain {
+        Type::Vector { n: vec_n, .. } => {
+            // Identity: vec_n(x, y, z, ...) — each arg stamped with the inner quantity type.
+            let args: Vec<CompiledExpr> = ids
+                .iter()
+                .map(|id| CompiledExpr::value_ref(id.clone(), component_ty.clone()))
+                .collect();
+            make_function_call(&format!("vec{vec_n}"), args, codomain.clone())
+        }
+        _ => {
+            // Linear sum: x + y + z + ...
+            // All value_refs and BinOp::Add intermediate nodes are stamped with
+            // component_ty (== codomain for non-Vector codomains).
+            let mut acc = CompiledExpr::value_ref(ids[0].clone(), component_ty.clone());
+            for id in &ids[1..] {
+                acc = CompiledExpr::binop(
+                    BinOp::Add,
+                    acc,
+                    CompiledExpr::value_ref(id.clone(), component_ty.clone()),
+                    component_ty.clone(),
+                );
+            }
+            acc
+        }
+    }
+}
+
 /// Evaluate a calculus operator on a standard analytical test field.
 ///
 /// Builds a `Value::Field` with the given `domain` and `codomain` types, using a
-/// standard lambda body:
+/// standard lambda body built by [`build_eval_field_op_body`]:
 ///  - Vector codomain → identity `vec_n(x, y, z, ...)` (passes params straight through)
 ///  - Scalar / Real / other codomain → linear sum `x + y + z + ...`
 ///
-/// Value refs inside the body use `Type::Real` annotations (trust-the-declaration
-/// pattern, consistent with the rest of the test suite).
+/// Value refs and intermediate nodes inside the body are stamped with the codomain's
+/// component type (`codomain_component_type(codomain)`): the inner quantity for
+/// Vector codomains, or the codomain itself for scalar/Real shapes.  This keeps the
+/// body statically type-consistent with the declared field codomain.
 ///
 /// Supports `"gradient"`, `"divergence"`, `"curl"`, and `"laplacian"`.
 /// Returns the operator-result `Value` (a `Value::Field` for valid inputs).
@@ -653,30 +797,8 @@ fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
         .map(|&name| ValueCellId::new("$lambda0.S", name))
         .collect();
 
-    // Build lambda body.
-    let body = match &codomain {
-        Type::Vector { n: vec_n, .. } => {
-            // Identity: vec_n(x, y, z, ...)
-            let args: Vec<CompiledExpr> = ids
-                .iter()
-                .map(|id| CompiledExpr::value_ref(id.clone(), Type::Real))
-                .collect();
-            make_function_call(&format!("vec{vec_n}"), args, codomain.clone())
-        }
-        _ => {
-            // Linear sum: x + y + z + ...
-            let mut acc = CompiledExpr::value_ref(ids[0].clone(), Type::Real);
-            for id in &ids[1..] {
-                acc = CompiledExpr::binop(
-                    BinOp::Add,
-                    acc,
-                    CompiledExpr::value_ref(id.clone(), Type::Real),
-                    Type::Real,
-                );
-            }
-            acc
-        }
-    };
+    // Build lambda body using the extracted helper.
+    let body = build_eval_field_op_body(&ids, &codomain);
 
     let params: Vec<(&str, ValueCellId)> = names[..n].iter().copied().zip(ids).collect();
     let lambda = make_value_lambda(params, body, ValueMap::new());
@@ -698,6 +820,242 @@ fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
 fn eval_field_op_panics_when_point_arity_exceeds_three() {
     let domain = Type::Point { n: 4, quantity: Box::new(Type::Real) };
     let _ = eval_field_op("gradient", domain, Type::Real);
+}
+
+/// `codomain_component_type` returns the inner quantity for Vector codomains
+/// and the codomain itself for all non-Vector shapes.
+///
+/// Cases:
+///   (a) Vec3(Scalar<Velocity>) → Scalar<Velocity>
+///   (b) Vec3(Real)             → Real
+///   (c) Vec2(Scalar<Length>)   → Scalar<Length>
+///   (d) Scalar<Temperature>    → Scalar<Temperature>
+///   (e) Real                   → Real
+#[test]
+fn codomain_component_type_returns_vector_quantity_or_codomain_itself() {
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+
+    // (a) Vec3(Scalar<Velocity>) → Scalar<Velocity>
+    let vel_scalar = Type::Scalar { dimension: velocity_dim };
+    let vec3_velocity = Type::vec3(vel_scalar.clone());
+    assert_eq!(
+        codomain_component_type(&vec3_velocity),
+        vel_scalar,
+        "Vec3(Scalar<Velocity>) should yield Scalar<Velocity>"
+    );
+
+    // (b) Vec3(Real) → Real
+    let vec3_real = Type::vec3(Type::Real);
+    assert_eq!(
+        codomain_component_type(&vec3_real),
+        Type::Real,
+        "Vec3(Real) should yield Real"
+    );
+
+    // (c) Vec2(Scalar<Length>) → Scalar<Length>
+    let length_scalar = Type::Scalar { dimension: DimensionVector::LENGTH };
+    let vec2_length = Type::vec2(length_scalar.clone());
+    assert_eq!(
+        codomain_component_type(&vec2_length),
+        length_scalar,
+        "Vec2(Scalar<Length>) should yield Scalar<Length>"
+    );
+
+    // (d) Scalar<Temperature> → Scalar<Temperature>
+    let temp_scalar = Type::Scalar { dimension: DimensionVector::TEMPERATURE };
+    assert_eq!(
+        codomain_component_type(&temp_scalar),
+        temp_scalar.clone(),
+        "Scalar<Temperature> should yield itself"
+    );
+
+    // (e) Real → Real
+    assert_eq!(
+        codomain_component_type(&Type::Real),
+        Type::Real,
+        "Real should yield itself"
+    );
+}
+
+/// `build_eval_field_op_body` (Vector branch) stamps each `value_ref` with the
+/// codomain's component type (the inner quantity of the Vector), not `Type::Real`.
+///
+/// Case 1: Vec3(Scalar<Velocity>) → component type is Scalar<Velocity>.
+/// Case 2: Vec3(Real)             → component type is Real (regression check).
+///
+/// For each case the test asserts:
+/// (a) top-level kind is FunctionCall with name "vec3" and result_type == codomain;
+/// (b) exactly 3 ValueRef nodes are present in the tree;
+/// (c) every ValueRef's result_type equals the expected component type.
+#[test]
+fn build_eval_field_op_body_vector_branch_stamps_codomain_component_type() {
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+    let ids: Vec<ValueCellId> = ["x", "y", "z"]
+        .iter()
+        .map(|&name| ValueCellId::new("$lambda0.S", name))
+        .collect();
+
+    // ── Case 1: Vec3(Scalar<Velocity>) ───────────────────────────────────────
+    let vel_scalar = Type::Scalar { dimension: velocity_dim };
+    let vec3_velocity = Type::vec3(vel_scalar.clone());
+    let body1 = build_eval_field_op_body(&ids, &vec3_velocity);
+
+    // (a) top-level kind and result_type
+    match &body1.kind {
+        CompiledExprKind::FunctionCall { function, .. } => {
+            assert_eq!(function.name, "vec3",
+                "case 1: expected FunctionCall 'vec3', got {:?}", function.name);
+        }
+        other => panic!("case 1: expected FunctionCall, got {:?}", other),
+    }
+    assert_eq!(
+        body1.result_type, vec3_velocity,
+        "case 1: top-level result_type should be Vec3(Velocity), got {:?}", body1.result_type
+    );
+
+    // (b,c) collect value_ref result_types
+    let mut value_ref_types: Vec<Type> = Vec::new();
+    body1.walk(&mut |node| {
+        if matches!(&node.kind, CompiledExprKind::ValueRef(_)) {
+            value_ref_types.push(node.result_type.clone());
+        }
+    });
+    assert_eq!(value_ref_types.len(), 3, "case 1: expected 3 ValueRef nodes, got {}", value_ref_types.len());
+    for ty in &value_ref_types {
+        assert_eq!(
+            *ty, vel_scalar,
+            "case 1: each ValueRef should have result_type Scalar<Velocity>, got {:?}", ty
+        );
+    }
+
+    // ── Case 2: Vec3(Real) — regression check ────────────────────────────────
+    let vec3_real = Type::vec3(Type::Real);
+    let body2 = build_eval_field_op_body(&ids, &vec3_real);
+
+    match &body2.kind {
+        CompiledExprKind::FunctionCall { function, .. } => {
+            assert_eq!(function.name, "vec3",
+                "case 2: expected FunctionCall 'vec3', got {:?}", function.name);
+        }
+        other => panic!("case 2: expected FunctionCall, got {:?}", other),
+    }
+    assert_eq!(
+        body2.result_type, vec3_real,
+        "case 2: top-level result_type should be Vec3(Real), got {:?}", body2.result_type
+    );
+
+    let mut value_ref_types2: Vec<Type> = Vec::new();
+    body2.walk(&mut |node| {
+        if matches!(&node.kind, CompiledExprKind::ValueRef(_)) {
+            value_ref_types2.push(node.result_type.clone());
+        }
+    });
+    assert_eq!(value_ref_types2.len(), 3, "case 2: expected 3 ValueRef nodes, got {}", value_ref_types2.len());
+    for ty in &value_ref_types2 {
+        assert_eq!(
+            *ty, Type::Real,
+            "case 2: each ValueRef should have result_type Real, got {:?}", ty
+        );
+    }
+}
+
+/// `build_eval_field_op_body` (scalar branch) stamps every `value_ref` and every
+/// intermediate `BinOp::Add` node with the codomain's component type.
+///
+/// Case 1: Scalar<Temperature> → all nodes stamped with Scalar<Temperature>.
+/// Case 2: Real                → all nodes stamped with Real (regression check).
+///
+/// For each case the test asserts:
+/// (a) top-level kind is BinOp(Add) with result_type == codomain;
+/// (b) exactly 3 ValueRef nodes present, all with result_type == component type;
+/// (c) exactly 2 BinOp(Add) nodes (the nested `(x+y)+z`), all with result_type == component type.
+#[test]
+fn build_eval_field_op_body_scalar_branch_stamps_codomain_into_sum_nodes() {
+    let ids: Vec<ValueCellId> = ["x", "y", "z"]
+        .iter()
+        .map(|&name| ValueCellId::new("$lambda0.S", name))
+        .collect();
+
+    // ── Case 1: Scalar<Temperature> ─────────────────────────────────────────
+    let temp_scalar = Type::Scalar { dimension: DimensionVector::TEMPERATURE };
+    let body1 = build_eval_field_op_body(&ids, &temp_scalar);
+
+    // (a) top-level BinOp(Add) with result_type == codomain
+    match &body1.kind {
+        CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(*op, BinOp::Add,
+                "case 1: expected BinOp::Add at top level, got {:?}", op);
+        }
+        other => panic!("case 1: expected BinOp, got {:?}", other),
+    }
+    assert_eq!(
+        body1.result_type, temp_scalar,
+        "case 1: top-level result_type should be Scalar<Temperature>, got {:?}", body1.result_type
+    );
+
+    // (b,c) walk and collect ValueRef and BinOp(Add) types
+    let mut value_ref_types1: Vec<Type> = Vec::new();
+    let mut binop_add_types1: Vec<Type> = Vec::new();
+    body1.walk(&mut |node| {
+        match &node.kind {
+            CompiledExprKind::ValueRef(_) => value_ref_types1.push(node.result_type.clone()),
+            CompiledExprKind::BinOp { op, .. } if *op == BinOp::Add => {
+                binop_add_types1.push(node.result_type.clone());
+            }
+            _ => {}
+        }
+    });
+    assert_eq!(value_ref_types1.len(), 3,
+        "case 1: expected 3 ValueRef nodes, got {}", value_ref_types1.len());
+    assert_eq!(binop_add_types1.len(), 2,
+        "case 1: expected 2 BinOp(Add) nodes, got {}", binop_add_types1.len());
+    for ty in &value_ref_types1 {
+        assert_eq!(*ty, temp_scalar,
+            "case 1: each ValueRef should be Scalar<Temperature>, got {:?}", ty);
+    }
+    for ty in &binop_add_types1 {
+        assert_eq!(*ty, temp_scalar,
+            "case 1: each BinOp(Add) should be Scalar<Temperature>, got {:?}", ty);
+    }
+
+    // ── Case 2: Real — regression check ──────────────────────────────────────
+    let body2 = build_eval_field_op_body(&ids, &Type::Real);
+
+    match &body2.kind {
+        CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(*op, BinOp::Add,
+                "case 2: expected BinOp::Add at top level, got {:?}", op);
+        }
+        other => panic!("case 2: expected BinOp, got {:?}", other),
+    }
+    assert_eq!(
+        body2.result_type, Type::Real,
+        "case 2: top-level result_type should be Real, got {:?}", body2.result_type
+    );
+
+    let mut value_ref_types2: Vec<Type> = Vec::new();
+    let mut binop_add_types2: Vec<Type> = Vec::new();
+    body2.walk(&mut |node| {
+        match &node.kind {
+            CompiledExprKind::ValueRef(_) => value_ref_types2.push(node.result_type.clone()),
+            CompiledExprKind::BinOp { op, .. } if *op == BinOp::Add => {
+                binop_add_types2.push(node.result_type.clone());
+            }
+            _ => {}
+        }
+    });
+    assert_eq!(value_ref_types2.len(), 3,
+        "case 2: expected 3 ValueRef nodes, got {}", value_ref_types2.len());
+    assert_eq!(binop_add_types2.len(), 2,
+        "case 2: expected 2 BinOp(Add) nodes, got {}", binop_add_types2.len());
+    for ty in &value_ref_types2 {
+        assert_eq!(*ty, Type::Real,
+            "case 2: each ValueRef should be Real, got {:?}", ty);
+    }
+    for ty in &binop_add_types2 {
+        assert_eq!(*ty, Type::Real,
+            "case 2: each BinOp(Add) should be Real, got {:?}", ty);
+    }
 }
 
 /// Sample a field value at the standard test point for its domain type.
@@ -1834,8 +2192,8 @@ fn divergence_sample_dimensional_correctness_returns_scalar() {
 /// cause it to fail with `Value::Real`.  This is the early-warning signal: a naïve
 /// un-ignore serves as a concrete, executable spec for the required fix.
 #[test]
-#[ignore = "known bug: dim_quotient_type returns Type::Real when codomain is dimensionless, \
-            losing the 1/domain-unit result dimension — see analysis in plan step-3"]
+#[ignore = "known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
+            losing the 1/Length result dimension; expected Value::Scalar{1/Length}"]
 fn divergence_sample_mixed_length_to_real_placeholder() {
     let domain = Type::point3(Type::Scalar {
         dimension: DimensionVector::LENGTH,
@@ -2147,8 +2505,8 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
 /// cause it to fail with `Value::Real`.  This is the early-warning signal: a naïve
 /// un-ignore serves as a concrete, executable spec for the required fix.
 #[test]
-#[ignore = "known bug: dim_quotient_type returns Type::Real when codomain is dimensionless, \
-            losing the 1/domain-unit² result dimension — see analysis in plan step-5"]
+#[ignore = "known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
+            losing the 1/Length\u{00b2} result dimension; expected Value::Scalar{1/Length\u{00b2}}"]
 fn laplacian_sample_mixed_length_to_real_placeholder() {
     let domain = Type::point3(Type::Scalar {
         dimension: DimensionVector::LENGTH,
@@ -3836,4 +4194,256 @@ fn sample_point_enum_correctness() {
         assert_eq!(items[0], Value::Real(1.0));
         assert_eq!(items[1], Value::Real(2.0));
     }
+}
+
+/// Scans `source` (a Rust source file as a string) and verifies every
+/// `#[ignore = "..."]` attribute complies with the Task 1622 convention.
+///
+/// Three guards are applied in order:
+///
+/// 1. **Bare-ignore rejection** — a `#[ignore]` attribute without a reason
+///    string is rejected outright.
+/// 2. **Positive invariant** — every reason string must begin with
+///    `"known bug:"`.  This rejects wholly-replaced prefixes but does NOT
+///    catch stale wordings *appended inside* an otherwise-compliant prefix
+///    (e.g. `"known bug: see plan.md step-3"` would pass guard 2 and would
+///    only trip guard 3 if it happened to contain the specific sentinel).
+/// 3. **Negative sentinel** — the specific historical stale-pointer substring
+///    is also checked whole-file as belt-and-suspenders.
+///
+/// Lines whose trimmed start is `///` or `//!` are skipped so prose mentions
+/// of `#[ignore]` in doc comments do not generate false positives.
+///
+/// All scanner constants are assembled at runtime via `.concat()` so the
+/// source file does not contain the guarded sequences as adjacent characters.
+fn check_ignore_reasons(source: &str) -> Result<(), String> {
+    // DO NOT inline — split at boundary ["#[", "ignore"] keeps the guarded
+    // 8-char sequence from appearing adjacent in this source file; inlining
+    // would cause the scanner to self-trigger on this very line.
+    let ignore_prefix = ["#[", "ignore"].concat();
+
+    for (line_idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        // Skip doc-comment lines (`///`, `//!`) — they may mention the
+        // bare-ignore form in prose without it being an actual attribute.
+        // NOTE: regular `//` line comments and `/* */` block comments are NOT
+        // skipped.  The file currently has no bare-ignore forms in regular
+        // comments; if a future bare-ignore example inside a `//` comment
+        // causes a spurious meta-test failure, rewrite it as a `///` doc
+        // comment instead (doc comments ARE skipped).
+        if trimmed.starts_with("///") || trimmed.starts_with("//!") {
+            continue;
+        }
+
+        let mut rest = line;
+        while let Some(pos) = rest.find(ignore_prefix.as_str()) {
+            let after = &rest[pos + ignore_prefix.len()..];
+            if after.starts_with(']') {
+                return Err(format!(
+                    "bare {} attribute found at line {} \
+                     — reason string required (Task 1622/1641 convention): {line:?}",
+                    ["#[", "ignore]"].concat(),
+                    line_idx + 1,
+                ));
+            } else if after.starts_with(" = \"") {
+                let reason_start = &after[4..];
+                let preview: String = reason_start.chars().take(80).collect();
+                if !reason_start.starts_with("known bug:") {
+                    return Err(format!(
+                        "An {} reason string at line {} does not begin with \
+                         \"known bug:\":\n  {preview:?}\nReason strings must be \
+                         self-contained inline summaries (Task 1622 convention).",
+                        ["#[", "ignore]"].concat(),
+                        line_idx + 1,
+                    ));
+                }
+            }
+            // Neither `]` nor ` = "` — advance past this match and continue
+            // (e.g. the guarded sequence inside a string literal in source code).
+            rest = &rest[pos + 1..];
+        }
+    }
+
+    // Belt-and-suspenders negative check for the specific original stale-pointer pattern.
+    // DO NOT inline — split at boundary ["plan", " step-"] keeps the guarded
+    // sequence from appearing adjacent in this source file.
+    let stale_needle = ["plan", " step-"].concat();
+    if source.contains(&stale_needle) {
+        return Err(format!(
+            "Found stale-pointer substring in source. \
+             Update any affected {} reason string to a self-contained inline summary \
+             (e.g. \"known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
+             losing the 1/Length result dimension; expected Value::Scalar{{1/Length}}\").",
+            ["#[", "ignore]"].concat(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Meta-test: asserts that every `#[ignore = "..."]` attribute in this file
+/// complies with the Task 1622 convention — reason strings must be
+/// self-contained inline summaries beginning with `"known bug:"`.  The two
+/// placeholder tests (`divergence_sample_mixed_length_to_real_placeholder` and
+/// `laplacian_sample_mixed_length_to_real_placeholder`) previously had trailing
+/// breadcrumbs pointing at a transient plan document step, but plan files go
+/// stale.  Bare `#[ignore]` attributes (no reason string) are also forbidden.
+/// (Task 1622: introduced convention and first two guards.
+///  Task 1641: added bare-ignore guard and extracted `check_ignore_reasons`.)
+///
+/// Three guards are enforced (see `check_ignore_reasons` for implementation):
+///
+/// 1. **Bare-ignore rejection** — a `#[ignore]` attribute without a reason
+///    string is rejected outright.
+/// 2. **Positive invariant** — every reason string must begin with
+///    `"known bug:"`.  This rejects wholly-replaced prefixes but does NOT
+///    catch stale wordings appended inside an otherwise-compliant prefix
+///    (e.g. `"known bug: see plan.md step-3"` would pass this guard and would
+///    only trip guard 3 if it happened to contain the specific sentinel).
+/// 3. **Belt-and-suspenders negative sentinel** — the specific historical
+///    stale-pointer substring (assembled at runtime to avoid self-triggering)
+///    is also checked whole-file as belt-and-suspenders.
+///
+/// Doc-comment lines (`///`, `//!`) are skipped so prose mentions of
+/// `#[ignore]` — e.g. `` "`#[ignore]` is load-bearing" `` — do not generate
+/// false positives.
+///
+/// All scanner constants are assembled at runtime via `.concat()` so this file
+/// does not contain the guarded sequences as adjacent characters and cannot
+/// accidentally self-trigger.
+#[test]
+fn ignore_reason_strings_have_no_stale_plan_pointers() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/field_calculus_tests.rs"
+    );
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed to read {path} for meta-inspection: {e}"));
+    check_ignore_reasons(&source).unwrap_or_else(|msg| {
+        panic!(
+            "{msg}\nAffected tests in this file: \
+             divergence_sample_mixed_length_to_real_placeholder, \
+             laplacian_sample_mixed_length_to_real_placeholder."
+        )
+    });
+}
+
+// ── check_ignore_reasons unit tests ──────────────────────────────────────────
+// These five tests exercise the check_ignore_reasons helper introduced in
+// Task 1641.  All synthetic source strings use runtime concatenation so this
+// test file does not contain the literal adjacent sequences that the meta-test
+// guards against (see check_ignore_reasons below for the invariant).
+
+#[test]
+fn check_ignore_reasons_rejects_bare_ignore_in_code() {
+    // A bare-ignore attribute (no reason string) in non-comment code must be
+    // rejected outright.  Source assembled at runtime so this file does not
+    // contain the guarded adjacent sequences.  The error must mention "bare"
+    // so we can tell the bare-ignore guard fired (not the positive-invariant
+    // guard or the stale-pointer sentinel).
+    let src = ["#[", "ignore]\n#[test]\nfn foo() {}"].concat();
+    let err = check_ignore_reasons(&src)
+        .expect_err("expected bare-ignore attribute (no reason string) to be rejected");
+    assert!(
+        err.contains("bare"),
+        "expected error message to identify the bare-ignore guard: {err:?}",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_allows_bare_ignore_mentioned_in_doc_comments() {
+    // A bare-ignore form that appears only inside a `///` doc-comment line
+    // must NOT trigger a rejection — doc-comment lines are skipped.
+    // Source assembled at runtime so this file does not contain the guarded
+    // adjacent sequences.
+    let src = ["/// example: ", "#[", "ignore] is load-bearing\n"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_ok(),
+        "expected bare-ignore inside a doc comment to be allowed",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_accepts_compliant_source() {
+    // A reason string beginning with "known bug:" complies with the Task 1622
+    // convention and must be accepted.  Source assembled at runtime.
+    let src = ["#[", "ignore = \"known bug: placeholder summary\"]"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_ok(),
+        "expected a compliant \"known bug:\" reason string to be accepted",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_rejects_non_known_bug_reason() {
+    // A reason string that does NOT begin with "known bug:" must be rejected
+    // by the positive-invariant guard.  The reason deliberately does not
+    // contain the stale-pointer needle so only the positive guard fires.
+    // The error must mention "known bug:" so we can tell the positive-invariant
+    // guard fired (not the bare-ignore guard or the stale-pointer sentinel).
+    // Source assembled at runtime.
+    let src = ["#[", "ignore = \"some other prefix here\"]"].concat();
+    let err = check_ignore_reasons(&src)
+        .expect_err("expected a non-\"known bug:\" reason string to be rejected");
+    assert!(
+        err.contains("known bug:"),
+        "expected error message to identify the positive-invariant guard: {err:?}",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_rejects_stale_plan_step_needle() {
+    // A source containing the stale-pointer needle (assembled at runtime)
+    // must be rejected by the belt-and-suspenders negative sentinel.
+    // The error must mention "stale-pointer" so we can tell the negative
+    // sentinel fired (not the bare-ignore guard or the positive-invariant
+    // guard).  Needle and source assembled at runtime so this file does not
+    // contain the literal sequence as adjacent characters.
+    let src = ["# source containing the needle: ", "plan", " step-", "5\n"].concat();
+    let err = check_ignore_reasons(&src)
+        .expect_err("expected source containing the stale-pointer needle to be rejected");
+    assert!(
+        err.contains("stale-pointer"),
+        "expected error message to identify the negative-sentinel guard: {err:?}",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_allows_bare_ignore_in_inner_doc_comment() {
+    // A bare-ignore form that appears only inside a `//!` inner-doc-comment
+    // line must NOT trigger a rejection — `//!` lines are skipped alongside
+    // `///` lines.  This complements the outer-doc-comment test above and
+    // pins the `//!` branch of the skip logic separately so neither branch
+    // can be removed silently.  Source assembled at runtime.
+    let src = ["//! example: ", "#[", "ignore] is load-bearing\n"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_ok(),
+        "expected bare-ignore inside an inner doc comment (//!) to be allowed",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_regular_comment_is_not_skipped() {
+    // Regular `//` line comments are NOT skipped — only `///` and `//!` are.
+    // This pins the documented limitation so a future refactor that
+    // accidentally starts skipping `//` is caught immediately.
+    // Source assembled at runtime to avoid self-triggering.
+    let src = ["// regular comment: ", "#[", "ignore]\n"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_err(),
+        "expected bare-ignore inside a regular // comment to be rejected \
+         (// comments are not skipped; only /// and //! are)",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_accepts_source_with_no_ignore_attributes() {
+    // A source string containing no ignore attributes at all must be accepted,
+    // pinning the empty-input / no-match contract.  If the loop logic ever
+    // regressed (e.g. find always returning Some), this test would catch it.
+    let src = "fn main() {}\nstruct Foo;\nfn bar() -> i32 { 42 }\n";
+    assert!(
+        check_ignore_reasons(src).is_ok(),
+        "expected source with no ignore attributes to be accepted",
+    );
 }

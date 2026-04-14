@@ -276,6 +276,7 @@ pub(crate) fn compile_connection(
         label: Some(format!("connect_compat_{}_{}", left_port, right_port)),
         expr: compat_expr,
         domain: None,
+        optimized_target: None,
         span,
     });
     *acc.constraint_index += 1;
@@ -352,6 +353,7 @@ pub(crate) fn compile_connection(
                 label: Some(format!("frame_align_{}_{}", left_port, right_port)),
                 expr: frame_eq,
                 domain: None,
+                optimized_target: None,
                 span,
             });
             *acc.constraint_index += 1;

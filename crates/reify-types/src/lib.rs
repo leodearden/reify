@@ -17,7 +17,8 @@ pub mod warm;
 pub use annotation::{Annotation, AnnotationArg};
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
-    ConstraintResult, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult,
+    ConstraintResult, ConstraintSolver, OptimizationObjective, OptimizedImpl, OptimizedImplInput,
+    OptimizedImplOutput, ResolutionProblem, SolveResult,
 };
 pub use diagnostics::{
     Diagnostic, DiagnosticInfo, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan,
