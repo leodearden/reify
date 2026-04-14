@@ -533,6 +533,77 @@ fn parse_annotation_on_param_member() {
     }
 }
 
+#[test]
+fn parse_annotation_on_let_member() {
+    let source = r#"structure S { @solver_hint("prefer_stock", thicknesses) let t = 5mm }"#;
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let s = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let let_decl = s
+        .members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Let(l) => Some(l),
+            _ => None,
+        })
+        .expect("expected a Let member");
+
+    assert_eq!(let_decl.name, "t");
+    assert_eq!(
+        let_decl.annotations.len(),
+        1,
+        "expected 1 annotation on let, got {:?}",
+        let_decl.annotations
+    );
+    assert_eq!(let_decl.annotations[0].name, "solver_hint");
+    assert_eq!(let_decl.annotations[0].args.len(), 2);
+    match &let_decl.annotations[0].args[0].kind {
+        ExprKind::StringLiteral(s) => assert_eq!(s, "prefer_stock"),
+        other => panic!("expected StringLiteral(\"prefer_stock\"), got {:?}", other),
+    }
+    match &let_decl.annotations[0].args[1].kind {
+        ExprKind::Ident(name) => assert_eq!(name, "thicknesses"),
+        other => panic!("expected Ident(\"thicknesses\"), got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_multiple_annotations_on_param_member() {
+    let source = r#"structure S { @deprecated("old") @solver_hint("discrete_set", sizes) param w : Length = auto }"#;
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let s = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let param = s
+        .members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Param(p) => Some(p),
+            _ => None,
+        })
+        .expect("expected a Param member");
+
+    assert_eq!(param.name, "w");
+    assert_eq!(
+        param.annotations.len(),
+        2,
+        "expected 2 annotations on param, got {:?}",
+        param.annotations
+    );
+    assert_eq!(param.annotations[0].name, "deprecated");
+    assert_eq!(param.annotations[1].name, "solver_hint");
+    assert_eq!(param.annotations[1].args.len(), 2);
+}
+
 // ── Step 23/24: annotation leakage on failed lowering ────────────────────────
 //
 // Bug: when a declaration node is encountered but its lower_* function returns
