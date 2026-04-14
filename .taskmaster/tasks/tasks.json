@@ -20207,12 +20207,10 @@
         "updatedAt": "2026-04-13T23:02:23.299Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/traits.rs",
-            "crates/reify-compiler/src/conformance.rs"
+            "crates/reify-compiler/src/lib.rs"
           ]
         }
       },
@@ -20229,7 +20227,7 @@
         "updatedAt": "2026-04-14T07:04:16.879Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/tests/tolerancing_tests.rs",
