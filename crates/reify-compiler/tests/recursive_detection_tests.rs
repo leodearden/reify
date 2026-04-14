@@ -344,9 +344,11 @@ structure S {
     );
 }
 
-/// Two independent cycles should produce exactly two warning diagnostics.
+/// A 2-node mutual cycle (A<->B) exercises the `find_cycle_back_to` code path
+/// for multi-node SCCs. The diagnostic message should contain either "A -> B -> A"
+/// or "B -> A -> B" depending on Tarjan's stack pop order.
 #[test]
-fn warning_diagnostic_count_matches_scc_count() {
+fn multi_node_cycle_path_in_diagnostic() {
     let source = r#"
 structure A {
     param n : Int = 5
@@ -355,14 +357,6 @@ structure A {
 structure B {
     param n : Int = 5
     sub a = A(n: n - 1) where n > 0
-}
-structure C {
-    param n : Int = 5
-    sub d = D(n: n - 1) where n > 0
-}
-structure D {
-    param n : Int = 5
-    sub c = C(n: n - 1) where n > 0
 }
 "#;
 
@@ -378,9 +372,81 @@ structure D {
 
     assert_eq!(
         cycle_warnings.len(),
-        2,
-        "expected 2 cycle warnings for 2 independent SCCs, got {}: {:?}",
+        1,
+        "expected exactly 1 cycle warning for A<->B mutual cycle, got {}: {:?}",
         cycle_warnings.len(),
+        cycle_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // Tarjan pops nodes in reverse discovery order, so either start is valid
+    let msg = &cycle_warnings[0].message;
+    assert!(
+        msg.contains("A -> B -> A") || msg.contains("B -> A -> B"),
+        "cycle warning should contain 'A -> B -> A' or 'B -> A -> B', got: {}",
+        msg
+    );
+}
+
+/// Mixed SCC sizes: a 3-node cycle (X->Y->Z->X) plus a self-loop (W->W).
+/// Each SCC should produce exactly one warning, and all four structures should be recursive.
+#[test]
+fn mixed_scc_sizes_each_produce_warning() {
+    let source = r#"
+structure X {
+    param n : Int = 5
+    sub y = Y(n: n - 1) where n > 0
+}
+structure Y {
+    param n : Int = 5
+    sub z = Z(n: n - 1) where n > 0
+}
+structure Z {
+    param n : Int = 5
+    sub x = X(n: n - 1) where n > 0
+}
+structure W {
+    param n : Int = 5
+    sub w = W(n: n - 1) where n > 0
+}
+"#;
+
+    let (templates, diagnostics) = compile_all(source);
+    let x = find_template(&templates, "X");
+    let y = find_template(&templates, "Y");
+    let z = find_template(&templates, "Z");
+    let w = find_template(&templates, "W");
+
+    assert!(x.is_recursive, "X in X->Y->Z->X cycle should be recursive");
+    assert!(y.is_recursive, "Y in X->Y->Z->X cycle should be recursive");
+    assert!(z.is_recursive, "Z in X->Y->Z->X cycle should be recursive");
+    assert!(w.is_recursive, "W with self-loop should be recursive");
+
+    // Each SCC (the 3-node cycle and the self-loop) produces exactly one warning
+    let cycle_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("recursive structure cycle detected")
+        })
+        .collect();
+    assert_eq!(
+        cycle_warnings.len(),
+        2,
+        "expected 2 cycle warnings (one per SCC), got {}: {:?}",
+        cycle_warnings.len(),
+        cycle_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // The self-loop SCC warning should contain "W -> W"
+    assert!(
+        cycle_warnings.iter().any(|d| d.message.contains("W -> W")),
+        "expected one warning to contain 'W -> W', got: {:?}",
         cycle_warnings
             .iter()
             .map(|d| &d.message)
@@ -401,12 +467,36 @@ structure S {
 }
 "#;
 
-    let (templates, _diagnostics) = compile_all(source);
+    let (templates, diagnostics) = compile_all(source);
     let s = find_template(&templates, "S");
 
     assert!(
         s.is_recursive,
         "structure S with collection sub `sub items : List<S>` should have is_recursive == true"
+    );
+
+    let cycle_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("recursive structure cycle detected")
+        })
+        .collect();
+    assert_eq!(
+        cycle_warnings.len(),
+        1,
+        "expected exactly 1 cycle warning for collection self-reference, got {}: {:?}",
+        cycle_warnings.len(),
+        cycle_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    assert!(
+        cycle_warnings[0].message.contains("S -> S"),
+        "cycle warning should contain 'S -> S', got: {}",
+        cycle_warnings[0].message
     );
 }
 
@@ -424,24 +514,13 @@ structure S {
 }
 "#;
 
-    let (templates, diagnostics) = compile_all(source);
+    let (templates, _diagnostics) = compile_all(source);
+    let s = find_template(&templates, "S");
 
-    // S MUST be present in the compiled templates — the detection pass should not
-    // drop it just because it references an unknown structure.
-    let s = templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("S should be present in compiled templates even when it references Unknown");
-
-    // An unresolved reference produces no edge, so S must not be tagged recursive.
     assert!(
         !s.is_recursive,
         "S referencing unknown structure should not be tagged recursive"
     );
-
-    // The compilation may produce error diagnostics about 'Unknown', that's fine.
-    // What matters is no panic occurred and S is correctly classified.
-    let _ = diagnostics;
 }
 
 // ─── Task 362: cycle path format and warning count ───────────────────────────
