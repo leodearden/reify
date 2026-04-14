@@ -35118,7 +35118,18 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:29:51.486Z"
+        "updatedAt": "2026-04-14T20:29:51.486Z",
+        "metadata": {
+          "memory_hints": {
+            "entity_refs": [
+              "user_defined_unit_tests"
+            ],
+            "search_queries": [
+              "transitive pub unit one-hop limitation",
+              "pub unit visibility transitive module lookup ordering"
+            ]
+          }
+        }
       },
       {
         "id": 1682,
