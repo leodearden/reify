@@ -523,6 +523,96 @@ fn tolerancing_position_mmc_flatness_ra() {
     }
 }
 
+// ── step-13: tolerancing_dimensional_bounds_computed ─────────────────────────
+
+/// Asserts the computed lets in the Flange.dim_tol sub (DimensionalTolerance)
+/// evaluate to the expected Scalar si_values:
+///   nominal=50mm, upper_deviation=+0.1mm, lower_deviation=-0.1mm
+///   → upper_limit  = 50mm + 0.1mm  = 50.1mm  (0.0501m)
+///   → lower_limit  = 50mm - 0.1mm  = 49.9mm  (0.0499m)
+///   → tolerance_band = 0.1mm - (-0.1mm) = 0.2mm (0.0002m)
+/// All dimension = LENGTH.  Confirms sub-component computed lets are correctly
+/// elaborated in child scope "Flange.dim_tol".
+#[test]
+fn tolerancing_dimensional_bounds_computed() {
+    let result = eval_ri_file(PATH_TOLERANCING, "m8_tolerancing");
+
+    // ── upper_limit (50mm + 0.1mm = 0.0501m) ─────────────────────────────────
+    let ul_id = ValueCellId::new("Flange.dim_tol", "upper_limit");
+    let ul_val = result
+        .values
+        .get(&ul_id)
+        .unwrap_or_else(|| panic!("Flange.dim_tol.upper_limit not found in eval result"));
+    match ul_val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 0.0501).abs() < 1e-9,
+                "Flange.dim_tol.upper_limit should be ≈0.0501m, got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "Flange.dim_tol.upper_limit should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "Flange.dim_tol.upper_limit should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+
+    // ── lower_limit (50mm - 0.1mm = 0.0499m) ─────────────────────────────────
+    let ll_id = ValueCellId::new("Flange.dim_tol", "lower_limit");
+    let ll_val = result
+        .values
+        .get(&ll_id)
+        .unwrap_or_else(|| panic!("Flange.dim_tol.lower_limit not found in eval result"));
+    match ll_val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 0.0499).abs() < 1e-9,
+                "Flange.dim_tol.lower_limit should be ≈0.0499m, got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "Flange.dim_tol.lower_limit should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "Flange.dim_tol.lower_limit should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+
+    // ── tolerance_band (0.1mm - (-0.1mm) = 0.2mm = 0.0002m) ─────────────────
+    let tb_id = ValueCellId::new("Flange.dim_tol", "tolerance_band");
+    let tb_val = result
+        .values
+        .get(&tb_id)
+        .unwrap_or_else(|| panic!("Flange.dim_tol.tolerance_band not found in eval result"));
+    match tb_val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 0.0002).abs() < 1e-9,
+                "Flange.dim_tol.tolerance_band should be ≈0.0002m (0.2mm), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "Flange.dim_tol.tolerance_band should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "Flange.dim_tol.tolerance_band should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
+
 // ── Section 4: m8_units.ri ───────────────────────────────────────────────────
 
 /// Smoke test: m8_units.ri parses, compiles (stdlib), evals without errors,
