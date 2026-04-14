@@ -1588,23 +1588,36 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
 /// MetaAccess expressions evaluate correctly through the concurrent path.
 ///
 /// Module: template 'S' with meta {"grade": "A2"}, param `width` (default mm(10.0)),
-/// let `grade_label` = meta_access("S", "grade"), constraint `grade_label == "A2"`.
+/// let `grade_label` = if width > mm(15.0) then meta_access("S", "grade") else "",
+/// constraint `grade_label == "A2"`.
 ///
-/// Cold check → Satisfied. edit_check_concurrent(width, mm(20.0)):
-///   - grade_label should still resolve to "A2" (meta_map wired through concurrent path)
-///   - constraint grade_label == "A2" should remain Satisfied
+/// `grade_label` depends on both `width` (ValueRef) and meta_access. Editing
+/// `width` places `grade_label` in the dirty cone, so the concurrent evaluator
+/// must re-evaluate it — exercising MetaAccess through the concurrent path and
+/// requiring meta_map to be present in the concurrent EvalContext.
+///
+/// Cold check at width=mm(10.0): grade_label="" → constraint Violated.
+/// edit_check_concurrent(width, mm(20.0)):
+///   - grade_label re-evaluates via meta_access to "A2"
+///   - constraint grade_label == "A2" flips to Satisfied
 #[tokio::test]
 async fn edit_check_concurrent_with_meta_access() {
     use reify_runtime::concurrent_eval::edit_check_concurrent;
-    use reify_test_support::builders::{eq, literal, value_ref};
+    use reify_test_support::builders::{conditional_expr, eq, gt, literal, value_ref};
     use reify_test_support::mm;
     use reify_types::{CompiledExpr, Satisfaction};
 
     let width_id = ValueCellId::new("S", "width");
     let grade_label_id = ValueCellId::new("S", "grade_label");
 
-    // grade_label = meta_access("S", "grade")
+    // grade_label = if width > mm(15.0) then meta_access("S", "grade") else ""
+    let width_ref = value_ref("S", "width");
+    let threshold = literal(mm(15.0));
+    let cond = gt(width_ref, threshold);
     let meta_expr = CompiledExpr::meta_access("S".to_string(), "grade".to_string());
+    let empty_str = CompiledExpr::literal(Value::String(String::new()), Type::String);
+    let grade_label_expr = conditional_expr(cond, meta_expr, empty_str);
+
     // constraint: grade_label == "A2"
     let grade_label_ref = value_ref("S", "grade_label");
     let a2_literal = CompiledExpr::literal(Value::String("A2".to_string()), Type::String);
@@ -1617,7 +1630,7 @@ async fn edit_check_concurrent_with_meta_access() {
                 .collect(),
         )
         .param("S", "width", Type::length(), Some(literal(mm(10.0))))
-        .let_binding("S", "grade_label", Type::String, meta_expr)
+        .let_binding("S", "grade_label", Type::String, grade_label_expr)
         .constraint("S", 0, None, constraint_expr)
         .build();
 
@@ -1625,33 +1638,40 @@ async fn edit_check_concurrent_with_meta_access() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = Engine::new(Box::new(checker), None);
 
-    // Cold check: grade_label == "A2" → Satisfied
+    // Cold check at width=mm(10.0): 10.0 !> 15.0 → grade_label == "" → Violated
     let cold_result = engine.check(&module);
     assert_eq!(
+        cold_result.values.get(&grade_label_id),
+        Some(&Value::String(String::new())),
+        "cold check: grade_label should be empty when width <= threshold"
+    );
+    assert_eq!(
         cold_result.constraint_results[0].satisfaction,
-        Satisfaction::Satisfied,
-        "cold check: grade_label == 'A2' should be Satisfied"
+        Satisfaction::Violated,
+        "cold check: grade_label == 'A2' should be Violated"
     );
 
     let cancel = CancellationToken::new();
 
-    // Concurrent edit: width changes, meta_access must still resolve correctly
+    // Concurrent edit: width=mm(20.0) places grade_label in the dirty cone.
+    // The concurrent evaluator must take the then-branch (meta_access) and
+    // resolve it against meta_map to produce "A2".
     let check_result = edit_check_concurrent(&mut engine, width_id.clone(), mm(20.0), &cancel)
         .await
         .unwrap();
 
-    // grade_label should still be "A2" — meta_map is stable
+    // grade_label was re-evaluated by the concurrent path: meta_access → "A2"
     assert_eq!(
         check_result.values.get(&grade_label_id),
         Some(&Value::String("A2".to_string())),
-        "grade_label should resolve to 'A2' through concurrent path"
+        "grade_label should be re-evaluated to 'A2' via meta_access through concurrent path"
     );
 
-    // Constraint must remain Satisfied
+    // Constraint flips to Satisfied
     assert_eq!(
         check_result.constraint_results[0].satisfaction,
         Satisfaction::Satisfied,
-        "grade_label == 'A2' must remain Satisfied after concurrent width edit"
+        "grade_label == 'A2' must become Satisfied after concurrent width edit"
     );
 }
 
