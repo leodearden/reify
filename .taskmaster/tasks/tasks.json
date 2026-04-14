@@ -8349,7 +8349,7 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/src"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
@@ -8359,8 +8359,7 @@
             ]
           },
           "files": [
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/tests/meta_eval_integration.rs"
+            "crates/reify-eval/src/lib.rs"
           ]
         },
         "subtasks": [],
@@ -8437,14 +8436,12 @@
             "crates/reify-test-support/src/lib.rs",
             "crates/reify-test-support/src/helpers.rs",
             "crates/reify-compiler/tests/common/mod.rs",
-            "crates/reify-eval/tests/resolution.rs",
-            "crates/reify-runtime/src/lib.rs"
+            "crates/reify-eval/tests/m9_integration.rs"
           ],
           "modules": [
-            "crates/reify-test-support",
-            "crates/reify-compiler",
-            "crates/reify-eval",
-            "crates/reify-runtime"
+            "crates/reify-test-support/src",
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests"
           ],
           "bundled_from": [
             "371",
@@ -8504,7 +8501,7 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ]
         }
       },
