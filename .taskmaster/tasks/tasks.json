@@ -16684,7 +16684,7 @@
           "files": [
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/units.rs",
-            "crates/reify-types/src/diagnostics.rs"
+            "crates/reify-types/src/source_location.rs"
           ]
         }
       },
