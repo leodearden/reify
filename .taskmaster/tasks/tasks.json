@@ -33973,7 +33973,7 @@
         }
       },
       {
-        "id": "1644",
+        "id": 1644,
         "title": "Broaden sanitize_wildcard_variants_passthrough with container/struct Value variants",
         "description": "sanitize_wildcard_variants_passthrough in both crates/reify-expr/src/sanitize.rs (~line 464) and crates/reify-stdlib/src/helpers.rs (~line 885) currently covers only Bool/Int/String out of ~25 wildcard-arm Value variants. Variants that own non-trivial payloads (Vector, Tensor, Map, Lambda, Frame, Transform, etc.) never get even a smoke check — and those are the shapes most likely to break if a future guarded arm accidentally moves out of `v`. The cost of adding two or three variants is trivial and meaningfully widens the safety net.",
         "status": "pending",
@@ -34014,7 +34014,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T00:01:24.948Z"
+        "updatedAt": "2026-04-14T00:01:24.948Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": 1647,
