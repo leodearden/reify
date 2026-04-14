@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 ///
 /// The marker and needle are assembled at runtime so this source file does not
 /// contain the literal substrings and does not self-trigger when scanned.
+///
+/// Note: reason strings containing escaped quotes (`\"`) are not handled —
+/// the captured reason is truncated at the first raw `"` byte. No current test
+/// file uses escaped quotes inside `#[ignore]` reasons.
 pub fn find_stale_plan_pointers_in_source(source: &str) -> Vec<String> {
     // Assembled at runtime — do not inline these as literals.
     let marker = ["#[ignore", " = \""].concat();
@@ -28,16 +32,19 @@ pub fn find_stale_plan_pointers_in_source(source: &str) -> Vec<String> {
             }
         }
 
-        byte_offset += rel_pos + 1;
-        remaining = &remaining[rel_pos + 1..];
+        // Advance past the consumed marker so the next scan starts there,
+        // not just +1 byte (avoids O(n*k) re-scan of the marker text).
+        byte_offset += rel_pos + marker.len();
+        remaining = &remaining[rel_pos + marker.len()..];
     }
 
     violations
 }
 
 /// Recursively walk `workspace_root` collecting every `.rs` file whose path
-/// contains a directory component named `tests`. Skips `target`, `.git`,
-/// `.worktrees`, and any directory whose name starts with `.`.
+/// contains a directory component named `tests`. Skips `target` and any
+/// directory whose name starts with `.` (which covers `.git`, `.worktrees`,
+/// etc.).
 ///
 /// Uses `std::fs::read_dir` with an explicit stack (no recursion, no external
 /// `walkdir` dep) — matching the existing convention in `reify-kernel-occt/build.rs`.
@@ -56,7 +63,9 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            // Use entry.file_type() (does not follow symlinks) to avoid
+            // infinite loops on symlink cycles in the workspace.
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 let name = path
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -169,6 +178,45 @@ mod tests {
         );
     }
 
+    /// (f) Multi-line `#[ignore]` reason (raw `\` + newline continuation as it
+    /// appears literally in source files) with no stale pointer → clean.
+    /// Locks in the assumption that the function operates on raw bytes and
+    /// correctly finds the closing `"` past the continuation character.
+    #[test]
+    fn fspp_multiline_reason_without_stale_pointer_is_clean() {
+        let marker = ["#[ignore", " = \""].concat();
+        // Raw source contains literal `\` + newline, as written in .rs files.
+        let source = format!("{marker}known bug: first line, \\\nsecond line\"]");
+        assert!(
+            find_stale_plan_pointers_in_source(&source).is_empty(),
+            "expected no violations for a multi-line known-bug reason"
+        );
+    }
+
+    /// (g) Multi-line `#[ignore]` reason where the stale needle appears on the
+    /// second line (after the `\` + newline continuation) → one violation.
+    /// Verifies that the function scans raw bytes across the line break.
+    #[test]
+    fn fspp_multiline_reason_with_stale_pointer_on_second_line_returns_violation() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        // Raw source: `#[ignore = "known bug: see \<newline>plan step-3\"]`
+        let source = format!("{marker}known bug: see \\\n{needle}3 reference\"]");
+        let violations = find_stale_plan_pointers_in_source(&source);
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected exactly one violation for stale pointer on second line, got: {violations:?}"
+        );
+        let expected_fragment = format!("{needle}3 reference");
+        assert!(
+            violations[0].contains(&expected_fragment),
+            "violation {:?} should contain the needle fragment {:?}",
+            violations[0],
+            expected_fragment
+        );
+    }
+
     // ── walk_test_rs_files ────────────────────────────────────────────────────
 
     /// Build a synthetic workspace tree using tempfile::tempdir() and verify that
@@ -189,9 +237,10 @@ mod tests {
         ];
         // Files that should NOT be returned
         let excluded = [
-            "crates/foo/src/lib.rs",       // no "tests" component
-            "target/tests/skipme.rs",       // "target" dir excluded
-            ".git/tests/skip.rs",           // dot-dir excluded
+            "crates/foo/src/lib.rs",                // no "tests" component
+            "target/tests/skipme.rs",               // root-level "target" dir excluded
+            "crates/foo/target/tests/skip_nested.rs", // nested "target" dir also excluded
+            ".git/tests/skip.rs",                   // dot-dir excluded
         ];
 
         for rel in included.iter().chain(excluded.iter()) {

@@ -28,11 +28,11 @@ fn no_stale_plan_pointers_in_workspace_ignore_reasons() {
     // the literal substrings and does not self-trigger when scanned.
     let mut all_violations: Vec<String> = Vec::new();
     for path in &test_files {
+        // Skip unreadable files (e.g. deleted mid-walk during concurrent cargo
+        // runs) rather than failing the regression test with a false positive.
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
-            Err(e) => {
-                panic!("failed to read {}: {e}", path.display());
-            }
+            Err(_) => continue,
         };
         let violations =
             reify_test_support::ignore_hygiene::find_stale_plan_pointers_in_source(&source);
