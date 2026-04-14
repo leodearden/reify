@@ -112,3 +112,28 @@ fn solver_hint_invalid_kind_warns() {
         warns.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ── Step 15: missing collection reference emits warning ────────────────────
+
+#[test]
+fn solver_hint_missing_collection_warns() {
+    let source =
+        r#"structure S { @solver_hint("discrete_set") param length : Length = auto }"#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let template = &module.templates[0];
+    let cell = &template.value_cells[0];
+    assert!(
+        cell.solver_hints.is_empty(),
+        "expected no solver hints when collection is missing, got {:?}",
+        cell.solver_hints
+    );
+
+    let warns = warnings_only(&module);
+    assert!(
+        warns.iter().any(|d| d.message.contains("collection reference")),
+        "expected warning about missing collection, got: {:?}",
+        warns.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
