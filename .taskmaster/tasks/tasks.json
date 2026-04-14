@@ -5849,7 +5849,7 @@
           "262",
           "290"
         ],
-        "status": "in-progress",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "examples"
@@ -5861,7 +5861,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T13:37:58.233Z"
+        "updatedAt": "2026-04-14T13:43:47.964Z"
       },
       {
         "id": "292",
@@ -34614,7 +34614,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T13:37:58.233Z",
+      "lastModified": "2026-04-14T13:43:47.979Z",
       "taskCount": 1661,
       "completedCount": 1380,
       "tags": [
