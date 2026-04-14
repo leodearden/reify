@@ -710,12 +710,12 @@ fn codomain_component_type(codomain: &Type) -> Type {
 /// type (see `codomain_component_type`):
 ///  - Vector codomain `Vec{n}(Q)` → each arg is stamped with `Q`; the outer
 ///    `FunctionCall` result_type is the full codomain.
-///  - Scalar / Real / other codomain → value_refs and intermediate `BinOp::Add`
-///    nodes are stamped with the codomain itself (handled in a later step; currently
-///    still uses `Type::Real` for the scalar branch until step-6 lands).
+///  - Scalar / Real / other codomain → value_refs and every intermediate
+///    `BinOp::Add` node are stamped with the codomain itself (since for non-Vector
+///    codomains `codomain_component_type` returns the codomain unchanged).
 ///
 /// This ensures the body's static type annotations are consistent with the declared
-/// field codomain, which is the invariant exercised by the Case B regression guards
+/// field codomain — the invariant exercised by the Case B regression guards
 /// (`divergence_sample_mixed_real_to_velocity_returns_scalar` and
 /// `laplacian_sample_mixed_real_to_temperature_returns_scalar`).
 fn build_eval_field_op_body(ids: &[ValueCellId], codomain: &Type) -> CompiledExpr {
@@ -731,15 +731,15 @@ fn build_eval_field_op_body(ids: &[ValueCellId], codomain: &Type) -> CompiledExp
         }
         _ => {
             // Linear sum: x + y + z + ...
-            // NOTE: scalar branch still uses Type::Real for value_refs and Add nodes;
-            // updated to use component_ty in step-6.
-            let mut acc = CompiledExpr::value_ref(ids[0].clone(), Type::Real);
+            // All value_refs and BinOp::Add intermediate nodes are stamped with
+            // component_ty (== codomain for non-Vector codomains).
+            let mut acc = CompiledExpr::value_ref(ids[0].clone(), component_ty.clone());
             for id in &ids[1..] {
                 acc = CompiledExpr::binop(
                     BinOp::Add,
                     acc,
-                    CompiledExpr::value_ref(id.clone(), Type::Real),
-                    Type::Real,
+                    CompiledExpr::value_ref(id.clone(), component_ty.clone()),
+                    component_ty.clone(),
                 );
             }
             acc
@@ -935,6 +935,105 @@ fn build_eval_field_op_body_vector_branch_stamps_codomain_component_type() {
             *ty, Type::Real,
             "case 2: each ValueRef should have result_type Real, got {:?}", ty
         );
+    }
+}
+
+/// `build_eval_field_op_body` (scalar branch) stamps every `value_ref` and every
+/// intermediate `BinOp::Add` node with the codomain's component type.
+///
+/// Case 1: Scalar<Temperature> → all nodes stamped with Scalar<Temperature>.
+/// Case 2: Real                → all nodes stamped with Real (regression check).
+///
+/// For each case the test asserts:
+/// (a) top-level kind is BinOp(Add) with result_type == codomain;
+/// (b) exactly 3 ValueRef nodes present, all with result_type == component type;
+/// (c) exactly 2 BinOp(Add) nodes (the nested `(x+y)+z`), all with result_type == component type.
+#[test]
+fn build_eval_field_op_body_scalar_branch_stamps_codomain_into_sum_nodes() {
+    let ids: Vec<ValueCellId> = ["x", "y", "z"]
+        .iter()
+        .map(|&name| ValueCellId::new("$lambda0.S", name))
+        .collect();
+
+    // ── Case 1: Scalar<Temperature> ─────────────────────────────────────────
+    let temp_scalar = Type::Scalar { dimension: DimensionVector::TEMPERATURE };
+    let body1 = build_eval_field_op_body(&ids, &temp_scalar);
+
+    // (a) top-level BinOp(Add) with result_type == codomain
+    match &body1.kind {
+        CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(*op, BinOp::Add,
+                "case 1: expected BinOp::Add at top level, got {:?}", op);
+        }
+        other => panic!("case 1: expected BinOp, got {:?}", other),
+    }
+    assert_eq!(
+        body1.result_type, temp_scalar,
+        "case 1: top-level result_type should be Scalar<Temperature>, got {:?}", body1.result_type
+    );
+
+    // (b,c) walk and collect ValueRef and BinOp(Add) types
+    let mut value_ref_types1: Vec<Type> = Vec::new();
+    let mut binop_add_types1: Vec<Type> = Vec::new();
+    body1.walk(&mut |node| {
+        match &node.kind {
+            CompiledExprKind::ValueRef(_) => value_ref_types1.push(node.result_type.clone()),
+            CompiledExprKind::BinOp { op, .. } if *op == BinOp::Add => {
+                binop_add_types1.push(node.result_type.clone());
+            }
+            _ => {}
+        }
+    });
+    assert_eq!(value_ref_types1.len(), 3,
+        "case 1: expected 3 ValueRef nodes, got {}", value_ref_types1.len());
+    assert_eq!(binop_add_types1.len(), 2,
+        "case 1: expected 2 BinOp(Add) nodes, got {}", binop_add_types1.len());
+    for ty in &value_ref_types1 {
+        assert_eq!(*ty, temp_scalar,
+            "case 1: each ValueRef should be Scalar<Temperature>, got {:?}", ty);
+    }
+    for ty in &binop_add_types1 {
+        assert_eq!(*ty, temp_scalar,
+            "case 1: each BinOp(Add) should be Scalar<Temperature>, got {:?}", ty);
+    }
+
+    // ── Case 2: Real — regression check ──────────────────────────────────────
+    let body2 = build_eval_field_op_body(&ids, &Type::Real);
+
+    match &body2.kind {
+        CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(*op, BinOp::Add,
+                "case 2: expected BinOp::Add at top level, got {:?}", op);
+        }
+        other => panic!("case 2: expected BinOp, got {:?}", other),
+    }
+    assert_eq!(
+        body2.result_type, Type::Real,
+        "case 2: top-level result_type should be Real, got {:?}", body2.result_type
+    );
+
+    let mut value_ref_types2: Vec<Type> = Vec::new();
+    let mut binop_add_types2: Vec<Type> = Vec::new();
+    body2.walk(&mut |node| {
+        match &node.kind {
+            CompiledExprKind::ValueRef(_) => value_ref_types2.push(node.result_type.clone()),
+            CompiledExprKind::BinOp { op, .. } if *op == BinOp::Add => {
+                binop_add_types2.push(node.result_type.clone());
+            }
+            _ => {}
+        }
+    });
+    assert_eq!(value_ref_types2.len(), 3,
+        "case 2: expected 3 ValueRef nodes, got {}", value_ref_types2.len());
+    assert_eq!(binop_add_types2.len(), 2,
+        "case 2: expected 2 BinOp(Add) nodes, got {}", binop_add_types2.len());
+    for ty in &value_ref_types2 {
+        assert_eq!(*ty, Type::Real,
+            "case 2: each ValueRef should be Real, got {:?}", ty);
+    }
+    for ty in &binop_add_types2 {
+        assert_eq!(*ty, Type::Real,
+            "case 2: each BinOp(Add) should be Real, got {:?}", ty);
     }
 }
 
