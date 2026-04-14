@@ -433,14 +433,15 @@ mod tests {
         assert!(trace.reads.contains(&b), "reads should contain 'y'");
     }
 
-    /// Documents the de-duplication contract of `extract_dependency_trace` for a
-    /// BinOp whose operands reference the same `ValueCellId` (e.g. `x + x`).
+    /// Step 1b: Documents the duplicate-preservation contract of `extract_dependency_trace`
+    /// for a BinOp whose operands reference the same `ValueCellId` (e.g. `x + x`).
     ///
     /// `extract_dependency_trace` is a thin wrapper over
     /// `CompiledExpr::collect_value_refs`, which *preserves duplicates* (it pushes
-    /// each `ValueRef` without deduping). The higher-level `extract_value_deps`
-    /// wrapper is responsible for deduplication and sorting. This test pins that
-    /// behavior so callers know whether they need to dedupe downstream.
+    /// each `ValueRef` without deduping). The sibling helper `extract_value_deps`
+    /// (defined below) is the deduplicating variant; `extract_dependency_trace`
+    /// intentionally keeps raw duplicates. This test pins that split so callers
+    /// know whether they need to dedupe downstream.
     #[test]
     fn extract_dependency_trace_preserves_duplicate_reads_for_same_cell_in_binop() {
         let x = ValueCellId::new("A", "x");
