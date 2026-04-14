@@ -29301,7 +29301,7 @@
         "updatedAt": "2026-04-10T00:01:36.421Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
             "crates/reify-compiler/src/module_dag.rs",
@@ -29322,7 +29322,7 @@
         "updatedAt": "2026-04-09T22:24:39.799Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/tests/user_defined_unit_tests.rs"
