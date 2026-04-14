@@ -34183,7 +34183,18 @@
           "modules": [
             "crates/reify-expr/src",
             "crates/reify-stdlib/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "crates/reify-expr/src/sanitize.rs",
+              "crates/reify-stdlib/src/helpers.rs"
+            ],
+            "queries": [
+              "sanitize_wildcard_variants_passthrough task 1644 Vector Frame NaN tripwire",
+              "task 892 sanitize_value consolidation complex.rs helpers.rs",
+              "Value::List Value::Transform variants reify-expr value.rs shape"
+            ]
+          }
         }
       },
       {
