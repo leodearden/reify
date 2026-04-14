@@ -3920,6 +3920,14 @@ fn sample_point_enum_correctness() {
 ///
 /// The marker and needle strings are assembled at runtime so this meta-test does not
 /// contain the literal substrings and accidentally trigger its own assertions.
+///
+/// **Relationship to workspace-wide guard**: the negative stale-plan-pointer sentinel
+/// (guard #2) is also enforced workspace-wide by
+/// `crates/reify-test-support/tests/ignore_reason_hygiene.rs`. Guard #1 (the
+/// positive `"known bug:"` prefix check) is intentionally file-local: sibling crates
+/// such as `reify-eval` use a different convention
+/// (`"blocked on Task N/M re-implementation; see esc-X-Y"`) that does not begin with
+/// `"known bug:"`. Neither guard is redundant — they test complementary properties.
 #[test]
 fn ignore_reason_strings_have_no_stale_plan_pointers() {
     let path = concat!(
