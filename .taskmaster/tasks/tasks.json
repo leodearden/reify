@@ -13827,12 +13827,12 @@
         "updatedAt": "2026-04-13T19:00:41.435Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr/src",
-            "crates/reify-expr/tests",
-            "crates/reify-types/src"
+            "crates/reify-types",
+            "crates/reify-expr"
           ],
           "files": [
             "crates/reify-types/src/value.rs",
+            "crates/reify-expr/src/calculus.rs",
             "crates/reify-expr/src/lib.rs"
           ]
         }
@@ -14107,7 +14107,7 @@
             "crates/reify-eval/tests/recursive_unfold.rs"
           ],
           "modules": [
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
