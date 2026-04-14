@@ -33952,11 +33952,11 @@
         "description": "In crates/reify-eval/tests/test_runner.rs around line 155, the `.any(...)` predicate is a single >100-column line with redundant inner parentheses: `(d.message.contains(\"violated\") && d.message.contains(\"constraint\"))`. Since `&&` is left-associative, the inner parens add no clarity. Drop the inner parens and run `cargo fmt` so rustfmt wraps the line. After: `.any(|d| d.severity == Severity::Error && d.message.contains(\"Positive[0]\") && d.message.contains(\"violated\") && d.message.contains(\"constraint\"))`. Follow-up from review of Task 1424.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:39:58.722Z",
+        "updatedAt": "2026-04-14T12:56:57.780Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -34598,7 +34598,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:56:55.409Z",
+      "lastModified": "2026-04-14T12:56:57.805Z",
       "taskCount": 1661,
       "completedCount": 1380,
       "tags": [
