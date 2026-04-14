@@ -126,6 +126,24 @@ impl MockOptimizedImpl {
     pub fn calls(&self) -> Vec<ConstraintNodeId> {
         self.calls.lock().unwrap().clone()
     }
+
+    /// A clone of the shared call-tracking handle.
+    ///
+    /// Useful when the mock itself has been moved into a `Box<dyn OptimizedImpl>`
+    /// (e.g. registered on an `Engine`) and is no longer reachable by the test.
+    /// Callers grab a handle *before* boxing, then assert against it after the
+    /// engine run:
+    ///
+    /// ```ignore
+    /// let mock = MockOptimizedImpl::new();
+    /// let calls = mock.calls_handle();
+    /// engine.register_optimized_impl("target_a", Box::new(mock));
+    /// engine.check(&compiled);
+    /// assert_eq!(calls.lock().unwrap().len(), 1);
+    /// ```
+    pub fn calls_handle(&self) -> Arc<Mutex<Vec<ConstraintNodeId>>> {
+        Arc::clone(&self.calls)
+    }
 }
 
 impl Default for MockOptimizedImpl {

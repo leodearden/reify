@@ -38,8 +38,16 @@ structure def S {
     let compiled = parse_and_compile(source);
 
     let mock = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
+    // Grab the call-tracking handle BEFORE the mock is moved into the box so
+    // the test can directly assert dispatch rather than inferring it from
+    // the returned Satisfaction.
+    let calls = mock.calls_handle();
     let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
     engine.register_optimized_impl("geo::coincident", Box::new(mock));
+
+    // Sanity check: the target is now registered.
+    let targets: Vec<_> = engine.optimized_targets().collect();
+    assert_eq!(targets, vec!["geo::coincident"]);
 
     let check_result = engine.check(&compiled);
 
@@ -57,15 +65,30 @@ structure def S {
         "expected the optimized impl to handle this constraint (Violated), \
          not the language-level checker (which would return Satisfied)"
     );
+
+    // Direct dispatch assertion via the shared handle: exactly one call, and
+    // the recorded ConstraintNodeId matches the compiled result's id.
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "expected MockOptimizedImpl to be invoked exactly once, got {:?}",
+        recorded
+    );
+    assert_eq!(
+        recorded[0], check_result.constraint_results[0].id,
+        "the mock's recorded id should match the dispatched constraint id"
+    );
 }
 
 // ── Test 2: unregistered target falls back to the checker ──────────────────
 
 #[test]
 fn unregistered_optimized_target_falls_back_to_checker() {
-    // Same module as above, but the optimized impl is NOT registered. The
-    // language-level `SimpleConstraintChecker` should handle the constraint
-    // and return Satisfied (1.0 == 1.0).
+    // Same module as above, but the optimized impl is registered under a
+    // DIFFERENT target ("other::target") so the constraint's "geo::coincident"
+    // falls through to the language-level checker. The mock's handle lets us
+    // additionally assert it was never invoked.
     let source = r#"
 @optimized("geo::coincident")
 constraint def Coincident {
@@ -80,16 +103,26 @@ structure def S {
 "#;
     let compiled = parse_and_compile(source);
 
+    let mock = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
+    let calls = mock.calls_handle();
     let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
-    // No optimized impl registered — falls back.
+    // Registered under an unrelated target — the @optimized("geo::coincident")
+    // constraint should still fall through to the language-level checker.
+    engine.register_optimized_impl("other::target", Box::new(mock));
 
     let check_result = engine.check(&compiled);
     assert_eq!(check_result.constraint_results.len(), 1);
     assert_eq!(
         check_result.constraint_results[0].satisfaction,
         Satisfaction::Satisfied,
-        "without a registered optimized impl the language-level checker \
-         should handle the constraint (x == x is Satisfied)"
+        "without a matching registered optimized impl the language-level \
+         checker should handle the constraint (x == x is Satisfied)"
+    );
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "mock registered under a different target must not be invoked for \
+         a constraint with @optimized(\"geo::coincident\"); recorded: {:?}",
+        calls.lock().unwrap()
     );
 }
 
@@ -128,6 +161,7 @@ structure def Mixed {
     let compiled = parse_and_compile(source);
 
     let mock = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
+    let calls = mock.calls_handle();
     let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
     engine.register_optimized_impl("target_a", Box::new(mock));
 
@@ -138,6 +172,18 @@ structure def Mixed {
         2,
         "expected two constraint results, got {:?}",
         check_result.constraint_results
+    );
+
+    // The optimized impl must have been invoked exactly once — for OptA only.
+    // PlainEq should have gone to the language-level checker, so the mock's
+    // recorded-calls list should have length 1.
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "expected optimized mock to be invoked exactly once (for OptA only), \
+         got recorded calls: {:?}",
+        recorded
     );
 
     // OptA must be first (Violated via the mock), PlainEq must be second
