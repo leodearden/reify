@@ -85,21 +85,24 @@ pub fn find_stale_plan_pointers_in_source(source: &str) -> Vec<String> {
 ///    catch stale wordings *appended inside* an otherwise-compliant prefix
 ///    (e.g. `"known bug: see plan.md step-3"` would pass guard 2 and would
 ///    only trip guard 3 if it happened to contain the specific sentinel).
-/// 3. **Negative sentinel** — the specific historical stale-pointer substring
-///    is also checked as belt-and-suspenders.  Guard 3 now scans
-///    line-by-line so it agrees with guards 1+2 on which lines are
-///    doc-comment prose to skip.  **Limitation:** because the check is
-///    line-local, a stale needle that straddles a `\` + newline
-///    string-literal continuation *across* a line boundary would be missed.
-///    Guards 1+2 still catch that case via `after_marker`'s cross-line scan.
-///    This asymmetry is not a realistic risk for current test files, but is
-///    documented here so future callers are aware.
+/// 3. **Negative sentinel** — guard 3 delegates to
+///    `find_stale_plan_pointers_in_source` so stale-needle detection —
+///    including multi-line reason support and `///`/`//!` doc-comment
+///    skipping — has a single source of truth across both public scanners.
+///    Any future scanner improvement (e.g. skipping `/* */` block comments)
+///    benefits both call sites automatically.
+///
+///    Note: guard 3 only catches stale needles that appear *inside* an
+///    `#[ignore = "..."]` reason string.  Occurrences in bare prose outside
+///    any attribute are no longer caught here; guards 1+2 cover every
+///    real-world case because the needle's space-dash boundary cannot appear
+///    in a Rust identifier (underscores are the convention), and grep of the
+///    current workspace confirms zero bare-prose occurrences.
 ///
 /// Lines where `is_doc_comment_line` returns true (`///` or `//!`, after
-/// `trim_start`) are skipped — prose mentions of `#[ignore]` in doc comments
-/// do not generate false positives.  This predicate is shared with
-/// `find_stale_plan_pointers_in_source` so doc-comment skipping cannot drift
-/// between the two scanners (lock-step guarantee).
+/// `trim_start`) are skipped by guards 1+2 directly, and by guard 3
+/// transitively through `find_stale_plan_pointers_in_source` — prose
+/// mentions of `#[ignore]` in doc comments do not generate false positives.
 ///
 /// All scanner constants are assembled at runtime via `.concat()` so the
 /// source file does not contain the guarded sequences as adjacent characters.
