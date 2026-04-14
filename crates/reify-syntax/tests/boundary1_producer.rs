@@ -351,6 +351,24 @@ fn parse_mixed_auto_and_auto_free() {
     ));
 }
 
+/// `auto(constrained)` — unrecognized modifier — should produce parse errors.
+///
+/// The grammar hard-codes the literal `free` as the only accepted modifier inside
+/// `auto(...)`.  This test is an intentional regression guard: if someone generalises
+/// the modifier into an arbitrary identifier, this test will fail and force them to
+/// decide whether that semantic change is deliberate.
+#[test]
+fn parse_auto_unrecognized_modifier_is_error() {
+    let source = r#"structure T {
+    param x: Scalar = auto(constrained)
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        !module.errors.is_empty(),
+        "expected parse errors for unrecognized modifier 'constrained' in auto(...)"
+    );
+}
+
 /// Line comment with `//` on its own line should parse without errors.
 #[test]
 fn parse_line_comment_double_slash() {
