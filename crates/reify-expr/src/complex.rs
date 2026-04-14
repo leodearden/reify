@@ -482,6 +482,23 @@ mod tests {
         );
     }
 
+    // ── method: phase (zero-vector edge case) ─────────────────────────────────
+
+    #[test]
+    fn phase_zero_complex_returns_undef() {
+        // Complex{re:0.0, im:0.0, DIMENSIONLESS}.phase → Undef
+        // atan2(0.0, 0.0) = 0.0 which is finite — neither sanitize_value nor the
+        // is_finite pre-guard can detect this case. The zero-vector guard
+        // (`*re == 0.0 && *im == 0.0`) correctly rejects the mathematically-
+        // undefined phase of the zero vector. This test locks that guard as a
+        // regression guard.
+        assert!(
+            call_complex_method(0.0, 0.0, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            "z.phase with zero vector should return Undef (atan2(0.0,0.0)=0.0 is finite, \
+             so the zero-vector guard, not sanitize_value, is what catches this)"
+        );
+    }
+
     // ── method regressions: finite phase values still work ────────────────────
 
     #[test]
