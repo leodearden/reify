@@ -6893,7 +6893,13 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/src/stdlib_loader.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib: Process traits + DFMRule"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-14T12:30:32.053Z"
@@ -13863,7 +13869,13 @@
           "files": [
             "crates/reify-types/src/value.rs",
             "crates/reify-expr/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Move inner_field into FieldSourceKind::Gradient and fix stale docs"
+            ]
+          }
         }
       },
       {
@@ -28899,7 +28911,13 @@
           ],
           "files": [
             "crates/reify-compiler/tests/self_keyword_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen error assertions in self_inside_lambda_in_fn_body_errors test"
+            ]
+          }
         }
       },
       {
@@ -29086,7 +29104,13 @@
           ],
           "files": [
             "crates/reify-eval/src/deps.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: deps.rs: fix doc accuracy, test naming, duplicate contract, cross-module comment"
+            ]
+          }
         }
       },
       {
