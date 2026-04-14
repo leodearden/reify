@@ -144,6 +144,186 @@ fn total_constraint_count_meets_threshold() {
     }
 }
 
+// ── Test 5: geometric let bindings are determined ────────────────────────────
+
+/// origin, target, offset, displacement should all evaluate to concrete (non-Undef) geometric values.
+#[test]
+fn geometric_bindings_determined() {
+    let result = eval_canonical();
+    let assert_non_undef = |name: &str| {
+        let id = ValueCellId::new("Assembly", name);
+        let v = result
+            .values
+            .get(&id)
+            .unwrap_or_else(|| panic!("Assembly.{name} not found in eval result"));
+        assert!(
+            !matches!(v, Value::Undef),
+            "Assembly.{name} should not be Undef (expected a concrete geometric value)"
+        );
+    };
+    assert_non_undef("origin");
+    assert_non_undef("target");
+    assert_non_undef("offset");
+    assert_non_undef("displacement");
+}
+
+// ── Test 6: meta access values ────────────────────────────────────────────────
+
+/// proj_name = meta.project → "integration-test"; file_ver = meta.version → "0.1".
+#[test]
+fn meta_access_values() {
+    let result = eval_canonical();
+
+    // proj_name = meta.project = "integration-test"
+    let proj_id = ValueCellId::new("Assembly", "proj_name");
+    let proj_val = result
+        .values
+        .get(&proj_id)
+        .unwrap_or_else(|| panic!("Assembly.proj_name not found in eval result"));
+    assert_eq!(
+        proj_val,
+        &Value::String("integration-test".to_string()),
+        "Assembly.proj_name should be String(\"integration-test\") via meta.project"
+    );
+
+    // file_ver = meta.version = "0.1"
+    let ver_id = ValueCellId::new("Assembly", "file_ver");
+    let ver_val = result
+        .values
+        .get(&ver_id)
+        .unwrap_or_else(|| panic!("Assembly.file_ver not found in eval result"));
+    assert_eq!(
+        ver_val,
+        &Value::String("0.1".to_string()),
+        "Assembly.file_ver should be String(\"0.1\") via meta.version"
+    );
+}
+
+// ── Test 7: trait values ──────────────────────────────────────────────────────
+
+/// mass = 5kg = 5.0 SI (Physical trait param); position_x = 100mm = 0.1 SI (Locatable trait param).
+#[test]
+fn trait_values() {
+    let result = eval_canonical();
+
+    // mass = 5kg = 5.0 SI
+    let mass_id = ValueCellId::new("Assembly", "mass");
+    let mass_val = result
+        .values
+        .get(&mass_id)
+        .unwrap_or_else(|| panic!("Assembly.mass not found in eval result"));
+    match mass_val {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 5.0).abs() < 1e-12,
+                "expected 5.0 SI for Assembly.mass (5kg), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for Assembly.mass, got {:?}", other),
+    }
+
+    // position_x = 100mm = 0.1 SI
+    let px_id = ValueCellId::new("Assembly", "position_x");
+    let px_val = result
+        .values
+        .get(&px_id)
+        .unwrap_or_else(|| panic!("Assembly.position_x not found in eval result"));
+    match px_val {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.1).abs() < 1e-12,
+                "expected 0.1 SI for Assembly.position_x (100mm), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for Assembly.position_x, got {:?}", other),
+    }
+}
+
+// ── Test 8: complex number binding ────────────────────────────────────────────
+
+/// impedance = complex(3.0, 4.0) should evaluate to Value::Complex (not Undef).
+#[test]
+fn complex_number_binding() {
+    let result = eval_canonical();
+
+    let id = ValueCellId::new("Assembly", "impedance");
+    let v = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("Assembly.impedance not found in eval result"));
+    assert!(
+        !matches!(v, Value::Undef),
+        "Assembly.impedance should not be Undef (expected Value::Complex from complex(3.0,4.0))"
+    );
+    assert!(
+        matches!(v, Value::Complex { .. }),
+        "Assembly.impedance should be Value::Complex, got {:?}",
+        v
+    );
+}
+
+// ── Test 9: custom unit value ─────────────────────────────────────────────────
+
+/// clearance = 500mil = 500 * 0.0000254m = 0.0127 SI.
+/// Confirms the custom `unit mil : Length = 0.0000254` resolves correctly.
+#[test]
+fn custom_unit_value() {
+    let result = eval_canonical();
+
+    let id = ValueCellId::new("Assembly", "clearance");
+    let v = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("Assembly.clearance not found in eval result"));
+    match v {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.0127).abs() < 1e-9,
+                "expected ~0.0127 SI for Assembly.clearance (500mil), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for Assembly.clearance, got {:?}", other),
+    }
+}
+
+// ── Test 10: match expression result ──────────────────────────────────────────
+
+/// grade = Grade.Premium; grade_code = match grade { ... Premium => 3 } → Int(3).
+#[test]
+fn match_expression_result() {
+    let result = eval_canonical();
+
+    let id = ValueCellId::new("Assembly", "grade_code");
+    let v = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("Assembly.grade_code not found in eval result"));
+    assert_eq!(
+        v,
+        &Value::Int(3),
+        "Assembly.grade_code should be Int(3) (Grade.Premium → 3 via match)"
+    );
+}
+
+// ── Test 11: collection operations ────────────────────────────────────────────
+
+/// sizes = [10, 20, 30, 40, 50] → size_count = sizes.count = Int(5).
+#[test]
+fn collection_operations() {
+    let result = eval_canonical();
+
+    let id = ValueCellId::new("Assembly", "size_count");
+    let v = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("Assembly.size_count not found in eval result"));
+    assert_eq!(
+        v,
+        &Value::Int(5),
+        "Assembly.size_count should be Int(5) (sizes has 5 elements)"
+    );
+}
+
 // ── Test 1: file parses without errors ───────────────────────────────────────
 
 /// Read integration_full_v01.ri, verify it parses without errors, and assert
