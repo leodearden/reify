@@ -34619,7 +34619,7 @@
         "description": "Follow-up from esc-1642-57 S1+S2 (reviewer_comprehensive). Promote `check_ignore_reasons` from crates/reify-expr/tests/field_calculus_tests.rs:4219 into reify-test-support::ignore_hygiene. Have both the file-local meta-test and the workspace-wide integration test reuse it. The current workspace scanner `find_stale_plan_pointers_in_source` lacks `///` / `//!` doc-comment skipping that `check_ignore_reasons` already implements — reuse fixes that. Two scanners must stay in lock-step; consolidating eliminates the drift surface.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -34632,12 +34632,13 @@
             "crates/reify-test-support/src",
             "crates/reify-expr/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-14T15:39:04.779Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T15:39:04.526Z",
+      "lastModified": "2026-04-14T15:39:04.779Z",
       "taskCount": 1661,
       "completedCount": 1383,
       "tags": [
