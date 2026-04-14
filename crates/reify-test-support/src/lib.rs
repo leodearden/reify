@@ -1,6 +1,7 @@
 pub mod builders;
 pub mod fixtures;
 pub mod helpers;
+pub mod ignore_hygiene;
 pub mod lsp_fixtures;
 pub mod mocks;
 pub mod tracing_support;
