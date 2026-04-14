@@ -30485,8 +30485,11 @@
         "updatedAt": "2026-04-10T02:27:56.512Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/scope.rs"
           ]
         }
       },
