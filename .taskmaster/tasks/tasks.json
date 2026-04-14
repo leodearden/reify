@@ -10078,7 +10078,7 @@
             "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
@@ -10349,11 +10349,10 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/tests/geometry_error_handling.rs"
+            "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
