@@ -12,7 +12,7 @@
 //! Uses `examples/m9_integration.ri` as the capstone source file and inline source
 //! strings for focused per-scenario assertions.
 
-use reify_constraints::SimpleConstraintChecker;
+use reify_test_support::make_simple_engine;
 use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the integration example file, resolved at compile time from crate root.
@@ -46,8 +46,7 @@ fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
 /// Use when asserting on values (SI scalars, strings, booleans).
 fn eval_source(source: &str) -> reify_eval::EvalResult {
     let compiled = parse_and_compile(source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     engine.eval(&compiled)
 }
 
@@ -55,8 +54,7 @@ fn eval_source(source: &str) -> reify_eval::EvalResult {
 /// Use when asserting on constraint satisfaction, labels, and counts.
 fn check_source(source: &str) -> reify_eval::CheckResult {
     let compiled = parse_and_compile(source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     engine.check(&compiled)
 }
 
@@ -602,8 +600,7 @@ fn full_pipeline_all_constraints_satisfied() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_integration.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let result = engine.check(&compiled);
 
     // All constraints must be Satisfied
@@ -640,8 +637,7 @@ fn full_pipeline_cross_feature_values() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_integration.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let check_result = engine.check(&compiled);
 
     // 1. Widget.size = 30mm = 0.03 SI (default from structure, implements Measurable)
