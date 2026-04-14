@@ -34120,11 +34120,11 @@
         "description": "In crates/reify-expr/src/complex.rs: (1) Reword the comment at line ~41 to accurately distinguish NaN propagation (caught by sanitize_value downstream) from Inf collapse (requires the is_finite pre-guard), explaining the guard is defense-in-depth for NaN but strictly necessary for Inf. (2) Split phase_zero_complex_returns_undef into two separate #[test] functions — one for (0.0, 0.0) and one for (-0.0, -0.0) — so signed-zero regression is never masked. (3) Add at least one dimensioned NaN/Inf phase test (e.g. phase_nan_im_dimensioned_returns_undef) to match the coverage pattern used by re/im/magnitude dimensioned tests.",
         "details": "<info added on 2026-04-14T04:56:48.436Z>\nNote: Task 1648 covers only the comment reword (S1) and is currently in-progress. If Task 1648 completes first, skip the comment reword and proceed directly to S2 (split signed-zero test) and S3 (add dimensioned NaN/Inf phase test). Task 1651 was cancelled as an exact duplicate of this task.\n</info added on 2026-04-14T04:56:48.436Z>",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T04:08:03.837Z",
+        "updatedAt": "2026-04-14T05:02:20.472Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src"
@@ -34239,7 +34239,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T05:02:19.005Z",
+      "lastModified": "2026-04-14T05:02:20.472Z",
       "taskCount": 1654,
       "completedCount": 1324,
       "tags": [
