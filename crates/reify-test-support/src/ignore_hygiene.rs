@@ -23,3 +23,80 @@ pub fn find_stale_plan_pointers_in_source(_source: &str) -> Vec<String> {
 pub fn walk_test_rs_files(_workspace_root: &Path) -> Vec<PathBuf> {
     unimplemented!()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── find_stale_plan_pointers_in_source ────────────────────────────────────
+
+    /// (a) Empty source → empty Vec.
+    #[test]
+    fn fspp_empty_source_is_clean() {
+        assert!(find_stale_plan_pointers_in_source("").is_empty());
+    }
+
+    /// (b) Source with one stale pointer → exactly one violation containing
+    /// a preview of the offending reason.
+    /// Marker and needle assembled at runtime so this file does not contain
+    /// the literal substrings and does not self-trigger the workspace guard.
+    #[test]
+    fn fspp_one_stale_pointer_returns_one_violation_with_preview() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let source = format!("{marker}{needle}3 reference\"]");
+        let violations = find_stale_plan_pointers_in_source(&source);
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected exactly one violation, got: {violations:?}"
+        );
+        let expected_fragment = format!("{needle}3 reference");
+        assert!(
+            violations[0].contains(&expected_fragment),
+            "violation {:?} should contain the reason preview {:?}",
+            violations[0],
+            expected_fragment
+        );
+    }
+
+    /// (c) Two #[ignore] attrs, only one with a stale pointer → one violation.
+    #[test]
+    fn fspp_two_ignores_only_one_stale_returns_one_violation() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let source = format!(
+            "{marker}{needle}7 reference\"]\n{marker}known bug: valid reason\"]"
+        );
+        let violations = find_stale_plan_pointers_in_source(&source);
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected one violation, got: {violations:?}"
+        );
+    }
+
+    /// (d) `#[ignore = "known bug: ..."]` with no stale pointer → clean.
+    #[test]
+    fn fspp_known_bug_reason_is_clean() {
+        let marker = ["#[ignore", " = \""].concat();
+        let source = format!("{marker}known bug: dimension returns wrong type\"]");
+        assert!(
+            find_stale_plan_pointers_in_source(&source).is_empty(),
+            "expected no violations for a known-bug reason"
+        );
+    }
+
+    /// (e) `#[ignore]` with no reason string → clean.
+    /// Assembled at runtime so the literal marker is not present in this file.
+    #[test]
+    fn fspp_bare_ignore_without_reason_is_clean() {
+        // Builds "#[ignore]" without putting the full marker literal in this file.
+        let bare = ["#[ignore", "]"].concat();
+        let source = format!("{bare}\nfn some_test() {{}}");
+        assert!(
+            find_stale_plan_pointers_in_source(&source).is_empty(),
+            "expected no violations for bare #[ignore] with no reason string"
+        );
+    }
+}
