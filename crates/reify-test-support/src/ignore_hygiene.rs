@@ -1,5 +1,16 @@
 use std::path::{Path, PathBuf};
 
+/// Returns `true` when `line` is an outer (`///`) or inner (`//!`) doc-comment
+/// line, after stripping leading whitespace.  Regular `//` line comments and
+/// `/* ... */` block comments return `false` — only `///` and `//!` are skipped
+/// by both scanners.  Note that `////` (four or more slashes) also returns
+/// `true` due to `starts_with("///")` semantics, preserving the existing
+/// behavior from the original field-local scanner.
+fn is_doc_comment_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("///") || trimmed.starts_with("//!")
+}
+
 /// Scan `source` for `#[ignore = "..."]` reason strings that contain a stale
 /// transient-plan-doc pointer (e.g. a `plan step-N` breadcrumb). Returns one
 /// human-readable violation string per offender. Empty Vec means clean.
