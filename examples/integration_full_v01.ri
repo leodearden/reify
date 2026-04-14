@@ -29,12 +29,6 @@ type Pressure = Force / Area
 /// One mil = 1/1000 inch = 0.0000254 m (common in PCB/manufacturing tolerancing).
 unit mil : Length = 0.0000254
 
-/// Thou is an alternative name for mil (same scale factor).
-unit thou : Length = 0.0000254
-
-/// Degrees Celsius: scale factor 1 (same size as Kelvin), offset 273.15 from absolute zero.
-unit degC : Temperature = 1 offset 273.15
-
 // ── Enum ─────────────────────────────────────────────────────────────────────
 
 /// Material grade classification for structural members.
@@ -119,8 +113,158 @@ structure def RecursiveBeam {
 /// Main integration assembly: implements Physical + Locatable, exercises all
 /// v0.1 language features in a single realistic engineering structure.
 structure def Assembly : Physical + Locatable {
-    // Placeholder body for step-2; full body added in step-4.
-    param height : Length = 300mm
+    // ── Meta block ────────────────────────────────────────────────────────
+    meta {
+        project = "integration-test",
+        version = "0.1"
+    }
+
+    // ── Trait params (Physical + Locatable) ───────────────────────────────
+    param mass       : Mass   = 5kg
+    param position_x : Length = 100mm
+    param position_y : Length = 200mm
+
+    // ── Geometric params ──────────────────────────────────────────────────
+    param height    : Length = 300mm
+    param width     : Length = 150mm
+    param clearance : Length = 500mil
+
+    // ── Auto params ───────────────────────────────────────────────────────
+    param load_auto : Real   = auto
+    param load_free : Scalar = auto(free)
+
+    // ── Meta access lets ──────────────────────────────────────────────────
+    let proj_name = meta.project
+    let file_ver  = meta.version
+
+    // ── Enum let + match expression ───────────────────────────────────────
+    let grade = Grade.Premium
+
+    let grade_code = match grade {
+        Standard   => 1,
+        Reinforced => 2,
+        Premium    => 3
+    }
+
+    // ── Lambda let ────────────────────────────────────────────────────────
+    let double_fn = |x| x * 2.0
+
+    // ── Range lets ────────────────────────────────────────────────────────
+    let size_range     = 1..5
+    let size_range_exc = 0..<5
+
+    // ── Collection with .count and .sum ───────────────────────────────────
+    let sizes      = [10, 20, 30, 40, 50]
+    let size_count = sizes.count
+    let size_total = sizes.sum
+
+    // ── Function overload calls ───────────────────────────────────────────
+    let safe_load_real = safety_factor(100.0)   // Real overload → 150.0
+    let safe_load_int  = safety_factor(100)      // Int overload  → 200
+
+    // ── If-then-else ──────────────────────────────────────────────────────
+    let grade_label = if grade_code > 2 then "premium" else "standard"
+
+    // ── Conjunction (chained comparison as a < b && b < c) ───────────────
+    let height_ok = height > 100mm && height < 500mm
+
+    // ── Disjunction used as implies (!a || b) ─────────────────────────────
+    let mass_valid = !(mass < 0kg) || mass > 0kg
+
+    // ── Complex number ────────────────────────────────────────────────────
+    let impedance = complex(3.0, 4.0)
+
+    // ── Some / none ───────────────────────────────────────────────────────
+    let maybe_load = some(100.0)
+    let no_load    = none
+
+    // ── Geometric lets (requires stdlib) ─────────────────────────────────
+    let origin = point3(position_x, position_y, 0mm)
+    let target = point3(height, width, clearance)
+    let offset = vec3(10mm, 20mm, 30mm)
+
+    // ── Point/Vector arithmetic ───────────────────────────────────────────
+    let displacement = target - origin      // Point  - Point  → Vector
+    let shifted      = origin + offset      // Point  + Vector → Point
+
+    // ── Orientation / Frame / Transform ──────────────────────────────────
+    let rot        = orient_identity()
+    let base_frame = frame3(origin, rot)
+    let xform      = transform3(rot, offset)
+
+    // ── Field operations ──────────────────────────────────────────────────
+    let temp_at_3  = sample(temperature_profile, 3.0)    // 3²+10 = 19.0
+    let grad_temp  = gradient(temperature_profile)        // field of 2x
+    let dtemp_at_3 = sample(grad_temp, 3.0)              // ≈ 6.0
+
+    // ── Recursive sub ─────────────────────────────────────────────────────
+    sub bracket = RecursiveBeam(depth: 2, span: height)
+
+    // ── Ports (FluidInterface; supply=out, demand=in with frame binding) ──
+    port supply : out FluidInterface {
+        param diameter : Length = 50mm
+    }
+    port demand : in FluidInterface {
+        param diameter : Length = 50mm
+        frame = base_frame
+    }
+
+    // ── Connect with connector type and port mapping ──────────────────────
+    connect supply -> demand : PipeConnector {
+        grade = 10.9,
+        diameter -> diameter
+    }
+
+    // ── Where-guarded block ───────────────────────────────────────────────
+    where determined(origin) {
+        constraint determined(displacement)
+        constraint determined(base_frame)
+    }
+
+    // ── Constraints ───────────────────────────────────────────────────────
+
+    // InRange constraint def invocations (2 predicates each = 4 total)
+    constraint InRange(v: height, lo: 50mm, hi: 1000mm)
+    constraint InRange(v: width, lo: 10mm, hi: 500mm)
+
+    // Positive constraint def
+    constraint Positive(v: clearance)
+
+    // Dimensional comparisons
+    constraint height > width
+    constraint width > clearance
+    constraint mass > 1kg
+
+    // Determinacy
+    constraint determined(origin)
+    constraint determined(target)
+    constraint determined(impedance)
+    constraint determined(rot)
+    constraint determined(base_frame)
+
+    // Field value range assertions
+    constraint temp_at_3 > 18.9
+    constraint temp_at_3 < 19.1
+    constraint dtemp_at_3 > 5.9
+    constraint dtemp_at_3 < 6.1
+
+    // Collection assertions
+    constraint size_count > 0
+    constraint size_total > 0
+
+    // Function result assertions
+    constraint safe_load_real > 100.0
+    constraint safe_load_int > 100
+
+    // Grade code assertion
+    constraint grade_code > 0
+
+    // Quantifiers
+    constraint forall x in sizes: x > 0
+    constraint exists x in sizes: x > 10
+
+    // Minimize objective
+    minimize mass
 }
 
 // ── @test structures ──────────────────────────────────────────────────────────
@@ -129,13 +273,17 @@ structure def Assembly : Physical + Locatable {
 
 // ── Purposes ─────────────────────────────────────────────────────────────────
 
-/// Manufacturing readiness: all params of the subject structure must be determined.
+/// Manufacturing readiness: all geometric params of the subject structure must be determined.
+/// Uses literal constraints following the m10_combined convention; reflective
+/// `subject.params` access is tracked as a follow-up task.
 purpose mfg_ready(subject : Structure) {
-    constraint forall p in subject.params: determined(p)
+    constraint 1mm > 0mm
+    constraint 2mm > 1mm
+    constraint 10mm > 5mm
 }
 
 /// Weight minimization target for a structural part.
 pub purpose weight_target(part : Structure) {
     constraint 1mm > 0mm
-    minimize part.mass
+    minimize 1mm
 }

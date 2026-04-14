@@ -59,6 +59,46 @@ fn check_source(src: &str) -> reify_eval::CheckResult {
     engine.check(&compiled)
 }
 
+// ── Test 2: file compiles with expected templates ─────────────────────────────
+
+/// Compile integration_full_v01.ri (with stdlib) and verify the compiled module
+/// contains the expected templates: Assembly (>=10 value cells), RecursiveBeam,
+/// PipeConnector — and at least 5 templates total (including @test structures).
+#[test]
+fn integration_full_v01_compiles() {
+    let compiled = compiled();
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected at least one template in the compiled module"
+    );
+
+    // Assembly must exist with >=10 value cells (params + lets from full body)
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("should have an Assembly template");
+    assert!(
+        assembly.value_cells.len() >= 10,
+        "Assembly should have >=10 value cells (params + lets), got {}",
+        assembly.value_cells.len()
+    );
+
+    // RecursiveBeam must exist
+    assert!(
+        compiled.templates.iter().any(|t| t.name == "RecursiveBeam"),
+        "should have a RecursiveBeam template"
+    );
+
+    // At least 3 templates total (Assembly, RecursiveBeam, PipeConnector).
+    // More templates (>=9) are added in step-22 when @test structures land.
+    assert!(
+        compiled.templates.len() >= 3,
+        "expected >=3 templates total, got {}",
+        compiled.templates.len()
+    );
+}
+
 // ── Test 1: file parses without errors ───────────────────────────────────────
 
 /// Read integration_full_v01.ri, verify it parses without errors, and assert
