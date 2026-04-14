@@ -16003,8 +16003,7 @@
         "metadata": {
           "files": [
             "crates/reify-types/src/traits.rs",
-            "crates/reify-compiler/src/traits.rs",
-            "crates/reify-compiler/tests/trait_bounds_tests.rs"
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
           ],
           "modules": [
             "crates/reify-types",
