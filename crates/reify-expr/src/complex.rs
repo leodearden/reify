@@ -38,7 +38,9 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
                     //
                     //   • is_finite guard: atan2(y, ±Inf) = 0.0 or ±π, and
                     //     atan2(±Inf, x) = ±π/2 — all finite. sanitize_value cannot
-                    //     detect NaN/Inf inputs from these outputs alone.
+                    //     detect Inf inputs from these outputs alone (NaN inputs would
+                    //     propagate through atan2 and be caught downstream, but for
+                    //     stylistic parity and defense-in-depth we reject both up-front).
                     //
                     //   • zero-vector guard: atan2(0.0, 0.0) = 0.0 which is
                     //     also finite, so sanitize_value cannot distinguish the
