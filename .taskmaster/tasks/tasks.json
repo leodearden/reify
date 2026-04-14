@@ -28314,10 +28314,11 @@
           },
           "files": [
             "crates/reify-compiler/tests/boundary2_producer.rs",
-            "crates/reify-compiler/tests/port_compile_tests.rs"
+            "crates/reify-syntax/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler",
+            "crates/reify-syntax"
           ]
         }
       },
