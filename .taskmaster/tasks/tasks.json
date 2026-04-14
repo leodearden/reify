@@ -30255,8 +30255,12 @@
         "updatedAt": "2026-04-10T01:31:14.700Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/scope.rs"
           ]
         }
       },
@@ -30273,7 +30277,11 @@
         "updatedAt": "2026-04-10T01:31:44.574Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/collection_sub_tests.rs",
+            "crates/reify-compiler/tests/silent_defaults_tests.rs"
           ]
         }
       },
