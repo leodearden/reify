@@ -10849,8 +10849,8 @@
             "crates/reify-eval/tests/stdlib_prelude_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-eval/tests"
+            "crates/reify-compiler",
+            "crates/reify-eval"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
@@ -10886,8 +10886,7 @@
             "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ],
           "memory_hints": [
             {
