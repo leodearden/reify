@@ -6104,7 +6104,7 @@
         "testStrategy": "cargo test -p reify-kernel-occt -- cone && cargo test -p reify-eval -- cone",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-M8.1",
           "modules": [
@@ -6127,7 +6127,7 @@
           "bundle_key": "K"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:22.332Z"
+        "updatedAt": "2026-04-14T12:30:27.625Z"
       },
       {
         "id": "304",
@@ -34460,7 +34460,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:30:27.365Z",
+      "lastModified": "2026-04-14T12:30:27.625Z",
       "taskCount": 1661,
       "completedCount": 1338,
       "tags": [
