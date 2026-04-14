@@ -13236,9 +13236,7 @@
             "crates/reify-lsp/tests/in_process_bridge.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-lsp/src",
-            "crates/reify-syntax/tests"
+            "crates/reify-lsp"
           ],
           "memory_hints": {
             "entities": [],
@@ -13455,9 +13453,8 @@
             "818e7314-6409-426f-89c3-275441a9d4cb"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-eval/src",
-            "crates/reify-types/src"
+            "crates/reify-compiler",
+            "crates/reify-eval"
           ],
           "memory_hints": {
             "entities": [
@@ -13475,8 +13472,8 @@
           },
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/lib.rs",
             "crates/reify-eval/src/lib.rs"
           ]
         },
