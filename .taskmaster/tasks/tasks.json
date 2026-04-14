@@ -33741,7 +33741,7 @@
         "updatedAt": "2026-04-11T21:09:50.501Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ],
           "memory_hints": {
             "entities": [
@@ -33806,7 +33806,7 @@
         "updatedAt": "2026-04-14T07:04:28.437Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ],
           "files": [
             "crates/reify-eval/tests/m9_combined.rs"
