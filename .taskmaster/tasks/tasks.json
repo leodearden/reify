@@ -8130,7 +8130,13 @@
           "modules": [
             "crates/reify-compiler/tests",
             "crates/reify-expr/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Determinacy predicate test hardening"
+            ]
+          }
         }
       },
       {
