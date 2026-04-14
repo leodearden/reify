@@ -375,6 +375,7 @@ mod tests {
                 label: None,
                 expr: CompiledExpr::value_ref(ValueCellId::new(e, "a"), Type::Real),
                 content_hash: ContentHash::of_str("c0"),
+                optimized_target: None,
             },
         );
 

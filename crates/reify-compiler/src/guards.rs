@@ -394,6 +394,7 @@ pub(crate) fn compile_guarded_members(
                     expr: compiled_expr,
                     span: constraint.span,
                     domain: None,
+                    optimized_target: None,
                 });
                 *constraint_index += 1;
             }

@@ -15,6 +15,7 @@
 //! NOTE: Two feature categories are not yet implemented by Task 259:
 //!   - `.geometric_params` filtering
 //!   - `forall p in subject.params: determined(p)` evaluated at runtime
+//!
 //! A follow-up task should implement them and add tests here. See
 //! `crates/reify-compiler/src/traits.rs` (resolved_queries building loop).
 

@@ -719,6 +719,7 @@ pub(crate) fn compile_entity(
                         expr: compiled_expr,
                         span: constraint.span,
                         domain: None,
+                        optimized_target: None,
                     };
                     constraint_index += 1;
 
@@ -973,6 +974,7 @@ pub(crate) fn compile_entity(
                                 expr: compiled_expr,
                                 span: constraint.span,
                                 domain: None,
+                                optimized_target: None,
                             });
                             constraint_index += 1;
                         }
@@ -1131,6 +1133,11 @@ pub(crate) fn compile_entity(
                     continue;
                 }
 
+                // Propagate the constraint def's `@optimized("target")` annotation (if any)
+                // onto each compiled predicate so the Engine's dispatch shim can route it.
+                let def_optimized_target =
+                    crate::annotations::optimized_target(&def.annotations);
+
                 // For each predicate in the constraint def, substitute params with args
                 // and compile the resulting expression in the calling entity's scope.
                 for (pred_idx, predicate) in def.predicates.iter().enumerate() {
@@ -1145,6 +1152,7 @@ pub(crate) fn compile_entity(
                         expr: compiled_expr,
                         span: ci.span,
                         domain: None,
+                        optimized_target: def_optimized_target.clone(),
                     };
                     constraint_index += 1;
 
