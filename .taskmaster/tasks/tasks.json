@@ -9319,16 +9319,14 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-types/src/expr.rs",
-            "crates/reify-types/src/ty.rs",
+            "crates/reify-types/src/lib.rs",
             "crates/reify-syntax/src/lib.rs",
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/type_resolution.rs"
+            "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-types",
-            "crates/reify-syntax",
-            "crates/reify-compiler"
+            "crates/reify-types/src",
+            "crates/reify-syntax/src",
+            "crates/reify-compiler/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
@@ -9531,12 +9529,10 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-types/src/ty.rs"
+            "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-types"
+            "crates/reify-compiler/src"
           ],
           "memory_hints": {
             "entities": [
