@@ -27115,7 +27115,7 @@
             "crates/reify-eval"
           ],
           "files": [
-            "crates/reify-eval/src/tests_runner.rs",
+            "crates/reify-eval/src/test_runner.rs",
             "crates/reify-eval/tests/test_runner.rs"
           ]
         }
@@ -27184,9 +27184,9 @@
             "crates/reify-compiler"
           ],
           "files": [
-            "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/expr.rs",
-            "crates/reify-compiler/tests/self_keyword_tests.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/collection_sub_tests.rs"
           ]
         }
       },
