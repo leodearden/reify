@@ -359,28 +359,20 @@ pub fn build_si_units_source() -> String {
             u.name, u.dimension, factor_str
         ));
 
-        // Prefixed variants — resolve each prefix symbol's factor from
-        // SI_PREFIXES, multiply with the unit's base factor, and emit.
-        // Derived units always use PrefixSet::Only(list); iterate the list.
-        if let PrefixSet::Only(list) = u.prefix_combos {
-            for prefix in list {
-                let prefix_factor = SI_PREFIXES
-                    .iter()
-                    .find(|(sym, _)| *sym == *prefix)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "SI_DERIVED_UNITS entry `{}` references unknown prefix `{}`",
-                            u.name, prefix
-                        )
-                    })
-                    .1;
-                let combined = prefix_factor * u.factor;
-                let combined_str = format_f64_as_decimal(combined);
-                out.push_str(&format!(
-                    "pub unit {}{} : {} = {}\n",
-                    prefix, u.name, u.dimension, combined_str
-                ));
+        // Prefixed variants — iterate SI_PREFIXES and emit each prefix that
+        // u.prefix_combos.includes(sym). This mirrors the base-unit loop and
+        // correctly handles both PrefixSet::All and PrefixSet::Only without
+        // silently producing zero results if a unit ever carries PrefixSet::All.
+        for (prefix, prefix_factor) in SI_PREFIXES {
+            if !u.prefix_combos.includes(prefix) {
+                continue;
             }
+            let combined = prefix_factor * u.factor;
+            let combined_str = format_f64_as_decimal(combined);
+            out.push_str(&format!(
+                "pub unit {}{} : {} = {}\n",
+                prefix, u.name, u.dimension, combined_str
+            ));
         }
         out.push('\n');
     }
@@ -559,20 +551,24 @@ mod tests {
     /// `SI_PREFIXES`. A typo here would only surface at `load_stdlib()` time
     /// (inside `OnceLock::get_or_init`) crashing every downstream user.
     ///
-    /// Derived units use `PrefixSet::Only(list)` exclusively; iterate the list.
+    /// Uses `match` with an explicit `PrefixSet::All` arm so the compiler
+    /// enforces exhaustiveness if a new variant is ever added.
     #[test]
     fn all_derived_unit_prefix_combos_are_valid_si_prefix_symbols() {
         let known: std::collections::HashSet<&str> =
             SI_PREFIXES.iter().map(|(sym, _)| *sym).collect();
         for unit in SI_DERIVED_UNITS {
-            if let PrefixSet::Only(list) = unit.prefix_combos {
-                for prefix in list {
-                    assert!(
-                        known.contains(prefix),
-                        "SI_DERIVED_UNITS entry `{}` has unknown prefix `{}` in prefix_combos",
-                        unit.name,
-                        prefix
-                    );
+            match unit.prefix_combos {
+                PrefixSet::All => {} // All SI_PREFIXES symbols are valid by construction.
+                PrefixSet::Only(list) => {
+                    for prefix in list {
+                        assert!(
+                            known.contains(prefix),
+                            "SI_DERIVED_UNITS entry `{}` has unknown prefix `{}` in prefix_combos",
+                            unit.name,
+                            prefix
+                        );
+                    }
                 }
             }
         }
@@ -583,21 +579,24 @@ mod tests {
     /// would cause the generator to silently skip that prefix at `load_stdlib()`
     /// time, producing a subtly incomplete unit set.
     ///
-    /// `PrefixSet::All` has no list to validate (uses all SI_PREFIXES by construction).
-    /// `PrefixSet::Only(list)` validates each symbol in the list.
+    /// Uses `match` with an explicit `PrefixSet::All` arm so the compiler
+    /// enforces exhaustiveness if a new variant is ever added.
     #[test]
     fn all_prefix_base_prefix_combos_are_valid_si_prefix_symbols() {
         let known: std::collections::HashSet<&str> =
             SI_PREFIXES.iter().map(|(sym, _)| *sym).collect();
         for base in SI_PREFIX_BASES {
-            if let PrefixSet::Only(list) = base.prefix_combos {
-                for prefix in list {
-                    assert!(
-                        known.contains(prefix),
-                        "SI_PREFIX_BASES entry `{}` has unknown prefix `{}` in prefix_combos",
-                        base.name,
-                        prefix
-                    );
+            match base.prefix_combos {
+                PrefixSet::All => {} // All SI_PREFIXES symbols are valid by construction.
+                PrefixSet::Only(list) => {
+                    for prefix in list {
+                        assert!(
+                            known.contains(prefix),
+                            "SI_PREFIX_BASES entry `{}` has unknown prefix `{}` in prefix_combos",
+                            base.name,
+                            prefix
+                        );
+                    }
                 }
             }
         }
