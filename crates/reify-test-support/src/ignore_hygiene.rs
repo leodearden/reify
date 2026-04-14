@@ -629,6 +629,85 @@ mod tests {
         );
     }
 
+    // ── collect_workspace_stale_pointers ─────────────────────────────────────
+
+    /// (a) Synthetic workspace with stale plan pointers in two different crate
+    /// test dirs → collect_workspace_stale_pointers returns violations that cite
+    /// both files.  Marker and needle assembled at runtime so this source file
+    /// does not contain the literal guarded sequences.
+    #[test]
+    fn cwsp_synthetic_workspace_with_two_stale_files_returns_both_violations() {
+        use tempfile::TempDir;
+
+        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path();
+
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let stale_source = format!("{marker}known bug: see {needle}3 reference\"]");
+        let good_source = format!("{marker}known bug: a clean summary\"]");
+
+        // Two test files with stale pointers in different crates
+        let stale_a = root.join("crates/alpha/tests/foo.rs");
+        let stale_b = root.join("crates/beta/tests/bar.rs");
+        // A clean file that should produce zero violations
+        let clean = root.join("crates/gamma/tests/baz.rs");
+
+        for (path, content) in [
+            (&stale_a, stale_source.as_str()),
+            (&stale_b, stale_source.as_str()),
+            (&clean, good_source.as_str()),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).expect("create parent dirs");
+            std::fs::write(path, content.as_bytes()).expect("write file");
+        }
+
+        let violations = collect_workspace_stale_pointers(root);
+
+        assert_eq!(
+            violations.len(),
+            2,
+            "expected exactly 2 violations (one per stale file), got: {violations:?}"
+        );
+        // Each violation must include a relative path fragment for its file.
+        let combined = violations.join("\n");
+        assert!(
+            combined.contains("crates/alpha/tests/foo.rs")
+                || combined.contains("alpha/tests/foo.rs"),
+            "expected violation to mention the alpha test file: {violations:?}"
+        );
+        assert!(
+            combined.contains("crates/beta/tests/bar.rs")
+                || combined.contains("beta/tests/bar.rs"),
+            "expected violation to mention the beta test file: {violations:?}"
+        );
+    }
+
+    /// (b) Synthetic workspace with only compliant `#[ignore]` reasons →
+    /// collect_workspace_stale_pointers returns an empty Vec.  Marker assembled
+    /// at runtime so this source file does not self-trigger.
+    #[test]
+    fn cwsp_clean_synthetic_workspace_returns_empty_vec() {
+        use tempfile::TempDir;
+
+        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path();
+
+        let marker = ["#[ignore", " = \""].concat();
+        let clean_source = format!("{marker}known bug: a clean self-contained summary\"]");
+
+        let test_file = root.join("crates/foo/tests/clean.rs");
+        std::fs::create_dir_all(test_file.parent().unwrap()).expect("create parent dirs");
+        std::fs::write(&test_file, clean_source.as_bytes()).expect("write file");
+
+        let violations = collect_workspace_stale_pointers(root);
+
+        assert!(
+            violations.is_empty(),
+            "expected no violations for a clean workspace, got: {violations:?}"
+        );
+    }
+
     // ── walk_test_rs_files ────────────────────────────────────────────────────
 
     /// Build a synthetic workspace tree using tempfile::tempdir() and verify that
