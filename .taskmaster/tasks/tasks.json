@@ -17005,7 +17005,7 @@
         "description": "Add a durable test for successful multi-param lambda invocation through sample(). Current tests only cover 1D domain (sample_temperature_over_length_field) and an Undef lambda case. No test exercises multi-param argument binding in apply_lambda.\n\nTest to add in crates/reify-expr/tests/field_eval_tests.rs:\n- Build a 3D field with lambda |x, y, z| x + y + z\n- Call sample(field, Point([1.0, 2.0, 3.0]))\n- Assert result is Value::Real(6.0)\n\nThis pins the multi-param binding contract so regressions in apply_lambda are detected.\n\nmemory_hints: search \"apply_lambda multi param\" and \"sample field 3D\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17017,7 +17017,7 @@
             "crates/reify-expr/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-14T15:39:43.263Z"
       },
       {
         "id": "776",
@@ -34640,7 +34640,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T15:39:39.958Z",
+      "lastModified": "2026-04-14T15:39:43.263Z",
       "taskCount": 1661,
       "completedCount": 1383,
       "tags": [
