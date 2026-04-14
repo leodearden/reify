@@ -6378,7 +6378,7 @@
           "309",
           "311"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.1",
           "modules": [
@@ -6399,7 +6399,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:47:50.011Z"
+        "updatedAt": "2026-04-14T12:47:55.290Z"
       },
       {
         "id": "313",
@@ -34590,9 +34590,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:47:50.011Z",
+      "lastModified": "2026-04-14T12:47:55.290Z",
       "taskCount": 1661,
-      "completedCount": 1378,
+      "completedCount": 1379,
       "tags": [
         "master"
       ]
