@@ -192,14 +192,11 @@ fn sample_temperature_over_length_field() {
 /// lambda the arity check **passes** (1 arg == 1 param), and the body executes
 /// with `x` bound to the full `Value::Point(...)`.
 ///
-/// This test uses an identity body (`|x| x`) so the result is the bound Point
-/// itself, making the binding directly observable. If sample() were to
-/// decompose the Point into 3 separate args instead (triggering an arity
-/// mismatch: 3 args vs 1 param → `Value::Undef`), the assertion
-/// `result == Point(...)` would fail. The earlier `-x` body was not
-/// discriminating because both the correct path (arity passes, body returns
-/// `negate_value(Point)` → Undef) and the hypothetical decomposition path
-/// (arity mismatch → Undef) produced identical Undef results.
+/// Uses an identity body (`|x| x`) rather than `-x` because `-x` on a Point
+/// also returns Undef (via affine negate rules), which would mask a
+/// hypothetical decomposition bug that also produces Undef. With the identity
+/// body, a decomposition bug (3 args vs 1 param → Undef) would fail the
+/// `result == Point(...)` assertion.
 ///
 /// The Point components use `Value::Scalar { dimension: LENGTH }` to match
 /// the declared `domain_type: Type::point3(Type::length())`.
@@ -362,7 +359,7 @@ fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
     // Positive control: the identical constant body IS reachable via a 1-param
     // lambda (arity matches).  This proves that Undef above is caused solely by
     // the arity check, not by anything in the body.
-    let x_id2 = ValueCellId::new("$lambda1.S", "x");
+    let x_id2 = ValueCellId::new("$lambda0.S", "x");
     let body2 = CompiledExpr::literal(Value::Real(42.0), Type::Real);
     let lambda2 = make_value_lambda(vec![("x", x_id2)], body2, ValueMap::new());
     let field2 = Value::Field {
