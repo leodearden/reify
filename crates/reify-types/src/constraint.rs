@@ -130,6 +130,47 @@ pub trait ConstraintChecker: Send + Sync {
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult>;
 }
 
+/// Input to an optimized implementation (Task 273 — @optimized plumbing).
+///
+/// Mirrors `ConstraintInput` in shape: a batch of constraints with current values,
+/// available user functions, and an optional determinacy snapshot. The Engine's
+/// `dispatch_constraints` helper splits constraints by registered optimization
+/// target and calls into the matching `OptimizedImpl` with this input.
+#[derive(Debug)]
+pub struct OptimizedImplInput<'a> {
+    /// The constraints assigned to this optimized implementation, keyed by node ID.
+    pub constraints: Vec<(ConstraintNodeId, &'a CompiledExpr)>,
+    /// Current values of all cells referenced by constraints.
+    pub values: &'a ValueMap,
+    /// User-defined functions available for evaluation.
+    pub functions: &'a [CompiledFunction],
+    /// Optional determinacy snapshot, supplied when determinacy predicates are
+    /// reachable from within these constraints. Same shape as `ConstraintInput::determinacy`.
+    pub determinacy: Option<&'a PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+}
+
+/// Output from an optimized implementation.
+///
+/// Carries one `ConstraintResult` per input constraint. Producers are expected to
+/// preserve the same id/order the caller supplied so the Engine can weave results
+/// back into the original constraint sequence without extra bookkeeping.
+#[derive(Debug, Clone, Default)]
+pub struct OptimizedImplOutput {
+    pub results: Vec<ConstraintResult>,
+}
+
+/// Trait for an optimized constraint implementation (Task 273 — @optimized plumbing).
+///
+/// Registered on the Engine via `register_optimized_impl(target, imp)` and invoked
+/// by `dispatch_constraints` for any constraint whose originating `constraint def`
+/// carried an `@optimized("target")` annotation. Lives in reify-types so that
+/// reify-eval can own a trait object without a direct dependency on any concrete
+/// optimizer crate.
+pub trait OptimizedImpl: Send + Sync {
+    /// Evaluate a batch of constraints routed to this implementation.
+    fn check(&self, input: &OptimizedImplInput) -> OptimizedImplOutput;
+}
+
 /// Trait for constraint solving. Lives in reify-types for dependency inversion —
 /// implemented in reify-constraints, consumed by reify-eval.
 pub trait ConstraintSolver: Send + Sync {
