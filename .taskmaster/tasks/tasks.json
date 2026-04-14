@@ -34098,17 +34098,18 @@
         "description": "Task 1638 completed evaluator-layer support for all five non-params filter members (geometric_params, material_params, sub_entities, ports, constraints), but reify-compiler only covers the 'params' reflective query kind. There are no references to material_params or geometric_params in crates/reify-compiler, and compiler tests cover only 'params'. This means queries using non-params filter members receive no compile-time validation — errors surface only at eval time. Investigate whether this gap is intentional (the 'geometry check deferred to eval time' pattern covers forall-variable geometry, but the scope of that deferral is unclear) or an omission. If the deferral is intentional for all non-params kinds, document the design decision. If not, implement compile-time validation for each missing kind, mirroring how 'params' is handled in crates/reify-compiler/src/traits.rs.",
         "details": "## Investigation steps\n1. Read crates/reify-compiler/src/traits.rs (and compile_reflective_query / related entry points) to understand how 'params' is validated statically.\n2. Check the 'geometry check deferred to eval time' design decision (memory: \"geometry check for forall variable members is deferred to eval time because the compiler can't statically determine the sub-component's geometry\") — determine if this rationale applies to all non-params query kinds or just forall+geometry.\n3. For each non-params kind (geometric_params, material_params, sub_entities, ports, constraints):\n   - Can the compiler statically validate it? (type/membership available at compile time?)\n   - If yes, implement compile-time validation and add compiler tests in crates/reify-compiler/tests/.\n   - If no, add a doc comment or internal note confirming intentional deferral to eval time.\n4. Update compiler tests to cover at least one case per kind that can be validated statically.\n\n## Verification\n- `cargo test -p reify-compiler` green.\n- At least one compiler test per newly supported query kind.\n\n## Memory hints\n- Search: \"reify-compiler reflective query params compile-time validation traits.rs\"\n- Search: \"geometry check deferred eval time forall sub-component\"\n- Search: \"Task 1638 geometric_params material_params evaluator layer completion\"\n- Entity: crates/reify-compiler/src/traits.rs\n- Compiler tests only cover 'params' reflective query kind (Graphiti edge 79092d4a)\n- No references to material_params in reify-compiler (Graphiti edge 7a7b8dae)",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1638"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-14T04:02:48.046Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T04:02:46.698Z",
+      "lastModified": "2026-04-14T04:02:48.050Z",
       "taskCount": 1652,
       "completedCount": 1319,
       "tags": [
