@@ -28983,7 +28983,7 @@
         "updatedAt": "2026-04-14T07:04:24.581Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/src"
           ],
           "files": [
             "crates/reify-eval/src/deps.rs"
@@ -29105,7 +29105,7 @@
         "updatedAt": "2026-04-14T07:04:25.576Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
             "crates/reify-compiler/src/scope.rs",
