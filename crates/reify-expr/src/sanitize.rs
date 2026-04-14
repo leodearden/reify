@@ -24,9 +24,7 @@ pub(crate) fn sanitize_value(v: Value) -> Value {
         Value::Real(x) if !x.is_finite() => Value::Undef,
         Value::Scalar { si_value, .. } if !si_value.is_finite() => Value::Undef,
         Value::Complex { re, im, .. } if !re.is_finite() || !im.is_finite() => Value::Undef,
-        Value::Orientation { w, x, y, z } if !quaternion_is_finite(*w, *x, *y, *z) => {
-            Value::Undef
-        }
+        Value::Orientation { w, x, y, z } if !quaternion_is_finite(*w, *x, *y, *z) => Value::Undef,
         _ => v,
     }
 }
@@ -463,8 +461,8 @@ mod tests {
     #[test]
     fn sanitize_wildcard_variants_passthrough() {
         // Smoke test: representative `_ => v` variants pass through bit-identical.
-        // Bool(true/false), Int, String, Vector, and Frame sample five of ~25 variants
-        // that all hit the wildcard arm. Container/struct payloads intentionally carry
+        // Bool(true/false), Int, String, Vector, Frame, List, and Transform sample seven of ~25
+        // variants that all hit the wildcard arm. Container/struct payloads intentionally carry
         // NaN components as a non-recursion tripwire: if sanitize_value were changed to
         // recurse into children, the inner NaN would become Undef and the assert_eq!
         // below would fail. (Value::PartialEq uses to_bits(), so NaN == NaN here.)
@@ -487,6 +485,20 @@ mod tests {
                     y: 0.0,
                     z: 0.0,
                 }),
+            },
+            Value::List(vec![Value::Real(f64::NAN)]),
+            Value::Transform {
+                rotation: Box::new(Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+                translation: Box::new(Value::Vector(vec![
+                    Value::Real(f64::NAN),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ])),
             },
         ];
         for v in &cases {
