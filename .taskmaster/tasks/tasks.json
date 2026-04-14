@@ -10023,12 +10023,12 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-runtime/src/concurrent_eval.rs",
-            "crates/reify-eval/src/lib.rs"
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-runtime/src/concurrent_eval.rs"
           ],
           "modules": [
-            "crates/reify-runtime",
-            "crates/reify-eval"
+            "crates/reify-eval",
+            "crates/reify-runtime"
           ]
         }
       },
