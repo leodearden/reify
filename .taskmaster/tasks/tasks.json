@@ -15586,7 +15586,7 @@
             "crates/reify-eval/src/graph.rs"
           ],
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
@@ -15983,12 +15983,10 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-types/src/traits.rs",
-            "crates/reify-compiler/tests/trait_conformance_tests.rs"
+            "crates/reify-types/src/traits.rs"
           ],
           "modules": [
-            "crates/reify-types",
-            "crates/reify-compiler"
+            "crates/reify-types/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
