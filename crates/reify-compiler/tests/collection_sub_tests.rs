@@ -524,3 +524,65 @@ fn compile_collection_sub_as_standalone_identifier() {
         other => panic!("expected List type, got {:?}", other),
     }
 }
+
+// ─── task-1441 regression: collection/scalar coexistence + bare collection identifier ───
+
+#[test]
+fn compile_collection_identifier_after_noncollection_sub() {
+    // Structure has BOTH a non-collection sub (rib = Rib()) AND a collection sub
+    // (bolts : List<Bolt>). Bare-identifier resolution of `bolts` must resolve to
+    // ValueRef(__list_bolts__...), NOT confuse bolts with rib or error.
+    // This locks in that collection_sub_names (not map presence) is what gates
+    // collection-specific resolution — after the refactor sub_member_types covers
+    // BOTH subs, so only the gate distinguishes them.
+    let source = r#"
+        structure Rib { param width : Scalar = 5mm }
+        structure Bolt { param diameter : Scalar = 10mm }
+        structure S {
+            sub rib = Rib()
+            sub bolts : List<Bolt>
+            constraint bolts.count == 3
+            let gs = bolts
+        }
+    "#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("should have template S");
+
+    // Find the 'gs' let binding
+    let gs_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "gs")
+        .expect("should have let binding 'gs'");
+
+    let expr = gs_cell
+        .default_expr
+        .as_ref()
+        .expect("gs should have an expression");
+
+    // Should resolve to a ValueRef to the first member's per-member list __list_bolts__diameter
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id.entity, "S", "entity should be S");
+            assert!(
+                id.member.starts_with("__list_bolts__"),
+                "member should be a __list_bolts__<member> synthetic cell, got: {}",
+                id.member
+            );
+        }
+        other => panic!(
+            "expected ValueRef(__list_bolts__...) for bare collection sub 'bolts', got {:?}",
+            other
+        ),
+    }
+
+    // Result type should be List
+    match &expr.result_type {
+        reify_types::Type::List(_) => {}
+        other => panic!("expected List type for bare collection identifier, got {:?}", other),
+    }
+}
