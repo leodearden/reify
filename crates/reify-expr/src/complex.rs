@@ -38,9 +38,13 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
                     //
                     //   • is_finite guard: atan2(y, ±Inf) = 0.0 or ±π, and
                     //     atan2(±Inf, x) = ±π/2 — all finite. sanitize_value cannot
-                    //     detect Inf inputs from these outputs alone (NaN inputs would
-                    //     propagate through atan2 and be caught downstream, but for
-                    //     stylistic parity and defense-in-depth we reject both up-front).
+                    //     detect Inf inputs from these outputs alone. NaN inputs would
+                    //     propagate through atan2 to a NaN output, which a hypothetical
+                    //     sanitize_value wrap on the result would catch — but phase()
+                    //     does not currently wrap its output, so the pre-guard is the
+                    //     sole NaN guard. We use the pre-guard for both NaN and Inf so
+                    //     a single check handles both, matching the conjugate/re/im
+                    //     pattern.
                     //
                     //   • zero-vector guard: atan2(0.0, 0.0) = 0.0 which is
                     //     also finite, so sanitize_value cannot distinguish the
@@ -502,12 +506,13 @@ mod tests {
     fn phase_nan_im_dimensioned_returns_undef() {
         // Complex{re:1.0, im:NaN, LENGTH}.phase → Undef
         //
-        // phase() ignores the Complex's dimension field and applies the is_finite
-        // pre-guard uniformly regardless of dimension. This test mirrors the
-        // re_nan_dimensioned_returns_undef / im_nan_dimensioned_returns_undef pattern
-        // and locks the guard against any future split into dimensioned fast/slow paths
-        // (e.g. a specialised dimensionless fast-path that omits the guard would be
-        // caught because it would leave the dimensioned path unprotected).
+        // phase() ignores the Complex's dimension field — Value::Complex { re, im, .. }
+        // drops it before the is_finite pre-guard runs, so dimensionless and dimensioned
+        // inputs take the same code path through phase(). This test does not exercise a
+        // distinct branch; it locks the invariant that phase() ignores dimension: if a
+        // future refactor introduced a dimensioned fast/slow split and accidentally
+        // omitted the pre-guard on one branch, this test would catch the regression.
+        // Mirrors re_nan_dimensioned_returns_undef for parity across complex methods.
         assert!(
             call_complex_method(1.0, f64::NAN, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()).is_undef(),
             "z.phase with NaN imaginary part (dimensioned) should return Undef"
@@ -520,10 +525,12 @@ mod tests {
         //
         // atan2(-Inf, 1.0) = -π/2 which is finite, so sanitize_value alone cannot
         // catch this -Inf input (and phase() doesn't wrap its output in sanitize_value
-        // anyway). The is_finite pre-guard is what correctly rejects it, dimension-
-        // agnostic. This test mirrors im_neg_inf_dimensioned_returns_undef and
-        // re_neg_inf_dimensioned_returns_undef, bringing phase coverage to parity with
-        // re/im/magnitude for the dimensioned NaN and NEG_INFINITY variants.
+        // anyway). Like the NaN variant above, phase() ignores the Complex's dimension
+        // field — dimensionless and dimensioned inputs take the same code path. This
+        // test locks the invariant that phase() ignores dimension for NEG_INFINITY
+        // inputs: not a distinct branch, but a guard against a future dimensioned
+        // fast/slow split accidentally omitting the pre-guard. Mirrors
+        // im_neg_inf_dimensioned_returns_undef and re_neg_inf_dimensioned_returns_undef.
         assert!(
             call_complex_method(1.0, f64::NEG_INFINITY, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()).is_undef(),
             "z.phase with -Inf imaginary part (dimensioned) should return Undef"
