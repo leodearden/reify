@@ -6019,7 +6019,7 @@
           "291",
           "269"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-cli/tests/cli_integration_smoke.rs",
@@ -6033,7 +6033,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T14:39:50.845Z"
+        "updatedAt": "2026-04-14T15:39:04.029Z"
       },
       {
         "id": "298",
@@ -34637,7 +34637,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T15:39:03.391Z",
+      "lastModified": "2026-04-14T15:39:04.029Z",
       "taskCount": 1661,
       "completedCount": 1383,
       "tags": [
