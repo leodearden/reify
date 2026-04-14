@@ -1193,6 +1193,10 @@ fn unfold_mutual_recursion_with_let_bindings() {
         !result.values.contains(&ValueCellId::new("A.b", "a_only")),
         "A.b.a_only must NOT exist — A's binding must not leak into a B instance"
     );
+    assert!(
+        !result.values.contains(&ValueCellId::new("A.b.a", "b_only")),
+        "A.b.a.b_only must NOT exist — B's binding must not leak into a depth-2 A instance"
+    );
 }
 
 // ─── step-37: mutual recursion with heterogeneous (non-overlapping) members ──
@@ -1431,7 +1435,9 @@ fn cyclic_let_bindings_emit_diagnostic() {
     // in unrelated diagnostic text.
     let has_cycle_error = result.diagnostics.iter().any(|d| {
         d.severity == Severity::Error
-            && (d.message.contains("circular") || d.message.contains("cycle"))
+            && (d.message.contains("circular")
+                || d.message.contains("cycle")
+                || d.message.contains("cyclic"))
             && d.message.contains("count_x")
             && d.message.contains("count_y")
     });
