@@ -187,10 +187,17 @@ fn sample_temperature_over_length_field() {
 ///
 /// # Contract pinned
 ///
-/// sample()'s analytical path forwards the entire input as a **single** element
-/// to apply_lambda (`&evaluated_args[1..]` is a 1-element slice). For a 1-param
-/// lambda the arity check **passes** (1 arg == 1 param), and the body executes
-/// with `x` bound to the full `Value::Point(...)`.
+/// sample()'s analytical path binds the **entire** `Value::Point` to a 1-param
+/// lambda (no unpacking). The `params.len() > 1` guard in sample() ensures that
+/// 1-param lambdas NEVER unpack Point inputs, even if the Point has multiple
+/// elements. For a 1-param lambda the arity check **passes** (1 arg == 1 param),
+/// and the body executes with `x` bound to the full `Value::Point(...)`.
+///
+/// Multi-param lambdas whose arity matches the Point's length **do** unpack —
+/// see `sample_multi_param_lambda_binds_unpacked_point_components`.
+/// Multi-param lambdas with mismatched arity or scalar (non-Point) inputs still
+/// hit the apply_lambda arity check and return Undef —
+/// see `sample_multi_param_lambda_with_scalar_input_returns_undef`.
 ///
 /// Uses an identity body (`|x| x`) rather than `-x` because `-x` on a Point
 /// also returns Undef (via affine negate rules), which would mask a
@@ -202,7 +209,7 @@ fn sample_temperature_over_length_field() {
 /// the declared `domain_type: Type::point3(Type::length())`.
 ///
 /// Note: the apply_lambda arity check does NOT fire in this test (1 arg == 1
-/// param). See `sample_multi_param_lambda_returns_undef_due_to_no_unpacking`
+/// param). See `sample_multi_param_lambda_with_scalar_input_returns_undef`
 /// for the test that directly pins the arity-check path.
 #[test]
 fn sample_one_param_lambda_binds_entire_point_as_single_value() {
