@@ -1,0 +1,84 @@
+// M8.3 Ports fixture
+//
+// Exercises inline port trait definitions and the connect declaration through
+// the full parse → compile_with_stdlib → eval pipeline.
+//
+// Ports declared inline (no stdlib ports.ri module exists):
+//   RotaryPort  — rpm (Real), torque (Real), shaft_diameter (Length)
+//   ThreadedPort — thread_major_dia (Length), thread_pitch (Length), thread_length (Length)
+//
+// Structures:
+//   Motor   — out RotaryPort (shaft), in ThreadedPort (mount)
+//   Gearbox — in RotaryPort (input), in ThreadedPort (mount)
+//
+// Assembly:
+//   DriveTrain — sub motor : Motor, sub gearbox : Gearbox
+//                connect motor.shaft -> gearbox.input
+
+// ── Port traits ──────────────────────────────────────────────────────────────
+
+trait RotaryPort {
+    param rpm            : Real
+    param torque         : Real
+    param shaft_diameter : Length
+}
+
+trait ThreadedPort {
+    param thread_major_dia : Length
+    param thread_pitch     : Length
+    param thread_length    : Length
+}
+
+// ── Motor structure ──────────────────────────────────────────────────────────
+
+structure def Motor {
+    // Physical properties — give eval something to compute
+    param rated_power   : Real = 750.0      // W  (0.75 kW motor)
+    param rated_speed   : Real = 1500.0     // rpm (nominal)
+
+    // Rotary output shaft — M8 shaft (8 mm diameter)
+    port shaft : out RotaryPort {
+        param rpm            : Real   = 1500.0
+        param torque         : Real   = 10.0
+        param shaft_diameter : Length = 8mm
+    }
+
+    // Threaded mounting interface — M8 bolt pattern
+    port mount : in ThreadedPort {
+        param thread_major_dia : Length = 8mm
+        param thread_pitch     : Length = 1.25mm
+        param thread_length    : Length = 10mm
+    }
+}
+
+// ── Gearbox structure ────────────────────────────────────────────────────────
+
+structure def Gearbox {
+    // Physical properties
+    param gear_ratio    : Real = 3.0        // output/input
+    param efficiency    : Real = 0.95       // 95%
+
+    // Rotary input — M8 shaft (matches Motor.shaft)
+    port input : in RotaryPort {
+        param rpm            : Real   = 1500.0
+        param torque         : Real   = 10.0
+        param shaft_diameter : Length = 8mm
+    }
+
+    // Threaded mounting interface — M8 bolt pattern
+    port mount : in ThreadedPort {
+        param thread_major_dia : Length = 8mm
+        param thread_pitch     : Length = 1.25mm
+        param thread_length    : Length = 10mm
+    }
+}
+
+// ── DriveTrain assembly ───────────────────────────────────────────────────────
+
+structure def DriveTrain {
+    sub motor   = Motor()
+    sub gearbox = Gearbox()
+
+    // Connect the motor shaft output to the gearbox rotary input
+    connect motor.shaft -> gearbox.input
+}

@@ -1,0 +1,68 @@
+// M8.3 Units fixture
+//
+// Exercises SI-prefix unit literals, imperial units, and cross-system
+// arithmetic through the full parse → compile_with_stdlib → eval pipeline.
+//
+// SI-prefix coverage (step-16):
+//   Length:  nm (1e-9 m), um (1e-6 m), mm (1e-3 m), km (1e3 m), Mm (1e6 m)
+//   Mass:    mg (1e-6 kg), kg (1.0 kg), Mg (1e3 kg)
+//   Time:    ns (1e-9 s), us (1e-6 s), ms (1e-3 s), ks (1e3 s)
+//
+// Imperial (step-18):
+//   Length:  in (0.0254 m), ft (0.3048 m), yd (0.9144 m)
+//   Mass:    lb (0.45359237 kg)
+//   Force:   lbf (4.4482216152605 N)
+//   Pressure: psi (6894.757293168361 Pa)
+//   Volume:  gal (0.003785411784 m³)
+//
+// Cross-system arithmetic (step-20):
+//   mixed_len      = 1in + 25.4mm        → Length ≈ 0.0508m
+//   energy_imperial = 2lbf * 3mm         → Energy ≈ 0.026689 J
+//   pressure_ratio = (1psi) / (1Pa)      → Dimensionless ≈ 6894.757
+
+structure def UnitShowcase {
+    // ── SI-prefix length ────────────────────────────────────────────────────────
+    let len_nm = 1nm
+    let len_um = 1um
+    let len_mm = 1mm
+    let len_km = 1km
+    let len_Mm = 1Mm
+
+    // ── SI-prefix mass ──────────────────────────────────────────────────────────
+    let mass_mg = 1mg
+    let mass_kg = 1kg
+    let mass_Mg = 1Mg
+
+    // ── SI-prefix time ──────────────────────────────────────────────────────────
+    let time_ns = 1ns
+    let time_us = 1us
+    let time_ms = 1ms
+    let time_ks = 1ks
+
+    // ── Imperial length (step-18) ────────────────────────────────────────────────
+    let len_in = 1in
+    let len_ft = 1ft
+    let len_yd = 1yd
+
+    // ── Imperial mass (step-18) ──────────────────────────────────────────────────
+    let mass_lb = 1lb
+
+    // ── Imperial force (step-18) ─────────────────────────────────────────────────
+    let force_lbf = 1lbf
+
+    // ── Imperial pressure (step-18) ──────────────────────────────────────────────
+    let pressure_psi = 1psi
+
+    // ── Imperial volume (step-18) ────────────────────────────────────────────────
+    let volume_gal = 1gal
+
+    // ── Cross-system arithmetic (step-20) ────────────────────────────────────────
+    // 1in + 25.4mm: both Length → 0.0254m + 0.0254m = 0.0508m
+    let mixed_len = 1in + 25.4mm
+
+    // 2lbf * 3mm: Force × Length = Energy → 2*4.4482216152605 N * 0.003 m
+    let energy_imperial = 2lbf * 3mm
+
+    // (1psi) / (1Pa): Pressure / Pressure = Dimensionless → ≈6894.757
+    let pressure_ratio = (1psi) / (1Pa)
+}

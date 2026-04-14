@@ -1,0 +1,117 @@
+// M8.3 Tolerancing fixture
+//
+// Exercises the stdlib tolerancing.ri module (GD&T structures, enums,
+// DimensionalTolerance computed lets) through the full
+// parse → compile_with_stdlib → eval pipeline.
+//
+// NOTE: compile_with_stdlib provides stdlib definitions as a compilation
+// context (type resolution, conformance checking), but the output
+// CompiledModule contains only user-defined templates.  The eval engine
+// resolves sub-component templates exclusively from module.templates.
+// Therefore the enum types AND the GD&T structure definitions used by
+// Flange's sub-components must be re-declared locally so they are present
+// in the output module and available at eval time.
+//
+// The local declarations mirror the stdlib tolerancing.ri definitions exactly,
+// so type-compatibility with stdlib-compiled code is preserved.  The duplicate
+// enum declarations are harmless: the compiler merges prelude + local enum
+// definitions during resolution; the local structure declarations shadow the
+// stdlib ones in the user module's template list without causing errors.
+//
+// TODO: This re-declaration is a WORKAROUND for a product coupling gap.  Every
+// consumer of stdlib structures must copy-paste stdlib definitions into their
+// .ri file when they need eval-time sub resolution.  A proper fix requires
+// either:
+//   (a) compile_with_stdlib includes used stdlib templates in the output
+//       CompiledModule (so the eval engine can find them without re-declaration), or
+//   (b) the eval engine consults a stdlib template registry when resolving subs.
+// Track as a follow-up issue so this pattern is not mistaken for a permanent
+// convention.
+//
+// Flange structure contains:
+//   sub pos      — Position (location tolerance, MMC modifier)
+//   sub flat     — Flatness (form tolerance)
+//   sub finish   — SurfaceFinish (Ra parameter, 1.6 μm value)
+//   sub dim_tol  — DimensionalTolerance (nominal=50mm, ±0.1mm)
+//                  computed lets: upper_limit, lower_limit, tolerance_band
+
+// ── Local enum re-declarations (parser disambiguation + eval availability) ──
+
+enum MaterialCondition { MMC, LMC, RFS }
+enum SurfaceParameter { Ra, Rz, Rq, Rt, Rp, Rv, Rsk, Rku }
+enum SurfaceDirection { Parallel, Perpendicular, Crossed, Multidirectional, Circular, Radial }
+
+// ── Local structure definitions (eval-time availability) ─────────────────────
+// These must appear before Flange so compiled_templates contains them when
+// the sub declarations in Flange are resolved.
+
+// GD&T position tolerance (location)
+structure def Position {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    param datum_refs : Real = 0.0
+}
+
+// GD&T flatness tolerance (form)
+structure def Flatness {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+// Surface texture specification per ISO 1302
+structure def SurfaceFinish {
+    param parameter : SurfaceParameter
+    param value : Length
+    param direction : SurfaceDirection
+    param process : String
+}
+
+// Dimensional tolerance with computed limits and band
+structure def DimensionalTolerance {
+    param nominal : Length
+    param upper_deviation : Length
+    param lower_deviation : Length
+    let upper_limit = nominal + upper_deviation
+    let lower_limit = nominal + lower_deviation
+    let tolerance_band = upper_deviation - lower_deviation
+    constraint upper_deviation >= lower_deviation
+}
+
+// ── Flange structure ──────────────────────────────────────────────────────────
+
+structure def Flange {
+    // Position tolerance — ⌀0.1mm tolerance zone at MMC
+    sub pos = Position(
+        tolerance_value:    0.1mm,
+        material_condition: MaterialCondition.MMC,
+        datum_refs:         0.0,
+        feature:            0.0
+    )
+
+    // Flatness form tolerance — 0.05mm flatness zone
+    sub flat = Flatness(
+        tolerance_value:    0.05mm,
+        material_condition: MaterialCondition.RFS,
+        feature:            0.0
+    )
+
+    // Surface finish — Ra 1.6 μm, parallel lay, turning process
+    sub finish = SurfaceFinish(
+        parameter:  SurfaceParameter.Ra,
+        value:      1.6um,
+        direction:  SurfaceDirection.Parallel,
+        process:    "turning"
+    )
+
+    // Dimensional tolerance — 50mm nominal ±0.1mm
+    //   upper_limit  = 50mm + 0.1mm  = 50.1mm (0.0501m)
+    //   lower_limit  = 50mm + (-0.1mm) = 49.9mm (0.0499m)
+    //   tolerance_band = 0.1mm - (-0.1mm) = 0.2mm (0.0002m)
+    sub dim_tol = DimensionalTolerance(
+        nominal:          50mm,
+        upper_deviation:  0.1mm,
+        lower_deviation: -0.1mm
+    )
+}
