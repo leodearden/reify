@@ -289,6 +289,8 @@ type Alias = Real
 
 unit myunit : Length = 0.001
 
+import some.module
+
 field def temp : Point3 -> Scalar { source = analytical { |p| p } }
 
 constraint def Positive {
@@ -325,6 +327,8 @@ constraint def Positive {
         assert_eq!(isolated.path, module.path, "module path must be preserved");
         assert!(!module.units.is_empty(), "units must be non-empty in source module");
         assert_eq!(isolated.units.len(), module.units.len(), "units must be preserved");
+        assert!(!module.imports.is_empty(), "imports must be non-empty in source module");
+        assert_eq!(isolated.imports.len(), module.imports.len(), "imports must be preserved");
     }
 
     #[test]
