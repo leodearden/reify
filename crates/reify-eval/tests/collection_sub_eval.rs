@@ -78,30 +78,7 @@ fn count_bolt_diameter_instances(values: &ValueMap) -> usize {
 
 #[test]
 fn from_templates_creates_collection_instances() {
-    // Bolt template: param diameter : Scalar = 10mm
-    let bolt = TopologyTemplateBuilder::new("Bolt")
-        .param(
-            "Bolt",
-            "diameter",
-            Type::length(),
-            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
-        )
-        .build();
-
-    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
-    let count_expr = value_ref_typed("Parent", "n", Type::Int);
-    let parent = TopologyTemplateBuilder::new("Parent")
-        .param(
-            "Parent",
-            "n",
-            Type::Int,
-            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
-        )
-        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
-        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
-        .build();
-
+    let (parent, bolt) = make_bolt_parent_templates(Some(4));
     let graph = EvaluationGraph::from_templates(&[parent, bolt]);
 
     // Verify 4 scoped instances exist: Parent.bolts[0].diameter through Parent.bolts[3].diameter
