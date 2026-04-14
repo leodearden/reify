@@ -41,3 +41,23 @@ fn solver_hint_discrete_set_compiles() {
     assert_eq!(cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
     assert_eq!(cell.solver_hints[0].collection, "bolt_lengths");
 }
+
+// ── Step 9: @solver_hint("prefer_stock", ...) on param compiles ─────────────
+
+#[test]
+fn solver_hint_prefer_stock_compiles() {
+    let source = r#"structure S { @solver_hint("prefer_stock", sheet_thicknesses) param width : Length = auto }"#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let template = &module.templates[0];
+    let cell = &template.value_cells[0];
+    assert_eq!(
+        cell.solver_hints.len(),
+        1,
+        "expected 1 solver hint, got {:?}",
+        cell.solver_hints
+    );
+    assert_eq!(cell.solver_hints[0].kind, reify_compiler::SolverHintKind::PreferStock);
+    assert_eq!(cell.solver_hints[0].collection, "sheet_thicknesses");
+}
