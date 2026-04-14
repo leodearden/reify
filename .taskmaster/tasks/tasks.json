@@ -34076,10 +34076,11 @@
         "description": "In crates/reify-expr/src/complex.rs: (1) Reword the comment at line ~41 to accurately distinguish NaN propagation (caught by sanitize_value downstream) from Inf collapse (requires the is_finite pre-guard), explaining the guard is defense-in-depth for NaN but strictly necessary for Inf. (2) Split phase_zero_complex_returns_undef into two separate #[test] functions — one for (0.0, 0.0) and one for (-0.0, -0.0) — so signed-zero regression is never masked. (3) Add at least one dimensioned NaN/Inf phase test (e.g. phase_nan_im_dimensioned_returns_undef) to match the coverage pattern used by re/im/magnitude dimensioned tests.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-14T04:02:49.561Z"
       },
       {
         "id": "1651",
@@ -34109,7 +34110,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T04:02:48.050Z",
+      "lastModified": "2026-04-14T04:02:49.562Z",
       "taskCount": 1652,
       "completedCount": 1319,
       "tags": [
