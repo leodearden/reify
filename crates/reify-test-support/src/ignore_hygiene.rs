@@ -45,8 +45,52 @@ pub fn find_stale_plan_pointers_in_source(source: &str) -> Vec<String> {
 /// # Panics
 ///
 /// Does not panic — I/O errors on individual directories are silently skipped.
-pub fn walk_test_rs_files(_workspace_root: &Path) -> Vec<PathBuf> {
-    unimplemented!()
+pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    let mut stack = vec![workspace_root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                // Skip build artifacts, git internals, worktrees, and all dot-dirs.
+                if name == "target" || name.starts_with('.') {
+                    continue;
+                }
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                // Only include files that have "tests" as a directory component
+                // in the path relative to workspace_root.
+                if has_tests_component(&path, workspace_root) {
+                    result.push(path);
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Returns true when `path` (relative to `workspace_root`) contains at least
+/// one directory component whose name is exactly `"tests"`.
+fn has_tests_component(path: &Path, workspace_root: &Path) -> bool {
+    let rel = match path.strip_prefix(workspace_root) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    // Iterate directory components only (skip the final filename component).
+    rel.parent()
+        .unwrap_or(Path::new(""))
+        .components()
+        .any(|c| matches!(c, std::path::Component::Normal(name) if name == "tests"))
 }
 
 #[cfg(test)]
