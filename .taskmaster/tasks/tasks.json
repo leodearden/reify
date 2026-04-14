@@ -9012,7 +9012,7 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ]
         }
       },
