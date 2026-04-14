@@ -1303,15 +1303,21 @@ fn optimized_on_function_warns() {
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span");
 }
 
-/// Two `@optimized` annotations on the same declaration should produce
+/// Two `@optimized` annotations on the same constraint def should produce
 /// "multiple @optimized annotations" warning on the second occurrence.
 ///
-/// Exercises annotations.rs line 138–143.
+/// The duplicate check is scoped to `constraint_def` context because
+/// `optimized_target` is only consumed there; on structure/occurrence
+/// contexts the target string has no downstream consumer so warning about
+/// shadowing would be misleading (see annotations.rs duplicate-check block).
+///
+/// Exercises annotations.rs duplicate-annotation check.
 #[test]
 fn multiple_optimized_annotations_warning() {
     let source = r#"
-@optimized("target_a") @optimized("target_b") structure def S {
-    param x : Length = 1mm
+@optimized("target_a") @optimized("target_b") constraint def D {
+    param x : Length
+    x > 0mm
 }
 "#;
     let module = compile_module(source);
