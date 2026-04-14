@@ -182,8 +182,8 @@ fn sample_temperature_over_length_field() {
 }
 
 /// Sampling a 1-param analytical field with a 3-element Point: sample() binds
-/// the entire Point to the single lambda parameter, and Undef from the body
-/// propagates through sample() unchanged.
+/// the entire Point to the single lambda parameter. The identity body `|x| x`
+/// returns the bound value directly, making the binding observable.
 ///
 /// # Contract pinned
 ///
@@ -192,47 +192,47 @@ fn sample_temperature_over_length_field() {
 /// lambda the arity check **passes** (1 arg == 1 param), and the body executes
 /// with `x` bound to the full `Value::Point(...)`.
 ///
-/// What this test pins: sample() binds the entire input value — including a
-/// multi-element Point — to a single-param lambda without decomposing it, and
-/// Undef returned by the body propagates through sample() unchanged. The
-/// proximate cause of Undef is the body `-x` applied to a Point: per spec 3.3.1
-/// affine rules, `negate_value(Point)` returns `Value::Undef` (implementation at
-/// `crates/reify-expr/src/lib.rs:1163`). This is verified inline below — no
-/// dependency on other test files.
+/// This test uses an identity body (`|x| x`) so the result is the bound Point
+/// itself, making the binding directly observable. If sample() were to
+/// decompose the Point into 3 separate args instead (triggering an arity
+/// mismatch: 3 args vs 1 param → `Value::Undef`), the assertion
+/// `result == Point(...)` would fail. The earlier `-x` body was not
+/// discriminating because both the correct path (arity passes, body returns
+/// `negate_value(Point)` → Undef) and the hypothetical decomposition path
+/// (arity mismatch → Undef) produced identical Undef results.
+///
+/// The Point components use `Value::Scalar { dimension: LENGTH }` to match
+/// the declared `domain_type: Type::point3(Type::length())`.
 ///
 /// Note: the apply_lambda arity check does NOT fire in this test (1 arg == 1
 /// param). See `sample_multi_param_lambda_returns_undef_due_to_no_unpacking`
 /// for the test that directly pins the arity-check path.
 #[test]
-fn sample_one_param_lambda_with_three_element_point_returns_undef() {
+fn sample_one_param_lambda_binds_entire_point_as_single_value() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
 
-    // Lambda: |x| -> -x  (body is UnOp::Neg applied to x)
-    let body = CompiledExpr::unop(
-        reify_types::UnOp::Neg,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
-    );
+    // Lambda: |x| -> x  (identity body — returns whatever x is bound to)
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::point3(Type::length()));
 
-    // Inline verification: -x with x = Point3(1, 2, 3) yields Undef.
-    // Self-contained; no dependency on point_vector_eval_tests.rs.
-    // negate_value at crates/reify-expr/src/lib.rs:1163 returns Undef for
-    // Value::Point inputs (spec 3.3.1 affine rules forbid point negation).
+    // Inline verification: identity body with x = Point3(1m, 2m, 3m) returns
+    // the Point unchanged.  Self-contained; no dependency on other test files.
+    let point3_val = Value::Point(vec![
+        Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+        Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+        Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+    ]);
     let mut body_check = ValueMap::new();
-    body_check.insert(
-        x_id.clone(),
-        Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-    );
+    body_check.insert(x_id.clone(), point3_val.clone());
     assert_eq!(
         eval_expr(&body, &EvalContext::simple(&body_check)),
-        Value::Undef,
-        "body -x with x=Point3 must be Undef (negate_value, spec 3.3.1)"
+        point3_val.clone(),
+        "identity body with x=Point3 must return the Point itself"
     );
 
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
     let domain_type = Type::point3(Type::length());
-    let codomain_type = Type::Real;
+    let codomain_type = Type::point3(Type::length());
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -246,26 +246,26 @@ fn sample_one_param_lambda_with_three_element_point_returns_undef() {
         codomain: Box::new(codomain_type),
     };
 
-    // sample(field, Point3(1.0, 2.0, 3.0)) -> Undef
+    // sample(field, Point3(1m, 2m, 3m)) -> Point3(1m, 2m, 3m)
     // apply_lambda sees 1 arg (the whole Point) vs 1 param -> arity passes.
-    // Body `-x` with x = Point returns Undef via negate_value (affine rules).
-    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    // Identity body returns x = the whole Point directly.
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(field, field_type),
-            CompiledExpr::literal(point, domain_type),
+            CompiledExpr::literal(point3_val.clone(), domain_type),
         ],
-        Type::Real,
+        Type::point3(Type::length()),
     );
 
     let values = ValueMap::new();
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
     assert_eq!(
         sample_result,
-        Value::Undef,
-        "sample of 1-param field with 3-element Point must return Undef \
-         (body -x returns Undef via affine rules when x is a Point)"
+        point3_val,
+        "sample of 1-param field with 3-element Point must bind the entire Point \
+         to x and return it (identity body); Undef would indicate arity mismatch \
+         from incorrect decomposition"
     );
 }
 
@@ -295,6 +295,22 @@ fn sample_one_param_lambda_with_three_element_point_returns_undef() {
 /// This test uses a scalar input with a 3-param lambda, but the same Undef
 /// would result for any input (scalar or Point) paired with any lambda having
 /// more than one parameter.
+///
+/// # Cross-reference
+///
+/// `gradient_wrong_size_tensor_point_returns_undef` in `gradient_tests.rs`
+/// (at ~line 228) pins the same `apply_lambda` arity contract via the gradient
+/// path: it passes a 2-component `Value::Tensor` as a single arg to a 3-param
+/// lambda, also triggering `lib.rs:586`. Both tests enforce the same no-unpack
+/// invariant from different entry points.
+///
+/// # Intentional type-incoherence
+///
+/// This `Field` uses `domain_type: Type::Real` with a 3-param lambda — a
+/// combination the compiler would never emit. The mismatch is intentional: it
+/// directly exercises the runtime's defensive arity-check path without
+/// requiring a Point input. `sample()`'s analytical dispatch does not consult
+/// the type metadata; the arity check fires on argument count alone.
 #[test]
 fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
@@ -342,6 +358,15 @@ fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
         Value::Undef,
         "sample() never unpacks input; multi-param lambda always hits \
          apply_lambda arity check (1 forwarded arg vs 3 params)"
+    );
+    // The constant body (42.0) is unreachable: the arity check fires before
+    // the body is evaluated. Asserting this explicitly makes the claim testable
+    // rather than merely documented.
+    assert_ne!(
+        sample_result,
+        Value::Real(42.0),
+        "unreachable body: the constant 42.0 must never be observed \
+         (apply_lambda arity check fires before body executes)"
     );
 }
 
