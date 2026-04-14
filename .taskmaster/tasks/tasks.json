@@ -32534,10 +32534,9 @@
         "updatedAt": "2026-04-14T07:04:10.986Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
-            "crates/reify-compiler/tests/unit_registry_tests.rs",
             "crates/reify-compiler/tests/user_defined_unit_tests.rs"
           ]
         }
