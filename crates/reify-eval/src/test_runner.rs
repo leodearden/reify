@@ -320,6 +320,7 @@ constraint def Positive {
         assert!(!module.trait_defs.is_empty(), "trait_defs must be non-empty in source module");
         assert_eq!(isolated.trait_defs.len(), module.trait_defs.len(),
             "trait_defs must be preserved");
+        assert_eq!(isolated.path, module.path, "module path must be preserved");
     }
 
     #[test]
