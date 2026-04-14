@@ -379,6 +379,7 @@ fn existing_imperial_units_ft_thou_lb_oz_unchanged_post_task_335() {
     let length_cases: &[(&str, f64)] = &[
         ("1ft",   0.3048),
         ("1thou", 0.0000254),
+        ("1in",   0.0254),
     ];
     for (literal, expected) in length_cases {
         let (v, d) = stdlib_param_si_value("Length", literal);
@@ -412,7 +413,7 @@ fn existing_imperial_units_ft_thou_lb_oz_unchanged_post_task_335() {
     // Verify offset=None for all four via the stdlib module units list.
     let units_module = units_module();
 
-    for name in &["ft", "thou", "lb", "oz"] {
+    for name in &["ft", "thou", "in", "lb", "oz"] {
         let u = units_module
             .units
             .iter()
