@@ -742,3 +742,49 @@ fn units_imperial_conversions() {
     assert_scalar_cell(&result, e, "volume_gal", GAL_SI,     1e-13, v);
 }
 
+// ── step-19: units_cross_system_arithmetic ───────────────────────────────────
+
+/// Asserts three mixed-unit arithmetic expressions in UnitShowcase evaluate
+/// correctly across the SI/imperial boundary:
+///
+///   mixed_len      = 1in + 25.4mm   → LENGTH ≈ 0.0508m
+///     (1in = 0.0254m, 25.4mm = 0.0254m, sum = 0.0508m)
+///
+///   energy_imperial = 2lbf * 3mm    → ENERGY ≈ 0.026689329691563 J
+///     (2 × 4.4482216152605 N × 0.003 m = 0.026689329691563 J)
+///
+///   pressure_ratio = (1psi) / (1Pa) → DIMENSIONLESS ≈ 6894.757293168361
+///     (Pressure/Pressure = dimensionless; 6894.757.../1.0 = 6894.757...)
+///
+/// Exercises that dimension promotion is correct across the imperial/SI boundary.
+#[test]
+fn units_cross_system_arithmetic() {
+    let result = eval_ri_file(PATH_UNITS, "m8_units");
+    let e = "UnitShowcase";
+
+    // ── mixed_len: 1in + 25.4mm = 0.0508 m (LENGTH) ──────────────────────────
+    assert_scalar_cell(
+        &result, e, "mixed_len",
+        0.0508,
+        1e-12,
+        DimensionVector::LENGTH,
+    );
+
+    // ── energy_imperial: 2lbf * 3mm = 2 * LBF_SI * 0.003 J (ENERGY) ─────────
+    let expected_energy = 2.0 * LBF_SI * 0.003;  // ≈ 0.026689329691563 J
+    assert_scalar_cell(
+        &result, e, "energy_imperial",
+        expected_energy,
+        1e-11,
+        DimensionVector::ENERGY,
+    );
+
+    // ── pressure_ratio: (1psi) / (1Pa) = dimensionless ≈ 6894.757 ────────────
+    assert_scalar_cell(
+        &result, e, "pressure_ratio",
+        PSI_SI,
+        1e-6,
+        DimensionVector::DIMENSIONLESS,
+    );
+}
+
