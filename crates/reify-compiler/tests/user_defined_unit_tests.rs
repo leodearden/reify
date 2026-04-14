@@ -56,8 +56,10 @@ fn test_dir(name: &str) -> PathBuf {
 #[test]
 fn user_unit_in_let_binding() {
     // Declare `thou`, use it in a param default and a let binding.
-    // Verifies that QuantityLiteral resolution works in all expression contexts,
-    // not only param defaults.
+    // Verifies that QuantityLiteral resolution in a let-binding BinOp context
+    // resolves to the correct user-defined SI value (5 * 0.0000254 = 0.000127),
+    // not merely that an expression exists. A hardcoded-fallback regression
+    // would yield a different si_value (e.g. ≈0.005 for mm) rather than 0.000127.
     let module = parse_and_compile(
         "unit thou : Length = 0.0000254\n\
          structure S {\n\
@@ -78,10 +80,37 @@ fn user_unit_in_let_binding() {
         .iter()
         .find(|c| c.id.member == "w_thou")
         .expect("w_thou value cell not found");
-    assert!(
-        w_thou.default_expr.is_some(),
-        "w_thou should have a computed expression"
-    );
+    // Walk default_expr → BinOp → right operand → Scalar si_value
+    if let Some(expr) = &w_thou.default_expr {
+        if let reify_types::CompiledExprKind::BinOp { right, .. } = &expr.kind {
+            if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+                si_value,
+                ..
+            }) = &right.kind
+            {
+                let expected = 5.0 * 0.0000254;
+                assert!(
+                    (si_value - expected).abs() < 1e-10,
+                    "expected si_value≈{} (5 * 0.0000254 = 0.000127), got {} \
+                     (a hardcoded-mm fallback regression would yield ≈0.005)",
+                    expected,
+                    si_value
+                );
+            } else {
+                panic!(
+                    "expected scalar literal for 5thou (right operand of BinOp), got {:?}",
+                    right.kind
+                );
+            }
+        } else {
+            panic!(
+                "expected BinOp (w + 5thou) as default_expr kind, got {:?}",
+                expr.kind
+            );
+        }
+    } else {
+        panic!("w_thou has no default_expr");
+    }
 }
 
 // ─── step-3: user-defined unit overrides hardcoded fallback ──────────────────
