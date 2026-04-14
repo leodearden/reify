@@ -4,7 +4,7 @@
 //! count-based elaboration, and count re-elaboration.
 
 use reify_compiler::TopologyTemplate;
-use reify_eval::Engine;
+use reify_eval::{Engine, EvalResult};
 use reify_eval::graph::EvaluationGraph;
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
@@ -480,41 +480,35 @@ fn edit_param_count_int_undef_undef_int_transition() {
     let _initial = engine.eval(&module);
 
     // Transition sequence: Int(4) → Undef → Undef → Int(2)
+    let assert_no_bolts = |result: &EvalResult, label: &str| {
+        for i in 0..4 {
+            let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+            assert!(
+                result.values.get(&scoped_id).is_none(),
+                "bolts[{}].diameter must be absent after {}",
+                i,
+                label
+            );
+        }
+        assert_eq!(
+            count_bolt_diameter_instances(&result.values),
+            0,
+            "no bolt diameter instances should exist after {}",
+            label
+        );
+    };
+
     // Int(4) → Undef must clear all bolt instances
     let r1 = engine
         .edit_param(n_id.clone(), Value::Undef)
         .expect("first edit to Undef should succeed");
-    for i in 0..4 {
-        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
-        assert!(
-            r1.values.get(&scoped_id).is_none(),
-            "bolts[{}].diameter must be absent after Int(4)->Undef",
-            i
-        );
-    }
-    assert_eq!(
-        count_bolt_diameter_instances(&r1.values),
-        0,
-        "no bolt diameter instances should exist after Int(4)->Undef"
-    );
+    assert_no_bolts(&r1, "Int(4)->Undef");
 
     // Undef → Undef must be a no-op
     let r2 = engine
         .edit_param(n_id.clone(), Value::Undef)
         .expect("second edit to Undef should succeed");
-    for i in 0..4 {
-        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
-        assert!(
-            r2.values.get(&scoped_id).is_none(),
-            "bolts[{}].diameter must be absent after Undef->Undef",
-            i
-        );
-    }
-    assert_eq!(
-        count_bolt_diameter_instances(&r2.values),
-        0,
-        "no bolt diameter instances should exist after Undef->Undef"
-    );
+    assert_no_bolts(&r2, "Undef->Undef");
 
     // Undef → Int(2) must elaborate exactly bolts[0..2)
     let result = engine
