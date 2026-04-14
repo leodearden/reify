@@ -123,6 +123,21 @@ fn geom_ready_purpose_compiled_and_activatable() {
     );
 }
 
+// ── Test 10: ad-hoc port selector let binding present ────────────────────────
+
+/// Feature 6 (ad-hoc port selector).
+/// Asserts that `supply_point` (from `let supply_point = supply @ point(0mm, 0mm, 0mm)`)
+/// is present as a value cell in the Assembly template and also present in eval results.
+///
+/// NOTE: Ad-hoc selectors currently evaluate to Value::Undef in the pure expression
+/// evaluator (reify-expr/src/lib.rs:511). We intentionally do NOT assert on the
+/// payload — only on presence — so this test remains valid when engine-side geometry
+/// resolution lands later.
+#[test]
+fn ad_hoc_port_selector_let_binding_present() {
+    todo!("step-20 impl: verify supply_point cell is present in compiled template and eval results")
+}
+
 // ── Test 9: where-block nested constraints present and satisfied ──────────────
 
 /// Feature 7 (reference safety in where blocks).
