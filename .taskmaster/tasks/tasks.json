@@ -11088,9 +11088,9 @@
             "crates/reify-test-support/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval",
-            "crates/reify-test-support"
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests",
+            "crates/reify-test-support/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
@@ -11112,8 +11112,8 @@
             "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-compiler/src",
+            "crates/reify-eval/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
