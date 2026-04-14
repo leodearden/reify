@@ -1,8 +1,23 @@
 use std::io::{BufRead, BufReader, Read as _, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// Global mutex that serializes LSP protocol tests.
+///
+/// Each test spawns a long-running `reify lsp` child process with a tokio
+/// runtime. Running two such processes concurrently inside the same test
+/// binary — especially during a full `cargo test -p reify-cli` run with many
+/// parallel test binaries — can starve one process's runtime and cause the
+/// 10-second `wait_for_response` timeout to fire. Holding this lock for the
+/// lifetime of each test ensures at most one LSP process is active at a time
+/// from this binary.
+static LSP_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn acquire_lsp_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    LSP_TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
 
 /// Send a JSON-RPC message with Content-Length header framing.
 fn send_jsonrpc(stdin: &mut impl Write, body: &str) {
@@ -31,6 +46,7 @@ fn wait_for_exit(child: &mut Child, timeout_secs: u64) -> ExitStatus {
 
 #[test]
 fn lsp_initialize_returns_capabilities() {
+    let _lock = acquire_lsp_test_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args(["lsp"])
         .stdin(Stdio::piped())
@@ -172,6 +188,7 @@ fn wait_for_response(rx: &mpsc::Receiver<serde_json::Value>, id: u64) -> serde_j
 
 #[test]
 fn lsp_full_interactive_loop_through_binary() {
+    let _lock = acquire_lsp_test_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
         .args(["lsp"])
         .stdin(Stdio::piped())
