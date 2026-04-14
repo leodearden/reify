@@ -479,7 +479,10 @@ fn transitive_pub_unit_not_visible_via_compile_with_prelude() {
     // Module B: compiled with A as prelude, but B declares no units of its own.
     // B can use `mil` (it's in B's registry via prelude seeding), but
     // B's CompiledModule.units remains empty (only holds locally-declared units).
-    let module_b = compile_with_prelude_helper("// no local unit declarations", &[module_a]);
+    // Positive one-hop assertion: B's source actively resolves `mil` from its
+    // prelude, confirming the one-hop seeding works end-to-end.
+    let module_b =
+        compile_with_prelude_helper("structure T { param x : Length = 1mil }", &[module_a]);
     assert!(
         errors_only(&module_b).is_empty(),
         "module_b errors: {:?}",
@@ -550,7 +553,10 @@ fn transitive_pub_unit_not_visible_via_compile_project() {
     );
 
     let modules = result.unwrap();
-    let entry_module = modules.last().expect("no modules returned");
+    let entry_module = modules
+        .iter()
+        .find(|m| m.path.to_string() == "c")
+        .expect("module 'c' not found in compile_project output");
     let errors = errors_only(entry_module);
     assert_unknown_unit_mil(&errors);
 
