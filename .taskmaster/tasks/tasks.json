@@ -8992,13 +8992,14 @@
         "priority": "low",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval",
+            "crates/reify-compiler"
           ],
           "milestone": "M9",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/tests/recursive_unfold.rs"
+            "crates/reify-compiler/src/lib.rs"
           ]
         },
         "subtasks": [],
@@ -9018,8 +9019,7 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/scc.rs"
+            "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
             "crates/reify-compiler"
