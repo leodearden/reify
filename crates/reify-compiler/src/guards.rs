@@ -431,9 +431,19 @@ pub(crate) fn compile_guarded_members(
                     .with_label(DiagnosticLabel::new(m.span, "not yet supported")),
                 );
             }
-            _ => {
-                // Port, Connect, Chain, AssociatedType, MetaBlock, ConstraintInst
-                // within guarded blocks: not yet handled
+            reify_syntax::MemberDecl::Port(_)
+            | reify_syntax::MemberDecl::Connect(_)
+            | reify_syntax::MemberDecl::Chain(_)
+            | reify_syntax::MemberDecl::AssociatedType(_)
+            | reify_syntax::MemberDecl::MetaBlock(_)
+            | reify_syntax::MemberDecl::ConstraintInst(_) => {
+                // Not yet handled inside guarded blocks. Enumerated explicitly so
+                // adding a new MemberDecl variant produces a `non-exhaustive match`
+                // compile error here, forcing an intentional decision about how the
+                // new variant behaves under a `where { }` guard. If a new variant
+                // should be silently dropped inside a guard, add it to this arm; if
+                // it should emit a diagnostic (like Sub/Minimize/Maximize above),
+                // add a dedicated arm.
             }
         }
     }
