@@ -4,8 +4,7 @@
 //! parse → compile → eval/check → verify.
 //! Uses examples/m9_constraint_def.ri as the source file.
 
-use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::parse_and_compile;
+use reify_test_support::{make_simple_engine, parse_and_compile};
 use reify_types::{ModulePath, Satisfaction, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -58,8 +57,7 @@ fn constraint_def_all_constraints_satisfied() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let check_result = engine.check(&compiled);
 
     // Must have at least some constraint results (file has active constraints)
@@ -89,8 +87,7 @@ fn single_predicate_values() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let check_result = engine.check(&compiled);
 
     // Wall.thickness = 5mm = 0.005 m (SI)
@@ -143,8 +140,7 @@ fn multi_param_bounded_values() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let check_result = engine.check(&compiled);
 
     // Pipe.diameter = 20mm = 0.020 m (SI)
@@ -194,8 +190,7 @@ fn conjunction_predicate_labels() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let check_result = engine.check(&compiled);
 
     // Beam must be in the compiled templates
@@ -233,8 +228,7 @@ fn reused_def_both_structures() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let check_result = engine.check(&compiled);
 
     // Both structures must exist
@@ -269,8 +263,7 @@ fn named_args_order_independent() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let check_result = engine.check(&compiled);
 
     // FlippedPipe must be present
@@ -308,8 +301,7 @@ fn total_constraint_count() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let check_result = engine.check(&compiled);
 
     assert!(
@@ -339,8 +331,7 @@ fn guarded_constraint_inactive() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let check_result = engine.check(&compiled);
 
     // InactiveWall must exist as a template
