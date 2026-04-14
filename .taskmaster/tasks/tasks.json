@@ -27475,12 +27475,11 @@
         "updatedAt": "2026-04-09T08:22:02.039Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-types"
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-types/src/lib.rs",
             "crates/reify-compiler/tests/termination_check_tests.rs"
           ]
         }
@@ -27810,7 +27809,7 @@
         "updatedAt": "2026-04-09T09:31:58.116Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/tests/termination_check_tests.rs"
