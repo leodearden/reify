@@ -14,6 +14,15 @@ pub fn make_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(checker), None)
 }
 
+/// Create a new `Engine` backed by the real `SimpleConstraintChecker` and no
+/// geometry kernel. Suitable for integration tests that need the real
+/// constraint semantics (Satisfied/Violated/Indeterminate) rather than the
+/// mock's tracking-only stub.
+#[cfg(feature = "eval-helpers")]
+pub fn make_simple_engine() -> reify_eval::Engine {
+    reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
+}
+
 /// Parse `source`, assert no parse errors, compile, assert no compile errors.
 /// Returns the compiled module ready for eval.
 ///
