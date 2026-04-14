@@ -1,0 +1,32 @@
+// M8.3 Units fixture
+//
+// Exercises SI-prefix unit literals, imperial units, and cross-system
+// arithmetic through the full parse → compile_with_stdlib → eval pipeline.
+//
+// SI-prefix coverage (step-16):
+//   Length:  nm (1e-9 m), um (1e-6 m), mm (1e-3 m), km (1e3 m), Mm (1e6 m)
+//   Mass:    mg (1e-6 kg), kg (1.0 kg), Mg (1e3 kg)
+//   Time:    ns (1e-9 s), us (1e-6 s), ms (1e-3 s), ks (1e3 s)
+//
+// Imperial lets (step-18) and cross-system arithmetic (step-20) are added
+// incrementally by subsequent implementation steps.
+
+structure def UnitShowcase {
+    // ── SI-prefix length ────────────────────────────────────────────────────────
+    let len_nm = 1nm
+    let len_um = 1um
+    let len_mm = 1mm
+    let len_km = 1km
+    let len_Mm = 1Mm
+
+    // ── SI-prefix mass ──────────────────────────────────────────────────────────
+    let mass_mg = 1mg
+    let mass_kg = 1kg
+    let mass_Mg = 1Mg
+
+    // ── SI-prefix time ──────────────────────────────────────────────────────────
+    let time_ns = 1ns
+    let time_us = 1us
+    let time_ms = 1ms
+    let time_ks = 1ks
+}
