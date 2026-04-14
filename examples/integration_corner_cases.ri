@@ -25,7 +25,8 @@ type Acceleration = Velocity / Time
 type Jerk = Acceleration / Time
 
 structure def JerkDemo {
-    param j : Jerk = 1mm
+    // 1mm / (1s * 1s * 1s) = 1mm/s³ — dimensionally correct Jerk value
+    param j : Jerk = 1mm / (1s * 1s * 1s)
     constraint determined(j)
 }
 

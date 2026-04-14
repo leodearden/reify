@@ -16,9 +16,10 @@
 //! Uses examples/integration_corner_cases.ri as the source file.
 
 use std::fs;
+use std::sync::OnceLock;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
+use reify_types::{DimensionVector, ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -26,32 +27,50 @@ const EXAMPLE_PATH: &str = concat!(
     "/../../examples/integration_corner_cases.ri"
 );
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Cached helpers ────────────────────────────────────────────────────────────
 
-/// Load a .ri file, parse, compile (asserting no errors), and evaluate.
-/// Returns the full EvalResult for per-test assertions.
-fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
-    let source = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
-    let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors in {}: {:?}",
-        path,
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "compile errors in {}: {:?}",
-        path,
-        errors
-    );
+/// Read the integration_corner_cases.ri source file, cached across test runs.
+fn source() -> String {
+    static S: OnceLock<String> = OnceLock::new();
+    S.get_or_init(|| {
+        fs::read_to_string(EXAMPLE_PATH)
+            .unwrap_or_else(|e| panic!("{} should exist: {}", EXAMPLE_PATH, e))
+    })
+    .clone()
+}
+
+/// Parse and compile integration_corner_cases.ri, cached across test runs.
+/// Panics if there are parse or compile errors.
+fn compiled() -> reify_compiler::CompiledModule {
+    static C: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
+    C.get_or_init(|| {
+        let src = source();
+        let parsed = reify_syntax::parse(&src, ModulePath::single("integration_corner_cases"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors in integration_corner_cases.ri: {:?}",
+            parsed.errors
+        );
+        let compiled = reify_compiler::compile(&parsed);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "compile errors in integration_corner_cases.ri: {:?}",
+            errors
+        );
+        compiled
+    })
+    .clone()
+}
+
+/// Evaluate the cached compiled module with a fresh engine.
+/// Returns the full EvalResult for per-test value assertions.
+fn eval_ri_file() -> reify_eval::EvalResult {
+    let compiled = compiled();
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
@@ -62,55 +81,20 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
         .collect();
     assert!(
         eval_errors.is_empty(),
-        "eval errors in {}: {:?}",
-        path,
+        "eval errors in integration_corner_cases.ri: {:?}",
         eval_errors
     );
     result
 }
 
-/// Load and compile a .ri file, returning both compiled module and eval result.
-#[allow(dead_code)]
-fn compile_and_eval_ri(
-    path: &str,
-    module_name: &str,
-) -> (reify_compiler::CompiledModule, reify_eval::EvalResult) {
-    let source = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
-    let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors in {}: {:?}",
-        path,
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "compile errors in {}: {:?}",
-        path,
-        errors
-    );
+/// Evaluate the cached compiled module and run constraint checking.
+/// Returns the CheckResult for satisfaction assertions.
+fn eval_and_check_ri() -> reify_eval::CheckResult {
+    let compiled = compiled();
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let result = engine.eval(&compiled);
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        eval_errors.is_empty(),
-        "eval errors in {}: {:?}",
-        path,
-        eval_errors
-    );
-    (compiled, result)
+    let _ = engine.eval(&compiled);
+    engine.check(&compiled)
 }
 
 // ── step-1: smoke test ────────────────────────────────────────────────────────
@@ -118,7 +102,7 @@ fn compile_and_eval_ri(
 /// Load integration_corner_cases.ri, parse, compile, eval — no errors, non-empty values.
 #[test]
 fn corner_cases_parses_and_compiles() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     assert!(
         !result.values.is_empty(),
         "eval should produce non-empty values for integration_corner_cases.ri"
@@ -127,26 +111,45 @@ fn corner_cases_parses_and_compiles() {
 
 // ── step-3: type alias, trait, vacuous constraint def ────────────────────────
 
-/// Verify JerkDemo.j is a Scalar value (Jerk alias resolves to Length/Time^3 dimension).
+/// Verify JerkDemo.j has the correct Jerk dimension (Length·Time⁻³).
+/// This confirms the 3-deep alias chain (Velocity → Acceleration → Jerk) resolves correctly.
 #[test]
 fn type_alias_three_deep_resolves() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let j_id = ValueCellId::new("JerkDemo", "j");
     let j_val = result
         .values
         .get(&j_id)
         .unwrap_or_else(|| panic!("JerkDemo.j not found — 3-deep alias should resolve"));
-    assert!(
-        matches!(j_val, Value::Scalar { .. }),
-        "JerkDemo.j should be Scalar (Jerk = Length/Time^3), got: {:?}",
-        j_val
-    );
+
+    // Jerk = Length / Time³  →  DimensionVector: L¹·T⁻³
+    let expected_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME.pow(3));
+    match j_val {
+        Value::Scalar { dimension, .. } => {
+            assert_eq!(
+                dimension, &expected_dim,
+                "JerkDemo.j dimension should be Length/Time^3 (Jerk), got: {:?}",
+                dimension
+            );
+        }
+        other => panic!(
+            "JerkDemo.j should be a Scalar (Jerk = Length/Time^3), got: {:?}",
+            other
+        ),
+    }
 }
 
-/// Verify FullTraitImpl has value cells for size and doubled.
+/// Verify FullTraitImpl covers all trait member kinds:
+///   - param:      `size` evaluates as a Scalar value
+///   - let:        `doubled` evaluates as a Scalar value
+///   - port:       FullTraitImpl declares conformance to FullTrait (which owns the port);
+///                 trait ports live in the trait definition, not in the implementing structure's
+///                 template, so we verify the trait_bounds relationship
+///   - constraint: inherited `size > 0mm` is Satisfied (no Violated constraints)
 #[test]
 fn trait_all_member_kinds() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    // ── param + let: value assertions ──
+    let result = eval_ri_file();
 
     let size_id = ValueCellId::new("FullTraitImpl", "size");
     let size_val = result
@@ -169,12 +172,43 @@ fn trait_all_member_kinds() {
         "FullTraitImpl.doubled should be Scalar, got: {:?}",
         doubled_val
     );
+
+    // ── port: trait_bounds relationship ──
+    // Ports declared in a trait live in the trait definition, not in the implementing
+    // structure's TopologyTemplate.ports. We verify via trait_bounds that FullTraitImpl
+    // declares conformance to FullTrait (which has `port output : out FullTrait`).
+    let compiled = compiled();
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "FullTraitImpl")
+        .expect("FullTraitImpl template must exist in compiled module");
+    assert!(
+        template.trait_bounds.iter().any(|b| b == "FullTrait"),
+        "FullTraitImpl should declare conformance to FullTrait (which has the 'output' port), \
+         found trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    // ── constraint: verify no Violated constraints on FullTraitImpl ──
+    let check_result = eval_and_check_ri();
+    let violated: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.id.entity == "FullTraitImpl" && e.satisfaction == Satisfaction::Violated)
+        .collect();
+    assert!(
+        violated.is_empty(),
+        "FullTraitImpl should have no Violated constraints (e.g. size > 0mm should be Satisfied), \
+         violated: {:?}",
+        violated.iter().map(|e| &e.id).collect::<Vec<_>>()
+    );
 }
 
 /// Verify VacuousUser compiles and has a determined w value (vacuous constraint def = 0 predicates).
 #[test]
 fn vacuous_constraint_def_compiles() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let w_id = ValueCellId::new("VacuousUser", "w");
     let w_val = result
         .values
@@ -192,7 +226,7 @@ fn vacuous_constraint_def_compiles() {
 /// Verify EmptyListOps.n evaluates to Value::Int(0) (empty list .count = 0).
 #[test]
 fn empty_list_count_is_zero() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let n_id = ValueCellId::new("EmptyListOps", "n");
     let n_val = result
         .values
@@ -211,7 +245,7 @@ fn empty_list_count_is_zero() {
 /// Verify UndefPropagation.arith is Value::Undef (Undef + 1 = Undef).
 #[test]
 fn undef_propagation_arithmetic() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let arith_id = ValueCellId::new("UndefPropagation", "arith");
     let arith_val = result
         .values
@@ -228,7 +262,7 @@ fn undef_propagation_arithmetic() {
 /// Verify UndefPropagation.cmp is Value::Undef (Undef > 0 = Undef).
 #[test]
 fn undef_propagation_comparison() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let cmp_id = ValueCellId::new("UndefPropagation", "cmp");
     let cmp_val = result
         .values
@@ -245,7 +279,7 @@ fn undef_propagation_comparison() {
 /// Verify UndefPropagation.neg is Value::Undef (-Undef = Undef).
 #[test]
 fn undef_propagation_negation() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let neg_id = ValueCellId::new("UndefPropagation", "neg");
     let neg_val = result
         .values
@@ -264,7 +298,7 @@ fn undef_propagation_negation() {
 /// Verify OptionEdgeCases.n evaluates to Value::Option(None).
 #[test]
 fn option_none_is_determined() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let n_id = ValueCellId::new("OptionEdgeCases", "n");
     let n_val = result
         .values
@@ -281,7 +315,7 @@ fn option_none_is_determined() {
 /// some(Undef) wraps the Undef in an Option — the Option itself is determined.
 #[test]
 fn option_some_undef_is_determined() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let s_id = ValueCellId::new("OptionEdgeCases", "s");
     let s_val = result
         .values
@@ -300,7 +334,7 @@ fn option_some_undef_is_determined() {
 /// With depth=0 the where guard prevents child from being unfolded.
 #[test]
 fn recursive_depth_zero_no_child() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
 
     // depth should be 0
     let depth_id = ValueCellId::new("RecTree", "depth");
@@ -329,7 +363,7 @@ fn recursive_depth_zero_no_child() {
 /// a=1mm < b=2mm < c=3mm < d=4mm → all pairwise comparisons true → true.
 #[test]
 fn chained_comparison_four_elements() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let chain_id = ValueCellId::new("ChainedFour", "chain");
     let chain_val = result
         .values
@@ -349,7 +383,7 @@ fn chained_comparison_four_elements() {
 /// false ∧ Undef = false (Kleene AND absorbing element).
 #[test]
 fn kleene_and_false_absorbs_undef() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let and_id = ValueCellId::new("KleeneEdge", "and_absorb");
     let and_val = result
         .values
@@ -367,7 +401,7 @@ fn kleene_and_false_absorbs_undef() {
 /// true ∨ Undef = true (Kleene OR absorbing element).
 #[test]
 fn kleene_or_true_absorbs_undef() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let or_id = ValueCellId::new("KleeneEdge", "or_absorb");
     let or_val = result
         .values
@@ -385,7 +419,7 @@ fn kleene_or_true_absorbs_undef() {
 /// !false || Undef = true || Undef = true (vacuous implication pattern).
 #[test]
 fn kleene_implies_vacuous_true() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let imp_id = ValueCellId::new("KleeneEdge", "implies_vacuous");
     let imp_val = result
         .values
@@ -404,7 +438,7 @@ fn kleene_implies_vacuous_true() {
 /// Verify EqualRange.r is a Value::Range with equal lower/upper bounds.
 #[test]
 fn range_equal_bounds_value() {
-    let result = eval_ri_file(EXAMPLE_PATH, "integration_corner_cases");
+    let result = eval_ri_file();
     let r_id = ValueCellId::new("EqualRange", "r");
     let r_val = result
         .values
@@ -436,22 +470,7 @@ fn range_equal_bounds_value() {
 /// constrained(x) and constrained(y) should be Satisfied (auto = solver variables).
 #[test]
 fn auto_free_multiple_solutions() {
-    let source = fs::read_to_string(EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", EXAMPLE_PATH, e));
-    let parsed = reify_syntax::parse(&source, ModulePath::single("integration_corner_cases"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let _result = engine.eval(&compiled);
-    let check_result = engine.check(&compiled);
+    let check_result = eval_and_check_ri();
 
     // constrained(x) and constrained(y) should be Satisfied
     let auto_constraints: Vec<_> = check_result
@@ -482,22 +501,7 @@ fn auto_free_multiple_solutions() {
 /// Run check() on the full .ri file, verify no Violated constraints.
 #[test]
 fn all_non_auto_constraints_satisfied() {
-    let source = fs::read_to_string(EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", EXAMPLE_PATH, e));
-    let parsed = reify_syntax::parse(&source, ModulePath::single("integration_corner_cases"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let _ = engine.eval(&compiled);
-    let check_result = engine.check(&compiled);
+    let check_result = eval_and_check_ri();
 
     let violated: Vec<_> = check_result
         .constraint_results
@@ -515,22 +519,7 @@ fn all_non_auto_constraints_satisfied() {
 /// Assert total constraint count (Satisfied + Indeterminate) >= 25.
 #[test]
 fn assertion_count_at_least_25() {
-    let source = fs::read_to_string(EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", EXAMPLE_PATH, e));
-    let parsed = reify_syntax::parse(&source, ModulePath::single("integration_corner_cases"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let _ = engine.eval(&compiled);
-    let check_result = engine.check(&compiled);
+    let check_result = eval_and_check_ri();
 
     let total = check_result.constraint_results.len();
     assert!(
