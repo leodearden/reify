@@ -188,20 +188,22 @@ pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Op
 
 /// Extract the optimization target from a parsed annotation list.
 ///
-/// Returns `Some(target)` if there is an `@optimized("target")` annotation with a
-/// `StringLiteral` first arg, or `None` otherwise (including `@optimized` with
-/// no args, a non-string arg, or no `@optimized` annotation at all). Mirrors
-/// `deprecation_message` in shape, but operates on parsed `reify_syntax::Annotation`s
-/// because the helper runs against `ConstraintDef.annotations` before lowering.
+/// Returns `Some(target)` for the first `@optimized("target")` annotation with a
+/// `StringLiteral` first arg, or `None` if no such annotation is found. Malformed
+/// `@optimized` entries (no args, or a non-string arg) are skipped so that a later
+/// valid `@optimized("target")` in the list is still returned. This matches the
+/// validator's "first-valid wins" contract while ensuring a malformed earlier
+/// sibling does not silently drop a valid later one.
+///
+/// Operates on parsed `reify_syntax::Annotation`s because the helper runs against
+/// `ConstraintDef.annotations` before lowering.
 pub(crate) fn optimized_target(annotations: &[reify_syntax::Annotation]) -> Option<String> {
     for ann in annotations {
-        if ann.name == "optimized" {
-            if let Some(first) = ann.args.first()
-                && let reify_syntax::ExprKind::StringLiteral(s) = &first.kind
-            {
-                return Some(s.clone());
-            }
-            return None;
+        if ann.name == "optimized"
+            && let Some(first) = ann.args.first()
+            && let reify_syntax::ExprKind::StringLiteral(s) = &first.kind
+        {
+            return Some(s.clone());
         }
     }
     None
