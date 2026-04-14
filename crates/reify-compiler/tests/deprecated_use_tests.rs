@@ -63,15 +63,48 @@ fn deprecated_structure_used_as_sub_emits_warning() {
     );
 
     let warns = deprecation_warnings(&module, "OldBolt");
-    assert!(
-        !warns.is_empty(),
-        "expected deprecation warning for OldBolt, got warnings: {:?}",
-        warnings_only(&module)
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly one deprecation warning for OldBolt, got: {:?}",
+        warns
     );
     assert!(
         warns[0].message.contains("Use NewBolt"),
         "expected warning to mention 'Use NewBolt', got: {}",
         warns[0].message
+    );
+
+    // Span must point at the use-site, not the definition.
+    let label = warns[0]
+        .labels
+        .first()
+        .expect("expected at least one diagnostic label");
+    assert!(
+        !label.span.is_empty(),
+        "expected non-empty span in deprecation label, got: {:?}",
+        label.span
+    );
+    let use_site_offset = source
+        .find("sub b")
+        .expect("test source must contain 'sub b'") as u32;
+    assert!(
+        label.span.start >= use_site_offset,
+        "expected span.start ({}) >= use-site offset ({}); span is inside definition, not use-site",
+        label.span.start,
+        use_site_offset
+    );
+    assert!(
+        (label.span.end as usize) <= source.len(),
+        "expected span.end ({}) <= source.len() ({})",
+        label.span.end,
+        source.len()
+    );
+    let span_text = &source[label.span.start as usize..label.span.end as usize];
+    assert!(
+        span_text.contains("OldBolt"),
+        "expected span text to contain 'OldBolt', got: {:?}",
+        span_text
     );
 }
 
@@ -127,10 +160,11 @@ fn deprecated_function_called_emits_warning() {
     );
 
     let warns = deprecation_warnings(&module, "old_calc");
-    assert!(
-        !warns.is_empty(),
-        "expected deprecation warning for old_calc, got warnings: {:?}",
-        warnings_only(&module)
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly one deprecation warning for old_calc, got: {:?}",
+        warns
     );
     assert!(
         warns[0].message.contains("Use new_calc"),
@@ -157,10 +191,11 @@ fn deprecated_trait_used_as_trait_bound_emits_warning() {
     );
 
     let warns = deprecation_warnings(&module, "OldTrait");
-    assert!(
-        !warns.is_empty(),
-        "expected deprecation warning for OldTrait, got warnings: {:?}",
-        warnings_only(&module)
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly one deprecation warning for OldTrait, got: {:?}",
+        warns
     );
     assert!(
         warns[0].message.contains("Use NewTrait"),
@@ -330,76 +365,11 @@ fn annotation_compile_tests_no_regression() {
     );
 }
 
-// ── Task 272: five dedicated regression tests for @deprecated ────────────────
+// ── Definition-only edge cases (fn, trait) ────────────────────────────────
 
-// Scenario (1): deprecated entity emits warning on use, and the span points at
-// the use-site, not the definition.
 #[test]
-fn task_272_deprecated_entity_emits_warning_on_use() {
-    let source = r#"
-        @deprecated("Use NewBolt")
-        structure OldBolt { param d : Real = 1.0 }
-
-        structure Assembly {
-            sub b = OldBolt()
-        }
-    "#;
-    let module = compile_module(source);
-    assert!(
-        errors_only(&module).is_empty(),
-        "errors: {:?}",
-        errors_only(&module)
-    );
-
-    let warns = deprecation_warnings(&module, "OldBolt");
-    assert_eq!(
-        warns.len(),
-        1,
-        "expected exactly one deprecation warning for OldBolt, got: {:?}",
-        warns
-    );
-
-    // The warning must carry at least one label with a non-empty span.
-    let label = warns[0]
-        .labels
-        .first()
-        .expect("expected at least one diagnostic label");
-    assert!(
-        !label.span.is_empty(),
-        "expected non-empty span in deprecation label, got: {:?}",
-        label.span
-    );
-
-    // The label span must fall at or after the use-site ("sub b"), not at the definition.
-    let use_site_offset = source
-        .find("sub b")
-        .expect("test source must contain 'sub b'") as u32;
-    assert!(
-        label.span.start >= use_site_offset,
-        "expected span.start ({}) >= use-site offset ({}); span is inside definition, not use-site",
-        label.span.start,
-        use_site_offset
-    );
-}
-
-// Scenario (2): defining a deprecated entity (structure, fn, trait) without using
-// it must produce zero deprecation warnings.
-#[test]
-fn task_272_no_warning_on_definition_alone() {
-    // (a) deprecated structure — no use-site
-    let module = compile_module(r#"@deprecated("old") structure Only { param x : Real = 0.0 }"#);
-    assert!(
-        errors_only(&module).is_empty(),
-        "structure: errors: {:?}",
-        errors_only(&module)
-    );
-    assert!(
-        deprecation_warnings(&module, "Only").is_empty(),
-        "structure: expected no deprecation warning for definition-only, got: {:?}",
-        deprecation_warnings(&module, "Only")
-    );
-
-    // (b) deprecated fn — no call-site
+fn deprecated_fn_and_trait_definition_alone_produce_no_warning() {
+    // deprecated fn — no call-site
     let module = compile_module(r#"@deprecated("old") fn only_fn(x: Real) -> Real { x }"#);
     assert!(
         errors_only(&module).is_empty(),
@@ -412,7 +382,7 @@ fn task_272_no_warning_on_definition_alone() {
         deprecation_warnings(&module, "only_fn")
     );
 
-    // (c) deprecated trait — no implementor
+    // deprecated trait — no implementor
     let module = compile_module(r#"@deprecated("old") trait OnlyTrait { param w : Real }"#);
     assert!(
         errors_only(&module).is_empty(),
@@ -426,10 +396,10 @@ fn task_272_no_warning_on_definition_alone() {
     );
 }
 
-// Scenario (3): the warning message embeds the annotation argument verbatim and
-// the full message format is exactly `use of deprecated <kind> '<name>': <msg>`.
+// ── Message format contract ───────────────────────────────────────────────
+
 #[test]
-fn task_272_message_includes_annotation_argument() {
+fn deprecation_warning_message_format_contract() {
     let source = r#"
         @deprecated("Use NewBolt version 2")
         structure OldBolt { param d : Real = 1.0 }
@@ -453,103 +423,9 @@ fn task_272_message_includes_annotation_argument() {
         warns
     );
 
-    let msg = &warns[0].message;
-
-    // Individual substring checks for clarity on failure.
-    assert!(
-        msg.contains("use of deprecated"),
-        "message must contain 'use of deprecated', got: {msg}"
-    );
-    assert!(
-        msg.contains("structure"),
-        "message must contain entity kind 'structure', got: {msg}"
-    );
-    assert!(
-        msg.contains("'OldBolt'"),
-        "message must contain quoted name \"'OldBolt'\", got: {msg}"
-    );
-    assert!(
-        msg.contains("Use NewBolt version 2"),
-        "message must contain the verbatim annotation argument 'Use NewBolt version 2', got: {msg}"
-    );
-
     // Full format assertion — locks the diagnostic format as a stable contract.
-    let expected = "use of deprecated structure 'OldBolt': Use NewBolt version 2";
     assert_eq!(
-        msg, expected,
-        "message format mismatch: expected {expected:?}, got {msg:?}"
-    );
-}
-
-// Scenario (4): implementing a deprecated trait emits a warning.
-#[test]
-fn task_272_deprecated_trait_emits_warning_when_implemented() {
-    let source = r#"
-        @deprecated("Use NewTrait")
-        trait OldTrait { param w : Real }
-
-        structure S : OldTrait { param w : Real = 1.0 }
-    "#;
-    let module = compile_module(source);
-    assert!(
-        errors_only(&module).is_empty(),
-        "errors: {:?}",
-        errors_only(&module)
-    );
-
-    let warns = deprecation_warnings(&module, "OldTrait");
-    assert_eq!(
-        warns.len(),
-        1,
-        "expected exactly one deprecation warning for OldTrait, got: {:?}",
-        warns
-    );
-
-    let msg = &warns[0].message;
-    assert!(
-        msg.contains("trait"),
-        "message must contain entity kind 'trait', got: {msg}"
-    );
-    assert!(
-        msg.contains("Use NewTrait"),
-        "message must contain annotation argument 'Use NewTrait', got: {msg}"
-    );
-}
-
-// Scenario (5): calling a deprecated function emits a warning.
-#[test]
-fn task_272_deprecated_fn_emits_warning_when_called() {
-    let source = r#"
-        @deprecated("Use new_calc")
-        fn old_calc(x: Real) -> Real { x }
-
-        structure S {
-            param x : Real = 1.0
-            let y = old_calc(x)
-        }
-    "#;
-    let module = compile_module(source);
-    assert!(
-        errors_only(&module).is_empty(),
-        "errors: {:?}",
-        errors_only(&module)
-    );
-
-    let warns = deprecation_warnings(&module, "old_calc");
-    assert_eq!(
-        warns.len(),
-        1,
-        "expected exactly one deprecation warning for old_calc, got: {:?}",
-        warns
-    );
-
-    let msg = &warns[0].message;
-    assert!(
-        msg.contains("function"),
-        "message must contain entity kind 'function', got: {msg}"
-    );
-    assert!(
-        msg.contains("Use new_calc"),
-        "message must contain annotation argument 'Use new_calc', got: {msg}"
+        &warns[0].message, "use of deprecated structure 'OldBolt': Use NewBolt version 2",
+        "message format mismatch"
     );
 }
