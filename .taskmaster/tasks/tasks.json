@@ -5950,16 +5950,19 @@
         "status": "pending",
         "metadata": {
           "modules": [
+            "crates/reify-types",
             "crates/reify-compiler",
-            "crates/reify-eval",
-            "crates/reify-types"
+            "crates/reify-expr",
+            "crates/reify-eval"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
+            "crates/reify-types/src/ty.rs",
+            "crates/reify-types/src/value.rs",
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-types/src/value.rs"
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-eval/src/lib.rs"
           ]
         },
         "subtasks": [],
