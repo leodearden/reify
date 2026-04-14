@@ -277,6 +277,8 @@ mod tests {
         // Rich source that populates every shared-infrastructure collection so
         // equality assertions cannot trivially pass as 0==0.
         let source = r#"
+#precision(value=64)
+
 fn double(x: Real) -> Real { x * 2 }
 
 enum Quality { Standard, Premium }
@@ -329,6 +331,8 @@ constraint def Positive {
         assert_eq!(isolated.units.len(), module.units.len(), "units must be preserved");
         assert!(!module.imports.is_empty(), "imports must be non-empty in source module");
         assert_eq!(isolated.imports.len(), module.imports.len(), "imports must be preserved");
+        assert!(!module.pragmas.is_empty(), "pragmas must be non-empty in source module");
+        assert_eq!(isolated.pragmas.len(), module.pragmas.len(), "pragmas must be preserved");
     }
 
     #[test]
