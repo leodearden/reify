@@ -32,6 +32,10 @@ trait ThreadedPort {
 // ── Motor structure ──────────────────────────────────────────────────────────
 
 structure def Motor {
+    // Physical properties — give eval something to compute
+    param rated_power   : Real = 750.0      // W  (0.75 kW motor)
+    param rated_speed   : Real = 1500.0     // rpm (nominal)
+
     // Rotary output shaft — M8 shaft (8 mm diameter)
     port shaft : out RotaryPort {
         param rpm            : Real   = 1500.0
@@ -50,6 +54,10 @@ structure def Motor {
 // ── Gearbox structure ────────────────────────────────────────────────────────
 
 structure def Gearbox {
+    // Physical properties
+    param gear_ratio    : Real = 3.0        // output/input
+    param efficiency    : Real = 0.95       // 95%
+
     // Rotary input — M8 shaft (matches Motor.shaft)
     port input : in RotaryPort {
         param rpm            : Real   = 1500.0
