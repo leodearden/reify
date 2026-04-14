@@ -159,7 +159,9 @@ structure def Assembly : Physical + Locatable {
     let size_total = sizes.sum
 
     // ── Function overload calls ───────────────────────────────────────────
-    let safe_load_real = safety_factor(100.0)   // Real overload → 150.0
+    // Note: in Reify, whole-number literals (100.0) compile as Int; use 100.5
+    // (non-whole) to force the Real overload. safety_factor(100.5) = 100.5*1.5 = 150.75
+    let safe_load_real = safety_factor(100.5)   // Real overload → 150.75
     let safe_load_int  = safety_factor(100)      // Int overload  → 200
 
     // ── If-then-else ──────────────────────────────────────────────────────
@@ -252,7 +254,7 @@ structure def Assembly : Physical + Locatable {
     constraint size_count > 0
     constraint size_total > 0
 
-    // Function result assertions
+    // Function result assertions (safe_load_real = 150.75, safe_load_int = 200)
     constraint safe_load_real > 100.0
     constraint safe_load_int > 100
 
@@ -262,6 +264,22 @@ structure def Assembly : Physical + Locatable {
     // Quantifiers
     constraint forall x in sizes: x > 0
     constraint exists x in sizes: x > 10
+
+    // Additional bounds and sanity checks
+    constraint height < 2000mm
+    constraint width < 1000mm
+    constraint mass < 100kg
+    constraint position_x > -10000mm
+    constraint position_y > -10000mm
+    constraint size_count > 3
+
+    // Result range assertions
+    constraint safe_load_real < 200.0
+    constraint safe_load_int < 300
+    constraint grade_code <= 3
+
+    // Complex number non-undef
+    constraint height_ok == height_ok
 
     // Minimize objective
     minimize mass

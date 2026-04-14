@@ -99,6 +99,51 @@ fn integration_full_v01_compiles() {
     );
 }
 
+// ── Test 3: all constraints satisfied ────────────────────────────────────────
+
+/// Smoke test: check_canonical produces at least one constraint result and
+/// every entry is Satisfaction::Satisfied.
+#[test]
+fn all_constraints_satisfied() {
+    let check_result = check_canonical();
+    assert!(
+        !check_result.constraint_results.is_empty(),
+        "expected at least one constraint result"
+    );
+    for entry in &check_result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
+}
+
+// ── Test 4: total constraint count meets threshold ────────────────────────────
+
+/// Capstone assertion: constraint_results.len() >= 40, all Satisfied.
+/// Guards against silent constraint drops during future refactoring.
+#[test]
+fn total_constraint_count_meets_threshold() {
+    let check_result = check_canonical();
+    let n = check_result.constraint_results.len();
+    assert!(
+        n >= 40,
+        "expected >= 40 total constraint results, got {n}"
+    );
+    for entry in &check_result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
+}
+
 // ── Test 1: file parses without errors ───────────────────────────────────────
 
 /// Read integration_full_v01.ri, verify it parses without errors, and assert
