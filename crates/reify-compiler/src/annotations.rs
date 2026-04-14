@@ -116,7 +116,7 @@ pub(crate) fn validate_annotations(
                 }
             }
             "solver_hint" => {
-                if !matches!(context, "structure" | "occurrence") {
+                if !matches!(context, "structure" | "occurrence" | "param" | "let") {
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "annotation @solver_hint is not valid on {context} declarations"
@@ -234,6 +234,71 @@ pub(crate) fn optimized_target(annotations: &[reify_syntax::Annotation]) -> Opti
         }
     }
     None
+}
+
+/// Extract solver hints from compiled annotations.
+///
+/// Iterates all `@solver_hint` annotations, parsing the first arg as a hint kind
+/// string ("discrete_set" or "prefer_stock") and the second arg as an identifier
+/// naming the collection. Emits warnings for unrecognized kinds or missing args.
+pub(crate) fn extract_solver_hints(
+    annotations: &[reify_types::Annotation],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<SolverHint> {
+    let mut hints = Vec::new();
+    for ann in annotations {
+        if ann.name != "solver_hint" {
+            continue;
+        }
+        // First arg: string literal for hint kind
+        let kind = match ann.args.first() {
+            Some(reify_types::AnnotationArg::String(s)) => match s.as_str() {
+                "discrete_set" => SolverHintKind::DiscreteSet,
+                "prefer_stock" => SolverHintKind::PreferStock,
+                other => {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "unknown solver hint kind '{other}'; expected 'discrete_set' or 'prefer_stock'"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "unknown kind")),
+                    );
+                    continue;
+                }
+            },
+            _ => {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "@solver_hint requires a string literal kind as first argument, \
+                         e.g. @solver_hint(\"discrete_set\", collection)"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(ann.span, "missing kind")),
+                );
+                continue;
+            }
+        };
+        // Second arg: identifier for collection name
+        let collection = match ann.args.get(1) {
+            Some(reify_types::AnnotationArg::Ident(name)) => name.clone(),
+            _ => {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "@solver_hint requires a collection reference as second argument, \
+                         e.g. @solver_hint(\"discrete_set\", bolt_lengths)"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(ann.span, "missing collection")),
+                );
+                continue;
+            }
+        };
+        hints.push(SolverHint {
+            kind,
+            collection,
+            span: ann.span,
+        });
+    }
+    hints
 }
 
 /// Emit a deprecation warning for a use-site reference to a deprecated entity.
