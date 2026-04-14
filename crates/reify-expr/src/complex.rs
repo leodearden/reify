@@ -447,6 +447,17 @@ mod tests {
     }
 
     #[test]
+    fn phase_inf_im_returns_undef() {
+        // Complex{re:1.0, im:+Inf, DIMENSIONLESS}.phase → Undef
+        // Note: atan2(+Inf, 1.0) = π/2 which is finite — sanitize_value alone
+        // would NOT catch this Inf input. The pre-guard is what correctly rejects it.
+        assert!(
+            call_complex_method(1.0, f64::INFINITY, DimensionVector::DIMENSIONLESS, Type::Real, "phase", Type::angle()).is_undef(),
+            "z.phase with +Inf imaginary part should return Undef"
+        );
+    }
+
+    #[test]
     fn phase_neg_inf_im_returns_undef() {
         // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.phase → Undef
         // The Complex carries an Inf component, violating sanitization convention
