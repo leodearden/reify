@@ -17349,7 +17349,7 @@
         "description": "Consolidates assert_no_eval_errors helper extraction for m9_trait_conformance, assertion strengthening (dedup comment, inherited-let coverage, double-eval), and recursive_unfold.rs test quality cleanup (dedup, naming, missing assertions).",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 787 plus 2 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 787: Extract assert_no_eval_errors helper and eliminate duplication in m9_trait_conformance tests\n\n\nAdd assert_no_eval_errors helper to test module or reify-test-support; use it in all 5 test functions (including refinement_chain_values and diamond_merging_values which currently lack it). Rename shadowed `result` to `eval_result`. Consider reusing field_eval_tests.rs eval_source helper pattern.\n\n\n\nSource: escalation esc-434-29 (task 434 review). File: crates/reify-eval/tests/m9_trait_conformance.rs. Eval-error assertion block copy-pasted 3 times at lines 69-85, 448-464, 488-504.\n\n### Absorbed from task 788: Strengthen m9_trait_conformance assertions: dedup comment, inherited-let coverage, double-eval\nAdd explanatory comment on merged_constraints.len()==2 identifying which 2 constraints are expected. Add Component.half_size assertion in refinement_chain_values. Either use check_result.diagnostics for error assertion or restructure to avoid double eval.\n\nSource: escalation esc-434-29 (task 434 review). File: crates/reify-eval/tests/m9_trait_conformance.rs:245,421.\n\n### Absorbed from task 790: Clean up recursive_unfold.rs test quality: dedup, naming, missing assertions\nFold cyclic_let_binding_diagnostic_includes_template_name into cyclic_let_bindings_emit_diagnostic. Rename has_only_warning to has_any_warning_about_unknown_structure. Replace redundant negative assertion with count==1 check. Add assert!(result.diagnostics.is_empty()) to bfs_traverses_through_wrapper test.\n\nSource: escalation esc-550-13 (task 550 review). File: crates/reify-eval/tests/recursive_unfold.rs:1390-1609.\n",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17368,7 +17368,7 @@
           "bundled_at": "2026-04-11",
           "bundle_key": "J"
         },
-        "updatedAt": "2026-04-11T07:44:49.000Z"
+        "updatedAt": "2026-04-14T20:58:01.534Z"
       },
       {
         "id": "788",
@@ -35187,7 +35187,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T20:57:59.882Z",
+      "lastModified": "2026-04-14T20:58:01.534Z",
       "taskCount": 1685,
       "completedCount": 1418,
       "tags": [
