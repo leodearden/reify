@@ -34723,15 +34723,16 @@
         "description": "Three refinements in crates/reify-eval/src/deps.rs from task 1374 review:\n\n1. Lines 441-443: Doc says extract_value_deps is \"the deduplicating variant\" — change to \"the deduplicating-and-sorting variant\" (it also sorts, see lines 588-594).\n\n2. Lines 4-9: Module doc says \"may short-circuit at runtime\" — misleading for pure expressions. Rephrase to: \"even though only one arm is taken at runtime, the static set includes every reachable ValueRef across all arms.\"\n\n3. Near line 446: Add companion test using conditional_expr(flag, x, x) asserting trace.reads.len() == 3 and two copies of x, tying duplicate-preservation to \"all branches\" property.\n\nmemory_hints: search \"deps.rs extract_dependency_trace duplicate preservation\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-14T19:27:51.980Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T19:27:46.608Z",
+      "lastModified": "2026-04-14T19:27:51.980Z",
       "taskCount": 1665,
       "completedCount": 1387,
       "tags": [
