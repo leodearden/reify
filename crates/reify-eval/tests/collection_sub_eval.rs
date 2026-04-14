@@ -48,6 +48,18 @@ fn make_bolt_parent_engine(n_default: Option<i64>) -> (reify_compiler::CompiledM
     (module, engine)
 }
 
+/// Count how many `Parent.bolts[N].diameter` cells exist in `values`.
+///
+/// Filtering on both the entity prefix **and** the specific `member` name
+/// makes this assertion robust: if the engine ever emits additional cells
+/// per bolt instance (e.g. a synthetic list cell), the count won't drift.
+fn count_bolt_diameter_instances(values: &ValueMap) -> usize {
+    values
+        .iter()
+        .filter(|(id, _)| id.entity.starts_with("Parent.bolts[") && id.member == "diameter")
+        .count()
+}
+
 // ─── step-7: collection sub elaboration in from_templates ───
 
 #[test]
@@ -222,11 +234,7 @@ fn edit_param_count_change_re_elaborates_collection() {
     );
 
     // (5) Assert no spurious bolt instances beyond the expected 6
-    let bolt_instance_count = edit_result
-        .values
-        .iter()
-        .filter(|(id, _)| id.entity.starts_with("Parent.bolts["))
-        .count();
+    let bolt_instance_count = count_bolt_diameter_instances(&edit_result.values);
     assert_eq!(
         bolt_instance_count, 6,
         "exactly 6 bolt instances should exist after count change to 6, got {}",
@@ -279,11 +287,7 @@ fn edit_param_count_decrease_removes_stale_instances() {
     );
 
     // Assert no spurious bolt instances beyond the expected 2
-    let bolt_instance_count = result
-        .values
-        .iter()
-        .filter(|(id, _)| id.entity.starts_with("Parent.bolts["))
-        .count();
+    let bolt_instance_count = count_bolt_diameter_instances(&result.values);
     assert_eq!(
         bolt_instance_count, 2,
         "exactly 2 bolt instances should exist after count decrease to 2, got {}",
@@ -550,11 +554,7 @@ fn edit_param_count_to_undef_removes_all_instances() {
 
     // Assert zero bolt instances remain — not just that old ones are gone,
     // but no spurious new ones appeared either.
-    let bolt_instance_count = result
-        .values
-        .iter()
-        .filter(|(id, _)| id.entity.starts_with("Parent.bolts["))
-        .count();
+    let bolt_instance_count = count_bolt_diameter_instances(&result.values);
     assert_eq!(
         bolt_instance_count, 0,
         "zero bolt instances should remain when count is Undef, got {}",
