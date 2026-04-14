@@ -63,9 +63,51 @@ fn constraint_count(engine: &Engine) -> usize {
 /// Feature 3 (Frame/Transform in let bindings and port definitions).
 /// Asserts rot/base/mount/xform are non-Undef and that supply/demand ports
 /// have frame_expr compiled (confirming `frame = base` and `frame = mount`).
+///
+/// Note: `rot = orient_identity()` triggers a compiler warning
+/// ("cannot infer return type of zero-arg function 'orient_identity', defaulting to Real")
+/// but the warning is NOT an error, so parse_and_compile_with_stdlib succeeds.
+/// `rot` still evaluates to a concrete (non-Undef) value; the test checks presence only.
 #[test]
 fn frame_transform_lets_and_port_frames_present() {
-    todo!("step-12 impl: assert frame/transform lets non-Undef and ports have frame_expr")
+    // (a) Eval assertions: rot, base, mount, xform are non-Undef
+    let result = eval_source(&source());
+    let assert_nondetermined = |name: &str| {
+        let id = ValueCellId::new("Assembly", name);
+        let v = result
+            .values
+            .get(&id)
+            .unwrap_or_else(|| panic!("Assembly.{name} not found in eval result"));
+        assert!(
+            !matches!(v, Value::Undef),
+            "Assembly.{name} should not be Undef (expected a concrete Frame/Transform value)"
+        );
+    };
+
+    assert_nondetermined("rot");
+    assert_nondetermined("base");
+    assert_nondetermined("mount");
+    assert_nondetermined("xform");
+
+    // (b) Compile assertions: supply and demand ports both have a frame_expr
+    let compiled = parse_and_compile_with_stdlib(&source());
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly template should exist");
+
+    for port_name in &["supply", "demand"] {
+        let port = assembly
+            .ports
+            .iter()
+            .find(|p| p.name == *port_name)
+            .unwrap_or_else(|| panic!("Assembly should have a '{port_name}' port"));
+        assert!(
+            port.frame_expr.is_some(),
+            "Assembly.{port_name} port should have frame_expr (from `frame = base|mount`)"
+        );
+    }
 }
 
 // ── Test 5: geometric let bindings are determined ────────────────────────────
