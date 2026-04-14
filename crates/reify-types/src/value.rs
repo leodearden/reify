@@ -48,6 +48,18 @@ pub enum FieldSourceKind {
     /// A field produced by `laplacian()` — its lambda slot stores the original
     /// scalar field and the sample handler dispatches to numerical-laplacian evaluation.
     Laplacian,
+    /// A field produced by `von_mises()` — lambda slot stores the original tensor
+    /// field; sample handler applies pointwise von Mises stress computation.
+    VonMises,
+    /// A field produced by `principal_stresses()` — lambda slot stores the original
+    /// tensor field; sample handler applies pointwise eigenvalue computation.
+    PrincipalStresses,
+    /// A field produced by `max_shear()` — lambda slot stores the original tensor
+    /// field; sample handler applies pointwise max shear computation.
+    MaxShear,
+    /// A field produced by `safety_factor()` — lambda slot stores the original
+    /// tensor field; the yield strength is captured in the codomain metadata.
+    SafetyFactor,
 }
 
 /// Runtime values in Reify (M1 subset).
