@@ -23653,7 +23653,7 @@
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/connect.rs",
+            "crates/reify-compiler/src/entity.rs",
             "crates/reify-compiler/tests/port_compile_tests.rs",
             "crates/reify-compiler/tests/guard_compilation.rs"
           ]
