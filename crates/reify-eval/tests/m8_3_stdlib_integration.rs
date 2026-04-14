@@ -219,6 +219,85 @@ fn m8_ports_smoke() {
     );
 }
 
+// ── step-7: ports_rotary_connection_compiles ─────────────────────────────────
+
+/// Asserts the compiled DriveTrain assembly has >= 1 connection linking
+/// motor.shaft → gearbox.input. Also asserts:
+///   - Motor template has a "shaft" port with type_name "RotaryPort"
+///   - Motor template has a "mount" port with type_name "ThreadedPort"
+///   - Gearbox template has an "input" port with type_name "RotaryPort"
+#[test]
+fn ports_rotary_connection_compiles() {
+    use reify_compiler::CompiledModule;
+    let compiled: CompiledModule = compiled_ri(PATH_PORTS, "m8_ports");
+
+    // --- DriveTrain assembly: connection motor.shaft → gearbox.input ---
+    let drivetrain = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "DriveTrain")
+        .expect("DriveTrain template should exist in compiled m8_ports module");
+
+    assert!(
+        !drivetrain.connections.is_empty(),
+        "DriveTrain should have >= 1 connection"
+    );
+
+    let conn = drivetrain
+        .connections
+        .iter()
+        .find(|c| c.left_port == "motor.shaft" && c.right_port == "gearbox.input")
+        .expect("DriveTrain should have a connection from motor.shaft to gearbox.input");
+    let _ = conn; // successfully found
+
+    // --- Motor template: shaft port (RotaryPort) + mount port (ThreadedPort) ---
+    let motor = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Motor")
+        .expect("Motor template should exist");
+
+    let shaft_port = motor
+        .ports
+        .iter()
+        .find(|p| p.name == "shaft")
+        .expect("Motor should have a 'shaft' port");
+    assert_eq!(
+        shaft_port.type_name, "RotaryPort",
+        "Motor.shaft port type_name should be 'RotaryPort', got '{}'",
+        shaft_port.type_name
+    );
+
+    let mount_port = motor
+        .ports
+        .iter()
+        .find(|p| p.name == "mount")
+        .expect("Motor should have a 'mount' port");
+    assert_eq!(
+        mount_port.type_name, "ThreadedPort",
+        "Motor.mount port type_name should be 'ThreadedPort', got '{}'",
+        mount_port.type_name
+    );
+
+    // --- Gearbox template: input port (RotaryPort) ---
+    let gearbox = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Gearbox")
+        .expect("Gearbox template should exist");
+
+    let input_port = gearbox
+        .ports
+        .iter()
+        .find(|p| p.name == "input")
+        .expect("Gearbox should have an 'input' port");
+    assert_eq!(
+        input_port.type_name, "RotaryPort",
+        "Gearbox.input port type_name should be 'RotaryPort', got '{}'",
+        input_port.type_name
+    );
+}
+
 // ── Section 3: m8_tolerancing.ri ─────────────────────────────────────────────
 
 /// Smoke test: m8_tolerancing.ri parses, compiles (stdlib), evals without errors,
