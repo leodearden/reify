@@ -34885,11 +34885,11 @@
         "description": "Follow-up from esc-1441-23 (reviewer_comprehensive, task 1441). In crates/reify-compiler/tests/collection_sub_tests.rs:459, test `compile_indexed_member_access_multi_member_child` verifies accessing the second member (grade) via `bolts[0].grade` but doesn't verify that accessing the first member (diameter) via `bolts[0].diameter` also works in the same multi-member scenario. Add a second let binding (e.g., `let d = bolts[0].diameter`) and assert it resolves to ValueRef with member 'diameter'.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:01:13.065Z"
+        "updatedAt": "2026-04-14T20:20:15.582Z"
       },
       {
         "id": "1672",
@@ -34948,9 +34948,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T20:19:50.138Z",
+      "lastModified": "2026-04-14T20:20:15.583Z",
       "taskCount": 1674,
-      "completedCount": 1406,
+      "completedCount": 1407,
       "tags": [
         "master"
       ]
