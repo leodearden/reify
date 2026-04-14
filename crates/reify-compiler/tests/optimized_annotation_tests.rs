@@ -325,6 +325,69 @@ constraint def Plain {
     );
 }
 
+/// `@optimized` (malformed, no args) followed by `@optimized("kernel::foo")` on
+/// a constraint_def must resolve to `Some("kernel::foo")` — the extractor must
+/// continue scanning past the malformed first entry rather than returning None.
+///
+/// The user still sees:
+///   - a missing-target warning on the first (malformed) @optimized
+///   - a duplicate-@optimized warning on the second
+/// so the annotation is not silently condoned, but the valid target is plumbed through.
+#[test]
+fn malformed_then_valid_optimized_resolves_to_valid_target() {
+    let source = r#"
+@optimized()
+@optimized("kernel::foo")
+constraint def PlainC {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure S {
+    param x: Real
+    param y: Real
+    constraint PlainC(a: x, b: y)
+}
+"#;
+    let module = compile_module(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // The valid second @optimized target must be returned by the extractor.
+    let tmpl = template_named(&module, "S");
+    assert_eq!(tmpl.constraints.len(), 1);
+    let cc: &CompiledConstraint = &tmpl.constraints[0];
+    assert_eq!(
+        cc.optimized_target,
+        Some("kernel::foo".to_string()),
+        "expected extractor to skip past malformed @optimized() and return the valid target; got: {:?}",
+        cc.optimized_target
+    );
+
+    // The missing-target warning must still fire (on the malformed first @optimized).
+    let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .collect();
+    assert!(
+        !missing_target_warnings.is_empty(),
+        "expected a missing-target warning for the malformed first @optimized, got none; all diags: {:?}",
+        module.diagnostics
+    );
+
+    // The duplicate-@optimized warning must also fire (on the second @optimized).
+    let duplicate_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("multiple @optimized annotations"))
+        .collect();
+    assert!(
+        !duplicate_warnings.is_empty(),
+        "expected a duplicate-@optimized warning for the second annotation, got none; all diags: {:?}",
+        module.diagnostics
+    );
+}
+
 /// A valid single `@optimized("target")` must NOT trip any of the new
 /// malformed-annotation warnings.
 #[test]
