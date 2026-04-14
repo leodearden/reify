@@ -155,3 +155,81 @@ structure S {
         "un-annotated constraint def should yield optimized_target=None"
     );
 }
+
+// ── Step 13: structure/occurrence contexts still accept @optimized ──────────
+
+/// `@optimized` on a structure must still be accepted after broadening the
+/// validator to include `constraint_def`. This guards against a regression
+/// where the new arm might have accidentally replaced the old list.
+#[test]
+fn optimized_on_structure_is_accepted() {
+    let module = compile_module(
+        r#"
+@optimized("kernel::fast")
+structure S {
+    param x: Real
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let bad: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized is not valid"))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "@optimized on structure should not warn; got: {:?}",
+        bad
+    );
+}
+
+/// `@optimized` on an occurrence must still be accepted after broadening the
+/// validator.
+#[test]
+fn optimized_on_occurrence_is_accepted() {
+    let module = compile_module(
+        r#"
+@optimized("kernel::fast")
+occurrence def Outer {
+    param y: Real = 1.0
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let bad: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized is not valid"))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "@optimized on occurrence should not warn; got: {:?}",
+        bad
+    );
+}
+
+/// `@optimized` on a function (an unsupported context) should still emit a
+/// warning — the broadening should have added `constraint_def`, not silenced
+/// the entire context check.
+#[test]
+fn optimized_on_unsupported_context_still_warns() {
+    let module = compile_module(r#"@optimized("x") fn f(x: Real) -> Real { x }"#);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized is not valid"))
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "expected a warning about @optimized on function, got none; all diags: {:?}",
+        module.diagnostics
+    );
+}
