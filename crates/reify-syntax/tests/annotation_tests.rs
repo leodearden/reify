@@ -484,6 +484,55 @@ fn parse_annotation_attaches_to_following_declaration() {
     assert_eq!(b.annotations[0].name, "middle");
 }
 
+// ── Member-level annotations ────────────────────────────────────────────────
+
+#[test]
+fn parse_annotation_on_param_member() {
+    let source = r#"structure S { @solver_hint("discrete_set", bolt_lengths) param length : Length = auto }"#;
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let s = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    // Find the param member
+    let param = s
+        .members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Param(p) => Some(p),
+            _ => None,
+        })
+        .expect("expected a Param member");
+
+    assert_eq!(param.name, "length");
+    assert_eq!(
+        param.annotations.len(),
+        1,
+        "expected 1 annotation on param, got {:?}",
+        param.annotations
+    );
+    assert_eq!(param.annotations[0].name, "solver_hint");
+    assert_eq!(
+        param.annotations[0].args.len(),
+        2,
+        "expected 2 args, got {:?}",
+        param.annotations[0].args
+    );
+    // First arg: StringLiteral("discrete_set")
+    match &param.annotations[0].args[0].kind {
+        ExprKind::StringLiteral(s) => assert_eq!(s, "discrete_set"),
+        other => panic!("expected StringLiteral(\"discrete_set\"), got {:?}", other),
+    }
+    // Second arg: Ident("bolt_lengths")
+    match &param.annotations[0].args[1].kind {
+        ExprKind::Ident(name) => assert_eq!(name, "bolt_lengths"),
+        other => panic!("expected Ident(\"bolt_lengths\"), got {:?}", other),
+    }
+}
+
 // ── Step 23/24: annotation leakage on failed lowering ────────────────────────
 //
 // Bug: when a declaration node is encountered but its lower_* function returns
