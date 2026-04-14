@@ -34363,7 +34363,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-test-support/src/ignore_hygiene.rs",
+            "crates/reify-expr/tests/field_calculus_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support/src",
+            "crates/reify-expr/tests"
+          ]
+        }
       }
     ],
     "metadata": {
