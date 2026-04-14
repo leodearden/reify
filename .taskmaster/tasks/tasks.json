@@ -33708,8 +33708,7 @@
         "updatedAt": "2026-04-11T16:14:07.128Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ],
           "memory_hints": {
             "entities": [
@@ -33719,7 +33718,10 @@
               "SI units table SI_DERIVED_UNITS SI_PREFIX_BASES steradian SolidAngle prefix_combos crates/reify-compiler/src/si_units.rs",
               "task 334 SI derived units prefix table implementation done"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/si_units.rs"
+          ]
         }
       },
       {
@@ -33735,8 +33737,7 @@
         "updatedAt": "2026-04-11T16:14:48.313Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ],
           "memory_hints": {
             "entities": [
@@ -33746,7 +33747,10 @@
               "format_f64_as_decimal si_units.rs large magnitude guard power of ten",
               "stdlib_loader.rs SI unit registration error handling panic assert"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/si_units.rs"
+          ]
         }
       },
       {
