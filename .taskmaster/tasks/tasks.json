@@ -18026,7 +18026,7 @@
             "crates/reify-runtime",
             "crates/reify-eval",
             "crates/reify-compiler",
-            "crates/reify-expr/tests"
+            "crates/reify-expr"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
