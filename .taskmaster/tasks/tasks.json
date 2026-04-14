@@ -34360,6 +34360,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1661,
+        "title": "Unify ignore-hygiene scanners and skip doc-comment lines workspace-wide",
+        "description": "Follow-up from esc-1642-57 S1+S2 (reviewer_comprehensive). Promote `check_ignore_reasons` from crates/reify-expr/tests/field_calculus_tests.rs:4219 into reify-test-support::ignore_hygiene. Have both the file-local meta-test and the workspace-wide integration test reuse it. The current workspace scanner `find_stale_plan_pointers_in_source` lacks `///` / `//!` doc-comment skipping that `check_ignore_reasons` already implements — reuse fixes that. Two scanners must stay in lock-step; consolidating eliminates the drift surface.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -34372,7 +34383,7 @@
       ],
       "created": "2026-04-14T09:41:05.118Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-14T09:41:38.257Z"
+      "updated": "2026-04-14T09:41:43.684Z"
     }
   }
 }
