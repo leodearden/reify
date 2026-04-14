@@ -396,6 +396,133 @@ fn m8_tolerancing_smoke() {
     );
 }
 
+// ── step-11: tolerancing_position_mmc_flatness_ra ────────────────────────────
+
+/// Asserts the compiled Flange template from m8_tolerancing.ri has:
+///   - sub pos (Position): tolerance_value=0.1mm (0.0001m), material_condition=MMC
+///   - sub flat (Flatness): tolerance_value=0.05mm (0.00005m)
+///   - sub finish (SurfaceFinish): parameter=Ra, value=1.6μm (1.6e-6m)
+/// Tests both compile-level (template exists) and eval-level (values resolved).
+#[test]
+fn tolerancing_position_mmc_flatness_ra() {
+    let result = eval_ri_file(PATH_TOLERANCING, "m8_tolerancing");
+
+    // ── Flange.pos.tolerance_value (0.1mm = 0.0001m, LENGTH) ─────────────────
+    let pos_tol_id = ValueCellId::new("Flange.pos", "tolerance_value");
+    let pos_tol_val = result
+        .values
+        .get(&pos_tol_id)
+        .unwrap_or_else(|| panic!("Flange.pos.tolerance_value not found in eval result"));
+    match pos_tol_val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 0.0001).abs() < 1e-9,
+                "Flange.pos.tolerance_value should be 0.0001m (0.1mm), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "Flange.pos.tolerance_value should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "Flange.pos.tolerance_value should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+
+    // ── Flange.pos.material_condition (MaterialCondition.MMC) ─────────────────
+    let pos_mc_id = ValueCellId::new("Flange.pos", "material_condition");
+    let pos_mc_val = result
+        .values
+        .get(&pos_mc_id)
+        .unwrap_or_else(|| panic!("Flange.pos.material_condition not found"));
+    match pos_mc_val {
+        Value::Enum { variant, .. } => {
+            assert_eq!(
+                variant, "MMC",
+                "Flange.pos.material_condition should be MMC, got {}",
+                variant
+            );
+        }
+        other => panic!(
+            "Flange.pos.material_condition should be Value::Enum, got {:?}",
+            other
+        ),
+    }
+
+    // ── Flange.flat.tolerance_value (0.05mm = 0.00005m, LENGTH) ──────────────
+    let flat_tol_id = ValueCellId::new("Flange.flat", "tolerance_value");
+    let flat_tol_val = result
+        .values
+        .get(&flat_tol_id)
+        .unwrap_or_else(|| panic!("Flange.flat.tolerance_value not found"));
+    match flat_tol_val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 0.00005).abs() < 1e-12,
+                "Flange.flat.tolerance_value should be 0.00005m (0.05mm), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "Flange.flat.tolerance_value should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "Flange.flat.tolerance_value should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+
+    // ── Flange.finish.parameter (SurfaceParameter.Ra) ────────────────────────
+    let finish_param_id = ValueCellId::new("Flange.finish", "parameter");
+    let finish_param_val = result
+        .values
+        .get(&finish_param_id)
+        .unwrap_or_else(|| panic!("Flange.finish.parameter not found"));
+    match finish_param_val {
+        Value::Enum { variant, .. } => {
+            assert_eq!(
+                variant, "Ra",
+                "Flange.finish.parameter should be Ra, got {}",
+                variant
+            );
+        }
+        other => panic!(
+            "Flange.finish.parameter should be Value::Enum, got {:?}",
+            other
+        ),
+    }
+
+    // ── Flange.finish.value (1.6μm = 1.6e-6m, LENGTH) ────────────────────────
+    let finish_val_id = ValueCellId::new("Flange.finish", "value");
+    let finish_val = result
+        .values
+        .get(&finish_val_id)
+        .unwrap_or_else(|| panic!("Flange.finish.value not found"));
+    match finish_val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 1.6e-6).abs() < 1e-15,
+                "Flange.finish.value should be 1.6e-6m (1.6μm), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "Flange.finish.value should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "Flange.finish.value should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
+
 // ── Section 4: m8_units.ri ───────────────────────────────────────────────────
 
 /// Smoke test: m8_units.ri parses, compiles (stdlib), evals without errors,
