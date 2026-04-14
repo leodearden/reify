@@ -633,13 +633,20 @@ pub(crate) fn compile_entity(
                     Visibility::Private
                 };
 
+                // Lower and validate annotations on this let
+                let lowered_annotations =
+                    lower_annotations(&let_decl.annotations, diagnostics);
+                validate_annotations(&lowered_annotations, "let", diagnostics);
+                let solver_hints =
+                    extract_solver_hints(&lowered_annotations, diagnostics);
+
                 let decl = ValueCellDecl {
                     id,
                     kind: ValueCellKind::Let,
                     visibility,
                     cell_type,
                     default_expr: Some(compiled_expr),
-                    solver_hints: Vec::new(),
+                    solver_hints,
                     span: let_decl.span,
                 };
 

@@ -61,3 +61,29 @@ fn solver_hint_prefer_stock_compiles() {
     assert_eq!(cell.solver_hints[0].kind, reify_compiler::SolverHintKind::PreferStock);
     assert_eq!(cell.solver_hints[0].collection, "sheet_thicknesses");
 }
+
+// ── Step 11: @solver_hint on let member compiles ────────────────────────────
+
+#[test]
+fn solver_hint_on_let_compiles() {
+    let source = r#"structure S { @solver_hint("discrete_set", gauges) let t : Length = 5mm }"#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let template = &module.templates[0];
+    // Find the let value cell (kind == Let)
+    let let_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.kind == reify_compiler::ValueCellKind::Let)
+        .expect("expected a Let value cell");
+
+    assert_eq!(
+        let_cell.solver_hints.len(),
+        1,
+        "expected 1 solver hint on let, got {:?}",
+        let_cell.solver_hints
+    );
+    assert_eq!(let_cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
+    assert_eq!(let_cell.solver_hints[0].collection, "gauges");
+}
