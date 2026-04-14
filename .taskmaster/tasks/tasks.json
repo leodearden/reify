@@ -34118,7 +34118,7 @@
         "id": 1650,
         "title": "Complex phase: fix comment and add missing test coverage",
         "description": "In crates/reify-expr/src/complex.rs: (1) Reword the comment at line ~41 to accurately distinguish NaN propagation (caught by sanitize_value downstream) from Inf collapse (requires the is_finite pre-guard), explaining the guard is defense-in-depth for NaN but strictly necessary for Inf. (2) Split phase_zero_complex_returns_undef into two separate #[test] functions — one for (0.0, 0.0) and one for (-0.0, -0.0) — so signed-zero regression is never masked. (3) Add at least one dimensioned NaN/Inf phase test (e.g. phase_nan_im_dimensioned_returns_undef) to match the coverage pattern used by re/im/magnitude dimensioned tests.",
-        "details": "<info added on 2026-04-14T04:56:48.436Z>\nNote: Task 1648 covers only the comment reword (S1) and is currently in-progress. If Task 1648 completes first, skip the comment reword and proceed directly to S2 (split signed-zero test) and S3 (add dimensioned NaN/Inf phase test). Task 1651 was cancelled as an exact duplicate of this task.\n</info added on 2026-04-14T04:56:48.436Z>",
+        "details": "<info added on 2026-04-14T04:56:48.436Z>\nNote: Task 1648 covers only the comment reword (S1) and is currently in-progress. If Task 1648 completes first, skip the comment reword and proceed directly to S2 (split signed-zero test) and S3 (add dimensioned NaN/Inf phase test). Task 1651 was cancelled as an exact duplicate of this task.\n</info added on 2026-04-14T04:56:48.436Z>\n<info added on 2026-04-14T05:04:28.312Z>\nTask 1648, which covers the comment reword (S1), is currently BLOCKED. The implementing agent should include S1 unless Task 1648 unblocks and completes before this task starts. If Task 1648 completes first, skip S1 and proceed to S2 and S3 only.\n</info added on 2026-04-14T05:04:28.312Z>",
         "testStrategy": "",
         "status": "in-progress",
         "dependencies": [],
@@ -34138,7 +34138,8 @@
               "phase_zero_complex_returns_undef signed zero split test",
               "sanitize_value NaN Inf phase dimensioned test coverage complex.rs"
             ]
-          }
+          },
+          "_causation_id": "0b276b5b-46b4-4dc5-b4a2-4a12966a0b7c"
         }
       },
       {
