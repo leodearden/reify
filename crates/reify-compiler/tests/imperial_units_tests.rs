@@ -137,9 +137,8 @@ const KSI_SI: f64 = 6894757.293168361;
 #[test]
 fn stdlib_psi_resolves_to_pressure_6894p757293168361() {
     let (v, d) = stdlib_param_si_value("Pressure", "1psi");
-    let tol = PSI_SI * 1e-9;
     assert!(
-        (v - PSI_SI).abs() < tol,
+        (v - PSI_SI).abs() < 1e-12,
         "1psi should be {} Pa, got {}",
         PSI_SI,
         v
@@ -150,9 +149,8 @@ fn stdlib_psi_resolves_to_pressure_6894p757293168361() {
 #[test]
 fn stdlib_ksi_resolves_to_pressure_6894757p293168361() {
     let (v, d) = stdlib_param_si_value("Pressure", "1ksi");
-    let tol = KSI_SI * 1e-9;
     assert!(
-        (v - KSI_SI).abs() < tol,
+        (v - KSI_SI).abs() < 1e-12,
         "1ksi should be {} Pa, got {}",
         KSI_SI,
         v
