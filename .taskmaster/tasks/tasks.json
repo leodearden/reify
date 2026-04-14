@@ -5882,7 +5882,7 @@
           "262",
           "290"
         ],
-        "status": "in-progress",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "examples"
@@ -5894,7 +5894,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T14:13:32.007Z"
+        "updatedAt": "2026-04-14T14:21:36.888Z"
       },
       {
         "id": "293",
@@ -34620,7 +34620,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T14:18:48.335Z",
+      "lastModified": "2026-04-14T14:21:36.934Z",
       "taskCount": 1661,
       "completedCount": 1380,
       "tags": [
