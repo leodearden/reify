@@ -7264,7 +7264,7 @@
           "307",
           "312"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
@@ -7279,7 +7279,7 @@
         },
         "subtasks": [],
         "details": "Degenerate booleans: coincident faces, tangent solids, union of identical shapes, difference→empty, nested ((A∪B)∩C)\\D, thin solid (1μm), union_all 20+ solids. Verify no panics, graceful errors.",
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-14T14:29:54.584Z"
       },
       {
         "id": "346",
@@ -34626,7 +34626,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T14:27:44.960Z",
+      "lastModified": "2026-04-14T14:29:54.593Z",
       "taskCount": 1661,
       "completedCount": 1380,
       "tags": [
