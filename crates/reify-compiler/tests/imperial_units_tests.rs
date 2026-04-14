@@ -66,6 +66,23 @@ fn units_module() -> &'static CompiledModule {
         .expect("std/units module not found")
 }
 
+/// Assert `a ≈ b` within `max(|a|, |b|) * rel_tol`.
+///
+/// Using the larger magnitude as the scale makes the tolerance robust when one
+/// operand is zero (e.g. a future dimensionless unit with factor 0.0).
+fn assert_eq_rel(a: f64, b: f64, rel_tol: f64, msg: &str) {
+    let scale = a.abs().max(b.abs());
+    let tol = scale * rel_tol;
+    assert!(
+        (a - b).abs() < tol,
+        "{}: expected {} ≈ {} (tol {})",
+        msg,
+        a,
+        b,
+        tol
+    );
+}
+
 /// Assert that a named unit in `std/units` has the expected dimension, factor
 /// (within `rel_tol` relative tolerance), and no offset.
 fn assert_simple_unit(name: &str, expected_dim: DimensionVector, expected_factor: f64, rel_tol: f64) {
@@ -76,13 +93,11 @@ fn assert_simple_unit(name: &str, expected_dim: DimensionVector, expected_factor
         .find(|u| u.name == name)
         .unwrap_or_else(|| panic!("unit '{}' not found in std/units", name));
     assert_eq!(u.dimension, expected_dim, "unit '{}' dimension wrong", name);
-    assert!(
-        (u.factor - expected_factor).abs() < expected_factor.abs() * rel_tol,
-        "unit '{}' factor should be {} (rel_tol {}), got {}",
-        name,
+    assert_eq_rel(
+        u.factor,
         expected_factor,
         rel_tol,
-        u.factor
+        &format!("unit '{}' factor", name),
     );
     assert!(u.offset.is_none(), "unit '{}' should have no offset", name);
 }
@@ -92,11 +107,7 @@ fn assert_simple_unit(name: &str, expected_dim: DimensionVector, expected_factor
 #[test]
 fn stdlib_yd_resolves_to_length_0p9144() {
     let (v, d) = stdlib_param_si_value("Length", "1yd");
-    assert!(
-        (v - 0.9144).abs() < 1e-12,
-        "1yd should be 0.9144 m, got {}",
-        v
-    );
+    assert_eq_rel(v, 0.9144, 1e-12, "1yd should be 0.9144 m");
     assert_eq!(d, DimensionVector::LENGTH);
 }
 
@@ -113,12 +124,7 @@ const LBF_SI: f64 = 4.4482216152605;
 #[test]
 fn stdlib_lbf_resolves_to_force_4p4482216152605() {
     let (v, d) = stdlib_param_si_value("Force", "1lbf");
-    assert!(
-        (v - LBF_SI).abs() < 1e-9,
-        "1lbf should be {} N, got {}",
-        LBF_SI,
-        v
-    );
+    assert_eq_rel(v, LBF_SI, 1e-9, "1lbf should match LBF_SI");
     assert_eq!(d, DimensionVector::FORCE);
 }
 
@@ -137,24 +143,14 @@ const KSI_SI: f64 = 6894757.293168361;
 #[test]
 fn stdlib_psi_resolves_to_pressure_6894p757293168361() {
     let (v, d) = stdlib_param_si_value("Pressure", "1psi");
-    assert!(
-        (v - PSI_SI).abs() < 1e-12,
-        "1psi should be {} Pa, got {}",
-        PSI_SI,
-        v
-    );
+    assert_eq_rel(v, PSI_SI, 1e-12, "1psi should match PSI_SI");
     assert_eq!(d, DimensionVector::PRESSURE);
 }
 
 #[test]
 fn stdlib_ksi_resolves_to_pressure_6894757p293168361() {
     let (v, d) = stdlib_param_si_value("Pressure", "1ksi");
-    assert!(
-        (v - KSI_SI).abs() < 1e-12,
-        "1ksi should be {} Pa, got {}",
-        KSI_SI,
-        v
-    );
+    assert_eq_rel(v, KSI_SI, 1e-12, "1ksi should match KSI_SI");
     assert_eq!(d, DimensionVector::PRESSURE);
 }
 
@@ -174,24 +170,14 @@ const GAL_SI: f64 = 0.003785411784;
 #[test]
 fn stdlib_fl_oz_resolves_to_volume_2p9573e_minus5() {
     let (v, d) = stdlib_param_si_value("Volume", "1fl_oz");
-    assert!(
-        (v - FL_OZ_SI).abs() < 1e-15,
-        "1fl_oz should be {} m³, got {}",
-        FL_OZ_SI,
-        v
-    );
+    assert_eq_rel(v, FL_OZ_SI, 1e-12, "1fl_oz should match FL_OZ_SI");
     assert_eq!(d, DimensionVector::VOLUME);
 }
 
 #[test]
 fn stdlib_gal_resolves_to_volume_3p785e_minus3() {
     let (v, d) = stdlib_param_si_value("Volume", "1gal");
-    assert!(
-        (v - GAL_SI).abs() < 1e-15,
-        "1gal should be {} m³, got {}",
-        GAL_SI,
-        v
-    );
+    assert_eq_rel(v, GAL_SI, 1e-12, "1gal should match GAL_SI");
     assert_eq!(d, DimensionVector::VOLUME);
 }
 
@@ -205,20 +191,6 @@ fn stdlib_units_module_contains_fl_oz_and_gal_with_volume_dimension() {
 
 #[test]
 fn cross_relationships_between_imperial_units() {
-    /// Assert `a ≈ b` within `max(|a|, |b|) * rel_tol`.
-    fn assert_eq_rel(a: f64, b: f64, rel_tol: f64, msg: &str) {
-        let scale = a.abs().max(b.abs());
-        let tol = scale * rel_tol;
-        assert!(
-            (a - b).abs() < tol,
-            "{}: expected {} ≈ {} (tol {})",
-            msg,
-            a,
-            b,
-            tol
-        );
-    }
-
     // 1 yd == 3 ft
     let (yd_si, _) = stdlib_param_si_value("Length", "1yd");
     let (ft3_si, _) = stdlib_param_si_value("Length", "3ft");
@@ -354,7 +326,7 @@ fn lbf_times_mm_produces_energy_dimension_via_stdlib() {
 // ─── step-10: regression guard for pre-existing imperial units ────────────────
 
 #[test]
-fn existing_imperial_units_ft_thou_lb_oz_unchanged_post_task_335() {
+fn existing_imperial_units_ft_thou_in_lb_oz_unchanged_post_task_335() {
     // Verify the four pre-existing imperial unit factors and dimensions
     // are unchanged by this task's edits to units.ri.
 
@@ -366,13 +338,7 @@ fn existing_imperial_units_ft_thou_lb_oz_unchanged_post_task_335() {
     ];
     for (literal, expected) in length_cases {
         let (v, d) = stdlib_param_si_value("Length", literal);
-        assert!(
-            (v - expected).abs() < 1e-12,
-            "{} should be {} m, got {}",
-            literal,
-            expected,
-            v
-        );
+        assert_eq_rel(v, *expected, 1e-12, &format!("{} should be {} m", literal, expected));
         assert_eq!(d, DimensionVector::LENGTH, "{} dimension wrong", literal);
     }
 
@@ -383,13 +349,7 @@ fn existing_imperial_units_ft_thou_lb_oz_unchanged_post_task_335() {
     ];
     for (literal, expected) in mass_cases {
         let (v, d) = stdlib_param_si_value("Mass", literal);
-        assert!(
-            (v - expected).abs() < 1e-12,
-            "{} should be {} kg, got {}",
-            literal,
-            expected,
-            v
-        );
+        assert_eq_rel(v, *expected, 1e-12, &format!("{} should be {} kg", literal, expected));
         assert_eq!(d, DimensionVector::MASS, "{} dimension wrong", literal);
     }
 
