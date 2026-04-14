@@ -58,6 +58,15 @@ fn constraint_count(engine: &Engine) -> usize {
         .len()
 }
 
+// ── Test 2: compiles with Assembly template ──────────────────────────────────
+
+/// Compile m10_combined.ri (with stdlib) and verify the compiled module contains
+/// an Assembly template (confirming compile-cleanliness and top-level structure name).
+#[test]
+fn m10_combined_compiles_with_assembly_template() {
+    todo!("step-4 impl: assert parse_and_compile_with_stdlib produces Assembly template")
+}
+
 // ── Test 1: file parses without errors ──────────────────────────────────────
 
 /// Read m10_combined.ri and verify it parses without errors.
