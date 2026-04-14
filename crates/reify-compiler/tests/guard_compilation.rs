@@ -612,6 +612,41 @@ structure def S {
     );
 }
 
+/// Characterization test: `Connect` inside a `where {}` block is silently ignored by
+/// `compile_guarded_members` — no error diagnostic is emitted.
+///
+/// The ports `a` and `b` are declared at the top level so the parser can resolve
+/// them; the `connect a -> b` statement lives inside the guarded block and is
+/// silently dropped by the current implementation.
+#[test]
+fn connect_in_block_guard_silently_ignored() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    param active : Bool = true
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    where active {
+        connect a -> b
+    }
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for connect in block guard \
+         (should be silently dropped), got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// Reference safety: a top-level constraint referencing a guarded param should
 /// produce a diagnostic. Currently the unguarded-reference check only walks
 /// value_cells, not top-level constraints.
