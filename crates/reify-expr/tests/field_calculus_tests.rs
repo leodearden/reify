@@ -4245,8 +4245,7 @@ fn check_ignore_reasons(source: &str) -> Result<(), String> {
                     ["#[", "ignore]"].concat(),
                     line_idx + 1,
                 ));
-            } else if after.starts_with(" = \"") {
-                let reason_start = &after[4..];
+            } else if let Some(reason_start) = after.strip_prefix(" = \"") {
                 let preview: String = reason_start.chars().take(80).collect();
                 if !reason_start.starts_with("known bug:") {
                     return Err(format!(
