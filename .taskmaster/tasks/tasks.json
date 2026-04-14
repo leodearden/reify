@@ -34192,8 +34192,8 @@
         "updatedAt": "2026-04-14T07:04:30.944Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr",
-            "crates/reify-stdlib"
+            "crates/reify-expr/src",
+            "crates/reify-stdlib/src"
           ],
           "memory_hints": {
             "entities": [
