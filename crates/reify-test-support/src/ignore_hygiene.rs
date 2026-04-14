@@ -185,10 +185,7 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
             // Use entry.file_type() (does not follow symlinks) to avoid
             // infinite loops on symlink cycles in the workspace.
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 // Skip build artifacts, git internals, worktrees, and all dot-dirs.
                 if name == "target" || name.starts_with('.') {
                     continue;
@@ -262,9 +259,7 @@ mod tests {
     fn fspp_two_ignores_only_one_stale_returns_one_violation() {
         let marker = ["#[ignore", " = \""].concat();
         let needle = ["plan", " step-"].concat();
-        let source = format!(
-            "{marker}{needle}7 reference\"]\n{marker}known bug: valid reason\"]"
-        );
+        let source = format!("{marker}{needle}7 reference\"]\n{marker}known bug: valid reason\"]");
         let violations = find_stale_plan_pointers_in_source(&source);
         assert_eq!(
             violations.len(),
@@ -557,16 +552,15 @@ mod tests {
         ];
         // Files that should NOT be returned
         let excluded = [
-            "crates/foo/src/lib.rs",                // no "tests" component
-            "target/tests/skipme.rs",               // root-level "target" dir excluded
+            "crates/foo/src/lib.rs",                  // no "tests" component
+            "target/tests/skipme.rs",                 // root-level "target" dir excluded
             "crates/foo/target/tests/skip_nested.rs", // nested "target" dir also excluded
-            ".git/tests/skip.rs",                   // dot-dir excluded
+            ".git/tests/skip.rs",                     // dot-dir excluded
         ];
 
         for rel in included.iter().chain(excluded.iter()) {
             let full = root.join(rel);
-            std::fs::create_dir_all(full.parent().unwrap())
-                .expect("create parent dirs");
+            std::fs::create_dir_all(full.parent().unwrap()).expect("create parent dirs");
             std::fs::write(&full, b"// synthetic\n").expect("write file");
         }
 

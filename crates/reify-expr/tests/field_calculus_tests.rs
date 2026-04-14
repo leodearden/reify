@@ -130,12 +130,8 @@ fn make_field_with_source_builds_field_with_given_source() {
         FieldSourceKind::Curl,
         FieldSourceKind::Laplacian,
     ] {
-        let (field, field_type) = make_field_with_source(
-            Type::Real,
-            Type::Real,
-            source_kind.clone(),
-            lambda.clone(),
-        );
+        let (field, field_type) =
+            make_field_with_source(Type::Real, Type::Real, source_kind.clone(), lambda.clone());
 
         // Type::Field carries the supplied domain and codomain.
         assert_eq!(
@@ -331,8 +327,7 @@ fn build_divergence_identity_field(label: &str) -> (Value, Type) {
     let domain_type = Type::point3(Type::Real);
     let codomain_type = Type::vec3(Type::Real);
 
-    let (field, field_type) =
-        make_analytical_field(domain_type.clone(), codomain_type, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), codomain_type, lambda);
 
     // divergence(field) → scalar field
     let div_expr = make_function_call(
@@ -422,8 +417,7 @@ fn build_curl_rotation_field(label: &str) -> (Value, Type) {
     let domain_type = Type::point3(Type::Real);
     let codomain_type = Type::vec3(Type::Real);
 
-    let (field, field_type) =
-        make_analytical_field(domain_type.clone(), codomain_type, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), codomain_type, lambda);
 
     // curl(field) → vector field
     let curl_expr = make_function_call(
@@ -513,8 +507,7 @@ fn build_laplacian_quadratic_field(label: &str) -> (Value, Type) {
     let domain_type = Type::point3(Type::Real);
     let codomain_type = Type::Real;
 
-    let (field, field_type) =
-        make_analytical_field(domain_type.clone(), codomain_type, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), codomain_type, lambda);
 
     // laplacian(field) → scalar field
     let lap_expr = make_function_call(
@@ -678,7 +671,10 @@ const MAX_POINT_ARITY: usize = 3;
 fn make_sample_point(domain: &Type) -> (Value, Type) {
     match domain {
         Type::Point { n, quantity } => {
-            assert!(*n <= MAX_POINT_ARITY, "make_sample_point: Point domain only supports up to {MAX_POINT_ARITY} dimensions, got {n}");
+            assert!(
+                *n <= MAX_POINT_ARITY,
+                "make_sample_point: Point domain only supports up to {MAX_POINT_ARITY} dimensions, got {n}"
+            );
             let coords = [1.0f64, 2.0, 3.0];
             let comps: Vec<Value> = coords[..*n]
                 .iter()
@@ -688,7 +684,10 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
                         si_value: v,
                         dimension: *dimension,
                     },
-                    other => panic!("make_sample_point: unsupported quantity type in Point: {:?}", other),
+                    other => panic!(
+                        "make_sample_point: unsupported quantity type in Point: {:?}",
+                        other
+                    ),
                 })
                 .collect();
             (Value::Point(comps), domain.clone())
@@ -708,7 +707,10 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
 #[test]
 #[should_panic(expected = "make_sample_point: Point domain only supports")]
 fn make_sample_point_panics_when_point_arity_exceeds_three() {
-    let domain = Type::Point { n: 4, quantity: Box::new(Type::Real) };
+    let domain = Type::Point {
+        n: 4,
+        quantity: Box::new(Type::Real),
+    };
     let _ = make_sample_point(&domain);
 }
 
@@ -785,7 +787,10 @@ fn build_eval_field_op_body(ids: &[ValueCellId], codomain: &Type) -> CompiledExp
 fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
     let n: usize = match &domain {
         Type::Point { n, .. } => {
-            assert!(*n <= MAX_POINT_ARITY, "eval_field_op: Point domain only supports up to {MAX_POINT_ARITY} dimensions, got {n}");
+            assert!(
+                *n <= MAX_POINT_ARITY,
+                "eval_field_op: Point domain only supports up to {MAX_POINT_ARITY} dimensions, got {n}"
+            );
             *n
         }
         _ => 1,
@@ -818,7 +823,10 @@ fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
 #[test]
 #[should_panic(expected = "eval_field_op: Point domain only supports")]
 fn eval_field_op_panics_when_point_arity_exceeds_three() {
-    let domain = Type::Point { n: 4, quantity: Box::new(Type::Real) };
+    let domain = Type::Point {
+        n: 4,
+        quantity: Box::new(Type::Real),
+    };
     let _ = eval_field_op("gradient", domain, Type::Real);
 }
 
@@ -836,7 +844,9 @@ fn codomain_component_type_returns_vector_quantity_or_codomain_itself() {
     let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
 
     // (a) Vec3(Scalar<Velocity>) → Scalar<Velocity>
-    let vel_scalar = Type::Scalar { dimension: velocity_dim };
+    let vel_scalar = Type::Scalar {
+        dimension: velocity_dim,
+    };
     let vec3_velocity = Type::vec3(vel_scalar.clone());
     assert_eq!(
         codomain_component_type(&vec3_velocity),
@@ -853,7 +863,9 @@ fn codomain_component_type_returns_vector_quantity_or_codomain_itself() {
     );
 
     // (c) Vec2(Scalar<Length>) → Scalar<Length>
-    let length_scalar = Type::Scalar { dimension: DimensionVector::LENGTH };
+    let length_scalar = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
     let vec2_length = Type::vec2(length_scalar.clone());
     assert_eq!(
         codomain_component_type(&vec2_length),
@@ -862,7 +874,9 @@ fn codomain_component_type_returns_vector_quantity_or_codomain_itself() {
     );
 
     // (d) Scalar<Temperature> → Scalar<Temperature>
-    let temp_scalar = Type::Scalar { dimension: DimensionVector::TEMPERATURE };
+    let temp_scalar = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
     assert_eq!(
         codomain_component_type(&temp_scalar),
         temp_scalar.clone(),
@@ -896,21 +910,27 @@ fn build_eval_field_op_body_vector_branch_stamps_codomain_component_type() {
         .collect();
 
     // ── Case 1: Vec3(Scalar<Velocity>) ───────────────────────────────────────
-    let vel_scalar = Type::Scalar { dimension: velocity_dim };
+    let vel_scalar = Type::Scalar {
+        dimension: velocity_dim,
+    };
     let vec3_velocity = Type::vec3(vel_scalar.clone());
     let body1 = build_eval_field_op_body(&ids, &vec3_velocity);
 
     // (a) top-level kind and result_type
     match &body1.kind {
         CompiledExprKind::FunctionCall { function, .. } => {
-            assert_eq!(function.name, "vec3",
-                "case 1: expected FunctionCall 'vec3', got {:?}", function.name);
+            assert_eq!(
+                function.name, "vec3",
+                "case 1: expected FunctionCall 'vec3', got {:?}",
+                function.name
+            );
         }
         other => panic!("case 1: expected FunctionCall, got {:?}", other),
     }
     assert_eq!(
         body1.result_type, vec3_velocity,
-        "case 1: top-level result_type should be Vec3(Velocity), got {:?}", body1.result_type
+        "case 1: top-level result_type should be Vec3(Velocity), got {:?}",
+        body1.result_type
     );
 
     // (b,c) collect value_ref result_types
@@ -920,11 +940,17 @@ fn build_eval_field_op_body_vector_branch_stamps_codomain_component_type() {
             value_ref_types.push(node.result_type.clone());
         }
     });
-    assert_eq!(value_ref_types.len(), 3, "case 1: expected 3 ValueRef nodes, got {}", value_ref_types.len());
+    assert_eq!(
+        value_ref_types.len(),
+        3,
+        "case 1: expected 3 ValueRef nodes, got {}",
+        value_ref_types.len()
+    );
     for ty in &value_ref_types {
         assert_eq!(
             *ty, vel_scalar,
-            "case 1: each ValueRef should have result_type Scalar<Velocity>, got {:?}", ty
+            "case 1: each ValueRef should have result_type Scalar<Velocity>, got {:?}",
+            ty
         );
     }
 
@@ -934,14 +960,18 @@ fn build_eval_field_op_body_vector_branch_stamps_codomain_component_type() {
 
     match &body2.kind {
         CompiledExprKind::FunctionCall { function, .. } => {
-            assert_eq!(function.name, "vec3",
-                "case 2: expected FunctionCall 'vec3', got {:?}", function.name);
+            assert_eq!(
+                function.name, "vec3",
+                "case 2: expected FunctionCall 'vec3', got {:?}",
+                function.name
+            );
         }
         other => panic!("case 2: expected FunctionCall, got {:?}", other),
     }
     assert_eq!(
         body2.result_type, vec3_real,
-        "case 2: top-level result_type should be Vec3(Real), got {:?}", body2.result_type
+        "case 2: top-level result_type should be Vec3(Real), got {:?}",
+        body2.result_type
     );
 
     let mut value_ref_types2: Vec<Type> = Vec::new();
@@ -950,11 +980,18 @@ fn build_eval_field_op_body_vector_branch_stamps_codomain_component_type() {
             value_ref_types2.push(node.result_type.clone());
         }
     });
-    assert_eq!(value_ref_types2.len(), 3, "case 2: expected 3 ValueRef nodes, got {}", value_ref_types2.len());
+    assert_eq!(
+        value_ref_types2.len(),
+        3,
+        "case 2: expected 3 ValueRef nodes, got {}",
+        value_ref_types2.len()
+    );
     for ty in &value_ref_types2 {
         assert_eq!(
-            *ty, Type::Real,
-            "case 2: each ValueRef should have result_type Real, got {:?}", ty
+            *ty,
+            Type::Real,
+            "case 2: each ValueRef should have result_type Real, got {:?}",
+            ty
         );
     }
 }
@@ -977,45 +1014,64 @@ fn build_eval_field_op_body_scalar_branch_stamps_codomain_into_sum_nodes() {
         .collect();
 
     // ── Case 1: Scalar<Temperature> ─────────────────────────────────────────
-    let temp_scalar = Type::Scalar { dimension: DimensionVector::TEMPERATURE };
+    let temp_scalar = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
     let body1 = build_eval_field_op_body(&ids, &temp_scalar);
 
     // (a) top-level BinOp(Add) with result_type == codomain
     match &body1.kind {
         CompiledExprKind::BinOp { op, .. } => {
-            assert_eq!(*op, BinOp::Add,
-                "case 1: expected BinOp::Add at top level, got {:?}", op);
+            assert_eq!(
+                *op,
+                BinOp::Add,
+                "case 1: expected BinOp::Add at top level, got {:?}",
+                op
+            );
         }
         other => panic!("case 1: expected BinOp, got {:?}", other),
     }
     assert_eq!(
         body1.result_type, temp_scalar,
-        "case 1: top-level result_type should be Scalar<Temperature>, got {:?}", body1.result_type
+        "case 1: top-level result_type should be Scalar<Temperature>, got {:?}",
+        body1.result_type
     );
 
     // (b,c) walk and collect ValueRef and BinOp(Add) types
     let mut value_ref_types1: Vec<Type> = Vec::new();
     let mut binop_add_types1: Vec<Type> = Vec::new();
-    body1.walk(&mut |node| {
-        match &node.kind {
-            CompiledExprKind::ValueRef(_) => value_ref_types1.push(node.result_type.clone()),
-            CompiledExprKind::BinOp { op, .. } if *op == BinOp::Add => {
-                binop_add_types1.push(node.result_type.clone());
-            }
-            _ => {}
+    body1.walk(&mut |node| match &node.kind {
+        CompiledExprKind::ValueRef(_) => value_ref_types1.push(node.result_type.clone()),
+        CompiledExprKind::BinOp { op, .. } if *op == BinOp::Add => {
+            binop_add_types1.push(node.result_type.clone());
         }
+        _ => {}
     });
-    assert_eq!(value_ref_types1.len(), 3,
-        "case 1: expected 3 ValueRef nodes, got {}", value_ref_types1.len());
-    assert_eq!(binop_add_types1.len(), 2,
-        "case 1: expected 2 BinOp(Add) nodes, got {}", binop_add_types1.len());
+    assert_eq!(
+        value_ref_types1.len(),
+        3,
+        "case 1: expected 3 ValueRef nodes, got {}",
+        value_ref_types1.len()
+    );
+    assert_eq!(
+        binop_add_types1.len(),
+        2,
+        "case 1: expected 2 BinOp(Add) nodes, got {}",
+        binop_add_types1.len()
+    );
     for ty in &value_ref_types1 {
-        assert_eq!(*ty, temp_scalar,
-            "case 1: each ValueRef should be Scalar<Temperature>, got {:?}", ty);
+        assert_eq!(
+            *ty, temp_scalar,
+            "case 1: each ValueRef should be Scalar<Temperature>, got {:?}",
+            ty
+        );
     }
     for ty in &binop_add_types1 {
-        assert_eq!(*ty, temp_scalar,
-            "case 1: each BinOp(Add) should be Scalar<Temperature>, got {:?}", ty);
+        assert_eq!(
+            *ty, temp_scalar,
+            "case 1: each BinOp(Add) should be Scalar<Temperature>, got {:?}",
+            ty
+        );
     }
 
     // ── Case 2: Real — regression check ──────────────────────────────────────
@@ -1023,38 +1079,58 @@ fn build_eval_field_op_body_scalar_branch_stamps_codomain_into_sum_nodes() {
 
     match &body2.kind {
         CompiledExprKind::BinOp { op, .. } => {
-            assert_eq!(*op, BinOp::Add,
-                "case 2: expected BinOp::Add at top level, got {:?}", op);
+            assert_eq!(
+                *op,
+                BinOp::Add,
+                "case 2: expected BinOp::Add at top level, got {:?}",
+                op
+            );
         }
         other => panic!("case 2: expected BinOp, got {:?}", other),
     }
     assert_eq!(
-        body2.result_type, Type::Real,
-        "case 2: top-level result_type should be Real, got {:?}", body2.result_type
+        body2.result_type,
+        Type::Real,
+        "case 2: top-level result_type should be Real, got {:?}",
+        body2.result_type
     );
 
     let mut value_ref_types2: Vec<Type> = Vec::new();
     let mut binop_add_types2: Vec<Type> = Vec::new();
-    body2.walk(&mut |node| {
-        match &node.kind {
-            CompiledExprKind::ValueRef(_) => value_ref_types2.push(node.result_type.clone()),
-            CompiledExprKind::BinOp { op, .. } if *op == BinOp::Add => {
-                binop_add_types2.push(node.result_type.clone());
-            }
-            _ => {}
+    body2.walk(&mut |node| match &node.kind {
+        CompiledExprKind::ValueRef(_) => value_ref_types2.push(node.result_type.clone()),
+        CompiledExprKind::BinOp { op, .. } if *op == BinOp::Add => {
+            binop_add_types2.push(node.result_type.clone());
         }
+        _ => {}
     });
-    assert_eq!(value_ref_types2.len(), 3,
-        "case 2: expected 3 ValueRef nodes, got {}", value_ref_types2.len());
-    assert_eq!(binop_add_types2.len(), 2,
-        "case 2: expected 2 BinOp(Add) nodes, got {}", binop_add_types2.len());
+    assert_eq!(
+        value_ref_types2.len(),
+        3,
+        "case 2: expected 3 ValueRef nodes, got {}",
+        value_ref_types2.len()
+    );
+    assert_eq!(
+        binop_add_types2.len(),
+        2,
+        "case 2: expected 2 BinOp(Add) nodes, got {}",
+        binop_add_types2.len()
+    );
     for ty in &value_ref_types2 {
-        assert_eq!(*ty, Type::Real,
-            "case 2: each ValueRef should be Real, got {:?}", ty);
+        assert_eq!(
+            *ty,
+            Type::Real,
+            "case 2: each ValueRef should be Real, got {:?}",
+            ty
+        );
     }
     for ty in &binop_add_types2 {
-        assert_eq!(*ty, Type::Real,
-            "case 2: each BinOp(Add) should be Real, got {:?}", ty);
+        assert_eq!(
+            *ty,
+            Type::Real,
+            "case 2: each BinOp(Add) should be Real, got {:?}",
+            ty
+        );
     }
 }
 
@@ -1195,8 +1271,7 @@ fn gradient_3d_sum_of_squares_accuracy() {
 
     let domain_type = Type::point3(Type::Real);
 
-    let (field, field_type) =
-        make_analytical_field(domain_type.clone(), Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::Real, lambda);
 
     // gradient(field)
     let grad_expr = make_function_call(
@@ -1504,8 +1579,7 @@ fn gradient_3d_vector_codomain_type() {
 
     let domain_type = Type::point3(Type::Real);
 
-    let (field, field_type) =
-        make_analytical_field(domain_type.clone(), Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::Real, lambda);
 
     let grad_expr = make_function_call(
         "gradient",
@@ -1608,8 +1682,7 @@ fn gradient_dimensional_correctness() {
         dimension: DimensionVector::TEMPERATURE,
     };
 
-    let (field, field_type) =
-        make_analytical_field(domain_type, codomain_type.clone(), lambda);
+    let (field, field_type) = make_analytical_field(domain_type, codomain_type.clone(), lambda);
 
     // gradient(field) → gradient field with dimension Temperature/Length
     let grad_expr = make_function_call(
@@ -1763,8 +1836,7 @@ fn gradient_linear_field_constant() {
 
     let domain_type = Type::point3(Type::Real);
 
-    let (field, field_type) =
-        make_analytical_field(domain_type.clone(), Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::Real, lambda);
 
     // gradient(field) should give constant [1, 2, 3]
     let grad_expr = make_function_call(
@@ -1852,8 +1924,7 @@ fn laplacian_linear_field_near_zero() {
 
     let domain_type = Type::point3(Type::Real);
 
-    let (field, field_type) =
-        make_analytical_field(domain_type.clone(), Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::Real, lambda);
 
     // laplacian(field) → scalar field ≈ 0
     let lap_expr = make_function_call(
@@ -2065,8 +2136,11 @@ fn laplacian_dimensional_correctness() {
 /// behaviour for dimensionless fields now that the dimensioned path is wired up.
 #[test]
 fn divergence_dimensionless_still_real() {
-    let div_result =
-        eval_field_op("divergence", Type::point3(Type::Real), Type::vec3(Type::Real));
+    let div_result = eval_field_op(
+        "divergence",
+        Type::point3(Type::Real),
+        Type::vec3(Type::Real),
+    );
     let Value::Field {
         codomain_type: ref actual_codomain,
         ..
@@ -2519,8 +2593,7 @@ fn laplacian_sample_mixed_length_to_real_placeholder() {
 
     // Desired: Scalar[1/Length², si_value ≈ 0.0]
     // (linear body `x+y+z`, ∇²(linear) = 0; result dimension = 1/Length²)
-    let one_over_length_sq =
-        DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH.pow(2));
+    let one_over_length_sq = DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH.pow(2));
     match sampled {
         Value::Scalar {
             si_value,
@@ -2723,8 +2796,7 @@ fn divergence_gradient_field_returns_undef() {
 
     let domain_type = Type::point3(Type::Real);
 
-    let (field, field_type) =
-        make_analytical_field(domain_type.clone(), Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::Real, lambda);
 
     // gradient(field) — should succeed and produce a Gradient-sourced field
     // with domain=Point3 and codomain=Vec3(Real).
@@ -2793,11 +2865,8 @@ fn divergence_field_with_mismatched_dims_returns_undef() {
     );
 
     // n=3 domain, n=2 codomain — mismatch!
-    let (field, field_type) = make_analytical_field(
-        Type::point3(Type::Real),
-        Type::vec2(Type::Real),
-        lambda,
-    );
+    let (field, field_type) =
+        make_analytical_field(Type::point3(Type::Real), Type::vec2(Type::Real), lambda);
 
     let div_expr = make_function_call(
         "divergence",
@@ -3722,10 +3791,7 @@ fn curl_sample_dimensional_correctness_returns_scalar() {
                 }
             }
         }
-        other => panic!(
-            "curl sample should return Vector(3), got {:?}",
-            other
-        ),
+        other => panic!("curl sample should return Vector(3), got {:?}", other),
     }
 }
 
@@ -3767,11 +3833,7 @@ fn curl_sample_dimensionless_returns_real() {
     let values = ValueMap::new();
     let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
 
-    let point = Value::Point(vec![
-        Value::Real(1.0),
-        Value::Real(2.0),
-        Value::Real(3.0),
-    ]);
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
 
     let curl_field_type = Type::Field {
         domain: Box::new(domain_type.clone()),
@@ -3799,10 +3861,7 @@ fn curl_sample_dimensionless_returns_real() {
                 );
             }
         }
-        other => panic!(
-            "curl sample should return Vector(3), got {:?}",
-            other
-        ),
+        other => panic!("curl sample should return Vector(3), got {:?}", other),
     }
 }
 
@@ -3954,7 +4013,9 @@ fn divergence_dimensional_correctness_1d() {
         },
         FieldSourceKind::Analytical,
         Type::Scalar {
-            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME).div(&DimensionVector::LENGTH),
+            dimension: DimensionVector::LENGTH
+                .div(&DimensionVector::TIME)
+                .div(&DimensionVector::LENGTH),
         },
         "divergence_dimensional_correctness_1d",
     );
@@ -3974,7 +4035,9 @@ fn divergence_dimensional_correctness_2d() {
         }),
         FieldSourceKind::Analytical,
         Type::Scalar {
-            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME).div(&DimensionVector::LENGTH),
+            dimension: DimensionVector::LENGTH
+                .div(&DimensionVector::TIME)
+                .div(&DimensionVector::LENGTH),
         },
         "divergence_dimensional_correctness_2d",
     );
@@ -4014,7 +4077,9 @@ fn divergence_dimensional_correctness_composed_source() {
         }),
         FieldSourceKind::Composed,
         Type::Scalar {
-            dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME).div(&DimensionVector::LENGTH),
+            dimension: DimensionVector::LENGTH
+                .div(&DimensionVector::TIME)
+                .div(&DimensionVector::LENGTH),
         },
         "divergence_dimensional_correctness_composed_source",
     );
@@ -4196,7 +4261,6 @@ fn sample_point_enum_correctness() {
     }
 }
 
-
 /// Meta-test: asserts that every `#[ignore = "..."]` attribute in this file
 /// complies with the Task 1622 convention — reason strings must be
 /// self-contained inline summaries beginning with `"known bug:"`.  The two
@@ -4229,10 +4293,7 @@ fn sample_point_enum_correctness() {
 /// accidentally self-trigger.
 #[test]
 fn ignore_reason_strings_have_no_stale_plan_pointers() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/field_calculus_tests.rs"
-    );
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/field_calculus_tests.rs");
     let source = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("failed to read {path} for meta-inspection: {e}"));
     reify_test_support::ignore_hygiene::check_ignore_reasons(&source).unwrap_or_else(|msg| {
@@ -4243,4 +4304,3 @@ fn ignore_reason_strings_have_no_stale_plan_pointers() {
         )
     });
 }
-
