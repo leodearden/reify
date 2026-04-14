@@ -5400,7 +5400,7 @@
         "dependencies": [
           "265"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/annotations.rs",
@@ -5439,7 +5439,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:40:58.900Z"
+        "updatedAt": "2026-04-14T15:39:02.080Z"
       },
       {
         "id": "276",
@@ -34637,7 +34637,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T15:39:01.212Z",
+      "lastModified": "2026-04-14T15:39:02.081Z",
       "taskCount": 1661,
       "completedCount": 1383,
       "tags": [
