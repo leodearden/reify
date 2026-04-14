@@ -58,6 +58,16 @@ fn constraint_count(engine: &Engine) -> usize {
         .len()
 }
 
+// ── Test 5: geometric let bindings are determined ────────────────────────────
+
+/// Feature 1 (geometric type params) + Feature 2 (Point/Vector arithmetic in lets).
+/// Asserts that origin, target, offset, displacement, shifted, and total_offset
+/// are present in the eval result as non-Undef values.
+#[test]
+fn geometric_let_bindings_determined() {
+    todo!("step-10 impl: assert geometric let bindings are present and non-Undef")
+}
+
 // ── Test 4: total constraint count meets threshold ───────────────────────────
 
 /// Capstone assertion: constraint_results.len() >= 15, all Satisfied.
