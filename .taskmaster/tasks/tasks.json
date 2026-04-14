@@ -11106,8 +11106,8 @@
             "crates/reify-test-support/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-eval/tests",
+            "crates/reify-compiler",
+            "crates/reify-eval",
             "crates/reify-test-support"
           ]
         },
