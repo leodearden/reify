@@ -14,10 +14,39 @@ pub fn fixture_path(name: &str) -> String {
 ///
 /// The crate lives at `<root>/crates/reify-cli`, so the examples directory is
 /// two levels up: `<CARGO_MANIFEST_DIR>/../../examples/<name>`.
+///
+/// When the file exists on disk, the path is canonicalized (resolving `..`
+/// segments) so that assertion failure messages are readable.  When the file
+/// does not yet exist (e.g. it belongs to a sibling task not yet merged), the
+/// raw path is returned — callers can still call `.exists()` on it.
 #[allow(dead_code)]
 pub fn example_path(name: &str) -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{}/../../examples/{}", manifest_dir, name)
+    let raw = PathBuf::from(manifest_dir).join("../../examples").join(name);
+    std::fs::canonicalize(&raw)
+        .unwrap_or(raw)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Run `reify <subcommand> <path>` and return `(status, stdout, stderr)`.
+///
+/// This generic helper avoids duplicating the `Command`-building boilerplate
+/// across test files that only differ in the subcommand name (`"check"`, `"test"`,
+/// etc.).
+#[allow(dead_code)]
+pub fn run_subcommand(subcommand: &str, path: &str) -> (ExitStatus, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args([subcommand, path])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    (output.status, stdout, stderr)
 }
 
 /// Captures the output of a `reify build` invocation.

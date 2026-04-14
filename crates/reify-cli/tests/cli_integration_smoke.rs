@@ -1,37 +1,6 @@
 mod common;
 
 use std::path::Path;
-use std::process::Command;
-
-/// Run `reify check <path>` and return (status, stdout, stderr).
-fn run_check(path: &str) -> (std::process::ExitStatus, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(["check", path])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    (output.status, stdout, stderr)
-}
-
-/// Run `reify test <path>` and return (status, stdout, stderr).
-fn run_test(path: &str) -> (std::process::ExitStatus, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(["test", path])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    (output.status, stdout, stderr)
-}
 
 // ── step-1: check integration_full_v01.ri succeeds (SKIP if absent) ──────────
 
@@ -39,6 +8,9 @@ fn run_test(path: &str) -> (std::process::ExitStatus, String, String) {
 fn check_integration_full_v01_succeeds() {
     let path = common::example_path("integration_full_v01.ri");
     if !Path::new(&path).exists() {
+        // Note: `#[ignore]` cannot be used here because the skip decision is
+        // made at runtime (file exists only after upstream task 291 merges).
+        // Run with `--nocapture` to see SKIP messages.
         eprintln!(
             "SKIP cli_integration_smoke::check_integration_full_v01_succeeds: \
              {path} not present (dependency: task 291)"
@@ -46,7 +18,7 @@ fn check_integration_full_v01_succeeds() {
         return;
     }
 
-    let (status, stdout, stderr) = run_check(&path);
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
 
     assert!(
         status.success(),
@@ -65,7 +37,7 @@ fn test_m11_annotations_reports_results() {
     let path = common::example_path("m11_annotations.ri");
 
     // m11_annotations.ri is a committed example in the worktree — no SKIP needed.
-    let (_status, stdout, stderr) = run_test(&path);
+    let (_status, stdout, stderr) = common::run_subcommand("test", &path);
 
     // The fixture has PASS, FAIL, and INDETERMINATE rows.
     assert!(
@@ -90,6 +62,11 @@ fn test_m11_annotations_reports_results() {
     );
 
     // Summary line: fixture declares 3 passed, 2 failed, 1 indeterminate.
+    // These counts correspond to the @test structures in examples/m11_annotations.ri:
+    //   PASS:          TestPositiveWidth, TestColumnPositive, TestAssemblyFits  (3)
+    //   FAIL:          TestNegativeWidth, TestColumnNegative                    (2, intentional)
+    //   INDETERMINATE: TestUnknownLoad                                          (1)
+    // If the fixture is updated, these counts must be updated here too.
     assert!(
         stdout.contains("3 passed"),
         "stdout should contain '3 passed' in summary, got: {stdout}"
@@ -97,6 +74,10 @@ fn test_m11_annotations_reports_results() {
     assert!(
         stdout.contains("2 failed"),
         "stdout should contain '2 failed' in summary, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("1 indeterminate"),
+        "stdout should contain '1 indeterminate' in summary, got: {stdout}"
     );
 
     // No internal errors or panics.
@@ -117,6 +98,9 @@ fn test_m11_annotations_reports_results() {
 fn build_integration_full_v01_produces_geometry() {
     let path = common::example_path("integration_full_v01.ri");
     if !Path::new(&path).exists() {
+        // Note: `#[ignore]` cannot be used here because the skip decision is
+        // made at runtime (file exists only after upstream task 291 merges).
+        // Run with `--nocapture` to see SKIP messages.
         eprintln!(
             "SKIP cli_integration_smoke::build_integration_full_v01_produces_geometry: \
              {path} not present (dependency: task 291)"
@@ -166,6 +150,7 @@ const NEW_M11_EXAMPLES: &[(&str, &str)] = &[
 #[test]
 fn new_m11_examples_pass_check_when_present() {
     let mut failures: Vec<String> = Vec::new();
+    let mut tested: usize = 0;
 
     for (name, dep_task) in NEW_M11_EXAMPLES {
         let path = common::example_path(name);
@@ -182,7 +167,8 @@ fn new_m11_examples_pass_check_when_present() {
             continue;
         }
 
-        let (status, stdout, _stderr) = run_check(&path);
+        tested += 1;
+        let (status, stdout, _stderr) = common::run_subcommand("check", &path);
 
         let passes = status.success()
             && (stdout.contains("All constraints satisfied")
@@ -198,6 +184,13 @@ fn new_m11_examples_pass_check_when_present() {
         }
     }
 
+    // Guard against vacuous pass: at least m11_field_calculus.ri is always
+    // committed and must be exercised.
+    assert!(
+        tested > 0,
+        "no M11 examples were tested — all files are absent \
+         (check that m11_field_calculus.ri exists in the examples/ directory)"
+    );
     assert!(
         failures.is_empty(),
         "The following M11 examples failed reify check:\n{:#?}",
