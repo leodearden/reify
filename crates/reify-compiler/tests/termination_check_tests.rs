@@ -626,7 +626,7 @@ structure S {
 /// this test is un-ignored and verifies that exactly one 'not yet supported' error
 /// is produced — confirming the sub is explicitly rejected rather than silently dropped.
 #[test]
-fn recursive_sub_inside_block_guard_no_error() {
+fn recursive_sub_inside_block_guard_emits_unsupported_error() {
     let source = r#"
 structure S {
     param n : Int = 5
