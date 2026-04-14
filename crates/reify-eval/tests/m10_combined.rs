@@ -58,6 +58,17 @@ fn constraint_count(engine: &Engine) -> usize {
         .len()
 }
 
+// ── Test 8: geom_ready purpose compiled and activatable ──────────────────────
+
+/// Feature 5 (purpose checking geometric determinacy).
+/// Asserts the geom_ready purpose is compiled with Structure subject kind,
+/// can be activated against Assembly, injects exactly 3 constraints, and
+/// is cleanly deactivatable.
+#[test]
+fn geom_ready_purpose_compiled_and_activatable() {
+    todo!("step-16 impl: assert geom_ready purpose present, activatable, +3 constraints")
+}
+
 // ── Test 7: assembly connect has connector and explicit port mapping ──────────
 
 /// Feature 4 (connect with connector type + explicit port mapping).
