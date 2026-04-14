@@ -15999,7 +15999,7 @@
         "description": "The type_param hash in compute_trait_content_hash (trait_def.rs) only hashes `b.trait_ref.name`, ignoring `type_args`. Two TypeParams with the same bound trait name but different type arguments (e.g., `Rigid<Real>` vs `Rigid<Int>`) produce identical hashes — the exact class of bug task 628 was created to fix.\n\nFix: Include type_args in the bound string in compute_trait_content_hash, e.g.:\n```rust\ns.push_str(&format!(\":bound:{}:{}\", b.trait_ref.name, \n    b.trait_ref.type_args.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(\",\")));\n```\n\nAlso add edge-case tests:\n1. TypeParam `T` with empty bounds vs TypeParam `T` with one bound — assert hashes differ (already covered by existing test, verify)\n2. TypeParam `T` with `default: None` vs TypeParam `T` with `default: Some(Type::Real)` — assert hashes differ\n3. TypeParam with bound `Rigid<Real>` vs `Rigid<Int>` — assert hashes differ (the main fix)\n\nmemory_hints: search \"content_hash type_param bound test builder\", get_entity \"TypeParam\", get_entity \"TraitRef\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "727"
         ],
@@ -16019,7 +16019,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-14T09:52:39.791Z"
+        "updatedAt": "2026-04-14T12:30:23.334Z"
       },
       {
         "id": "734",
@@ -34460,7 +34460,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:30:23.250Z",
+      "lastModified": "2026-04-14T12:30:23.334Z",
       "taskCount": 1661,
       "completedCount": 1338,
       "tags": [
