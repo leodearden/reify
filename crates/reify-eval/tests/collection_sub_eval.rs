@@ -212,6 +212,26 @@ fn edit_param_count_change_re_elaborates_collection() {
         edit_result.values.get(&no_instance).is_none(),
         "should not have bolts[6]"
     );
+
+    // (4) Count cell should reflect the new value of 6
+    let count_id = ValueCellId::new("Parent", "__count_bolts");
+    assert_eq!(
+        edit_result.values.get(&count_id),
+        Some(&Value::Int(6)),
+        "count cell should reflect new count of 6 after edit"
+    );
+
+    // (5) Assert no spurious bolt instances beyond the expected 6
+    let bolt_instance_count = edit_result
+        .values
+        .iter()
+        .filter(|(id, _)| id.entity.starts_with("Parent.bolts["))
+        .count();
+    assert_eq!(
+        bolt_instance_count, 6,
+        "exactly 6 bolt instances should exist after count change to 6, got {}",
+        bolt_instance_count
+    );
 }
 
 // ─── step-21: count change 4→2, stale instances removed ───
@@ -249,6 +269,26 @@ fn edit_param_count_decrease_removes_stale_instances() {
             i
         );
     }
+
+    // Count cell should reflect the new value
+    let count_id = ValueCellId::new("Parent", "__count_bolts");
+    assert_eq!(
+        result.values.get(&count_id),
+        Some(&Value::Int(2)),
+        "count cell should reflect new count of 2 after edit"
+    );
+
+    // Assert no spurious bolt instances beyond the expected 2
+    let bolt_instance_count = result
+        .values
+        .iter()
+        .filter(|(id, _)| id.entity.starts_with("Parent.bolts["))
+        .count();
+    assert_eq!(
+        bolt_instance_count, 2,
+        "exactly 2 bolt instances should exist after count decrease to 2, got {}",
+        bolt_instance_count
+    );
 }
 
 // ─── step-19: collection value aggregation ───
@@ -507,4 +547,17 @@ fn edit_param_count_to_undef_removes_all_instances() {
             i
         );
     }
+
+    // Assert zero bolt instances remain — not just that old ones are gone,
+    // but no spurious new ones appeared either.
+    let bolt_instance_count = result
+        .values
+        .iter()
+        .filter(|(id, _)| id.entity.starts_with("Parent.bolts["))
+        .count();
+    assert_eq!(
+        bolt_instance_count, 0,
+        "zero bolt instances should remain when count is Undef, got {}",
+        bolt_instance_count
+    );
 }
