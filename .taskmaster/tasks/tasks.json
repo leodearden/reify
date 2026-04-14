@@ -7673,12 +7673,12 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-types/src/lib.rs"
+            "crates/reify-types/src/lib.rs",
+            "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-types"
+            "crates/reify-types/src",
+            "crates/reify-compiler/src"
           ]
         }
       },
