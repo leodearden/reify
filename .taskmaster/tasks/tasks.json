@@ -28272,13 +28272,13 @@
         "description": "Two minor test-quality improvements for the auto(free) work landed in task 159: (a) add a negative-path parse test that `auto(constrained)` (or any unrecognized modifier) fails to parse, documenting the grammar's hard-coded 'free' literal as a regression guard; (b) tighten `compile_auto_free_in_port_param` at crates/reify-compiler/tests/boundary2_producer.rs:501-552 which currently uses a loose `foo.id.member.contains(\"mount.foo\")` assertion — switch to an exact `assert_eq!(foo.id, ValueCellId::new(\"S\", \"mount.foo\"))` to match the pattern used elsewhere in the same file.",
         "details": "Scope:\n1. Add parse-error test in crates/reify-syntax/tests/boundary1_producer.rs that feeds `param x: Scalar = auto(constrained)` and asserts the parse fails (or produces an error expression). This documents the expected behavior so future grammar changes must explicitly consider whether to accept other modifiers.\n2. In crates/reify-compiler/tests/boundary2_producer.rs, locate `compile_auto_free_in_port_param` (around lines 501-552) and replace the `contains(\"mount.foo\")` assertion with an exact `ValueCellId::new(...)` equality check, consistent with sibling tests in the same file.\n\nSource: review triage of task 159 (auto(free) grammar + compiler threading).\n<info added on 2026-04-10T07:11:07.629Z>\nTask 159 has been merged to main (commit 792e012ac), unblocking this task. The auto(free) grammar and compiler work is now available on the main branch, allowing the addition of the negative-path parse test and the tightening of `compile_auto_free_in_port_param` assertions to proceed.\n</info added on 2026-04-10T07:11:07.629Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "159"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:23.273Z",
+        "updatedAt": "2026-04-14T09:52:25.045Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -28795,11 +28795,11 @@
         "description": "The `self_inside_lambda_in_fn_body_errors` test in `self_keyword_tests.rs` has two assertion quality issues:\n\n1. **Tautological else branch (lines 636-640):** The else branch is entered only when `parsed.errors.is_empty()` is false, so `assert!(!parsed.errors.is_empty(), ...)` can never fail — it's dead validation code. Replace with an assertion on error content, e.g. check that at least one error message mentions `self`.\n\n2. **Weak if-branch assertion (lines 617-635):** The if branch only asserts that at least one Error diagnostic exists, without checking that the error is specifically about `self` usage. A future regression introducing a different compile error (e.g. type mismatch) would still pass. Assert on the diagnostic message content.\n\nFix: In both branches, assert that error messages mention `self` or `unresolved`, not just that errors exist.\n\nmemory_hints: search \"self keyword test error assertion\" in reify project; get_entity for self_keyword_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:24.137Z",
+        "updatedAt": "2026-04-14T09:52:25.136Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -28845,11 +28845,11 @@
         "description": "Two related issues in conformance.rs from task 823 review:\n\n1. **Misleading diagnostic message (conformance.rs:48):** The diagnostic says \"trait member '{}' has no type annotation\" but `p` is iterated from `structure.members`, not the trait's member list. Users see \"trait member X has no type annotation\" and look at the trait definition instead of the structure. Change message to \"structure member '{}' has no type annotation; cannot infer type for trait conformance check\" or similar wording.\n\n2. **Behavioral change test gap (conformance.rs:58-83):** The Let branch now uses `?` to skip let bindings without type annotations from `structure_members`. Previously `let y = expr` (no annotation) would contribute `(y, Type::Real)` and potentially satisfy a trait requirement. Now it is excluded, so a trait requiring that member gets \"missing required member\" instead. The test `trait_let_no_type_annotation_compiles_clean` only covers the case where the trait does NOT require that let member. Add a test where the trait DOES require member `y` and the structure provides `let y = expr` without a type annotation, asserting the \"missing required member\" diagnostic fires.\n\nmemory_hints: search(\"conformance check trait structure member diagnostic\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:09.487Z",
+        "updatedAt": "2026-04-14T09:52:25.217Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -34378,7 +34378,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T09:52:24.962Z",
+      "lastModified": "2026-04-14T09:52:25.217Z",
       "taskCount": 1661,
       "completedCount": 1333,
       "tags": [
