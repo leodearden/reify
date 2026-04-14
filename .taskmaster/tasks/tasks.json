@@ -8148,8 +8148,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/scope.rs",
-            "crates/reify-compiler/tests/meta_compile_tests.rs"
+            "crates/reify-compiler/src/scope.rs"
           ]
         },
         "subtasks": [],
@@ -8166,13 +8165,11 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/entity.rs"
+            "crates/reify-compiler/src/lib.rs"
           ],
           "memory_hints": {
             "entities": [
