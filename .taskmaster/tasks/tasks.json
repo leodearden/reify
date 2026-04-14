@@ -16693,11 +16693,11 @@
         "description": "Four test coverage gaps identified in the unit registry tests:\n\n1. **degF offset unit**: `degF` has a non-trivial offset (5/9, offset 255.3722...) but zero test coverage. Add test: `32degF → 273.15K`, `212degF → 373.15K`.\n\n2. **Private prelude units excluded**: The `if cu.is_pub` guard ensures private units aren't seeded, but no test verifies it. Add test: compile prelude with one pub + one private unit, verify private is inaccessible.\n\n3. **Bare compile() negative test**: No test verifies that bare `compile()` does NOT resolve `1mm`. Add test: compile with bare compile(), assert unknown-unit error for mm.\n\n4. **thou via stdlib**: `thou` is a chain unit (references mm), but no integration test verifies it resolves via stdlib prelude. Add test: `10thou → 0.000254`.\n\nLocation: crates/reify-compiler/tests/unit_registry_tests.rs.\n\nmemory_hints: search \"unit registry tests\" for current test patterns.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:57:06.553Z",
+        "updatedAt": "2026-04-14T09:52:40.258Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -28845,11 +28845,11 @@
         "description": "Two related issues in conformance.rs from task 823 review:\n\n1. **Misleading diagnostic message (conformance.rs:48):** The diagnostic says \"trait member '{}' has no type annotation\" but `p` is iterated from `structure.members`, not the trait's member list. Users see \"trait member X has no type annotation\" and look at the trait definition instead of the structure. Change message to \"structure member '{}' has no type annotation; cannot infer type for trait conformance check\" or similar wording.\n\n2. **Behavioral change test gap (conformance.rs:58-83):** The Let branch now uses `?` to skip let bindings without type annotations from `structure_members`. Previously `let y = expr` (no annotation) would contribute `(y, Type::Real)` and potentially satisfy a trait requirement. Now it is excluded, so a trait requiring that member gets \"missing required member\" instead. The test `trait_let_no_type_annotation_compiles_clean` only covers the case where the trait does NOT require that let member. Add a test where the trait DOES require member `y` and the structure provides `let y = expr` without a type annotation, asserting the \"missing required member\" diagnostic fires.\n\nmemory_hints: search(\"conformance check trait structure member diagnostic\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:25.217Z",
+        "updatedAt": "2026-04-14T09:57:06.741Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -34386,7 +34386,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T09:57:06.727Z",
+      "lastModified": "2026-04-14T09:57:06.762Z",
       "taskCount": 1661,
       "completedCount": 1334,
       "tags": [
