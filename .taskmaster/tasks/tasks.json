@@ -30887,10 +30887,10 @@
         "updatedAt": "2026-04-10T16:05:28.337Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/src"
           ],
           "files": [
-            "crates/reify-eval/src/test_runner.rs"
+            "crates/reify-eval/src/tests_runner.rs"
           ]
         }
       },
@@ -31140,7 +31140,7 @@
         "updatedAt": "2026-04-14T07:04:26.252Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
+            "crates/reify-eval/tests",
             "examples"
           ],
           "files": [
