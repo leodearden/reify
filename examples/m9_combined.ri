@@ -1,0 +1,112 @@
+// M9 combined example: a bracket assembly integrating all M9 milestone features.
+//
+// Features covered:
+//   1. Trait definition with params, let bindings, and constraints (Dimensional + Weighted)
+//   2. Multi-predicate constraint def with three params (InRange)
+//   3. Custom unit declaration (mil = 1/1000 inch = 0.0000254 m)
+//   4. Structure implementing multiple traits, with meta block, determinacy predicates,
+//      constraint def invocations, and doc comments (Bracket)
+//   5. Recursive structure with depth-gated unfolding via where-clause guard (BracketTree)
+//   6. Default-injection structure with empty body (Plate)
+//
+// All active constraints are designed to be Satisfied.
+// Total active constraints >= 16 (above the >=15 requirement).
+
+// ── Feature 1a: trait Dimensional — defines a length param + let + constraint ──
+
+/// Trait for objects with a primary length dimension.
+trait Dimensional {
+    param length : Length
+    let half_length = length / 2
+    constraint length > 0mm
+}
+
+// ── Feature 1b: trait Weighted — defines a mass param with default + constraint ─
+
+/// Trait for objects with a mass.
+trait Weighted {
+    param mass : Mass = 1kg
+    constraint mass > 0kg
+}
+
+// ── Feature 2: multi-predicate, multi-param constraint def (range check) ─────
+
+/// Constraint def that checks a length value v is within [lo, hi].
+constraint def InRange {
+    param v  : Length
+    param lo : Length
+    param hi : Length
+    v >= lo
+    v <= hi
+}
+
+// ── Feature 3: custom unit declaration — mil (1/1000 inch) ───────────────────
+
+/// One mil = 1 thousandth of an inch = 0.0000254 m (common in PCB/manufacturing).
+unit mil : Length = 0.0000254
+
+// ── Feature 4: Bracket structure implementing Dimensional + Weighted ──────────
+
+/// Steel mounting bracket with material metadata, manufacturing constraints,
+/// and determinacy assertions.
+structure def Bracket : Dimensional + Weighted {
+    // Meta block providing material and revision metadata.
+    meta {
+        material = "steel",
+        revision = "A"
+    }
+
+    // Params — length (100mm) and mass (2kg) satisfy trait constraints.
+    // width (50mm) and clearance (500mil = 0.0127m) are additional params.
+    param length    : Length = 100mm
+    param mass      : Mass   = 2kg
+    param width     : Length = 50mm
+    param clearance : Length = 500mil
+
+    // Let bindings: access meta keys as string values.
+    let label = meta.material
+    let rev   = meta.revision
+
+    // Constraint def invocations: InRange checks on length and width.
+    // InRange[0]: length >= 10mm ✓,  InRange[1]: length <= 500mm ✓
+    constraint InRange(v: length, lo: 10mm, hi: 500mm)
+    // InRange[0]: width >= 5mm ✓,    InRange[1]: width <= 200mm ✓
+    constraint InRange(v: width, lo: 5mm, hi: 200mm)
+
+    // Determinacy predicates: confirm key params are determined.
+    constraint determined(length)
+    constraint determined(width)
+    constraint determined(mass)
+
+    // Additional dimensional constraints.
+    constraint width < length
+    constraint clearance > 0mm
+    constraint clearance < width
+}
+
+// ── Feature 5: BracketTree — recursive structure with depth-gated unfolding ───
+
+/// A binary tree of brackets, unfolded recursively while depth > 0.
+structure def BracketTree {
+    param depth : Int    = 2
+    param span  : Length = 200mm
+
+    let half_span = span / 2
+
+    // Recursive sub: creates a child BracketTree with depth-1 and half the span.
+    // Guard depth > 0 halts unfolding when depth reaches 0.
+    sub child = BracketTree(depth: depth - 1, span: span / 2) where depth > 0
+
+    // Constraints: span is positive, determined, and half_span is positive.
+    constraint span > 0mm
+    constraint determined(span)
+    constraint half_span > 0mm
+}
+
+// ── Feature 6: Plate — empty body, defaults injected from Weighted trait ─────
+
+/// A flat plate that inherits default mass from Weighted trait.
+structure def Plate : Weighted {
+    // Empty body — mass default (1kg) injected from Weighted trait.
+    // Constraint (mass > 0kg) also injected.
+}

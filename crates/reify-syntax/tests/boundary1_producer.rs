@@ -195,12 +195,50 @@ fn parse_auto_param() {
     match &param.default {
         Some(expr) => {
             assert!(
-                matches!(expr.kind, ExprKind::Auto),
-                "expected ExprKind::Auto, got {:?}",
+                matches!(expr.kind, ExprKind::Auto { free: false }),
+                "expected ExprKind::Auto {{ free: false }}, got {:?}",
                 expr.kind
             );
         }
         None => panic!("expected auto default, got None"),
+    }
+}
+
+/// Parse `param x: Scalar = auto(free)` → ExprKind::Auto { free: true } default.
+#[test]
+fn parse_auto_free_param() {
+    let source = r#"structure T {
+    param x: Scalar = auto(free)
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+    assert_eq!(module.declarations.len(), 1);
+
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(structure.members.len(), 1);
+    let param = match &structure.members[0] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+
+    assert_eq!(param.name, "x");
+    match &param.default {
+        Some(expr) => {
+            assert!(
+                matches!(expr.kind, ExprKind::Auto { free: true }),
+                "expected ExprKind::Auto {{ free: true }}, got {:?}",
+                expr.kind
+            );
+        }
+        None => panic!("expected auto(free) default, got None"),
     }
 }
 
@@ -242,7 +280,10 @@ fn parse_mixed_auto_and_normal_params() {
         other => panic!("expected Param, got {:?}", other),
     };
     assert_eq!(y.name, "y");
-    assert!(matches!(y.default.as_ref().unwrap().kind, ExprKind::Auto));
+    assert!(matches!(
+        y.default.as_ref().unwrap().kind,
+        ExprKind::Auto { free: false }
+    ));
 
     // z has no default
     let z = match &structure.members[2] {
@@ -251,6 +292,102 @@ fn parse_mixed_auto_and_normal_params() {
     };
     assert_eq!(z.name, "z");
     assert!(z.default.is_none());
+}
+
+/// Structure with both bare `auto` and `auto(free)` params produces correct flags.
+#[test]
+fn parse_mixed_auto_and_auto_free() {
+    let source = r#"structure S {
+    param a: Scalar = auto
+    param b: Scalar = auto(free)
+    param c: Scalar = 5mm
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    assert_eq!(structure.members.len(), 3);
+
+    // a: bare auto → free: false
+    let a = match &structure.members[0] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+    assert_eq!(a.name, "a");
+    assert!(
+        matches!(a.default.as_ref().unwrap().kind, ExprKind::Auto { free: false }),
+        "expected Auto {{ free: false }}, got {:?}",
+        a.default.as_ref().unwrap().kind
+    );
+
+    // b: auto(free) → free: true
+    let b = match &structure.members[1] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+    assert_eq!(b.name, "b");
+    assert!(
+        matches!(b.default.as_ref().unwrap().kind, ExprKind::Auto { free: true }),
+        "expected Auto {{ free: true }}, got {:?}",
+        b.default.as_ref().unwrap().kind
+    );
+
+    // c: QuantityLiteral
+    let c = match &structure.members[2] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+    assert_eq!(c.name, "c");
+    assert!(matches!(
+        c.default.as_ref().unwrap().kind,
+        ExprKind::QuantityLiteral { .. }
+    ));
+}
+
+/// `auto(constrained)` — unrecognized modifier — should produce parse errors.
+///
+/// The grammar hard-codes the literal `free` as the only accepted modifier inside
+/// `auto(...)`.  This test is an intentional regression guard: if someone generalises
+/// the modifier into an arbitrary identifier, this test will fail and force them to
+/// decide whether that semantic change is deliberate.
+///
+/// The span overlap check ensures the error is attributed to the `auto(constrained)`
+/// token rather than some unrelated part of the source.  A future grammar change that
+/// accidentally accepts `auto(constrained)` while still producing an unrelated error
+/// elsewhere (e.g. a stray `}`) would silently pass without this check.
+#[test]
+fn parse_auto_unrecognized_modifier_is_error() {
+    let source = r#"structure T {
+    param x: Scalar = auto(constrained)
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        !module.errors.is_empty(),
+        "expected parse errors for unrecognized modifier 'constrained' in auto(...)"
+    );
+    // At least one error must overlap the `auto(constrained)` token.  Using
+    // `str::find` avoids hard-coded magic byte offsets that would silently
+    // become wrong if the source fixture changes.
+    let token = "auto(constrained)";
+    let auto_start = source.find(token).expect("fixture must contain 'auto(constrained)'") as u32;
+    let auto_end = auto_start + token.len() as u32;
+    let has_overlapping_error = module
+        .errors
+        .iter()
+        .any(|e| e.span.start < auto_end && e.span.end > auto_start);
+    assert!(
+        has_overlapping_error,
+        "expected at least one parse error overlapping `auto(constrained)` \
+         (bytes {auto_start}..{auto_end}), got: {:?}",
+        module.errors,
+    );
 }
 
 /// Line comment with `//` on its own line should parse without errors.

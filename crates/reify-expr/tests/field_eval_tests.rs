@@ -42,6 +42,44 @@ fn make_value_lambda(
     }
 }
 
+/// Build the unevaluated `gradient(field)` expression shared by the three
+/// String-codomain gradient tests:
+/// - `gradient_of_field_with_non_numeric_lambda`
+/// - `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`
+/// - `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`
+///
+/// Returns the `gradient(field)` [`CompiledExpr`] ready to be passed to
+/// `eval_expr`. The caller is responsible for evaluation and any downstream
+/// assertions.
+fn build_string_codomain_grad_expr() -> CompiledExpr {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| "not_a_number"  (non-numeric return value)
+    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::String;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type,
+    )
+}
+
 // ── Durable: sample behavior tests ──────────────────────────────────────────
 
 /// Sampling a field with Undef lambda returns Undef.
@@ -140,6 +178,214 @@ fn sample_temperature_over_length_field() {
         sample_result,
         Value::Real(6.0),
         "sample(temperature_field, 3.0) should return 6.0 (2.0 * 3.0)"
+    );
+}
+
+/// Sampling a 1-param analytical field with a 3-element Point: sample() binds
+/// the entire Point to the single lambda parameter. The identity body `|x| x`
+/// returns the bound value directly, making the binding observable.
+///
+/// # Contract pinned
+///
+/// sample()'s analytical path forwards the entire input as a **single** element
+/// to apply_lambda (`&evaluated_args[1..]` is a 1-element slice). For a 1-param
+/// lambda the arity check **passes** (1 arg == 1 param), and the body executes
+/// with `x` bound to the full `Value::Point(...)`.
+///
+/// Uses an identity body (`|x| x`) rather than `-x` because `-x` on a Point
+/// also returns Undef (via affine negate rules), which would mask a
+/// hypothetical decomposition bug that also produces Undef. With the identity
+/// body, a decomposition bug (3 args vs 1 param → Undef) would fail the
+/// `result == Point(...)` assertion.
+///
+/// The Point components use `Value::Scalar { dimension: LENGTH }` to match
+/// the declared `domain_type: Type::point3(Type::length())`.
+///
+/// Note: the apply_lambda arity check does NOT fire in this test (1 arg == 1
+/// param). See `sample_multi_param_lambda_returns_undef_due_to_no_unpacking`
+/// for the test that directly pins the arity-check path.
+#[test]
+fn sample_one_param_lambda_binds_entire_point_as_single_value() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| -> x  (identity body — returns whatever x is bound to)
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::point3(Type::length()));
+
+    // Inline verification: identity body with x = Point3(1m, 2m, 3m) returns
+    // the Point unchanged.  Self-contained; no dependency on other test files.
+    let point3_val = Value::Point(vec![
+        Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+        Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+        Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+    ]);
+    let mut body_check = ValueMap::new();
+    body_check.insert(x_id.clone(), point3_val.clone());
+    assert_eq!(
+        eval_expr(&body, &EvalContext::simple(&body_check)),
+        point3_val.clone(),
+        "identity body with x=Point3 must return the Point itself"
+    );
+
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::length());
+    let codomain_type = Type::point3(Type::length());
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // sample(field, Point3(1m, 2m, 3m)) -> Point3(1m, 2m, 3m)
+    // apply_lambda sees 1 arg (the whole Point) vs 1 param -> arity passes.
+    // Identity body returns x = the whole Point directly.
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(point3_val.clone(), domain_type),
+        ],
+        Type::point3(Type::length()),
+    );
+
+    let values = ValueMap::new();
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        sample_result,
+        point3_val,
+        "sample of 1-param field with 3-element Point must bind the entire Point \
+         to x and return it (identity body); Undef would indicate arity mismatch \
+         from incorrect decomposition"
+    );
+}
+
+/// Sampling any multi-param lambda returns Undef because sample() never unpacks
+/// the input value into multiple lambda arguments.
+///
+/// # Contract pinned
+///
+/// sample()'s analytical path always forwards the entire input as a **single**
+/// element to apply_lambda (`&evaluated_args[1..]` is a 1-element slice),
+/// regardless of whether the input is a scalar, Point2, or Point3. Any lambda
+/// with more than one parameter hits the arity check in apply_lambda at
+/// `crates/reify-expr/src/lib.rs:586`:
+///
+/// ```rust
+/// if args.len() != params.len() {
+///     return Value::Undef;
+/// }
+/// ```
+///
+/// Here `args.len() == 1` but `params.len() == 3`, so the check fires and
+/// `Value::Undef` is returned **before the body is evaluated**. The constant
+/// body (`42.0`) is therefore unreachable — it satisfies lambda construction
+/// and matches the idiomatic 3-param pattern from
+/// `sample_gradient_of_constant_field_near_zero`.
+///
+/// This test uses a scalar input with a 3-param lambda, but the same Undef
+/// would result for any input (scalar or Point) paired with any lambda having
+/// more than one parameter.
+///
+/// # Cross-reference
+///
+/// `gradient_wrong_size_tensor_point_returns_undef` in `gradient_tests.rs`
+/// pins the same `apply_lambda` arity contract via the gradient
+/// path: it passes a 2-component `Value::Tensor` as a single arg to a 3-param
+/// lambda, also triggering `lib.rs:586`. Both tests enforce the same no-unpack
+/// invariant from different entry points.
+///
+/// # Intentional type-incoherence
+///
+/// This `Field` uses `domain_type: Type::Real` with a 3-param lambda — a
+/// combination the compiler would never emit. The mismatch is intentional: it
+/// directly exercises the runtime's defensive arity-check path without
+/// requiring a Point input. `sample()`'s analytical dispatch does not consult
+/// the type metadata; the arity check fires on argument count alone.
+#[test]
+fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| 42.0  (constant body; unreachable due to arity check)
+    let body = CompiledExpr::literal(Value::Real(42.0), Type::Real);
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // sample(field, Real(1.0)) -> Undef
+    // apply_lambda sees 1 arg vs 3 params -> arity check fires -> Undef.
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(Value::Real(1.0), domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "sample() never unpacks input; multi-param lambda always hits \
+         apply_lambda arity check (1 forwarded arg vs 3 params)"
+    );
+    // Positive control: the identical constant body IS reachable via a 1-param
+    // lambda (arity matches).  This proves that Undef above is caused solely by
+    // the arity check, not by anything in the body.
+    let x_id2 = ValueCellId::new("$lambda0.S", "x");
+    let body2 = CompiledExpr::literal(Value::Real(42.0), Type::Real);
+    let lambda2 = make_value_lambda(vec![("x", x_id2)], body2, ValueMap::new());
+    let field2 = Value::Field {
+        domain_type: Type::Real,
+        codomain_type: Type::Real,
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda2),
+    };
+    let field2_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::Real),
+    };
+    let sample_expr2 = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field2, field2_type),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let positive_result = eval_expr(&sample_expr2, &EvalContext::simple(&values));
+    assert_eq!(
+        positive_result,
+        Value::Real(42.0),
+        "1-param lambda body IS reachable (arity matches); proves Undef \
+         above comes from the arity check, not the body content"
     );
 }
 
@@ -454,43 +700,20 @@ fn gradient_temperature_over_length_returns_field() {
 }
 
 /// Gradient of a field whose lambda returns a non-numeric value: construction
-/// succeeds but sampling returns Undef.
+/// succeeds.
 ///
 /// Build a field whose lambda returns Value::String("not_a_number"). gradient()
-/// construction succeeds because the field has valid domain/source/lambda. But
-/// sampling the gradient field returns Undef because numerical differentiation
-/// (f(x+h) - f(x-h)) / 2h requires numeric f values, and String cannot
-/// participate in as_f64 extraction.
+/// construction succeeds because the field has valid domain/source/lambda. At
+/// sampling time the debug guard in `compute_numerical_gradient_at_point` fires
+/// on the unexpected `Type::String` codomain (see
+/// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug` for the
+/// debug-mode behaviour; the release-mode behaviour is tested in
+/// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`).
 #[test]
 fn gradient_of_field_with_non_numeric_lambda() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-
-    // Lambda: |x| "not_a_number"  (non-numeric return value)
-    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    let domain_type = Type::Real;
-    let codomain_type = Type::String;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
     // gradient(field) succeeds at construction time — domain is scalar, source
     // is Analytical, lambda is a Lambda.
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type)],
-        codomain_type.clone(),
-    );
+    let grad_expr = build_string_codomain_grad_expr();
 
     let values = ValueMap::new();
     let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
@@ -499,28 +722,82 @@ fn gradient_of_field_with_non_numeric_lambda() {
         "gradient construction should succeed (valid domain/source/lambda), got {:?}",
         grad_result
     );
+}
 
-    // Sampling the gradient field returns Undef because lambda returns String,
-    // which fails as_f64 extraction in the perturbation loop.
+/// Sampling a gradient field whose lambda returns a non-numeric value returns Undef
+/// in release mode (where the debug guard is absent).
+///
+/// The debug-mode counterpart is
+/// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`.
+///
+/// NOTE: This test is gated on `#[cfg(not(debug_assertions))]` and is therefore
+/// **excluded from `cargo test`** (which compiles with debug_assertions enabled).
+/// It only runs under `cargo test --release`. The orchestrator (`orchestrator.yaml`)
+/// always runs both a debug pass and a release pass, so CI coverage for this test
+/// is preserved. The sibling debug-mode test is
+/// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`.
+#[cfg(not(debug_assertions))]
+#[test]
+fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
+    let grad_expr = build_string_codomain_grad_expr();
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
     let point = Value::Real(1.0);
     let grad_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::String),
     };
-
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, domain_type),
+            CompiledExpr::literal(point, Type::Real),
         ],
         Type::Real,
     );
-
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
     assert_eq!(
         sample_result,
         Value::Undef,
-        "sampling gradient of non-numeric lambda must return Undef"
+        "sampling gradient of non-numeric lambda must return Undef in release mode"
     );
+}
+
+/// In debug mode, sampling a gradient field with a non-numeric (String) codomain
+/// panics with the unexpected-codomain guard added to
+/// `compute_numerical_gradient_at_point`.
+///
+/// `Type::String` is not a valid gradient codomain — the debug_assert in the
+/// result_dim match fires before any numeric work begins.
+///
+/// NOTE: This test is gated on `#[cfg(debug_assertions)]` and is therefore
+/// **excluded from `cargo test --release`**. It only runs under `cargo test`
+/// (debug mode). The orchestrator (`orchestrator.yaml`) always runs both a debug
+/// pass and a release pass, so CI coverage for this test is preserved. The sibling
+/// release-mode test is
+/// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "unexpected codomain_type")]
+fn gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug() {
+    let grad_expr = build_string_codomain_grad_expr();
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    let point = Value::Real(1.0);
+    let grad_field_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::String),
+    };
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::Real),
+        ],
+        Type::Real,
+    );
+    // In debug mode the result_dim debug_assert fires before any numeric work.
+    let _sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 }

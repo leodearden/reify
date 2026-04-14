@@ -602,8 +602,9 @@ pub enum ExprKind {
         discriminant: Box<Expr>,
         arms: Vec<MatchArm>,
     },
-    /// Auto keyword: solver-determined parameter value
-    Auto,
+    /// Auto keyword: solver-determined parameter value.
+    /// `free: false` = bare `auto` (strict), `free: true` = `auto(free)`.
+    Auto { free: bool },
     /// Lambda expression: `|x, y| x + y`
     Lambda {
         params: Vec<LambdaParam>,

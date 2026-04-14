@@ -30,7 +30,8 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
         let kind_str = match info.kind {
             reify_compiler::ValueCellKind::Param => "param",
             reify_compiler::ValueCellKind::Let => "let",
-            reify_compiler::ValueCellKind::Auto { .. } => "auto",
+            reify_compiler::ValueCellKind::Auto { free: true } => "auto(free)",
+            reify_compiler::ValueCellKind::Auto { free: false } => "auto",
         };
         let type_str = info.cell_type.to_string();
 
@@ -705,6 +706,34 @@ structure B {
         assert!(
             !md.contains("= 5mm"),
             "should NOT show A's Scalar value (= 5mm), got: {md}"
+        );
+    }
+
+    // --- auto / auto(free) hover tests ---
+
+    #[test]
+    fn hover_on_bare_auto_param_shows_auto() {
+        let source = "structure S {\n    param x: Scalar = auto\n}";
+        let position = Position::new(1, 10); // on 'x'
+        let md = hover_markdown(source, position).expect("hover should return info for auto param x");
+        assert!(
+            md.contains("auto x:"),
+            "should contain 'auto x:', got: {md}"
+        );
+        assert!(
+            !md.contains("auto(free)"),
+            "should NOT contain 'auto(free)' for bare auto param, got: {md}"
+        );
+    }
+
+    #[test]
+    fn hover_on_auto_free_param_shows_auto_free() {
+        let source = "structure S {\n    param x: Scalar = auto(free)\n}";
+        let position = Position::new(1, 10); // on 'x'
+        let md = hover_markdown(source, position).expect("hover should return info for auto(free) param x");
+        assert!(
+            md.contains("auto(free) x:"),
+            "should contain 'auto(free) x:', got: {md}"
         );
     }
 }

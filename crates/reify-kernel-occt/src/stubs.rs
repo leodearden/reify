@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn stub_handle_execute_returns_error() {
-        let mut handle = OcctKernelHandle::spawn();
+        let handle = OcctKernelHandle::spawn();
         let result = handle.execute(&GeometryOp::Box {
             width: Value::Real(10.0),
             height: Value::Real(10.0),

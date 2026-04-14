@@ -12,6 +12,17 @@ pub struct CompiledExpr {
     pub content_hash: ContentHash,
 }
 
+/// The kind of ad-hoc geometry selector: `@face`, `@point`, `@edge`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SelectorKind {
+    /// `@face("name")` — select a named face; resolves to a frame via centroid + normal.
+    Face,
+    /// `@point(x, y, z)` — select a point by coordinates; resolves to a frame at that point.
+    Point,
+    /// `@edge("name")` — select a named edge; resolves to a frame via midpoint + tangent.
+    Edge,
+}
+
 /// The kinds of compiled expression nodes.
 #[derive(Debug, Clone)]
 pub enum CompiledExprKind {
@@ -104,6 +115,13 @@ pub enum CompiledExprKind {
         upper: Option<Box<CompiledExpr>>,
         lower_inclusive: bool,
         upper_inclusive: bool,
+    },
+    /// Ad-hoc geometry selector: `base @ face("top")`, `base @ point(x,y,z)`, etc.
+    /// Evaluates to a `Value::Frame` derived from the geometry query result.
+    AdHocSelector {
+        base: Box<CompiledExpr>,
+        selector_kind: SelectorKind,
+        args: Vec<CompiledExpr>,
     },
 }
 
@@ -315,6 +333,12 @@ impl CompiledExpr {
                     hi.walk(f);
                 }
             }
+            CompiledExprKind::AdHocSelector { base, args, .. } => {
+                base.walk(f);
+                for arg in args {
+                    arg.walk(f);
+                }
+            }
         }
     }
 
@@ -440,6 +464,12 @@ impl CompiledExpr {
                 }
                 if let Some(hi) = upper {
                     hi.collect_value_refs_inner(refs);
+                }
+            }
+            CompiledExprKind::AdHocSelector { base, args, .. } => {
+                base.collect_value_refs_inner(refs);
+                for arg in args {
+                    arg.collect_value_refs_inner(refs);
                 }
             }
         }
@@ -708,6 +738,12 @@ impl CompiledExpr {
                     hi.remap_entity(from_entity, to_entity);
                 }
             }
+            CompiledExprKind::AdHocSelector { base, args, .. } => {
+                base.remap_entity(from_entity, to_entity);
+                for arg in args {
+                    arg.remap_entity(from_entity, to_entity);
+                }
+            }
         }
     }
 
@@ -770,6 +806,32 @@ impl CompiledExpr {
                 upper_inclusive,
             },
             result_type,
+            content_hash,
+        }
+    }
+
+    /// Create an ad-hoc selector expression. Result type is always `Type::Frame(3)`.
+    pub fn ad_hoc_selector(
+        base: CompiledExpr,
+        selector_kind: SelectorKind,
+        args: Vec<CompiledExpr>,
+    ) -> Self {
+        let kind_byte: u8 = match selector_kind {
+            SelectorKind::Face => 0,
+            SelectorKind::Point => 1,
+            SelectorKind::Edge => 2,
+        };
+        let mut content_hash = ContentHash::of(&[19, kind_byte]).combine(base.content_hash);
+        for arg in &args {
+            content_hash = content_hash.combine(arg.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::AdHocSelector {
+                base: Box::new(base),
+                selector_kind,
+                args,
+            },
+            result_type: Type::Frame(3),
             content_hash,
         }
     }

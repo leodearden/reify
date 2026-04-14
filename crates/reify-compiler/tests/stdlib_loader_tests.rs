@@ -102,12 +102,18 @@ fn std_units_is_first_module() {
 
 // ─── step-3b: std.units module content validation ───────────────────
 
-/// std.units module has zero error diagnostics and contains at minimum
-/// the 9 hardcoded units: mm, cm, m, in, deg, rad, kg, g, s.
+/// std.units module has zero error diagnostics and contains the hand-written
+/// SI base + non-SI units (cm, m, in, deg, rad, kg, g, s, ...). Note: SI
+/// prefixed units like `mm` and `km` now live in the generated `std.si_units`
+/// module — see `si_units_tests.rs` for their coverage.
 #[test]
 fn std_units_module_has_expected_units() {
     let modules = stdlib_loader::load_stdlib();
-    let units_module = &modules[0];
+    // ModulePath Display uses '/' as the separator.
+    let units_module = modules
+        .iter()
+        .find(|m| format!("{}", m.path) == "std/units")
+        .expect("std.units module not found in stdlib");
 
     // No error diagnostics
     let errors: Vec<_> = units_module
@@ -121,16 +127,18 @@ fn std_units_module_has_expected_units() {
         errors
     );
 
-    // At least the 9 original hardcoded units
+    // At least the 8 hand-written base units surviving after the SI prefix
+    // split-out.
     assert!(
-        units_module.units.len() >= 9,
-        "expected at least 9 units, got {}",
+        units_module.units.len() >= 8,
+        "expected at least 8 units, got {}",
         units_module.units.len()
     );
 
     let unit_names: Vec<&str> = units_module.units.iter().map(|u| u.name.as_str()).collect();
 
-    let required = ["mm", "cm", "m", "in", "deg", "rad", "kg", "g", "s"];
+    // These are the base / imperial / temperature units that remain hand-written.
+    let required = ["cm", "m", "in", "deg", "rad", "kg", "g", "s"];
     for name in &required {
         assert!(
             unit_names.contains(name),
@@ -140,10 +148,10 @@ fn std_units_module_has_expected_units() {
         );
     }
 
-    // Verify dimensions for a few key units
-    let mm = units_module.units.iter().find(|u| u.name == "mm").unwrap();
-    assert_eq!(mm.dimension, reify_types::DimensionVector::LENGTH);
-    assert!((mm.factor - 0.001).abs() < 1e-12);
+    // Verify dimensions for a few key units.
+    let cm = units_module.units.iter().find(|u| u.name == "cm").unwrap();
+    assert_eq!(cm.dimension, reify_types::DimensionVector::LENGTH);
+    assert!((cm.factor - 0.01).abs() < 1e-12);
 
     let deg = units_module.units.iter().find(|u| u.name == "deg").unwrap();
     assert_eq!(deg.dimension, reify_types::DimensionVector::ANGLE);

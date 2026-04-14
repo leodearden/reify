@@ -4,6 +4,15 @@
 //! (spec section 8.6). `self.param_name` is equivalent to `param_name` for
 //! locally-declared names; bare `self` is required when the entity itself is
 //! the referent. `self` is invalid outside entity scope (fn bodies, module scope).
+//!
+//! ## Step numbering note
+//!
+//! Steps 1–8 and step-11 live in this file (compiler-path coverage).
+//! Steps 9, 10, and 12 live in `crates/reify-eval/tests/self_keyword_eval.rs`
+//! (eval-path coverage: `self_param_eval_produces_correct_value`,
+//! `self_in_let_arithmetic_eval`, `self_in_constraint_eval_satisfied`).
+//! There is no gap between step-8 and step-11 in this file — the apparent gap
+//! is a cross-file artifact of the original task-153 plan.
 
 use reify_types::{Severity, ValueCellId};
 
@@ -459,6 +468,8 @@ structure S {
 
 // ─── step-11: self.param equivalence with bare param ───
 
+// NOTE: steps 9, 10, and 12 live in crates/reify-eval/tests/self_keyword_eval.rs.
+
 #[test]
 fn self_param_equivalence_with_bare_param() {
     // `self.x` and bare `x` should compile to identical ValueRef(S, x) expressions.
@@ -505,4 +516,130 @@ fn self_param_equivalence_with_bare_param() {
         "via_bare should reference S.x, got: {:?}",
         bare_refs
     );
+}
+
+// ─── task-1127 step-1: self.param inside lambda in entity scope ───
+
+#[test]
+fn self_dot_param_inside_lambda_captures_entity_param() {
+    // `self.x` inside a lambda body should be captured as ValueCellId("S", "x")
+    // because the lambda inherits the entity scope via scope.clone() in the compiler.
+    // The lambda's captures vec is built from all body refs minus lambda params.
+    // Use `|y: Scalar|` so the addition `y + self.x` is dimensionally consistent.
+    let source = r#"structure S {
+    param x : Scalar = 5mm
+    let f = |y: Scalar| y + self.x
+}"#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let f_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "f")
+        .expect("f value cell");
+    let f_expr = f_cell.default_expr.as_ref().expect("f should have default_expr");
+
+    match &f_expr.kind {
+        reify_types::CompiledExprKind::Lambda { captures, body, .. } => {
+            let expected_id = ValueCellId::new("S", "x");
+            assert!(
+                captures.contains(&expected_id),
+                "lambda captures should contain S.x (via self.x), got: {:?}",
+                captures
+            );
+            // Also verify the lambda body references S.x (not a lambda-local shadow).
+            // We call collect_value_refs on the unwrapped body (not on the Lambda node),
+            // because collect_value_refs on a Lambda only returns captures, not body refs.
+            let body_refs = body.collect_value_refs();
+            assert!(
+                body_refs.contains(&expected_id),
+                "lambda body should reference S.x, got body refs: {:?}",
+                body_refs
+            );
+        }
+        other => panic!("expected Lambda, got {:?}", other),
+    }
+}
+
+// ─── task-1127 step-2: bare self inside lambda in entity scope ───
+
+#[test]
+fn bare_self_inside_lambda_captures_entity_ref() {
+    // bare `self` inside a lambda body should be captured as ValueCellId("S", "__self"),
+    // the synthetic member name the compiler uses for bare self (expr.rs L99).
+    // The lambda body's result_type should be StructureRef("S") confirming the
+    // enclosing entity reference is returned.
+    let source = r#"structure S {
+    param x : Scalar = 5mm
+    let f = |_unused| self
+}"#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let f_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "f")
+        .expect("f value cell");
+    let f_expr = f_cell.default_expr.as_ref().expect("f should have default_expr");
+
+    match &f_expr.kind {
+        reify_types::CompiledExprKind::Lambda { captures, body, .. } => {
+            let expected_self_id = ValueCellId::new("S", "__self");
+            assert!(
+                captures.contains(&expected_self_id),
+                "lambda captures should contain S.__self (bare self), got: {:?}",
+                captures
+            );
+            // The lambda body is `self`, which resolves to StructureRef("S").
+            assert_eq!(
+                body.result_type,
+                reify_types::Type::StructureRef("S".to_string()),
+                "lambda body result_type should be StructureRef(\"S\") for bare self"
+            );
+        }
+        other => panic!("expected Lambda, got {:?}", other),
+    }
+}
+
+// ─── task-1127 step-3: self inside lambda in fn body is rejected ───
+
+#[test]
+fn self_inside_lambda_in_fn_body_errors() {
+    // `self` inside a lambda in an fn body should be rejected — the lambda inherits
+    // is_entity_scope=false from the enclosing fn scope (via scope.clone()), so
+    // `self` falls through to the unresolved-name error path.
+    // Mirror the dual-path pattern used by self_error_in_fn_body (step-7).
+    let source = r#"fn f(x: Scalar) -> Scalar {
+    let g = |y| y + self.x
+    g(x)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
+
+    if parsed.errors.is_empty() {
+        // Parsing succeeded — the compiler must reject `self` inside the lambda body.
+        let compiled = reify_compiler::compile(&parsed);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            !errors.is_empty(),
+            "expected error diagnostic for `self` inside lambda in fn body"
+        );
+    } else {
+        // Parser correctly rejects `self` in fn body — at least one error produced.
+        assert!(
+            !parsed.errors.is_empty(),
+            "expected at least one parse error for `self` inside lambda in fn body"
+        );
+    }
 }

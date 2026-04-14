@@ -346,6 +346,7 @@ fn eval_guarded_constraint_enforced_only_when_active() {
         expr: constraint_expr,
         span: SourceSpan::new(0, 0),
         domain: None,
+        optimized_target: None,
     };
 
     // Case 1: active=true — constraint should be checked and show Violated
@@ -397,6 +398,7 @@ fn eval_guarded_constraint_enforced_only_when_active() {
         ),
         span: SourceSpan::new(0, 0),
         domain: None,
+        optimized_target: None,
     };
 
     let template_false = TopologyTemplateBuilder::new("S")

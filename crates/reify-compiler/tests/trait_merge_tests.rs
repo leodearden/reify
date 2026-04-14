@@ -195,6 +195,15 @@ structure def W : NeedsX + ProvidesX {
         ValueCellKind::Param,
         "cross-trait default was a param, should materialize as Param cell"
     );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::length(),
+        "cross-trait default should preserve the Length type"
+    );
+    assert!(
+        x_cells[0].default_expr.is_some(),
+        "cross-trait default should preserve the default expression (10mm)"
+    );
 }
 
 /// Trait A requires `param x : Length` (no default),
@@ -502,6 +511,70 @@ structure def M : GeomA + GeomB {
         template.constraints.len() >= 2,
         "expected at least 2 constraints (one per trait), got {}",
         template.constraints.len()
+    );
+}
+
+/// Diamond inheritance: `Base` requires `param x : Real`, `Left : Base` adds nothing,
+/// `Right : Base` provides `param x : Real = 1.0`. Structure `S : Left + Right`.
+///
+/// The `visited` dedup skips `Base` when processing Right's refinement chain (Base
+/// was already visited via Left). Right's *own* default must still be collected and
+/// injected to satisfy the requirement from Base. This exercises the interaction
+/// between the `visited` dedup and cross-trait satisfaction in one test.
+///
+/// Expect: 0 errors, exactly 1 `x` value cell, Param kind, default_expr present.
+#[test]
+fn diamond_inheritance_right_provides_default() {
+    let source = r#"
+trait Base {
+    param x : Real
+}
+
+trait Left : Base {
+}
+
+trait Right : Base {
+    param x : Real = 1.0
+}
+
+structure def S : Left + Right {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics (Right provides default for Base requirement via diamond), got: {:?}",
+        diagnostics
+    );
+
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        // >1 would indicate dedup failure: Base's requirement was processed
+        // twice (once via Left, once via Right) and not collapsed by `visited`.
+        "expected exactly 1 'x' value cell from diamond inheritance (>1 means dedup failed), got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "x should materialize as Param cell (Right's default is a param)"
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Real,
+        "x should be Real-typed (matching the param declaration in Right)"
+    );
+    assert!(
+        x_cells[0].default_expr.is_some(),
+        "x should carry the default expression (1.0) injected from Right"
     );
 }
 

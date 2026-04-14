@@ -1,9 +1,20 @@
+//! Static dependency extraction for evaluation graph nodes.
+//!
+//! Each node's dependencies are extracted once at graph-build time by walking
+//! the compiled expression tree. This is a safe over-approximation for Reify
+//! expressions: because they are pure, the set of cells an expression *can*
+//! read is a superset of (or equal to) the set it *will* read on any given
+//! evaluation — conditional branches and match arms may short-circuit at runtime, but the
+//! statically collected reads cover every reachable ValueRef. There is no
+//! benefit to runtime (Adapton-style) tracing in a pure language.
+
 use reify_types::{CompiledExpr, ValueCellId};
 
-/// Tracks which value cells a node read during evaluation.
+/// Statically extracted value cell dependencies for a node.
 ///
-/// This is a minimal stub for task 12 (content-hash caching).
-/// Task 11 will replace this with a full dependency tracing implementation.
+/// Computed once from the compiled expression tree at graph-build time,
+/// not during evaluation. Params and other root nodes use
+/// `DependencyTrace::default()` (empty reads).
 #[derive(Debug, Clone, Default)]
 pub struct DependencyTrace {
     pub reads: Vec<ValueCellId>,
@@ -179,7 +190,7 @@ pub fn extract_realization_dependencies(
 mod tests {
     use super::*;
     use crate::cache::NodeId;
-    use reify_types::{ConstraintNodeId, ValueCellId};
+    use reify_types::{BinOp, ConstraintNodeId, Type, Value, ValueCellId};
 
     #[test]
     fn reverse_index_new_is_empty() {
@@ -259,6 +270,7 @@ mod tests {
                     reify_types::Type::Bool,
                 ),
                 content_hash: ContentHash::of_str("c0"),
+                optimized_target: None,
             },
         );
 
@@ -397,5 +409,668 @@ mod tests {
                 e, 0
             )))
         );
+    }
+
+    // --- extract_dependency_trace unit tests ---
+
+    /// Step 1: Verify extract_dependency_trace captures ValueRef ids from a simple BinOp.
+    ///
+    /// This documents the baseline static extraction behavior: every ValueRef in the
+    /// compiled expression tree contributes to the dependency trace, regardless of position.
+    #[test]
+    fn extract_dependency_trace_captures_value_refs_from_binop() {
+        let a = ValueCellId::new("A", "x");
+        let b = ValueCellId::new("A", "y");
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(a.clone(), Type::Real),
+            CompiledExpr::value_ref(b.clone(), Type::Real),
+            Type::Real,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert_eq!(trace.reads.len(), 2, "BinOp of two ValueRefs should yield 2 reads");
+        assert!(trace.reads.contains(&a), "reads should contain 'x'");
+        assert!(trace.reads.contains(&b), "reads should contain 'y'");
+    }
+
+    /// Step 1b: Documents the duplicate-preservation contract of `extract_dependency_trace`
+    /// for a BinOp whose operands reference the same `ValueCellId` (e.g. `x + x`).
+    ///
+    /// `extract_dependency_trace` is a thin wrapper over
+    /// `CompiledExpr::collect_value_refs`, which *preserves duplicates* (it pushes
+    /// each `ValueRef` without deduping). The sibling helper [`extract_value_deps`]
+    /// (defined later in this file) is the deduplicating variant; `extract_dependency_trace`
+    /// intentionally keeps raw duplicates. This test pins that split so callers
+    /// know whether they need to dedupe downstream.
+    #[test]
+    fn extract_dependency_trace_preserves_duplicate_reads_for_same_cell_in_binop() {
+        let x = ValueCellId::new("A", "x");
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            Type::Real,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert_eq!(
+            trace.reads.len(),
+            2,
+            "extract_dependency_trace preserves duplicates: x+x should yield 2 reads, \
+             got {:?}",
+            trace.reads
+        );
+        assert!(
+            trace.reads.iter().all(|id| id == &x),
+            "both reads should refer to x, got: {:?}",
+            trace.reads
+        );
+    }
+
+    /// Step 2: Verify extract_dependency_trace handles nested Conditional expressions —
+    /// condition, then-branch, and else-branch all contribute ValueRef reads.
+    ///
+    /// This is the key 'all branches' static extraction property: unlike runtime tracing,
+    /// static extraction conservatively includes all reachable ValueRefs across every branch.
+    #[test]
+    fn extract_dependency_trace_captures_all_branches_of_conditional() {
+        let cond_cell = ValueCellId::new("A", "flag");
+        let then_cell = ValueCellId::new("A", "then_val");
+        let else_cell = ValueCellId::new("A", "else_val");
+        let condition = CompiledExpr::value_ref(cond_cell.clone(), Type::Bool);
+        let then_branch = CompiledExpr::value_ref(then_cell.clone(), Type::Real);
+        let else_branch = CompiledExpr::value_ref(else_cell.clone(), Type::Real);
+        let expr = reify_test_support::builders::expr::conditional_expr(
+            condition,
+            then_branch,
+            else_branch,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert_eq!(
+            trace.reads.len(),
+            3,
+            "Conditional with 3 distinct ValueRefs should yield 3 reads"
+        );
+        assert!(trace.reads.contains(&cond_cell), "reads should contain condition cell");
+        assert!(trace.reads.contains(&then_cell), "reads should contain then-branch cell");
+        assert!(trace.reads.contains(&else_cell), "reads should contain else-branch cell");
+    }
+
+    /// Step 3: Verify extract_dependency_trace returns empty reads for a Literal expression.
+    ///
+    /// Confirms root/leaf behavior: a literal has no value-cell dependencies.
+    #[test]
+    fn extract_dependency_trace_returns_empty_for_literal() {
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let trace = extract_dependency_trace(&expr);
+        assert!(
+            trace.reads.is_empty(),
+            "Literal expression should have no reads, got: {:?}",
+            trace.reads
+        );
+    }
+
+    /// Step 4: Verify DependencyTrace::default() has empty reads.
+    ///
+    /// Documents the contract used throughout lib.rs: params and root nodes pass
+    /// `DependencyTrace::default()` to `record_evaluation()`, signalling that they
+    /// have no value-cell dependencies and will never be invalidated by cell changes.
+    #[test]
+    fn dependency_trace_default_has_empty_reads() {
+        let trace = DependencyTrace::default();
+        assert!(
+            trace.reads.is_empty(),
+            "DependencyTrace::default() should have no reads — root/param nodes are dependency roots"
+        );
+    }
+
+    /// Step 5: Verify CacheStore.invalidate_dependents uses the DependencyTrace.reads stored
+    /// in cached entries (the statically extracted trace, not a separate runtime trace).
+    ///
+    /// This documents the end-to-end path: static extraction → stored in cache via
+    /// record_evaluation() → used for invalidation by invalidate_dependents().
+    ///
+    /// NOTE: This is an intentional cross-module integration test. It lives alongside
+    /// the `extract_dependency_trace` unit tests (rather than in `cache.rs`) because
+    /// it asserts the contract *between* static dependency extraction here and the
+    /// `CacheStore` invalidation path in `crate::cache`. Moving it would split the
+    /// two halves of that contract across files and obscure the end-to-end guarantee.
+    #[test]
+    fn invalidate_dependents_uses_static_dependency_trace_reads() {
+        use crate::cache::{CacheStore, CachedResult};
+        use reify_types::{DeterminacyState, VersionId};
+
+        // Build a static trace for a BinOp: z = x + y
+        let x = ValueCellId::new("A", "x");
+        let y = ValueCellId::new("A", "y");
+        let z_id = ValueCellId::new("A", "z");
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            CompiledExpr::value_ref(y.clone(), Type::Real),
+            Type::Real,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert!(trace.reads.contains(&x), "sanity: trace contains x");
+        assert!(trace.reads.contains(&y), "sanity: trace contains y");
+
+        // Store z's cached result with the statically extracted trace
+        let z_node = NodeId::Value(z_id.clone());
+        let mut store = CacheStore::new();
+        store.record_evaluation(
+            z_node.clone(),
+            CachedResult::Value(Value::Real(3.0), DeterminacyState::Determined),
+            VersionId(1),
+            trace,
+        );
+
+        // Invalidate dependents of x — z should become dirty (reads x)
+        store.invalidate_dependents(std::slice::from_ref(&x));
+        assert!(
+            store.is_dirty(&z_node),
+            "z depends on x via static trace, should be dirty after x changes"
+        );
+
+        // Invalidate dependents of a cell z does NOT read — z should not be additionally dirtied
+        let w = ValueCellId::new("A", "w");
+        store.clear_dirty(&z_node); // reset for the next check
+        store.invalidate_dependents(std::slice::from_ref(&w));
+        assert!(
+            !store.is_dirty(&z_node),
+            "z does not depend on w, should not be dirtied by w changing"
+        );
+    }
+}
+
+/// Extract value cell dependencies from an expression, returning deduplicated sorted Vec.
+///
+/// This is a thin wrapper around CompiledExpr::collect_value_refs() that additionally
+/// deduplicates and sorts the results for deterministic ordering.
+pub fn extract_value_deps(expr: &reify_types::CompiledExpr) -> Vec<ValueCellId> {
+    let refs = expr.collect_value_refs();
+    let unique: std::collections::HashSet<_> = refs.into_iter().collect();
+    let mut sorted: Vec<_> = unique.into_iter().collect();
+    sorted.sort();
+    sorted
+}
+
+#[cfg(test)]
+mod extract_value_deps_tests {
+    use super::*;
+    use reify_types::{BinOp, CompiledExpr, Type, UnOp};
+
+    /// Step 1a: Verify literal expr returns empty vec.
+    #[test]
+    fn extract_value_deps_literal_returns_empty() {
+        use std::f64::consts::PI;
+        let expr = CompiledExpr::literal(reify_types::Value::Real(PI), Type::Real);
+        let deps = extract_value_deps(&expr);
+        assert!(
+            deps.is_empty(),
+            "Literal should have no value deps, got: {:?}",
+            deps
+        );
+    }
+
+    /// Step 1b: Verify ValueRef returns the referenced id.
+    #[test]
+    fn extract_value_deps_value_ref_returns_id() {
+        let cell = ValueCellId::new("A", "x");
+        let expr = CompiledExpr::value_ref(cell.clone(), Type::Real);
+        let deps = extract_value_deps(&expr);
+        assert_eq!(deps.len(), 1, "ValueRef should have 1 dep");
+        assert!(deps.contains(&cell), "deps should contain 'x'");
+    }
+
+    /// Step 1c: Verify BinOp recursively collects from both sides.
+    #[test]
+    fn extract_value_deps_binop_collects_both_sides() {
+        let a = ValueCellId::new("A", "a");
+        let b = ValueCellId::new("A", "b");
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(a.clone(), Type::Real),
+            CompiledExpr::value_ref(b.clone(), Type::Real),
+            Type::Real,
+        );
+        let deps = extract_value_deps(&expr);
+        assert_eq!(deps.len(), 2, "BinOp should have 2 deps");
+        assert!(deps.contains(&a), "deps should contain 'a'");
+        assert!(deps.contains(&b), "deps should contain 'b'");
+    }
+
+    /// Step 1d: Verify nested expressions collect all transitive ValueRef deps.
+    #[test]
+    fn extract_value_deps_nested_expr_collects_all_refs() {
+        // (a + b) * c
+        let a = ValueCellId::new("A", "a");
+        let b = ValueCellId::new("A", "b");
+        let c = ValueCellId::new("A", "c");
+        let inner = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(a.clone(), Type::Real),
+            CompiledExpr::value_ref(b.clone(), Type::Real),
+            Type::Real,
+        );
+        let expr = CompiledExpr::binop(BinOp::Mul, inner, CompiledExpr::value_ref(c.clone(), Type::Real), Type::Real);
+        let deps = extract_value_deps(&expr);
+        assert_eq!(deps.len(), 3, "Nested BinOp should have 3 deps");
+        assert!(deps.contains(&a));
+        assert!(deps.contains(&b));
+        assert!(deps.contains(&c));
+    }
+
+    /// Step 1e: Verify UnOp collects from operand.
+    #[test]
+    fn extract_value_deps_unop_collects_operand() {
+        let x = ValueCellId::new("A", "x");
+        let expr = CompiledExpr::unop(UnOp::Neg, CompiledExpr::value_ref(x.clone(), Type::Real), Type::Real);
+        let deps = extract_value_deps(&expr);
+        assert_eq!(deps.len(), 1, "UnOp should have 1 dep");
+        assert!(deps.contains(&x));
+    }
+
+    /// Step 1f: Verify duplicates are deduplicated.
+    #[test]
+    fn extract_value_deps_duplicates_deduplicated() {
+        // x + x (same cell referenced twice)
+        let x = ValueCellId::new("A", "x");
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            Type::Real,
+        );
+        let deps = extract_value_deps(&expr);
+        assert_eq!(
+            deps.len(),
+            1,
+            "Duplicate refs should be deduplicated to 1, got: {:?}",
+            deps
+        );
+    }
+
+    /// Step 1g: Verify results are sorted for deterministic ordering.
+    #[test]
+    fn extract_value_deps_results_are_sorted() {
+        let a = ValueCellId::new("A", "a");
+        let b = ValueCellId::new("A", "b");
+        let c = ValueCellId::new("A", "c");
+        // Build expr with refs in reverse order: c + b + a
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::binop(
+                BinOp::Add,
+                CompiledExpr::value_ref(c.clone(), Type::Real),
+                CompiledExpr::value_ref(b.clone(), Type::Real),
+                Type::Real,
+            ),
+            CompiledExpr::value_ref(a.clone(), Type::Real),
+            Type::Real,
+        );
+        let deps = extract_value_deps(&expr);
+        // Should be sorted: a, b, c
+        assert_eq!(deps, vec![a, b, c], "deps should be sorted");
+    }
+}
+
+/// Dependency map: forward and reverse mappings between value cells.
+///
+/// Forward map: cell → cells it depends on (directly).
+/// Reverse map: cell → cells that depend on it (inverse of forward).
+///
+/// Built once from EvaluationGraph at graph-build time.
+#[derive(Clone, Debug, Default)]
+pub struct DependencyMap {
+    /// Forward dependencies: cell → cells it reads from.
+    pub forward: HashMap<ValueCellId, Vec<ValueCellId>>,
+    /// Reverse dependencies: cell → cells that read from it.
+    pub reverse: HashMap<ValueCellId, Vec<ValueCellId>>,
+}
+
+impl DependencyMap {
+    /// Build a dependency map from an evaluation graph.
+    ///
+    /// Iterates all value cells, extracts dependencies from default_expr using
+    /// extract_value_deps, and builds both forward and reverse mappings.
+    pub fn from_graph(graph: &crate::graph::EvaluationGraph) -> Self {
+        use reify_compiler::ValueCellKind;
+
+        let mut forward = HashMap::new();
+        let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+
+        // Collect all value cells and their dependencies
+        for (_, node) in graph.value_cells.iter() {
+            let deps = match &node.default_expr {
+                Some(expr) => extract_value_deps(expr),
+                None => vec![], // Params have no dependencies
+            };
+
+            if !deps.is_empty() || node.kind == ValueCellKind::Let {
+                // Only non-empty deps matter for forward map (or Let bindings)
+                if !deps.is_empty() {
+                    forward.insert(node.id.clone(), deps.clone());
+                }
+
+                // Build reverse map: each dep gets this cell as a dependent
+                for dep in deps {
+                    reverse.entry(dep).or_default().push(node.id.clone());
+                }
+            }
+        }
+
+        // Add entries for cells with no dependencies (they have no reverse deps)
+        // This ensures all cells appear in the map if needed
+        for (_, node) in graph.value_cells.iter() {
+            if !forward.contains_key(&node.id) {
+                forward.entry(node.id.clone()).or_default();
+            }
+            if !reverse.contains_key(&node.id) {
+                reverse.entry(node.id.clone()).or_default();
+            }
+        }
+
+        Self { forward, reverse }
+    }
+
+    /// Get the set of cells that the given cell depends on (forward lookup).
+    pub fn deps_of(&self, cell: &ValueCellId) -> &[ValueCellId] {
+        self.forward.get(cell).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Get the set of cells that depend on the given cell (reverse lookup).
+    pub fn dependents_of(&self, cell: &ValueCellId) -> &[ValueCellId] {
+        self.reverse.get(cell).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Return all cells in dependency order (topological sort).
+    ///
+    /// Uses Kahn's algorithm: start with cells that have no deps, process queue,
+    /// decrement dependents' in-degree, emit when in-degree reaches 0.
+    pub fn topological_order(&self) -> Vec<ValueCellId> {
+        // Compute in-degree for each cell: how many cells does it depend on?
+        let mut in_degree: HashMap<ValueCellId, usize> = HashMap::new();
+
+        // Initialize all cells with in-degree 0
+        for cell in self.forward.keys() {
+            in_degree.insert(cell.clone(), 0);
+        }
+
+        // For each cell, its in-degree = number of dependencies
+        for (cell, deps) in &self.forward {
+            let degree = deps.len();
+            in_degree.insert(cell.clone(), degree);
+        }
+
+        // Start with cells that have in-degree 0 (no dependencies)
+        let mut queue: Vec<_> = in_degree
+            .iter()
+            .filter(|&(_, &deg)| deg == 0)
+            .map(|(cell, _)| cell.clone())
+            .collect();
+
+        let mut result = Vec::new();
+
+        while let Some(cell) = queue.pop() {
+            result.push(cell.clone());
+
+            // Decrement in-degree for dependents (cells that depend on this one)
+            if let Some(dependents) = self.reverse.get(&cell) {
+                for dependent in dependents {
+                    if let Some(deg) = in_degree.get_mut(dependent) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            queue.push(dependent.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+
+#[cfg(test)]
+mod dependency_map_tests {
+    use super::*;
+    use crate::graph::EvaluationGraph;
+    use reify_test_support::bracket_compiled_module;
+
+    /// Step 3a: Verify forward deps using bracket fixture.
+    #[test]
+    fn dependency_map_forward_deps_bracket() {
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let dep_map = DependencyMap::from_graph(&graph);
+
+        let e = "Bracket";
+
+        // width: param, no forward deps
+        let width_deps = dep_map.deps_of(&ValueCellId::new(e, "width"));
+        assert!(
+            width_deps.is_empty(),
+            "width (param) should have no forward deps, got: {:?}",
+            width_deps
+        );
+
+        // height: param, no forward deps
+        let height_deps = dep_map.deps_of(&ValueCellId::new(e, "height"));
+        assert!(
+            height_deps.is_empty(),
+            "height (param) should have no forward deps"
+        );
+
+        // thickness: param, no forward deps
+        let thickness_deps = dep_map.deps_of(&ValueCellId::new(e, "thickness"));
+        assert!(
+            thickness_deps.is_empty(),
+            "thickness (param) should have no forward deps"
+        );
+
+        // volume depends on width, height, thickness
+        let volume_deps = dep_map.deps_of(&ValueCellId::new(e, "volume"));
+        assert_eq!(
+            volume_deps.len(),
+            3,
+            "volume should depend on 3 cells, got: {:?}",
+            volume_deps
+        );
+        assert!(volume_deps.contains(&ValueCellId::new(e, "width")));
+        assert!(volume_deps.contains(&ValueCellId::new(e, "height")));
+        assert!(volume_deps.contains(&ValueCellId::new(e, "thickness")));
+    }
+
+    /// Step 3b: Verify the map contains entries for all value cells.
+    #[test]
+    fn dependency_map_contains_all_value_cells() {
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let dep_map = DependencyMap::from_graph(&graph);
+
+        let e = "Bracket";
+
+        // All value cells in bracket should be in the forward map
+        let expected_cells = vec![
+            ValueCellId::new(e, "width"),
+            ValueCellId::new(e, "height"),
+            ValueCellId::new(e, "thickness"),
+            ValueCellId::new(e, "fillet_radius"),
+            ValueCellId::new(e, "hole_diameter"),
+            ValueCellId::new(e, "volume"),
+        ];
+
+        for cell in expected_cells {
+            assert!(
+                dep_map.forward.contains_key(&cell),
+                "forward map should contain {:?}",
+                cell
+            );
+        }
+    }
+
+    /// Step 5a: Verify dependents_of (reverse lookup) for width.
+    #[test]
+    fn dependency_map_dependents_of_width() {
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let dep_map = DependencyMap::from_graph(&graph);
+
+        let e = "Bracket";
+        let width = ValueCellId::new(e, "width");
+        let dependents = dep_map.dependents_of(&width);
+
+        // width is depended on by: volume (let)
+        assert!(
+            dependents.contains(&ValueCellId::new(e, "volume")),
+            "width dependents should include volume, got: {:?}",
+            dependents
+        );
+    }
+
+    /// Step 5b: Verify dependents_of for height.
+    #[test]
+    fn dependency_map_dependents_of_height() {
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let dep_map = DependencyMap::from_graph(&graph);
+
+        let e = "Bracket";
+        let height = ValueCellId::new(e, "height");
+        let dependents = dep_map.dependents_of(&height);
+
+        // height is depended on by: volume (let)
+        assert!(
+            dependents.contains(&ValueCellId::new(e, "volume")),
+            "height dependents should include volume, got: {:?}",
+            dependents
+        );
+    }
+
+    /// Step 5c: Verify dependents_of for thickness.
+    #[test]
+    fn dependency_map_dependents_of_thickness() {
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let dep_map = DependencyMap::from_graph(&graph);
+
+        let e = "Bracket";
+        let thickness = ValueCellId::new(e, "thickness");
+        let dependents = dep_map.dependents_of(&thickness);
+
+        // thickness is depended on by: volume (let)
+        assert!(
+            dependents.contains(&ValueCellId::new(e, "volume")),
+            "thickness dependents should include volume, got: {:?}",
+            dependents
+        );
+    }
+
+    /// Step 5d: Verify volume has no dependents.
+    #[test]
+    fn dependency_map_volume_has_no_dependents() {
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let dep_map = DependencyMap::from_graph(&graph);
+
+        let e = "Bracket";
+        let volume = ValueCellId::new(e, "volume");
+        let dependents = dep_map.dependents_of(&volume);
+
+        assert!(
+            dependents.is_empty(),
+            "volume should have no dependents, got: {:?}",
+            dependents
+        );
+    }
+
+    /// Step 7a: Verify topological_order: params come before let bindings.
+    #[test]
+    fn dependency_map_topological_order_params_before_lets() {
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let dep_map = DependencyMap::from_graph(&graph);
+
+        let order = dep_map.topological_order();
+        let e = "Bracket";
+
+        let width_idx = order.iter().position(|c| c == &ValueCellId::new(e, "width"));
+        let height_idx = order.iter().position(|c| c == &ValueCellId::new(e, "height"));
+        let thickness_idx = order.iter().position(|c| c == &ValueCellId::new(e, "thickness"));
+        let volume_idx = order.iter().position(|c| c == &ValueCellId::new(e, "volume"));
+
+        // Params should come before volume in topological order
+        if let (Some(w), Some(v)) = (width_idx, volume_idx) {
+            assert!(
+                w < v,
+                "width ({}) should come before volume ({})",
+                w, v
+            );
+        }
+        if let (Some(h), Some(v)) = (height_idx, volume_idx) {
+            assert!(
+                h < v,
+                "height ({}) should come before volume ({})",
+                h, v
+            );
+        }
+        if let (Some(t), Some(v)) = (thickness_idx, volume_idx) {
+            assert!(
+                t < v,
+                "thickness ({}) should come before volume ({})",
+                t, v
+            );
+        }
+    }
+
+    /// Step 7b: Verify topological_order includes all cells.
+    #[test]
+    fn dependency_map_topological_order_includes_all() {
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let dep_map = DependencyMap::from_graph(&graph);
+
+        let order = dep_map.topological_order();
+        let e = "Bracket";
+
+        let expected = [
+            ValueCellId::new(e, "width"),
+            ValueCellId::new(e, "height"),
+            ValueCellId::new(e, "thickness"),
+            ValueCellId::new(e, "fillet_radius"),
+            ValueCellId::new(e, "hole_diameter"),
+            ValueCellId::new(e, "volume"),
+        ];
+
+        assert_eq!(
+            order.len(),
+            expected.len(),
+            "topological_order should have {} cells, got {}",
+            expected.len(),
+            order.len()
+        );
+    }
+
+    /// Step 7c: Verify topological_order is valid (no cell appears before its deps).
+    #[test]
+    fn dependency_map_topological_order_valid() {
+        let module = bracket_compiled_module();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let dep_map = DependencyMap::from_graph(&graph);
+
+        let order = dep_map.topological_order();
+
+        for (i, cell) in order.iter().enumerate() {
+            let deps = dep_map.deps_of(cell);
+            for dep in deps {
+                let dep_idx = order.iter().position(|c| c == dep);
+                if let Some(di) = dep_idx {
+                    assert!(
+                        di < i,
+                        "cell {:?} at {} has dep {:?} at {} (should be before)",
+                        cell, i, dep, di
+                    );
+                }
+            }
+        }
     }
 }

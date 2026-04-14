@@ -68,6 +68,7 @@ const AXIS_MAG_SQ_MIN: f64 = 1e-12;
 /// Angles below this are treated as effectively zero.
 /// Matches the C++ ANGLE_ABS_MIN threshold (1e-30).
 /// Value: 1e-30 radians ≈ 5.7e-29 degrees — far below any physical relevance.
+#[cfg(has_occt)]
 const ANGLE_ABS_MIN: f64 = 1e-30;
 
 #[cfg(has_occt)]

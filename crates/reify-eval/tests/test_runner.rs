@@ -1,20 +1,8 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::run_tests;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Satisfaction, Severity};
-
-fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test_runner_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-    compiled
-}
+use reify_test_support::parse_and_compile;
+use reify_types::{Satisfaction, Severity};
 
 #[test]
 fn run_tests_on_module_with_no_tests_returns_empty_vec() {
@@ -150,10 +138,23 @@ fn run_tests_propagates_violation_diagnostics() {
     let compiled = parse_and_compile(source);
     let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
     assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "TestA");
     assert_eq!(results[0].status, reify_eval::TestStatus::Fail);
     assert!(
-        !results[0].diagnostics.is_empty(),
-        "expected non-empty diagnostics for a violated constraint"
+        results[0]
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Violated),
+        "expected at least one Violated constraint result, got: {:?}",
+        results[0].constraint_results
+    );
+    assert!(
+        results[0]
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("Positive[0]") && (d.message.contains("violated") && d.message.contains("constraint"))),
+        "expected at least one Error diagnostic with message containing 'Positive[0]', 'violated', and 'constraint', got: {:?}",
+        results[0].diagnostics
     );
 }
 

@@ -25,11 +25,7 @@ use reify_types::{
 /// `reify_test_support`.  It replaces the former hand-rolled `EventCounter`
 /// subscriber that always returned `Id::from_u64(1)` from `new_span` (a
 /// correctness bug when multiple spans are created concurrently).
-fn event_counting_subscriber() -> (
-    impl tracing::Subscriber,
-    Arc<AtomicUsize>,
-    Arc<AtomicUsize>,
-) {
+fn event_counting_subscriber() -> (impl tracing::Subscriber, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let (subscriber, counters) = CountingSubscriberBuilder::new()
         .target_prefix("reify_constraints")
         .count_level(tracing::Level::DEBUG)

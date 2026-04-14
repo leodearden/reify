@@ -447,3 +447,168 @@ fn compiled_import_preserves_kind_and_is_pub() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ── step-2 (task-1074): cross-module unit collision names the source module ───
+
+/// When a module redeclares a unit exported by an imported user module,
+/// the diagnostic should:
+/// (a) mention the source module name ('dep'), NOT 'stdlib',
+/// (b) contain 'duplicate' and the unit name 'myunit',
+/// (c) have no label with SourceSpan::empty(0).
+#[test]
+fn compile_project_detects_cross_module_unit_collision() {
+    let dir = test_dir("cross_module_unit_collision");
+
+    // dep.ri: exports pub unit 'myunit'
+    fs::write(dir.join("dep.ri"), "pub unit myunit : Length = 0.001").unwrap();
+
+    // main.ri: imports dep and redeclares 'myunit'
+    fs::write(
+        dir.join("main.ri"),
+        "import dep\nunit myunit : Length = 0.002",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result =
+        reify_compiler::module_dag::compile_project(&dir.join("main.ri"), &resolver);
+
+    // compile_project returns Ok even when entry module has diagnostics
+    let modules = result.expect("compile_project should not return Err for duplicate unit");
+    let entry_module = modules.last().expect("no modules returned");
+
+    let errors: Vec<_> = entry_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+
+    // There should be a duplicate-unit error
+    let dup_diag = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate") && d.message.contains("myunit"));
+    assert!(
+        dup_diag.is_some(),
+        "expected a 'duplicate myunit' error, got: {:?}",
+        errors
+    );
+    let dup_diag = dup_diag.unwrap();
+
+    // (a) should mention 'dep' module name
+    assert!(
+        dup_diag.message.contains("dep"),
+        "expected 'dep' in diagnostic message, got: {:?}",
+        dup_diag.message
+    );
+
+    // (b) should NOT contain 'stdlib'
+    assert!(
+        !dup_diag.message.contains("stdlib"),
+        "diagnostic should NOT mention 'stdlib' for user module collision, got: {:?}",
+        dup_diag.message
+    );
+
+    // (c) no label should have SourceSpan::empty(0)
+    let empty_span = reify_types::SourceSpan::empty(0);
+    for label in &dup_diag.labels {
+        assert_ne!(
+            label.span, empty_span,
+            "diagnostic label '{}' has SourceSpan::empty(0) — misleading offset",
+            label.message
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ── step-3 (task-1575): compile_project-level stdlib unit collision mentions stdlib ───
+
+/// When the entry module redeclares a unit that was imported from a stdlib
+/// module via `compile_project`, the diagnostic should:
+/// (a) contain 'duplicate' and the unit name ('myunit'),
+/// (b) mention 'stdlib prelude' — NOT a bare module name — because the
+///     source module path starts with "std/" which triggers the stdlib branch
+///     in `compile_with_prelude`,
+/// (c) have no label with SourceSpan::empty(0) (the misleading prelude sentinel).
+///
+/// This exercises the stdlib collision path through the full `compile_project`
+/// pipeline, complementing the unit-registry-level test in `unit_registry_tests.rs`
+/// (`prelude_unit_collision_diagnostic_mentions_stdlib`).
+#[test]
+fn compile_project_stdlib_unit_collision_mentions_stdlib() {
+    let dir = test_dir("stdlib_unit_collision");
+
+    // Minimal stdlib: a single pub unit.  The resolver maps `std.*` imports
+    // to files under `<stdlib_root>/`, so `import std.units` resolves to
+    // `<stdlib_root>/units.ri`.
+    let stdlib_dir = dir.join("stdlib");
+    fs::create_dir_all(&stdlib_dir).unwrap();
+    fs::write(stdlib_dir.join("units.ri"), "pub unit myunit : Length = 1.0").unwrap();
+
+    // main.ri: imports std.units then re-declares 'myunit' — stdlib collision.
+    fs::write(
+        dir.join("main.ri"),
+        "import std.units\nunit myunit : Length = 2.0",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, &stdlib_dir);
+    let result =
+        reify_compiler::module_dag::compile_project(&dir.join("main.ri"), &resolver);
+
+    // compile_project returns Ok even when the entry module has diagnostics
+    let modules = result.expect("compile_project should not return Err for duplicate unit");
+    let entry_module = modules.last().expect("no modules returned");
+
+    let errors: Vec<_> = entry_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+
+    // (a) There must be a duplicate-unit error mentioning 'myunit'
+    let dup_diag = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate") && d.message.contains("myunit"));
+    assert!(
+        dup_diag.is_some(),
+        "expected a 'duplicate myunit' error, got: {:?}",
+        errors
+    );
+    let dup_diag = dup_diag.unwrap();
+
+    // (b) The message must say 'stdlib prelude' …
+    assert!(
+        dup_diag.message.contains("stdlib prelude"),
+        "expected 'stdlib prelude' in diagnostic message, got: {:?}",
+        dup_diag.message
+    );
+
+    // (b) … and must NOT use the user-module phrasing ("already defined in module '…'")
+    assert!(
+        !dup_diag.message.contains("already defined in module '"),
+        "diagnostic should NOT use user-module phrasing for stdlib collision, got: {:?}",
+        dup_diag.message
+    );
+
+    // (c) Exactly one label — the implementation omits the misleading
+    // SourceSpan::empty(0) prelude label and emits only the user's dup span.
+    assert_eq!(
+        dup_diag.labels.len(),
+        1,
+        "stdlib collision should emit a single label on the user's duplicate decl, got {:?}",
+        dup_diag.labels
+    );
+
+    // (c) … and that single label must not use SourceSpan::empty(0).
+    let empty_span = reify_types::SourceSpan::empty(0);
+    for label in &dup_diag.labels {
+        assert_ne!(
+            label.span, empty_span,
+            "diagnostic label '{}' has SourceSpan::empty(0) — misleading prelude offset",
+            label.message
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}

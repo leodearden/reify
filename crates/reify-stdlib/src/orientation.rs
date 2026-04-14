@@ -1,4 +1,4 @@
-use reify_types::{DimensionVector, Value};
+use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 use crate::helpers::{tensor_components_f64, trig_input};
 
@@ -113,10 +113,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             let mag_x = vec3_norm(xc[0], xc[1], xc[2]);
             let mag_y = vec3_norm(yc[0], yc[1], yc[2]);
             let mag_z = vec3_norm(zc[0], zc[1], zc[2]);
-            if (mag_x - 1.0).abs() > tol
-                || (mag_y - 1.0).abs() > tol
-                || (mag_z - 1.0).abs() > tol
-            {
+            if (mag_x - 1.0).abs() > tol || (mag_y - 1.0).abs() > tol || (mag_z - 1.0).abs() > tol {
                 return Some(Value::Undef);
             }
             let dot_xy = xc[0] * yc[0] + xc[1] * yc[1] + xc[2] * yc[2];
@@ -146,36 +143,16 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             let trace = r00 + r11 + r22;
             let (w, x, y, z) = if trace > 0.0 {
                 let s = (trace + 1.0).sqrt() * 2.0;
-                (
-                    0.25 * s,
-                    (r21 - r12) / s,
-                    (r02 - r20) / s,
-                    (r10 - r01) / s,
-                )
+                (0.25 * s, (r21 - r12) / s, (r02 - r20) / s, (r10 - r01) / s)
             } else if r00 > r11 && r00 > r22 {
                 let s = (1.0 + r00 - r11 - r22).sqrt() * 2.0;
-                (
-                    (r21 - r12) / s,
-                    0.25 * s,
-                    (r01 + r10) / s,
-                    (r02 + r20) / s,
-                )
+                ((r21 - r12) / s, 0.25 * s, (r01 + r10) / s, (r02 + r20) / s)
             } else if r11 > r22 {
                 let s = (1.0 - r00 + r11 - r22).sqrt() * 2.0;
-                (
-                    (r02 - r20) / s,
-                    (r01 + r10) / s,
-                    0.25 * s,
-                    (r12 + r21) / s,
-                )
+                ((r02 - r20) / s, (r01 + r10) / s, 0.25 * s, (r12 + r21) / s)
             } else {
                 let s = (1.0 - r00 - r11 + r22).sqrt() * 2.0;
-                (
-                    (r10 - r01) / s,
-                    (r02 + r20) / s,
-                    (r12 + r21) / s,
-                    0.25 * s,
-                )
+                ((r10 - r01) / s, (r02 + r20) / s, (r12 + r21) / s, 0.25 * s)
             };
             normalize_quaternion(w, x, y, z).unwrap_or(Value::Undef)
         }
@@ -214,7 +191,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
 
 /// Normalize a quaternion (w, x, y, z) to unit length.
 pub(crate) fn normalize_quaternion(w: f64, x: f64, y: f64, z: f64) -> Option<Value> {
-    if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+    if !quaternion_is_finite(w, x, y, z) {
         return None;
     }
     let norm = (w * w + x * x + y * y + z * z).sqrt();
@@ -238,7 +215,7 @@ fn elementary_rotation_quat(axis: usize, angle: f64) -> (f64, f64, f64, f64) {
         0 => (c, s, 0.0, 0.0),
         1 => (c, 0.0, s, 0.0),
         2 => (c, 0.0, 0.0, s),
-        _ => (1.0, 0.0, 0.0, 0.0),
+        _ => unreachable!("elementary_rotation_quat called with axis > 2 — axes always come from orient_euler match"),
     }
 }
 
@@ -273,8 +250,8 @@ fn vec3_norm(x: f64, y: f64, z: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use super::{elementary_rotation_quat, normalize_quaternion};
     use crate::eval_builtin;
-    use super::normalize_quaternion;
     use reify_types::{DimensionVector, Value};
 
     // ── assert_orientation_approx diagnostic tests ──────────────────────────
@@ -484,7 +461,9 @@ mod tests {
                 sign_insensitive = 1e-10
             );
         });
-        let err = result.expect_err("expected assert_orientation_approx sign_insensitive to panic for wrong value");
+        let err = result.expect_err(
+            "expected assert_orientation_approx sign_insensitive to panic for wrong value",
+        );
         let msg = err
             .downcast_ref::<String>()
             .map(|s| s.as_str())
@@ -1349,6 +1328,27 @@ mod tests {
         assert!(
             normalize_quaternion(1e-18, 1e-18, 1e-18, 1e-18).is_none(),
             "all near-zero components should return None"
+        );
+    }
+
+    // ── elementary_rotation_quat invalid-axis test ──────────────────────────
+
+    /// Calling elementary_rotation_quat with axis > 2 must panic loudly.
+    /// This ensures the previously-silent catch-all is now an unreachable!() guard.
+    #[test]
+    fn elementary_rotation_quat_invalid_axis_panics_loudly() {
+        let result = std::panic::catch_unwind(|| {
+            elementary_rotation_quat(3, 0.0);
+        });
+        let err = result.expect_err("expected elementary_rotation_quat(3, ...) to panic");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("elementary_rotation_quat called with axis > 2"),
+            "expected panic message to contain 'elementary_rotation_quat called with axis > 2', got: {msg:?}"
         );
     }
 }

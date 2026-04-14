@@ -3,10 +3,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex};
 
 use reify_types::{
-    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId, ConstraintResult,
-    ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError, GeometryHandle,
-    GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind,
-    ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueCellId, ValueMap,
+    AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId,
+    ConstraintResult, ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError,
+    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl,
+    OptimizedImplInput, OptimizedImplOutput, QueryError, ReprKind, ResolutionProblem, Satisfaction,
+    SolveResult, TessError, Type, Value, ValueCellId, ValueMap,
 };
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
@@ -17,6 +18,20 @@ pub fn empty_problem() -> ResolutionProblem {
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
+    }
+}
+
+/// Standard single-param convenience for constraint-solving tests.
+///
+/// Returns an `AutoParam` with `param_type = Type::length()`, `bounds = None`,
+/// `free = false`, and `id = cell_id`.  Callers that need a `Vec` can wrap with
+/// `vec![single_auto_param(cell_id)]`.
+pub fn single_auto_param(cell_id: ValueCellId) -> AutoParam {
+    AutoParam {
+        id: cell_id,
+        param_type: Type::length(),
+        bounds: None,
+        free: false,
     }
 }
 
@@ -67,6 +82,93 @@ impl ConstraintChecker for MockConstraintChecker {
                 }
             })
             .collect()
+    }
+}
+
+/// Mock optimized-constraint implementation used to exercise the `@optimized`
+/// dispatch path in reify-eval (Task 273).
+///
+/// Mirrors `MockConstraintChecker` in shape — configurable per-id results and
+/// a default — and additionally records every `ConstraintNodeId` it was
+/// invoked with. Tests can read `calls()` to assert that dispatch routed a
+/// constraint through the optimized path instead of the language-level
+/// `ConstraintChecker`.
+pub struct MockOptimizedImpl {
+    results: HashMap<ConstraintNodeId, Satisfaction>,
+    default: Satisfaction,
+    calls: Arc<Mutex<Vec<ConstraintNodeId>>>,
+}
+
+impl MockOptimizedImpl {
+    pub fn new() -> Self {
+        Self {
+            results: HashMap::new(),
+            default: Satisfaction::Satisfied,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Set the result for a specific constraint id.
+    pub fn with_result(mut self, id: ConstraintNodeId, satisfaction: Satisfaction) -> Self {
+        self.results.insert(id, satisfaction);
+        self
+    }
+
+    /// Set the default result for constraints not explicitly configured.
+    pub fn with_default(mut self, satisfaction: Satisfaction) -> Self {
+        self.default = satisfaction;
+        self
+    }
+
+    /// Snapshot of every `ConstraintNodeId` this impl has been invoked with,
+    /// in call order. A cloned Vec so callers can inspect it without holding
+    /// the internal lock.
+    pub fn calls(&self) -> Vec<ConstraintNodeId> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// A clone of the shared call-tracking handle.
+    ///
+    /// Useful when the mock itself has been moved into a `Box<dyn OptimizedImpl>`
+    /// (e.g. registered on an `Engine`) and is no longer reachable by the test.
+    /// Callers grab a handle *before* boxing, then assert against it after the
+    /// engine run:
+    ///
+    /// ```ignore
+    /// let mock = MockOptimizedImpl::new();
+    /// let calls = mock.calls_handle();
+    /// engine.register_optimized_impl("target_a", Box::new(mock));
+    /// engine.check(&compiled);
+    /// assert_eq!(calls.lock().unwrap().len(), 1);
+    /// ```
+    pub fn calls_handle(&self) -> Arc<Mutex<Vec<ConstraintNodeId>>> {
+        Arc::clone(&self.calls)
+    }
+}
+
+impl Default for MockOptimizedImpl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OptimizedImpl for MockOptimizedImpl {
+    fn check(&self, input: &OptimizedImplInput) -> OptimizedImplOutput {
+        let mut calls = self.calls.lock().unwrap();
+        let results = input
+            .constraints
+            .iter()
+            .map(|(id, _)| {
+                calls.push(id.clone());
+                let satisfaction = self.results.get(id).copied().unwrap_or(self.default);
+                ConstraintResult {
+                    id: id.clone(),
+                    satisfaction,
+                    diagnostics: ConstraintDiagnostics::default(),
+                }
+            })
+            .collect();
+        OptimizedImplOutput { results }
     }
 }
 
@@ -420,6 +522,47 @@ impl GeometryKernel for MockGeometryKernel {
     }
 }
 
+/// A mock geometry kernel whose `execute` always returns `Err`.
+///
+/// Useful for testing how consumers handle geometry operation failures.
+/// Because `execute` always fails, no valid `GeometryHandle` is ever
+/// produced. As a defensive fail-loud guard, `tessellate`, `export`,
+/// and `query` all return errors immediately — any call to them
+/// indicates a regression where the engine failed to short-circuit on
+/// the execute error.
+pub struct FailingMockGeometryKernel;
+
+impl GeometryKernel for FailingMockGeometryKernel {
+    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(
+            "simulated kernel failure".into(),
+        ))
+    }
+
+    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        Err(QueryError::QueryFailed(
+            "should not reach: execute always fails".into(),
+        ))
+    }
+
+    fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        _writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        Err(ExportError::FormatError(
+            "should not reach: execute always fails".into(),
+        ))
+    }
+
+    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+        Err(TessError::TessellationFailed(
+            "should not reach: execute always fails".into(),
+        ))
+    }
+}
+
 /// Spy constraint solver that captures the last `ResolutionProblem` passed to it.
 ///
 /// Use this in tests where you need to assert what the engine sent to the solver,
@@ -559,6 +702,16 @@ mod tests {
     }
 
     #[test]
+    fn single_auto_param_has_standard_defaults() {
+        let cell_id = ValueCellId::new("X", "y");
+        let param = single_auto_param(cell_id.clone());
+        assert_eq!(param.id, cell_id);
+        assert_eq!(param.param_type, Type::length());
+        assert_eq!(param.bounds, None);
+        assert!(!param.free);
+    }
+
+    #[test]
     fn mock_constraint_checker_predetermined() {
         let cnid = ConstraintNodeId::new("Bracket", 0);
         let checker =
@@ -575,6 +728,89 @@ mod tests {
 
         let results = checker.check(&input);
         assert_eq!(results[0].satisfaction, Satisfaction::Violated);
+    }
+
+    // step-7 (Task 273 — @optimized plumbing): failing tests for MockOptimizedImpl.
+    //
+    // MockOptimizedImpl mirrors MockConstraintChecker but also records every
+    // constraint id it was invoked with, so tests can assert that dispatch
+    // actually routed a constraint through the optimized path instead of the
+    // language-level checker.
+    #[test]
+    fn mock_optimized_impl_returns_default_satisfaction() {
+        let cnid = ConstraintNodeId::new("S", 0);
+        let imp = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
+
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let input = reify_types::OptimizedImplInput {
+            constraints: vec![(cnid.clone(), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let output = imp.check(&input);
+        assert_eq!(output.results.len(), 1);
+        assert_eq!(output.results[0].id, cnid);
+        assert_eq!(output.results[0].satisfaction, Satisfaction::Violated);
+    }
+
+    #[test]
+    fn mock_optimized_impl_returns_per_id_result() {
+        let a = ConstraintNodeId::new("S", 0);
+        let b = ConstraintNodeId::new("S", 1);
+        let imp = MockOptimizedImpl::new()
+            .with_default(Satisfaction::Satisfied)
+            .with_result(a.clone(), Satisfaction::Violated);
+
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let input = reify_types::OptimizedImplInput {
+            constraints: vec![(a.clone(), &expr), (b.clone(), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let output = imp.check(&input);
+        assert_eq!(output.results.len(), 2);
+        assert_eq!(output.results[0].id, a);
+        assert_eq!(output.results[0].satisfaction, Satisfaction::Violated);
+        assert_eq!(output.results[1].id, b);
+        assert_eq!(output.results[1].satisfaction, Satisfaction::Satisfied);
+    }
+
+    #[test]
+    fn mock_optimized_impl_records_calls() {
+        let a = ConstraintNodeId::new("S", 0);
+        let b = ConstraintNodeId::new("S", 1);
+        let imp = MockOptimizedImpl::new();
+
+        assert!(imp.calls().is_empty(), "no calls yet");
+
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let input = reify_types::OptimizedImplInput {
+            constraints: vec![(a.clone(), &expr), (b.clone(), &expr)],
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let _ = imp.check(&input);
+        let calls = imp.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], a);
+        assert_eq!(calls[1], b);
+    }
+
+    #[test]
+    fn mock_optimized_impl_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockOptimizedImpl>();
+
+        let _boxed: Box<dyn reify_types::OptimizedImpl> = Box::new(MockOptimizedImpl::new());
     }
 
     #[test]
@@ -1997,7 +2233,7 @@ mod tests {
 
     #[test]
     fn multi_call_spy_records_all_calls_and_returns_sequenced_results() {
-        use reify_types::{AutoParam, Type, ValueMap};
+        use reify_types::ValueMap;
 
         let mut values_a = HashMap::new();
         values_a.insert(ValueCellId::new("A", "x"), Value::length(0.005));
@@ -2018,12 +2254,7 @@ mod tests {
 
         // First call
         let problem1 = ResolutionProblem {
-            auto_params: vec![AutoParam {
-                id: ValueCellId::new("A", "x"),
-                param_type: Type::length(),
-                bounds: None,
-                free: false,
-            }],
+            auto_params: vec![single_auto_param(ValueCellId::new("A", "x"))],
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
@@ -2037,12 +2268,7 @@ mod tests {
 
         // Second call
         let problem2 = ResolutionProblem {
-            auto_params: vec![AutoParam {
-                id: ValueCellId::new("B", "y"),
-                param_type: Type::length(),
-                bounds: None,
-                free: false,
-            }],
+            auto_params: vec![single_auto_param(ValueCellId::new("B", "y"))],
             constraints: vec![],
             current_values: ValueMap::new(),
             objective: None,
@@ -2096,5 +2322,68 @@ mod tests {
             collected.into_inner().unwrap_or_else(|e| e.into_inner())
         });
         assert_eq!(result.len(), 4, "all 4 scoped threads should complete");
+    }
+
+    // step-1: failing tests for FailingMockGeometryKernel (struct not yet defined)
+    #[test]
+    fn failing_kernel_execute_returns_err() {
+        let mut kernel = FailingMockGeometryKernel;
+        let op = GeometryOp::Box {
+            width: Value::length(0.08),
+            height: Value::length(0.1),
+            depth: Value::length(0.005),
+        };
+        let result = kernel.execute(&op);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, GeometryError::OperationFailed(ref msg) if msg.contains("simulated kernel failure")),
+            "unexpected error: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn failing_kernel_query_returns_err_defensively() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let result = kernel.query(&GeometryQuery::Volume(id));
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, QueryError::QueryFailed(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn failing_kernel_export_returns_err_defensively() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let mut buf: Vec<u8> = Vec::new();
+        let result = kernel.export(id, ExportFormat::Step, &mut buf);
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ExportError::FormatError(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
+        assert!(buf.is_empty(), "buffer should not have been written to");
+    }
+
+    #[test]
+    fn failing_kernel_tessellate_returns_err_defensively() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let result = kernel.tessellate(id, 0.01);
+        assert!(result.is_err(), "expected Err but got Ok");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, TessError::TessellationFailed(ref msg) if msg.contains("should not reach")),
+            "unexpected error: {:?}",
+            err
+        );
     }
 }

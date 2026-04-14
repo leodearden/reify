@@ -20,8 +20,14 @@ else
     STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/lib.rs"
 fi
 
+[ -f "$EXPR_FILE" ] || { echo "ERROR: $EXPR_FILE not found"; exit 1; }
+[ -f "$STDLIB_FILE" ] || { echo "ERROR: $STDLIB_FILE not found"; exit 1; }
+
 [ -f "$REPO_ROOT/tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
-source "$REPO_ROOT/tests/infra/test_helpers.sh"
+source "$REPO_ROOT/tests/infra/test_helpers.sh" || { echo "ERROR: failed to source test_helpers.sh"; exit 1; }
+
+[ -f "$REPO_ROOT/tests/infra/sync_ref_helpers.sh" ] || { echo "ERROR: sync_ref_helpers.sh not found"; exit 1; }
+source "$REPO_ROOT/tests/infra/sync_ref_helpers.sh" || { echo "ERROR: failed to source sync_ref_helpers.sh"; exit 1; }
 
 # reify-expr's copy must reference reify-stdlib::sanitize_value
 assert \
@@ -30,40 +36,44 @@ assert \
 
 # reify-stdlib's copy must reference reify-expr::sanitize_value
 assert \
-    "$STDLIB_FILE has SYNC marker referencing reify-expr::sanitize_value" \
+    "reify-stdlib has SYNC marker referencing reify-expr::sanitize_value" \
     grep -q "SYNC:.*reify-expr::sanitize_value" "$STDLIB_FILE"
-
-# Helper: verify that source_file's SYNC comment references a function that
-# exists in target_file.  Args: source_crate target_crate source_file target_file
-assert_sync_ref_exists() {
-    local src_crate="$1" tgt_crate="$2" src_file="$3" tgt_file="$4"
-    # Only the first SYNC cross-reference is validated here; files with multiple
-    # cross-references to the same target crate would require a loop.
-    local ref_fn
-    ref_fn=$(grep 'SYNC:' "$src_file" | grep -oE "${tgt_crate}::[a-z_]+" | head -1 | sed 's/.*:://' || true)
-    if [ -z "$ref_fn" ]; then assert "SYNC in ${src_crate} references a ${tgt_crate} function" false; return; fi
-    local display_fn="${ref_fn:-<none>}"
-    assert \
-        "fn ${display_fn} exists in ${tgt_crate} (as referenced by SYNC in ${src_crate})" \
-        grep -qE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+'"${ref_fn}"'[[:space:](<]' "$tgt_file"
-}
 
 # Verify each SYNC cross-reference points to a real function in the peer crate
 assert_sync_ref_exists reify-expr reify-stdlib "$EXPR_FILE" "$STDLIB_FILE"
 assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 
 # Helper: extract from the fn signature line to the next line that begins with }
-# at column 0.  Content above the fn keyword is naturally excluded by the awk
-# range anchor, so doc comments and SYNC markers (which may legitimately differ
-# between the two copies) do not affect the body comparison.
+# at column 0.  Content above the fn keyword is excluded by the awk range
+# anchor start-pattern (which starts matching at the fn declaration line),
+# so doc comments and SYNC markers (which may legitimately differ between the
+# two copies) do not affect the body comparison.  The start-pattern also skips
+# commented-out function signatures via the leading /^[[:space:]]*(pub...)?fn/
+# anchor.
+#
+# The awk start-pattern mirrors the assert_sync_ref_exists regex in
+# tests/infra/sync_ref_helpers.sh so both helpers accept exactly the same set
+# of fn declarations.  Allowed prefixes (in canonical Rust grammar order):
+#   pub, pub(...), const, async, unsafe — each independently optional but MUST
+#   appear in this canonical order (the regex enforces it; 'unsafe async fn'
+#   and 'unsafe const fn' are rejected).
+# The pattern rejects embedded-fn expressions like 'let y = fn foo(x);' because
+# the leading identifier ('let') is not one of the permitted modifier keywords.
 extract_fn() {
     local fn_name="$1" file="$2"
-    # Match fn with optional visibility prefix (pub, pub(crate), etc.); strip the
-    # prefix from the signature line so bodies compare equal across crates that
-    # differ only in visibility (e.g. pub(crate) vs private after a module split).
-    awk '/^[^/]*fn '"$fn_name"'[(<]/,/^}/' "$file" |
+    # Match fn with optional structured modifier prefixes (pub, pub(crate),
+    # const, async, unsafe); strip ALL canonical Rust modifier prefixes from
+    # the signature line so body diffs are robust against orthogonal qualifier
+    # differences between the two copies.  Strip order mirrors the awk
+    # start-pattern's canonical Rust grammar order:
+    #   pub(...) → pub → const → async → unsafe
+    # Each sed stage strips one prefix at the start of the line (column 0).
+    awk '/^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?fn[[:space:]]+'"$fn_name"'[[:space:](<]/,/^}/' "$file" |
         sed 's/^pub([^)]*) *//' |
-        sed 's/^pub //'
+        sed 's/^pub //' |
+        sed 's/^const //' |
+        sed 's/^async //' |
+        sed 's/^unsafe //'
 }
 
 # Both copies of sanitize_value must have identical function bodies.
@@ -72,8 +82,8 @@ extract_fn() {
 # and `diff <() <()` would silently succeed (false negative).
 expr_body=$(extract_fn sanitize_value "$EXPR_FILE")
 stdlib_body=$(extract_fn sanitize_value "$STDLIB_FILE")
-[ -z "$expr_body" ] && assert "extract_fn sanitize_value found in reify-expr" false
-[ -z "$stdlib_body" ] && assert "extract_fn sanitize_value found in reify-stdlib" false
+[ -z "$expr_body" ] && { assert "extract_fn sanitize_value found in reify-expr" false; test_summary; }
+[ -z "$stdlib_body" ] && { assert "extract_fn sanitize_value found in reify-stdlib" false; test_summary; }
 assert \
     "sanitize_value body is identical in reify-expr and reify-stdlib" \
     diff \

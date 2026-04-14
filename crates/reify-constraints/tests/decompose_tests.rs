@@ -2,7 +2,7 @@
 
 use reify_constraints::decompose_into_components;
 use reify_test_support::*;
-use reify_types::{AutoParam, BinOp, Type};
+use reify_types::{BinOp, Type};
 
 /// 3 constraints each referencing a unique auto param → 3 components.
 #[test]
@@ -12,24 +12,9 @@ fn three_independent_constraints_three_components() {
     let c = vcid("Part", "c");
 
     let auto_params = vec![
-        AutoParam {
-            id: a.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
-        AutoParam {
-            id: b.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
-        AutoParam {
-            id: c.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
+        single_auto_param(a.clone()),
+        single_auto_param(b.clone()),
+        single_auto_param(c.clone()),
     ];
 
     // Each constraint references exactly one param
@@ -62,12 +47,7 @@ fn three_independent_constraints_three_components() {
 fn shared_param_merges_into_one_component() {
     let a = vcid("Part", "a");
 
-    let auto_params = vec![AutoParam {
-        id: a.clone(),
-        param_type: Type::length(),
-        bounds: None,
-        free: false,
-    }];
+    let auto_params = vec![single_auto_param(a.clone())];
 
     // Both constraints reference param 'a'
     let c1 = gt(value_ref("Part", "a"), literal(mm(1.0)));
@@ -93,24 +73,9 @@ fn chain_constraints_single_component() {
     let c = vcid("Part", "c");
 
     let auto_params = vec![
-        AutoParam {
-            id: a.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
-        AutoParam {
-            id: b.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
-        AutoParam {
-            id: c.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
+        single_auto_param(a.clone()),
+        single_auto_param(b.clone()),
+        single_auto_param(c.clone()),
     ];
 
     // C1: a > b (refs {a, b})
@@ -137,12 +102,7 @@ fn chain_constraints_single_component() {
 /// Empty constraints → 0 components.
 #[test]
 fn empty_constraints_zero_components() {
-    let auto_params = vec![AutoParam {
-        id: vcid("Part", "a"),
-        param_type: Type::length(),
-        bounds: None,
-        free: false,
-    }];
+    let auto_params = vec![single_auto_param(vcid("Part", "a"))];
 
     let constraints: Vec<(_, _)> = vec![];
     let components = decompose_into_components(&auto_params, &constraints, None);
@@ -158,12 +118,7 @@ fn empty_constraints_zero_components() {
 fn constraint_without_auto_params_excluded() {
     let a = vcid("Part", "a");
 
-    let auto_params = vec![AutoParam {
-        id: a.clone(),
-        param_type: Type::length(),
-        bounds: None,
-        free: false,
-    }];
+    let auto_params = vec![single_auto_param(a.clone())];
 
     // C1 references 'a' (an auto param)
     let c1 = gt(value_ref("Part", "a"), literal(mm(1.0)));
@@ -199,30 +154,10 @@ fn collect_value_refs_handles_nested_conditional() {
     let d = vcid("Part", "d");
 
     let auto_params = vec![
-        AutoParam {
-            id: a.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
-        AutoParam {
-            id: b.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
-        AutoParam {
-            id: c.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
-        AutoParam {
-            id: d.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
+        single_auto_param(a.clone()),
+        single_auto_param(b.clone()),
+        single_auto_param(c.clone()),
+        single_auto_param(d.clone()),
     ];
 
     // Build a Conditional expression:
@@ -275,20 +210,7 @@ fn objective_merges_independent_params_into_one_component() {
     let a = vcid("Part", "a");
     let b = vcid("Part", "b");
 
-    let auto_params = vec![
-        AutoParam {
-            id: a.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
-        AutoParam {
-            id: b.clone(),
-            param_type: Type::length(),
-            bounds: None,
-            free: false,
-        },
-    ];
+    let auto_params = vec![single_auto_param(a.clone()), single_auto_param(b.clone())];
 
     // Independent constraints (different params)
     let c1 = gt(value_ref("Part", "a"), literal(mm(1.0)));

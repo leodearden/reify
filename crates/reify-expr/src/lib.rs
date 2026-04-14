@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
     DeterminacyState, DimensionVector, FieldSourceKind, PersistentMap, QuantifierKind, Type, UnOp,
-    Value, ValueCellId, ValueMap,
+    Value, ValueCellId, ValueMap, quaternion_is_finite,
 };
 
 /// Maximum recursion depth for user-defined function calls.
@@ -127,19 +127,18 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         lambda,
                         source,
                         domain_type,
-                        codomain_type: grad_codomain_type,
+                        codomain_type,
                     } = &evaluated_args[0]
                     {
                         match (lambda.as_ref(), source) {
                             (Value::Lambda { .. }, _) => {
                                 apply_lambda(lambda, &evaluated_args[1..], ctx)
                             }
-                            // Gradient-produced field: lambda slot contains the
-                            // original field (with its own lambda inside).
-                            // Pass grad_codomain_type (the gradient field's codomain,
-                            // already R/Q-divided by compute_gradient) instead of the
-                            // inner field's codomain — eliminates the redundant division
-                            // inside compute_numerical_gradient_at_point.
+                            // Derived-field case: lambda slot contains the original field.
+                            // Pass codomain_type (the derived field's already-divided codomain,
+                            // stamped by compute_gradient / compute_divergence / etc.) instead
+                            // of the inner field's codomain — eliminates redundant division
+                            // inside the numerical compute functions.
                             (
                                 Value::Field {
                                     lambda: inner_lambda,
@@ -150,7 +149,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
-                                grad_codomain_type,
+                                codomain_type,
                                 ctx,
                             ),
                             (
@@ -163,7 +162,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
-                                grad_codomain_type,
+                                codomain_type,
                                 ctx,
                             ),
                             (
@@ -176,6 +175,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
+                                codomain_type,
                                 ctx,
                             ),
                             (
@@ -188,7 +188,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
-                                grad_codomain_type,
+                                codomain_type,
                                 ctx,
                             ),
                             _ => {
@@ -209,13 +209,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         Value::Undef
                     }
                 }
-                "gradient" if evaluated_args.len() == 1 => calculus::compute_gradient(&evaluated_args[0]),
+                "gradient" if evaluated_args.len() == 1 => {
+                    calculus::compute_gradient(&evaluated_args[0])
+                }
                 "divergence" if evaluated_args.len() == 1 => {
                     calculus::compute_divergence(&evaluated_args[0])
                 }
-                "curl" if evaluated_args.len() == 1 => {
-                    calculus::compute_curl(&evaluated_args[0])
-                }
+                "curl" if evaluated_args.len() == 1 => calculus::compute_curl(&evaluated_args[0]),
                 "laplacian" if evaluated_args.len() == 1 => {
                     calculus::compute_laplacian(&evaluated_args[0])
                 }
@@ -504,6 +504,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 }
             }
         }
+
+        // Ad-hoc selector evaluation is handled by the engine (Task 250),
+        // which has access to the geometry kernel. The pure expression
+        // evaluator returns Undef as a placeholder.
+        CompiledExprKind::AdHocSelector { .. } => Value::Undef,
     }
 }
 
@@ -1572,7 +1577,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         // Transform * Vector: apply rotation only (translation is ignored for vectors)
         (Value::Transform { rotation, .. }, Value::Vector(components)) => {
             if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
-                if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                if !quaternion_is_finite(*w, *x, *y, *z) {
                     return Value::Undef;
                 }
                 let norm = (w * w + x * x + y * y + z * z).sqrt();
@@ -1599,7 +1604,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             Value::Point(components),
         ) => {
             if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
-                if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                if !quaternion_is_finite(*w, *x, *y, *z) {
                     return Value::Undef;
                 }
                 let norm = (w * w + x * x + y * y + z * z).sqrt();
@@ -1666,8 +1671,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                             return Value::Undef;
                         }
                         // Validate and normalize q1 for translation rotation
-                        if !w1.is_finite() || !x1.is_finite() || !y1.is_finite() || !z1.is_finite()
-                        {
+                        if !quaternion_is_finite(*w1, *x1, *y1, *z1) {
                             return Value::Undef;
                         }
                         let q1_norm = (w1 * w1 + x1 * x1 + y1 * y1 + z1 * z1).sqrt();
@@ -1678,8 +1682,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                         // Compose rotations: R = R1 * R2
                         let (rw, rx, ry, rz) = quat_mul_t(q1_n, (*w2, *x2, *y2, *z2));
                         // Normalize result quaternion (reject NaN/Inf/zero-length)
-                        if !rw.is_finite() || !rx.is_finite() || !ry.is_finite() || !rz.is_finite()
-                        {
+                        if !quaternion_is_finite(rw, rx, ry, rz) {
                             return Value::Undef;
                         }
                         let norm = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt();
@@ -3413,5 +3416,4 @@ mod tests {
             other => panic!("expected Complex, got {:?}", other),
         }
     }
-
 }

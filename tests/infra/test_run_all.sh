@@ -72,7 +72,7 @@ if [ -f "$RUN_ALL" ]; then
     chmod +x "$TMPDIR_T3/test_portable_sha256.sh" \
               "$TMPDIR_T3/test_test_helpers.sh" \
               "$TMPDIR_T3/test_helpers.sh"
-    t3_output="$(bash "$RUN_ALL" "$TMPDIR_T3" 2>&1)" && t3_rc=0 || t3_rc=$?
+    t3_output="$(bash "$RUN_ALL" "$TMPDIR_T3" 2>&1)" || true
     rm -rf "$TMPDIR_T3"
 
     if echo "$t3_output" | grep -q "test_portable_sha256"; then
@@ -166,6 +166,9 @@ THIS_FILE="${BASH_SOURCE[0]}"
 
 assert "t2_rc dead variable removed" \
     bash -c "! grep -qE 't2_rc=[0\$]' '$THIS_FILE'"
+
+assert "t3_rc dead variable removed" \
+    bash -c "! grep -qE 't3_rc=[0\$]' '$THIS_FILE'"
 
 assert "trap cleanup EXIT is registered" \
     bash -c "grep -Eq '^trap cleanup EXIT' '$THIS_FILE'"

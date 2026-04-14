@@ -8,3 +8,10 @@ description = "Shared type vocabulary and trait definitions for Reify"
 [dependencies]
 im.workspace = true
 xxhash-rust.workspace = true
+serde = { workspace = true, features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde_json = "1"

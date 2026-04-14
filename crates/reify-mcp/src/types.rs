@@ -2,6 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
+// Re-export presentation types that live in reify-types so the engine layer
+// can import them without depending on the MCP adapter crate.
+pub use reify_types::{DiagnosticInfo, SourceLocationInfo};
+
 /// Error types returned by MCP tool handlers.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ToolError {
@@ -44,19 +48,6 @@ pub struct OpenFileInfo {
     pub dirty: bool,
 }
 
-/// A diagnostic (error/warning) from the engine.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DiagnosticInfo {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-    pub end_line: u32,
-    pub end_column: u32,
-    pub severity: String,
-    pub message: String,
-    pub code: Option<String>,
-}
-
 /// A parameter (value cell) in the model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParameterInfo {
@@ -92,16 +83,6 @@ pub struct EvalStatusInfo {
 pub struct SelectionInfo {
     pub selected_entity: Option<String>,
     pub hovered_entity: Option<String>,
-}
-
-/// A source location reference.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SourceLocationInfo {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-    pub end_line: u32,
-    pub end_column: u32,
 }
 
 /// Result of an update_source operation.

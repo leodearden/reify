@@ -911,6 +911,428 @@ structure def S {
     );
 }
 
+// ── task-247/step-1: auto_match_bidi_bidi_operator ───────────────────
+
+#[test]
+fn auto_match_bidi_bidi_operator() {
+    // Two bidi ports of same trait connected via `<->`.
+    // Auto-match should populate port_mappings with identity pairs and no diagnostics.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : bidi T { param d : Length = 5mm }
+    port b : bidi T { param d : Length = 5mm }
+    connect a <-> b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    assert_eq!(
+        template.connections[0].operator,
+        reify_syntax::ConnectOp::Bidirectional
+    );
+    // Auto-match: same trait, same member `d` → identity mapping
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected auto-generated identity mapping for bidi <-> bidi"
+    );
+    // No warnings
+    let warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "expected no warnings, got: {:?}",
+        warnings
+    );
+}
+
+// ── task-247/step-2: auto_match_reverse_operator ─────────────────────
+
+#[test]
+fn auto_match_reverse_operator() {
+    // Out->In reversed via `<-` (connect in <- out).
+    // Auto-match is operator-agnostic: same trait, same member `d` → identity mapping.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : in T { param d : Length = 5mm }
+    port b : out T { param d : Length = 5mm }
+    connect a <- b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    assert_eq!(
+        template.connections[0].operator,
+        reify_syntax::ConnectOp::Reverse
+    );
+    // Auto-match still produces identity mapping regardless of operator
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected auto-generated identity mapping for reverse operator"
+    );
+    // No warnings
+    let warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "expected no warnings, got: {:?}",
+        warnings
+    );
+}
+
+// ── task-247/step-3: auto_match_chain_multi_members ──────────────────
+
+#[test]
+fn auto_match_chain_multi_members() {
+    // Chain of three ports each with two matching members (d and length).
+    // Both desugared connections should carry auto-generated identity mappings sorted alphabetically.
+    let source = r#"
+trait MechPort {
+    param d : Length
+    param length : Length
+}
+structure def S {
+    port a : out MechPort {
+        param d : Length = 5mm
+        param length : Length = 10mm
+    }
+    port b : bidi MechPort {
+        param d : Length = 5mm
+        param length : Length = 10mm
+    }
+    port c : in MechPort {
+        param d : Length = 5mm
+        param length : Length = 10mm
+    }
+    chain a -> b -> c
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(
+        template.connections.len(),
+        2,
+        "expected 2 desugared connections"
+    );
+    // Both connections: sorted alphabetically → [("d","d"), ("length","length")]
+    let expected = vec![
+        ("d".to_string(), "d".to_string()),
+        ("length".to_string(), "length".to_string()),
+    ];
+    assert_eq!(
+        template.connections[0].port_mappings,
+        expected,
+        "first desugared connection (a->b) should have auto-mappings sorted alphabetically"
+    );
+    assert_eq!(
+        template.connections[1].port_mappings,
+        expected,
+        "second desugared connection (b->c) should have auto-mappings sorted alphabetically"
+    );
+}
+
+// ── task-247/step-4: explicit_mapping_multiple_pairs ─────────────────
+
+#[test]
+fn explicit_mapping_multiple_pairs() {
+    // Explicit mapping with two pairs `{ d -> d, length -> length }`.
+    // Both pairs should be preserved in source order with no diagnostics.
+    let source = r#"
+trait MechPort {
+    param d : Length
+    param length : Length
+}
+structure def S {
+    port a : out MechPort {
+        param d : Length = 5mm
+        param length : Length = 10mm
+    }
+    port b : in MechPort {
+        param d : Length = 5mm
+        param length : Length = 10mm
+    }
+    connect a -> b { d -> d, length -> length }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    // Both pairs preserved in source order
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![
+            ("d".to_string(), "d".to_string()),
+            ("length".to_string(), "length".to_string()),
+        ],
+        "expected two explicit mapping pairs preserved in source order"
+    );
+}
+
+// ── task-247/step-5: explicit_mapping_reverse_operator ───────────────
+
+#[test]
+fn explicit_mapping_reverse_operator() {
+    // Explicit mapping with `<-` reverse operator.
+    // Mapping should be preserved as-is and ConnectOp::Reverse recorded.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : in T { param d : Length = 5mm }
+    port b : out T { param d : Length = 5mm }
+    connect a <- b { d -> d }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    assert_eq!(
+        template.connections[0].operator,
+        reify_syntax::ConnectOp::Reverse,
+        "expected Reverse operator"
+    );
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected explicit mapping d->d preserved with reverse operator"
+    );
+}
+
+// ── task-247/step-6: explicit_mapping_bidirectional_operator ─────────
+
+#[test]
+fn explicit_mapping_bidirectional_operator() {
+    // Explicit mapping with `<->` between two bidi ports.
+    // Mapping preserved and ConnectOp::Bidirectional recorded.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : bidi T { param d : Length = 5mm }
+    port b : bidi T { param d : Length = 5mm }
+    connect a <-> b { d -> d }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    assert_eq!(
+        template.connections[0].operator,
+        reify_syntax::ConnectOp::Bidirectional,
+        "expected Bidirectional operator"
+    );
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected explicit mapping d->d preserved with bidirectional operator"
+    );
+}
+
+// ── task-247/step-7: mixed_multiple_params_and_mappings ──────────────
+
+#[test]
+fn mixed_multiple_params_and_mappings() {
+    // Connector body with 2 params (grade, count) and 2 explicit mappings (d->d, length_m->length_m).
+    // Verify connector sub receives both params and port_mappings holds both pairs.
+    let source = r#"
+trait T {
+    param d : Length
+    param length_m : Length
+}
+structure def BoltSet {
+    param grade : Real = 8.8
+    param count : Real = 4.0
+}
+structure def S {
+    port a : out T {
+        param d : Length = 5mm
+        param length_m : Length = 10mm
+    }
+    port b : in T {
+        param d : Length = 5mm
+        param length_m : Length = 10mm
+    }
+    connect a -> b : BoltSet { grade = 10.9, count = 6.0, d -> d, length_m -> length_m }
+}
+"#;
+    let module = compile_module(source);
+    let s_template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+    let diagnostics = &module.diagnostics;
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    assert_eq!(s_template.connections.len(), 1);
+    let conn = &s_template.connections[0];
+
+    // connector_sub should be present
+    assert!(conn.connector_sub.is_some(), "expected connector_sub");
+    let connector_name = conn.connector_sub.as_ref().unwrap();
+    let connector_sub = s_template
+        .sub_components
+        .iter()
+        .find(|s| s.name == *connector_name)
+        .expect("expected sub_component for connector");
+    assert_eq!(connector_sub.structure_name, "BoltSet");
+
+    // Both params should be in connector args
+    assert_eq!(
+        connector_sub.args.len(),
+        2,
+        "expected 2 connector params (grade and count)"
+    );
+
+    // Both explicit mappings preserved in source order
+    assert_eq!(
+        conn.port_mappings,
+        vec![
+            ("d".to_string(), "d".to_string()),
+            ("length_m".to_string(), "length_m".to_string()),
+        ],
+        "expected both explicit mapping pairs preserved"
+    );
+}
+
+// ── task-247/step-8: explicit_mapping_overrides_trait_mismatch ───────
+
+#[test]
+fn explicit_mapping_overrides_trait_mismatch() {
+    // Two ports with different traits (MechPort vs RotaryPort) connected with
+    // explicit `{ d -> d }` mapping. Verifies 'explicit always wins' semantics:
+    // mapping is preserved, no warning about unmatched members, no error.
+    let source = r#"
+trait MechPort { param d : Length }
+trait RotaryPort { param d : Length }
+structure def S {
+    port a : out MechPort { param d : Length = 5mm }
+    port b : in RotaryPort { param d : Length = 5mm }
+    connect a -> b { d -> d }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    let warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "expected no warnings with explicit mapping, got: {:?}",
+        warnings
+    );
+    assert_eq!(template.connections.len(), 1);
+    // Explicit mapping preserved, no auto-match interference
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected explicit mapping d->d preserved for different-trait ports"
+    );
+}
+
+// ── task-247/step-9: incomplete_mapping_parser_error ─────────────────
+
+#[test]
+fn incomplete_mapping_parser_error() {
+    // Malformed `{ d -> }` in connect body produces a parse error.
+    // Uses reify_syntax::parse directly (not compile_module) to inspect parse errors
+    // without hitting compile_module's assert on parsed.errors.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b { d -> }
+}
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        !parsed.errors.is_empty(),
+        "expected at least one parse error for malformed mapping"
+    );
+    // The malformed body causes the connect statement to be reported as invalid.
+    // The error message is "invalid connect: ..." and includes the malformed input.
+    assert!(
+        parsed.errors.iter().any(|e| e.message.contains("d ->")),
+        "expected error to include the malformed mapping text 'd ->', got: {:?}",
+        parsed.errors
+    );
+}
+
+// ── task-247/step-10: explicit_mapping_unknown_member_currently_accepted
+
+#[test]
+fn explicit_mapping_unknown_member_currently_accepted() {
+    // Explicit mapping names members that do not exist on either port.
+    // Documents current behavior: no validation of member names, mapping accepted verbatim.
+    //
+    // NOTE: This documents current (permissive) behavior. A future semantic-validation
+    // pass may make this an error — at that point this test is the regression tripwire.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b { ghost -> phantom }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    // No error: mapping member names are not validated against port.members
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+    // Mapping preserved verbatim, no substitution or rejection
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("ghost".to_string(), "phantom".to_string())],
+        "expected explicit mapping preserved even for non-existent member names"
+    );
+}
+
 // ── task-246/step-7: compile_connect_mixed_skips_auto_match ──────────
 
 #[test]

@@ -34,3 +34,7 @@ tree-sitter-reify/src/node-types.json
 tree-sitter-reify/src/.grammar_hash.stamp
 tree-sitter-reify/src/.generate.lock
 tree-sitter-reify/src/.generate.lock.d
+
+# Sidecar build artifacts
+gui/sidecar/dist/
+gui/src-tauri/sidecar/reify-sidecar-*

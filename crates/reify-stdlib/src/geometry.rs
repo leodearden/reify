@@ -401,8 +401,8 @@ use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate}
 
 #[cfg(test)]
 mod tests {
-    use crate::eval_builtin;
     use super::construct_point_or_vector;
+    use crate::eval_builtin;
     use reify_types::{DimensionVector, Value};
 
     // --- Determinacy predicate stubs (step-7) ---
@@ -2104,5 +2104,4 @@ mod tests {
         };
         assert!(eval_builtin("frame_to_frame", &[from, to]).is_undef());
     }
-
 }

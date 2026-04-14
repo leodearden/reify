@@ -1,8 +1,6 @@
 use reify_types::{DimensionVector, Value};
 
-use crate::helpers::{
-    binary, quinary_f64, sanitize_value, ternary, unary, unary_f64,
-};
+use crate::helpers::{binary, quinary_f64, sanitize_value, ternary, unary, unary_f64};
 
 pub(crate) fn eval_numeric(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {

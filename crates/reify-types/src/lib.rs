@@ -8,6 +8,7 @@ pub mod hash;
 pub mod identity;
 pub mod persistent;
 pub mod provenance;
+pub mod source_location;
 pub mod traits;
 pub mod ty;
 pub mod value;
@@ -16,13 +17,16 @@ pub mod warm;
 pub use annotation::{Annotation, AnnotationArg};
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
-    ConstraintResult, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult,
+    ConstraintResult, ConstraintSolver, OptimizationObjective, OptimizedImpl, OptimizedImplInput,
+    OptimizedImplOutput, ResolutionProblem, SolveResult,
 };
-pub use diagnostics::{Diagnostic, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan};
+pub use diagnostics::{
+    Diagnostic, DiagnosticInfo, DiagnosticLabel, DiagnosticRef, Severity, SourceSpan,
+};
 pub use dimension::{DimensionVector, Rational};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
-    DeterminacyPredicateKind, QuantifierKind, ResolvedFunction, UnOp,
+    DeterminacyPredicateKind, QuantifierKind, ResolvedFunction, SelectorKind, UnOp,
 };
 pub use geometry::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
@@ -36,5 +40,7 @@ pub use traits::{EnumDef, PortDirection, TraitBound, TraitDef, TraitMember, Trai
 pub use ty::Type;
 pub use value::{
     DeterminacyState, EvalError, FieldSourceKind, Freshness, Satisfaction, Value, ValueMap,
+    quaternion_is_finite,
 };
+pub use source_location::{SourceLocationInfo, byte_offset_to_line_col};
 pub use warm::{OpaqueState, WarmStartable};

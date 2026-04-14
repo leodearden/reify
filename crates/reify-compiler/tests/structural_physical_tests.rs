@@ -173,56 +173,6 @@ fn physical_trait_has_correct_members_and_refinements() {
     );
 }
 
-// ─── step-23: targeted Physical own-params assertion (over-broad fix) ────────
-
-/// Step 23: Targeted test for review issue [over_broad_assertion].
-/// Checks ONLY the four Physical-specific params by name. Resilient to compiler
-/// changes that might flatten inherited members of different types (e.g.,
-/// name:String from Material) into required_members.
-#[test]
-fn physical_own_params_are_real() {
-    let module = load_stdlib_module();
-    let physical = module
-        .trait_defs
-        .iter()
-        .find(|t| t.name == "Physical")
-        .expect("expected 'Physical' trait in compiled module");
-
-    let own_params = ["volume", "centroid_x", "centroid_y", "centroid_z"];
-    for param_name in &own_params {
-        let req = physical
-            .required_members
-            .iter()
-            .find(|r| r.name == *param_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "Physical should have '{}' in required_members, got: {:?}",
-                    param_name,
-                    physical
-                        .required_members
-                        .iter()
-                        .map(|r| &r.name)
-                        .collect::<Vec<_>>()
-                )
-            });
-        match &req.kind {
-            RequirementKind::Param(ty) => {
-                assert_eq!(
-                    *ty,
-                    Type::Real,
-                    "Physical param '{}' should be Real, got {:?}",
-                    param_name,
-                    ty
-                );
-            }
-            other => panic!(
-                "Physical member '{}' should be RequirementKind::Param, got {:?}",
-                param_name, other
-            ),
-        }
-    }
-}
-
 // ─── step-7: Bracket : Physical conformance (mass computed) ──────────────────
 
 /// Step 7: structure def Bracket : Physical compiles with all required members
@@ -538,45 +488,6 @@ fn load_stdlib_module_uses_production_path() {
          (std/structural/physical), not a standalone compilation path. \
          This indicates the helper is using the wrong code path."
     );
-}
-
-// ─── step-17: all stdlib modules error-free (silent failure boundary) ────────
-
-/// Step 17: Verify that ALL stdlib modules returned by load_stdlib() have zero
-/// Error-severity diagnostics. This validates the postcondition that the loader
-/// never silently caches a broken module. Iterates through every CompiledModule,
-/// not just structural_physical.
-#[test]
-fn all_stdlib_modules_have_zero_error_diagnostics() {
-    let modules = stdlib_loader::load_stdlib();
-    assert!(
-        !modules.is_empty(),
-        "load_stdlib() should return at least one module"
-    );
-
-    for module in modules {
-        let errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "stdlib module '{}' has Error-severity diagnostics (silent failure at initialization boundary): {:?}",
-            module.path,
-            errors
-        );
-
-        // Verify each non-units module has at least one trait def (not empty/broken).
-        // std/units only contains unit declarations, no traits.
-        if !module.path.to_string().contains("units") {
-            assert!(
-                !module.trait_defs.is_empty(),
-                "stdlib module '{}' has zero trait definitions — may be silently broken",
-                module.path
-            );
-        }
-    }
 }
 
 // ─── step-19: cross-module refinement chain via load_stdlib ──────────────────

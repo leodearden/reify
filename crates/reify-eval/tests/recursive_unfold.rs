@@ -1064,18 +1064,29 @@ fn unfold_mutual_recursion_three_node_cycle() {
 
 // ─── step-28b: mutual recursion with let-bindings ────────────────────────────
 
-/// Two mutually-recursive templates with let-bindings:
-///   A { param n: Int = 2; let val: Int = n * 10; is_recursive = true; sub b = B(n: n-1) where n > 0 }
-///   B { param n: Int = 0; let val: Int = n * 10; is_recursive = true; sub a = A(n: n-1) where n > 0 }
+/// Two mutually-recursive templates with DISTINCT per-template let-binding names
+/// and DISTINCT coefficient expressions:
+///   A { param n: Int = 2; let a_only: Int = n * 10; is_recursive = true;
+///       sub b = B(n: n-1) where n > 0 }
+///   B { param n: Int = 0; let b_only: Int = n * 7;  is_recursive = true;
+///       sub a = A(n: n-1) where n > 0 }
 ///
 /// Starting from A(n=2):
-///   A(n=2, val=20) → A.b = B(n=1, val=10) → A.b.a = A(n=0, val=0)
+///   A(n=2, a_only=20) → A.b = B(n=1, b_only=7) → A.b.a = A(n=0, a_only=0)
 ///
-/// This verifies that Phase 3 (elaborate_child_lets_only) receives the correct
-/// child-scoped recursive_sub_names for BFS traversal at each mutual recursion depth.
+/// Prior version used identical name `val` and identical expression `n*10` on both
+/// templates, making a buggy "reuse A's template for every entity" implementation
+/// produce identical values and pass silently. Distinct names and coefficients
+/// produce observable divergence: A.a_only must equal 20, A.b.b_only must equal 7.
+///
+/// Key leakage assertions (task 553 improvement #6):
+///   - A.b_only must NOT exist  (B's binding must not appear in an A instance)
+///   - A.b.a_only must NOT exist (A's binding must not leak into a B instance)
+///
+/// This verifies per-entity template lookup at each mutual-recursion depth.
 #[test]
 fn unfold_mutual_recursion_with_let_bindings() {
-    // Template A: param n=2, let val = n * 10, sub b = B(n: n-1) where n > 0
+    // Template A: param n=2, let a_only = n * 10, sub b = B(n: n-1) where n > 0
     let template_a = TopologyTemplateBuilder::new("A")
         .param(
             "A",
@@ -1085,7 +1096,7 @@ fn unfold_mutual_recursion_with_let_bindings() {
         )
         .let_binding(
             "A",
-            "val",
+            "a_only",
             Type::Int,
             binop(
                 BinOp::Mul,
@@ -1109,7 +1120,7 @@ fn unfold_mutual_recursion_with_let_bindings() {
         )
         .build();
 
-    // Template B: param n=0, let val = n * 10, sub a = A(n: n-1) where n > 0
+    // Template B: param n=0, let b_only = n * 7, sub a = A(n: n-1) where n > 0
     let template_b = TopologyTemplateBuilder::new("B")
         .param(
             "B",
@@ -1119,12 +1130,12 @@ fn unfold_mutual_recursion_with_let_bindings() {
         )
         .let_binding(
             "B",
-            "val",
+            "b_only",
             Type::Int,
             binop(
                 BinOp::Mul,
                 value_ref_typed("B", "n", Type::Int),
-                literal(Value::Int(10)),
+                literal(Value::Int(7)),
             ),
         )
         .is_recursive(true)
@@ -1152,25 +1163,39 @@ fn unfold_mutual_recursion_with_let_bindings() {
     let mut engine = Engine::new(Box::new(checker), None);
     let result = engine.eval(&module);
 
-    // A(n=2): val = 2 * 10 = 20
+    // A(n=2): a_only = 2 * 10 = 20
     assert_eq!(
-        result.values.get(&ValueCellId::new("A", "val")),
+        result.values.get(&ValueCellId::new("A", "a_only")),
         Some(&Value::Int(20)),
-        "A.val should be 20 (= 2 * 10)"
+        "A.a_only should be 20 (= 2 * 10)"
     );
 
-    // A.b = B(n=1): val = 1 * 10 = 10
+    // A.b = B(n=1): b_only = 1 * 7 = 7 (NOT 10 — coefficient diverges from A)
     assert_eq!(
-        result.values.get(&ValueCellId::new("A.b", "val")),
-        Some(&Value::Int(10)),
-        "A.b.val should be 10 (= 1 * 10)"
+        result.values.get(&ValueCellId::new("A.b", "b_only")),
+        Some(&Value::Int(7)),
+        "A.b.b_only should be 7 (= 1 * 7, B's distinct coefficient)"
     );
 
-    // A.b.a = A(n=0): val = 0 * 10 = 0
+    // A.b.a = A(n=0): a_only = 0 * 10 = 0
     assert_eq!(
-        result.values.get(&ValueCellId::new("A.b.a", "val")),
+        result.values.get(&ValueCellId::new("A.b.a", "a_only")),
         Some(&Value::Int(0)),
-        "A.b.a.val should be 0 (= 0 * 10)"
+        "A.b.a.a_only should be 0 (= 0 * 10, A instance at depth 2)"
+    );
+
+    // Leakage assertions: B's binding must not appear in an A instance and vice versa.
+    assert!(
+        !result.values.contains(&ValueCellId::new("A", "b_only")),
+        "A.b_only must NOT exist — B's binding must not appear in an A instance"
+    );
+    assert!(
+        !result.values.contains(&ValueCellId::new("A.b", "a_only")),
+        "A.b.a_only must NOT exist — A's binding must not leak into a B instance"
+    );
+    assert!(
+        !result.values.contains(&ValueCellId::new("A.b.a", "b_only")),
+        "A.b.a.b_only must NOT exist — B's binding must not leak into a depth-2 A instance"
     );
 }
 
@@ -1305,35 +1330,64 @@ fn unfold_mutual_recursion_heterogeneous_members() {
          If Undef, BFS projection in elaborate_child_lets_only iterates A's value_cells \
          for entity A.b (a B instance), missing B-specific members like 'height'."
     );
+
+    // Depth-2 alternation: A.b.a = A(n=0, width=5) — guard fires (n=1 > 0), creating
+    // A.b.a with n = B.n - 1 = 1 - 1 = 0. Then A.b.a's guard (0 > 0) is false → leaf.
+    // This verifies template lookup at depth 2: B's sub 'a' uses Template A, not Template B.
+    // Task 553 improvement #5: extends coverage from depth-1 to depth-2 alternation.
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b.a", "n")),
+        Some(&Value::Int(0)),
+        "A.b.a.n should be 0 (B(n=1).sub a = A(n=1-1=0))"
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b.a", "width")),
+        Some(&Value::Int(5)),
+        "A.b.a.width should be 5 (A's default). \
+         If absent, depth-2 template alternation (B→A lookup) is broken."
+    );
+    // Symmetric leakage check: B-specific member 'height' must NOT appear on the depth-2
+    // A instance. Task 553 amendment: closes the heterogeneous leakage check analogously
+    // to the explicit leakage assertions in unfold_mutual_recursion_with_let_bindings.
+    assert!(
+        !result.values.contains(&ValueCellId::new("A.b.a", "height")),
+        "A.b.a.height must NOT exist: A.b.a is an A instance (no 'height' member). \
+         Its presence indicates B-specific members leaking into a depth-2 A instance. \
+         Got: {:?}",
+        result.values.get(&ValueCellId::new("A.b.a", "height"))
+    );
 }
 
 // ─── step-39: cyclic let-binding dependency detection ─────────────────────────
 
 /// Recursive template S with mutually-dependent let-bindings:
-///   S { param n: Int = 2; let a: Int = b + 1; let b: Int = a + 1;
+///   S { param n: Int = 2; let count_x: Int = count_y + 1; let count_y: Int = count_x + 1;
 ///       sub child = S(n: n-1) where n > 0; is_recursive = true }
 ///
-/// The let-bindings `a` and `b` form a circular dependency: a depends on b,
-/// b depends on a. `topological_sort` (Kahn's algorithm) silently drops nodes
-/// in cycles — they never appear in the sorted output.
+/// The let-bindings `count_x` and `count_y` form a circular dependency: count_x
+/// depends on count_y and count_y depends on count_x. `topological_sort` (Kahn's
+/// algorithm) silently drops nodes in cycles — they never appear in the sorted output.
 ///
-/// Currently `elaborate_child_lets_only` has no cycle detection, so a and b
-/// remain `Value::Undef` with no diagnostic. This test asserts that:
+/// Bindings renamed from `a`/`b` to `count_x`/`count_y` (task 553 improvement #3)
+/// so the diagnostic substring check cannot pass incidentally via unrelated words
+/// like "circular", "binding", "label", or "debug" that happen to contain 'a' or 'b'.
+///
+/// This test asserts that:
 /// 1. An error-level diagnostic is emitted containing 'circular' or 'cycle'
-///    and naming both `a` and `b`.
-/// 2. S.a and S.b are Value::Undef (they can't be evaluated).
+///    and naming both `count_x` and `count_y`.
+/// 2. S.count_x and S.count_y are absent or Value::Undef (they can't be evaluated).
 #[test]
 fn cyclic_let_bindings_emit_diagnostic() {
-    // let a = b + 1 (depends on S.b)
-    let a_expr = binop(
+    // let count_x = count_y + 1 (depends on S.count_y)
+    let count_x_expr = binop(
         BinOp::Add,
-        value_ref_typed("S", "b", Type::Int),
+        value_ref_typed("S", "count_y", Type::Int),
         literal(Value::Int(1)),
     );
-    // let b = a + 1 (depends on S.a)
-    let b_expr = binop(
+    // let count_y = count_x + 1 (depends on S.count_x)
+    let count_y_expr = binop(
         BinOp::Add,
-        value_ref_typed("S", "a", Type::Int),
+        value_ref_typed("S", "count_x", Type::Int),
         literal(Value::Int(1)),
     );
 
@@ -1351,8 +1405,8 @@ fn cyclic_let_bindings_emit_diagnostic() {
             Type::Int,
             Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
         )
-        .let_binding("S", "a", Type::Int, a_expr)
-        .let_binding("S", "b", Type::Int, b_expr)
+        .let_binding("S", "count_x", Type::Int, count_x_expr)
+        .let_binding("S", "count_y", Type::Int, count_y_expr)
         .is_recursive(true)
         .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
         .build();
@@ -1363,30 +1417,34 @@ fn cyclic_let_bindings_emit_diagnostic() {
     // omits nodes in cycles). They may be absent (None) or Undef depending on whether
     // the cycle detection writes Undef explicitly. Either is acceptable — the key is the
     // diagnostic.
-    let a_val = result.values.get(&ValueCellId::new("S", "a"));
+    let count_x_val = result.values.get(&ValueCellId::new("S", "count_x"));
     assert!(
-        a_val.is_none() || a_val == Some(&Value::Undef),
-        "S.a should be absent or Undef (circular dependency), got {:?}",
-        a_val,
+        count_x_val.is_none() || count_x_val == Some(&Value::Undef),
+        "S.count_x should be absent or Undef (circular dependency), got {:?}",
+        count_x_val,
     );
-    let b_val = result.values.get(&ValueCellId::new("S", "b"));
+    let count_y_val = result.values.get(&ValueCellId::new("S", "count_y"));
     assert!(
-        b_val.is_none() || b_val == Some(&Value::Undef),
-        "S.b should be absent or Undef (circular dependency), got {:?}",
-        b_val,
+        count_y_val.is_none() || count_y_val == Some(&Value::Undef),
+        "S.count_y should be absent or Undef (circular dependency), got {:?}",
+        count_y_val,
     );
 
-    // An error diagnostic should be emitted about the circular dependency.
+    // An error diagnostic should be emitted about the circular dependency,
+    // naming both `count_x` and `count_y` — tokens that cannot appear incidentally
+    // in unrelated diagnostic text.
     let has_cycle_error = result.diagnostics.iter().any(|d| {
         d.severity == Severity::Error
-            && (d.message.contains("circular") || d.message.contains("cycle"))
-            && d.message.contains("a")
-            && d.message.contains("b")
+            && (d.message.contains("circular")
+                || d.message.contains("cycle")
+                || d.message.contains("cyclic"))
+            && d.message.contains("count_x")
+            && d.message.contains("count_y")
     });
     assert!(
         has_cycle_error,
-        "Expected an error diagnostic about circular let-binding dependency naming 'a' and 'b', \
-         got: {:?}",
+        "Expected an error diagnostic about circular let-binding dependency \
+         naming 'count_x' and 'count_y', got: {:?}",
         result.diagnostics
     );
 }
@@ -1558,24 +1616,27 @@ fn missing_template_ref_emits_error_diagnostic() {
 // ─── Cycle diagnostic UX: template name in message ──────────────────────────
 
 /// The cyclic let-binding diagnostic should include the template name, not just
-/// the entity path. Format: 'in template S (entity S.child): [a, b]' to match
-/// the termination-check diagnostic style.
+/// the entity path. Format: 'in template S (entity S.child): [count_x, count_y]'
+/// to match the termination-check diagnostic style.
 ///
-/// This is a separate test from `cyclic_let_bindings_emit_diagnostic` which only
-/// checks for 'circular', 'a', and 'b'. This test specifically verifies the
-/// template name appears in the message.
+/// This is a separate test from `cyclic_let_bindings_emit_diagnostic` which checks
+/// for 'circular'/'cycle' and names 'count_x'/'count_y'. This test specifically
+/// verifies the template name appears in the message.
+///
+/// Binding names updated to count_x/count_y for consistency with the companion
+/// test (task 553 improvement #3).
 #[test]
 fn cyclic_let_binding_diagnostic_includes_template_name() {
-    // let a = b + 1 (depends on S.b)
-    let a_expr = binop(
+    // let count_x = count_y + 1 (depends on S.count_y)
+    let count_x_expr = binop(
         BinOp::Add,
-        value_ref_typed("S", "b", Type::Int),
+        value_ref_typed("S", "count_y", Type::Int),
         literal(Value::Int(1)),
     );
-    // let b = a + 1 (depends on S.a)
-    let b_expr = binop(
+    // let count_y = count_x + 1 (depends on S.count_x)
+    let count_y_expr = binop(
         BinOp::Add,
-        value_ref_typed("S", "a", Type::Int),
+        value_ref_typed("S", "count_x", Type::Int),
         literal(Value::Int(1)),
     );
 
@@ -1593,8 +1654,8 @@ fn cyclic_let_binding_diagnostic_includes_template_name() {
             Type::Int,
             Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
         )
-        .let_binding("S", "a", Type::Int, a_expr)
-        .let_binding("S", "b", Type::Int, b_expr)
+        .let_binding("S", "count_x", Type::Int, count_x_expr)
+        .let_binding("S", "count_y", Type::Int, count_y_expr)
         .is_recursive(true)
         .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
         .build();
@@ -1787,6 +1848,83 @@ fn non_recursive_child_guarded_sub_not_unfolded() {
         "A.b.c.y should NOT exist: B is not recursive, so Phase 2 should not \
          recursively unfold B's guarded sub 'c'. Got {:?}",
         result.values.get(&ValueCellId::new("A.b.c", "y"))
+    );
+}
+
+/// Phase 2 should NOT recursively unfold guarded subs of a non-recursive ROOT template.
+///
+/// This is the root-level counterpart to `non_recursive_child_guarded_sub_not_unfolded`.
+/// That test checks a non-recursive child nested inside a recursive parent; this test
+/// checks a non-recursive top-level template with no recursive ancestor at all.
+///
+/// Setup:
+///   Template S: is_recursive=false, param n: Int = 1, sub child = C(x: n) where n > 0
+///   Template C: param y: Int = 99
+///
+/// Evaluate (module-level evaluation iterates every template at the root frame; S is one
+/// of them and its guarded sub must not elaborate because is_recursive=false):
+///
+/// Assert: (a) S.n == 1 (Phase 1 params work normally)
+///         (b) S.child.y does NOT exist (Phase 2 must be gated on is_recursive at the top frame)
+///
+/// Task 553 improvement #4: root-level variant of the is_recursive guard.
+/// If S.child.y materialises, escalate as design_concern — Phase 2 is ignoring
+/// is_recursive at the root frame.
+#[test]
+fn non_recursive_top_level_guarded_sub_not_unfolded() {
+    // guard: n > 0  (references S.n)
+    let guard_s = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+
+    // Template S: is_recursive=false, param n: Int = 1, sub child = C(x: n) where n > 0
+    let template_s = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        )
+        .is_recursive(false)
+        .sub_component_with_guard(
+            "child",
+            "C",
+            vec![("x".to_string(), value_ref_typed("S", "n", Type::Int))],
+            guard_s,
+        )
+        .build();
+
+    // Template C: param y: Int = 99
+    let template_c = TopologyTemplateBuilder::new("C")
+        .param(
+            "C",
+            "y",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(99), Type::Int)),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_s)
+        .template(template_c)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // (a) S.n should be 1 (Phase 1 param evaluation works)
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S", "n")),
+        Some(&Value::Int(1)),
+        "S.n should be 1 (Phase 1 param evaluation)"
+    );
+
+    // (b) KEY ASSERTION: S.child.y should NOT exist because S is not recursive,
+    // so Phase 2 should not recursively unfold S's guarded sub `child`.
+    assert!(
+        !result.values.contains(&ValueCellId::new("S.child", "y")),
+        "S.child.y should NOT exist: S is not recursive, so Phase 2 should not \
+         recursively unfold S's guarded sub 'child'. Got {:?}",
+        result.values.get(&ValueCellId::new("S.child", "y"))
     );
 }
 

@@ -121,11 +121,73 @@ impl DimensionVector {
     pub const TIME: DimensionVector = DimensionVector::basis(2);
     pub const CURRENT: DimensionVector = DimensionVector::basis(3);
     pub const TEMPERATURE: DimensionVector = DimensionVector::basis(4);
+    pub const AMOUNT_OF_SUBSTANCE: DimensionVector = DimensionVector::basis(5);
+    pub const LUMINOUS_INTENSITY: DimensionVector = DimensionVector::basis(6);
     pub const ANGLE: DimensionVector = DimensionVector::basis(7);
+    pub const SOLID_ANGLE: DimensionVector = DimensionVector::basis(8);
 
     /// Common derived dimensions.
     pub const AREA: DimensionVector = DimensionVector::basis_n(0, 2);
     pub const VOLUME: DimensionVector = DimensionVector::basis_n(0, 3);
+
+    // Derived SI dimensions — built at const-eval time via direct exponent arrays.
+    //
+    // Index layout reminder (see struct doc):
+    //   0:Length  1:Mass  2:Time  3:Current  4:Temperature
+    //   5:AmountOfSubstance  6:LuminousIntensity  7:Angle  8:SolidAngle
+
+    /// Frequency: s⁻¹
+    pub const FREQUENCY: DimensionVector = DimensionVector::from_exps(&[(2, -1)]);
+    /// Force: kg·m·s⁻² (same as module-scope `FORCE` — kept in parallel for ergonomics).
+    pub const FORCE: DimensionVector =
+        DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -2)]);
+    /// Energy: kg·m²·s⁻²
+    pub const ENERGY: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2)]);
+    /// Power: kg·m²·s⁻³
+    pub const POWER: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -3)]);
+    /// Pressure: kg·m⁻¹·s⁻²
+    pub const PRESSURE: DimensionVector =
+        DimensionVector::from_exps(&[(0, -1), (1, 1), (2, -2)]);
+    /// Voltage (electric potential): kg·m²·s⁻³·A⁻¹
+    pub const VOLTAGE: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -3), (3, -1)]);
+    /// Charge: s·A
+    pub const CHARGE: DimensionVector = DimensionVector::from_exps(&[(2, 1), (3, 1)]);
+    /// Capacitance: kg⁻¹·m⁻²·s⁴·A²
+    pub const CAPACITANCE: DimensionVector =
+        DimensionVector::from_exps(&[(0, -2), (1, -1), (2, 4), (3, 2)]);
+    /// Resistance: kg·m²·s⁻³·A⁻²
+    pub const RESISTANCE: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -3), (3, -2)]);
+    /// Conductance: kg⁻¹·m⁻²·s³·A²
+    pub const CONDUCTANCE: DimensionVector =
+        DimensionVector::from_exps(&[(0, -2), (1, -1), (2, 3), (3, 2)]);
+    /// Inductance: kg·m²·s⁻²·A⁻²
+    pub const INDUCTANCE: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (3, -2)]);
+    /// Magnetic flux: kg·m²·s⁻²·A⁻¹
+    pub const MAGNETIC_FLUX: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2), (3, -1)]);
+    /// Magnetic flux density: kg·s⁻²·A⁻¹
+    pub const MAGNETIC_FLUX_DENSITY: DimensionVector =
+        DimensionVector::from_exps(&[(1, 1), (2, -2), (3, -1)]);
+    /// Luminous flux: cd·sr
+    pub const LUMINOUS_FLUX: DimensionVector =
+        DimensionVector::from_exps(&[(6, 1), (8, 1)]);
+    /// Illuminance: cd·sr·m⁻²
+    pub const ILLUMINANCE: DimensionVector =
+        DimensionVector::from_exps(&[(0, -2), (6, 1), (8, 1)]);
+    /// Absorbed dose of ionising radiation: m²·s⁻² (also Sievert for equivalent dose).
+    pub const ABSORBED_DOSE: DimensionVector =
+        DimensionVector::from_exps(&[(0, 2), (2, -2)]);
+    /// Angular velocity: rad·s⁻¹
+    pub const ANGULAR_VELOCITY: DimensionVector =
+        DimensionVector::from_exps(&[(2, -1), (7, 1)]);
+    /// Dynamic viscosity: kg·m⁻¹·s⁻¹
+    pub const DYNAMIC_VISCOSITY: DimensionVector =
+        DimensionVector::from_exps(&[(0, -1), (1, 1), (2, -1)]);
 
     const fn basis(index: usize) -> DimensionVector {
         let mut v = [Rational::ZERO; 9];
@@ -136,6 +198,20 @@ impl DimensionVector {
     const fn basis_n(index: usize, n: i16) -> DimensionVector {
         let mut v = [Rational::ZERO; 9];
         v[index] = Rational::new(n, 1);
+        DimensionVector(v)
+    }
+
+    /// Build a `DimensionVector` from `(index, integer_exponent)` pairs at
+    /// const-eval time. Intended for concise declaration of derived-dimension
+    /// constants (e.g. `ENERGY`, `VOLTAGE`).
+    const fn from_exps(entries: &[(usize, i16)]) -> DimensionVector {
+        let mut v = [Rational::ZERO; 9];
+        let mut i = 0;
+        while i < entries.len() {
+            let (idx, e) = entries[i];
+            v[idx] = Rational::new(e, 1);
+            i += 1;
+        }
         DimensionVector(v)
     }
 
@@ -328,6 +404,89 @@ mod tests {
             .mul(&DimensionVector::LENGTH)
             .mul(&DimensionVector::TIME.pow(-2));
         assert_eq!(f, FORCE);
+    }
+
+    #[test]
+    fn all_new_derived_dimensions_have_correct_exponents() {
+        // Helper: build a DimensionVector from (index, exponent) pairs.
+        let make = |entries: &[(usize, i16)]| {
+            let mut v = [Rational::ZERO; 9];
+            for (i, e) in entries {
+                v[*i] = Rational::new(*e, 1);
+            }
+            DimensionVector(v)
+        };
+
+        // Base-dimension constants that must exist.
+        assert_eq!(DimensionVector::AMOUNT_OF_SUBSTANCE, make(&[(5, 1)]));
+        assert_eq!(DimensionVector::LUMINOUS_INTENSITY, make(&[(6, 1)]));
+        assert_eq!(DimensionVector::SOLID_ANGLE, make(&[(8, 1)]));
+
+        // Derived-dimension constants.
+        // Frequency: s⁻¹
+        assert_eq!(DimensionVector::FREQUENCY, make(&[(2, -1)]));
+        // Energy: kg·m²·s⁻²
+        assert_eq!(DimensionVector::ENERGY, make(&[(0, 2), (1, 1), (2, -2)]));
+        // Power: kg·m²·s⁻³
+        assert_eq!(DimensionVector::POWER, make(&[(0, 2), (1, 1), (2, -3)]));
+        // Pressure: kg·m⁻¹·s⁻²
+        assert_eq!(DimensionVector::PRESSURE, make(&[(0, -1), (1, 1), (2, -2)]));
+        // Voltage: kg·m²·s⁻³·A⁻¹
+        assert_eq!(
+            DimensionVector::VOLTAGE,
+            make(&[(0, 2), (1, 1), (2, -3), (3, -1)])
+        );
+        // Charge: s·A
+        assert_eq!(DimensionVector::CHARGE, make(&[(2, 1), (3, 1)]));
+        // Capacitance: kg⁻¹·m⁻²·s⁴·A²
+        assert_eq!(
+            DimensionVector::CAPACITANCE,
+            make(&[(0, -2), (1, -1), (2, 4), (3, 2)])
+        );
+        // Resistance: kg·m²·s⁻³·A⁻²
+        assert_eq!(
+            DimensionVector::RESISTANCE,
+            make(&[(0, 2), (1, 1), (2, -3), (3, -2)])
+        );
+        // Conductance: kg⁻¹·m⁻²·s³·A²
+        assert_eq!(
+            DimensionVector::CONDUCTANCE,
+            make(&[(0, -2), (1, -1), (2, 3), (3, 2)])
+        );
+        // Inductance: kg·m²·s⁻²·A⁻²
+        assert_eq!(
+            DimensionVector::INDUCTANCE,
+            make(&[(0, 2), (1, 1), (2, -2), (3, -2)])
+        );
+        // Magnetic flux: kg·m²·s⁻²·A⁻¹
+        assert_eq!(
+            DimensionVector::MAGNETIC_FLUX,
+            make(&[(0, 2), (1, 1), (2, -2), (3, -1)])
+        );
+        // Magnetic flux density: kg·s⁻²·A⁻¹
+        assert_eq!(
+            DimensionVector::MAGNETIC_FLUX_DENSITY,
+            make(&[(1, 1), (2, -2), (3, -1)])
+        );
+        // Luminous flux: cd·sr
+        assert_eq!(DimensionVector::LUMINOUS_FLUX, make(&[(6, 1), (8, 1)]));
+        // Illuminance: cd·sr·m⁻²
+        assert_eq!(
+            DimensionVector::ILLUMINANCE,
+            make(&[(0, -2), (6, 1), (8, 1)])
+        );
+        // Absorbed dose: m²·s⁻²
+        assert_eq!(DimensionVector::ABSORBED_DOSE, make(&[(0, 2), (2, -2)]));
+        // Angular velocity: rad·s⁻¹
+        assert_eq!(
+            DimensionVector::ANGULAR_VELOCITY,
+            make(&[(2, -1), (7, 1)])
+        );
+        // Dynamic viscosity: kg·m⁻¹·s⁻¹
+        assert_eq!(
+            DimensionVector::DYNAMIC_VISCOSITY,
+            make(&[(0, -1), (1, 1), (2, -1)])
+        );
     }
 
     #[test]

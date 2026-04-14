@@ -104,6 +104,12 @@ pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueC
                 collect_body_refs_inner(hi, refs);
             }
         }
+        CompiledExprKind::AdHocSelector { base, args, .. } => {
+            collect_body_refs_inner(base, refs);
+            for arg in args {
+                collect_body_refs_inner(arg, refs);
+            }
+        }
     }
 }
 
@@ -269,20 +275,26 @@ pub(crate) fn compile_guarded_members(
                 let cell_type = scope
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
-                    .unwrap_or(Type::Real);
+                    .unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "internal compiler error: unresolved guarded member '{}' in pass 2",
+                                param.name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                param.span,
+                                "ICE: name should have been registered in pass 1",
+                            )),
+                        );
+                        Type::Real
+                    });
 
-                let is_auto = matches!(
-                    param.default.as_ref(),
-                    Some(reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::Auto,
-                        ..
-                    })
-                );
+                let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
-                let decl = if is_auto {
+                let decl = if let Some(free) = auto_free {
                     ValueCellDecl {
                         id,
-                        kind: ValueCellKind::Auto { free: false },
+                        kind: ValueCellKind::Auto { free },
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
@@ -375,6 +387,7 @@ pub(crate) fn compile_guarded_members(
                     expr: compiled_expr,
                     span: constraint.span,
                     domain: None,
+                    optimized_target: None,
                 });
                 *constraint_index += 1;
             }

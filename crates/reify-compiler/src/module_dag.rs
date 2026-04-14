@@ -236,8 +236,22 @@ pub fn compile_project(
         }
     }
 
-    // Compile the entry module itself
-    let compiled_entry = crate::compile(&parsed);
+    // Collect imported modules as prelude so their pub units (and other
+    // exported definitions) are visible in the entry module.
+    let preludes: Vec<CompiledModule> = parsed
+        .declarations
+        .iter()
+        .filter_map(|d| {
+            if let reify_syntax::Declaration::Import(import) = d {
+                dag.modules.get(&import.path).cloned()
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Compile the entry module with prelude context
+    let compiled_entry = crate::compile_with_prelude(&parsed, &preludes);
     let entry_key = entry_name.to_string();
     dag.topo_order.push(entry_key.clone());
     dag.modules.insert(entry_key, compiled_entry);

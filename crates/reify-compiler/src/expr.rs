@@ -1,5 +1,17 @@
 use super::*;
 
+/// Extract the `free` flag from an `ExprKind::Auto` expression.
+///
+/// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
+/// Used to detect auto-solved parameters and build `ValueCellKind::Auto` declarations.
+pub(crate) fn extract_auto_free(expr: &reify_syntax::Expr) -> Option<bool> {
+    if let reify_syntax::ExprKind::Auto { free } = &expr.kind {
+        Some(*free)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn compile_expr(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
@@ -360,13 +372,24 @@ pub(crate) fn compile_expr_guarded(
                     _ => {}
                 }
             }
-            // Infer the element type from whichever bound is present
+            // Infer the element type from whichever bound is present.
+            // NOTE: the parser (lower_range_expr) always provides both lower
+            // and upper via `?`, so both being None is an ICE path that is
+            // unreachable from user code.
             let element_type = compiled_lower
                 .as_ref()
                 .map(|e| &e.result_type)
                 .or_else(|| compiled_upper.as_ref().map(|e| &e.result_type))
                 .cloned()
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "internal compiler error: range has no bounds; cannot infer element type",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "ICE: no lower or upper bound")),
+                    );
+                    Type::Real
+                });
             let result_type = Type::range(element_type);
             CompiledExpr::range_constructor(
                 compiled_lower,
@@ -572,7 +595,19 @@ pub(crate) fn compile_expr_guarded(
                         compiled_args
                             .first()
                             .map(|a| a.result_type.clone())
-                            .unwrap_or(Type::Real)
+                            .unwrap_or_else(|| {
+                                diagnostics.push(
+                                    Diagnostic::warning(format!(
+                                        "cannot infer return type of zero-arg function '{}', defaulting to Real",
+                                        name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "zero-arg function: return type inferred as Real",
+                                    )),
+                                );
+                                Type::Real
+                            })
                     };
 
                     let content_hash = {
@@ -888,11 +923,19 @@ pub(crate) fn compile_expr_guarded(
                     )
                 })
                 .collect();
-            // Infer element type from first element, default to Real for empty lists
+            // Infer element type from first element, warn and default to Real for empty lists
             let elem_type = compiled_elems
                 .first()
                 .map(|e| e.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "cannot infer element type of empty list literal, defaulting to Real",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "empty list")),
+                    );
+                    Type::Real
+                });
             let result_type = Type::List(Box::new(elem_type));
             CompiledExpr::list_literal(compiled_elems, result_type)
         }
@@ -914,7 +957,15 @@ pub(crate) fn compile_expr_guarded(
             let elem_type = compiled_elems
                 .first()
                 .map(|e| e.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "cannot infer element type of empty set literal, defaulting to Real",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "empty set")),
+                    );
+                    Type::Real
+                });
             let result_type = Type::Set(Box::new(elem_type));
             CompiledExpr::set_literal(compiled_elems, result_type)
         }
@@ -946,11 +997,23 @@ pub(crate) fn compile_expr_guarded(
             let key_type = compiled_entries
                 .first()
                 .map(|(k, _)| k.result_type.clone())
-                .unwrap_or(Type::String);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "cannot infer key type of empty map literal, defaulting to String",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "empty map")),
+                    );
+                    Type::String
+                });
             let val_type = compiled_entries
                 .first()
                 .map(|(_, v)| v.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    // Warning already emitted for empty map at key_type step above;
+                    // no second warning needed for the value type.
+                    Type::Real
+                });
             let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
             CompiledExpr::map_literal(compiled_entries, result_type)
         }
@@ -1039,11 +1102,21 @@ pub(crate) fn compile_expr_guarded(
                 })
                 .collect();
 
-            // Result type from the first arm's body
+            // Result type from the first arm's body.
+            // NOTE: the grammar requires at least one arm so an empty arms
+            // list is an ICE path unreachable from user code.
             let result_type = compiled_arms
                 .first()
                 .map(|a| a.body.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "internal compiler error: match expression has no arms; cannot infer result type",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "ICE: match with no arms")),
+                    );
+                    Type::Real
+                });
 
             // Exhaustiveness check: if discriminant is a known enum type,
             // verify all variants are covered by arm patterns or a wildcard.
@@ -1099,7 +1172,7 @@ pub(crate) fn compile_expr_guarded(
                 content_hash,
             }
         }
-        reify_syntax::ExprKind::Auto => {
+        reify_syntax::ExprKind::Auto { .. } => {
             // Auto expressions should not appear inside compile_expr — they are
             // handled at the param compilation level. If we reach here, emit an
             // Undef literal as a safe fallback.
@@ -1281,13 +1354,155 @@ pub(crate) fn compile_expr_guarded(
                 compiled_predicate,
             )
         }
-        // AdHocSelector compiler support is implemented in a separate task.
-        reify_syntax::ExprKind::AdHocSelector { .. } => {
-            diagnostics.push(
-                Diagnostic::error("ad-hoc selector (@) is not yet supported in the compiler")
-                    .with_label(DiagnosticLabel::new(expr.span, "not yet supported")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+        reify_syntax::ExprKind::AdHocSelector {
+            base,
+            selector,
+            args,
+        } => {
+            // Resolve selector kind
+            let selector_kind = match selector.as_str() {
+                "face" => Some(SelectorKind::Face),
+                "point" => Some(SelectorKind::Point),
+                "edge" => Some(SelectorKind::Edge),
+                unknown => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unknown selector kind '@{}'; expected face, point, or edge",
+                            unknown
+                        ))
+                        .with_label(DiagnosticLabel::new(expr.span, "unknown selector")),
+                    );
+                    None
+                }
+            };
+
+            let Some(selector_kind) = selector_kind else {
+                return CompiledExpr::literal(Value::Undef, Type::Real);
+            };
+
+            // Validate argument count and types per selector kind
+            match selector_kind {
+                SelectorKind::Face | SelectorKind::Edge => {
+                    if args.len() != 1 {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "@{} expects exactly 1 argument (a string name), got {}",
+                                selector, args.len()
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "wrong argument count")),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                    }
+                    // Check that the argument is a string literal (type check)
+                    if let reify_syntax::ExprKind::NumberLiteral(_) = &args[0].kind
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "@{} expects a string argument for the face/edge name, got a numeric type",
+                                selector
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                args[0].span,
+                                "expected string",
+                            )),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                    }
+                }
+                SelectorKind::Point => {
+                    if args.len() != 3 {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "@point expects exactly 3 coordinate arguments, got {}",
+                                args.len()
+                            ))
+                            .with_label(DiagnosticLabel::new(expr.span, "wrong argument count")),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                    }
+                }
+            }
+
+            // Geometry availability check: @face/@edge on a direct port in the current
+            // scope requires the structure to have geometry declarations.
+            if matches!(selector_kind, SelectorKind::Face | SelectorKind::Edge) {
+                let is_direct_port = matches!(&base.kind, reify_syntax::ExprKind::Ident(name) if scope.port_names.contains(name.as_str()));
+                if is_direct_port && !scope.has_geometry {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "@{} requires the structure to have geometry, but no geometry declarations found",
+                            selector
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "no geometry in this structure",
+                        )),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+            }
+
+            // Resolve the base expression as a port reference. Ports are not
+            // regular value cells so we compile the base to a string literal
+            // containing the port path. The evaluator (task 250) interprets
+            // this to find the geometry context.
+            let compiled_base = match &base.kind {
+                reify_syntax::ExprKind::Ident(name) => {
+                    // Validate: must be a known port or a scope variable (e.g. forall var)
+                    if !scope.port_names.contains(name.as_str())
+                        && scope.resolve(name).is_none()
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unresolved port or variable '{}' in ad-hoc selector",
+                                name
+                            ))
+                            .with_label(DiagnosticLabel::new(base.span, "unknown name")),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                    }
+                    CompiledExpr::literal(Value::String(name.clone()), Type::String)
+                }
+                reify_syntax::ExprKind::MemberAccess { object, member } => {
+                    // Sub-component or variable member: "sub.port" or "var.port"
+                    if let reify_syntax::ExprKind::Ident(obj_name) = &object.kind {
+                        CompiledExpr::literal(
+                            Value::String(format!("{}.{}", obj_name, member)),
+                            Type::String,
+                        )
+                    } else {
+                        // Complex base expression — compile normally
+                        compile_expr_guarded(
+                            base, scope, enum_defs, functions, diagnostics,
+                            current_guard, lambda_counter,
+                        )
+                    }
+                }
+                _ => {
+                    // Anything else — compile normally
+                    compile_expr_guarded(
+                        base, scope, enum_defs, functions, diagnostics,
+                        current_guard, lambda_counter,
+                    )
+                }
+            };
+
+            let compiled_args: Vec<CompiledExpr> = args
+                .iter()
+                .map(|arg| {
+                    compile_expr_guarded(
+                        arg,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        current_guard,
+                        lambda_counter,
+                    )
+                })
+                .collect();
+
+            CompiledExpr::ad_hoc_selector(compiled_base, selector_kind, compiled_args)
         }
         reify_syntax::ExprKind::QualifiedAccess { qualifier, member } => {
             // Resolve `TraitName::member` to the member's ValueCellId in the current scope.
@@ -1442,12 +1657,27 @@ pub(crate) fn compile_expr_guarded(
             let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
             let id = ValueCellId::new(&scoped_entity, &member);
             // Infer member type from the sub's structure member types if available.
+            // sub_member_types covers ALL subs (collection and non-collection), so it is
+            // the authoritative source here.  If a sub exists but the member is missing,
+            // the invariant is violated and the ICE branch below is the correct outcome.
             let ty = scope
-                .collection_sub_member_types
+                .sub_member_types
                 .get(&sub_name)
                 .and_then(|m| m.get(&member))
                 .cloned()
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "internal compiler error: unresolved sub-member type for '{}.{}'",
+                            sub_name, member
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "ICE: sub-member type not registered",
+                        )),
+                    );
+                    Type::Real
+                });
             CompiledExpr::value_ref(id, ty)
         }
     }

@@ -754,10 +754,10 @@ mod tests {
         Url::parse("file:///test.ri").unwrap()
     }
 
+    const GUARDED_GROUP_SOURCE: &str = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n}";
+
     // --- step-9: completion tests ---
 
-    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
-    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_keywords() {
         let source = reify_test_support::bracket_source();
@@ -784,8 +784,6 @@ mod tests {
         // (a top-level keyword) is not expected here after position-aware narrowing.
     }
 
-    // TODO(task-2): Position(7,17) is Expression context. When position-sensitive
-    // filtering lands, verify these assertions still hold in Expression context.
     #[test]
     fn completions_include_scope_identifiers() {
         let source = reify_test_support::bracket_source();
@@ -818,8 +816,6 @@ mod tests {
         );
     }
 
-    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
-    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_structure_names() {
         let source = reify_test_support::bracket_source();
@@ -834,8 +830,6 @@ mod tests {
         );
     }
 
-    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
-    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_builtin_functions() {
         let source = reify_test_support::bracket_source();
@@ -884,8 +878,6 @@ mod tests {
         );
     }
 
-    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
-    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_type_names() {
         let source = reify_test_support::bracket_source();
@@ -923,8 +915,6 @@ mod tests {
         );
     }
 
-    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
-    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_occurrence_names() {
         let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
@@ -939,10 +929,7 @@ mod tests {
         );
     }
 
-    // --- position-sensitive completion tests (task 481) ---
-    // These tests assert that completions are context-sensitive based on cursor position.
-    // They are #[ignore] because the current implementation returns everything everywhere;
-    // task 2 will implement position-sensitive filtering to make them pass.
+    // --- position-sensitive completion tests ---
 
     #[test]
     fn completion_top_level_excludes_body_keywords() {
@@ -1497,18 +1484,79 @@ mod tests {
         );
     }
 
+    /// Spot-check that one representative (source, position) pair per `CursorContext`
+    /// variant resolves to the expected context. Intentionally covers every variant of
+    /// the enum — including `DotAccess`, `TypePosition`, and `TopLevel` which also have
+    /// dedicated per-variant `determine_context_*` tests — so that this table acts as a
+    /// single compact regression guard for all branches simultaneously. The overlap with
+    /// per-variant tests is deliberate: it ensures no future refactor silently breaks one
+    /// branch without this table catching it.
+    #[test]
+    fn determine_context_at_sampled_positions() {
+        let check = |source: &str,
+                     pos: Position,
+                     label: &str,
+                     matcher: fn(&CursorContext) -> bool| {
+            let ctx = AnalysisContext::new(source, &test_uri());
+            let result = determine_context(source, pos, &ctx);
+            assert!(matcher(&result), "expected {} @ {:?}, got {:?}", label, pos, result);
+        };
+        // (a) bracket_source() @ Position(1,0) → StructureBody
+        check(
+            reify_test_support::bracket_source(),
+            Position::new(1, 0),
+            "bracket_source/StructureBody",
+            |r| matches!(r, CursorContext::StructureBody { .. }),
+        );
+        // (b) bracket_source() @ Position(7,17) → Expression
+        check(
+            reify_test_support::bracket_source(),
+            Position::new(7, 17),
+            "bracket_source/Expression",
+            |r| matches!(r, CursorContext::Expression { .. }),
+        );
+        // (c) occurrence def Joint source @ Position(1,0) → StructureBody
+        check(
+            "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}",
+            Position::new(1, 0),
+            "Joint occurrence/StructureBody",
+            |r| matches!(r, CursorContext::StructureBody { .. }),
+        );
+        // (d) guarded-group source @ Position(1,0) → StructureBody
+        check(
+            GUARDED_GROUP_SOURCE,
+            Position::new(1, 0),
+            "guarded-group/StructureBody",
+            |r| matches!(r, CursorContext::StructureBody { .. }),
+        );
+        // (e) dot-access source @ Position(3,18) → DotAccess
+        check(
+            "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}",
+            Position::new(3, 18),
+            "dot-access/DotAccess",
+            |r| matches!(r, CursorContext::DotAccess),
+        );
+        // (f) type-position source @ Position(1,13) → TypePosition
+        check(
+            "structure Foo {\n    param x: \n}",
+            Position::new(1, 13),
+            "type-position/TypePosition",
+            |r| matches!(r, CursorContext::TypePosition),
+        );
+        // (g) top-level source @ Position(3,0) → TopLevel
+        check(
+            "structure Foo {\n    param x: Scalar = 1mm\n}\n",
+            Position::new(3, 0),
+            "top-level/TopLevel",
+            |r| matches!(r, CursorContext::TopLevel),
+        );
+    }
+
     // --- guarded-group completion tests ---
 
-    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
-    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_guarded_group_members() {
-        let source = r#"structure S {
-    param cond : Bool = true
-    where cond {
-        param guarded_x : Scalar = 5mm
-    }
-}"#;
+        let source = GUARDED_GROUP_SOURCE;
         let items = compute_completions(source, &test_uri(), Position::new(1, 0));
         let variables: Vec<_> = items
             .iter()
@@ -1527,8 +1575,6 @@ mod tests {
 
     // --- linalg builtin completions (step-11) ---
 
-    // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
-    // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]
     fn completions_include_linalg_functions() {
         let source = reify_test_support::bracket_source();

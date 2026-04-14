@@ -277,11 +277,10 @@ fn message_context_with_all_fields_serializes() {
 }
 
 #[test]
-fn ipc_types_are_clone_debug_partialeq() {
-    fn assert_traits<T: Clone + std::fmt::Debug + PartialEq>() {}
-    assert_traits::<InboundMessage>();
-    assert_traits::<OutboundMessage>();
-    assert_traits::<MessageContext>();
+fn ipc_types_satisfy_full_contract() {
+    super::assert_ipc_contract::<InboundMessage>();
+    super::assert_ipc_contract::<OutboundMessage>();
+    super::assert_ipc_contract::<MessageContext>();
 }
 
 // --- parse_outbound tests (step-5) ---

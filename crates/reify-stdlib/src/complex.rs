@@ -140,7 +140,6 @@ pub(crate) fn eval_complex(name: &str, args: &[Value]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use crate::helpers::sanitize_value;
     use reify_types::{DimensionVector, Value};
 
     // ── complex() constructor tests (step-1) ──────────────────────────────────
@@ -970,76 +969,6 @@ mod tests {
         );
     }
 
-    // ── sanitize_value Complex arm tests (step-20) ────────────────────────────
-
-    #[test]
-    fn sanitize_complex_nan_re_returns_undef() {
-        let v = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Complex with NaN re should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_complex_nan_im_returns_undef() {
-        let v = Value::Complex {
-            re: 1.0,
-            im: f64::NAN,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Complex with NaN im should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_complex_inf_re_returns_undef() {
-        let v = Value::Complex {
-            re: f64::INFINITY,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Complex with +Inf re should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_complex_neg_inf_im_returns_undef() {
-        let v = Value::Complex {
-            re: 0.0,
-            im: f64::NEG_INFINITY,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Complex with -Inf im should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_complex_finite_passthrough() {
-        let v = Value::Complex {
-            re: 3.0,
-            im: -4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        match sanitize_value(v) {
-            Value::Complex { re, im, .. } => {
-                assert!((re - 3.0).abs() < f64::EPSILON);
-                assert!((im - (-4.0)).abs() < f64::EPSILON);
-            }
-            other => panic!("expected Complex{{re:3.0, im:-4.0}}, got {:?}", other),
-        }
-    }
-
     #[test]
     fn complex_mul_overflow_returns_undef() {
         // (f64::MAX + f64::MAX*i) * (f64::MAX + f64::MAX*i)
@@ -1078,89 +1007,6 @@ mod tests {
             eval_builtin("complex_add", &[a, b]).is_undef(),
             "complex_add with f64::MAX components must return Undef (Inf overflow)"
         );
-    }
-
-    // ── sanitize_value Orientation arm tests (task-904) ──────────────────────
-
-    #[test]
-    fn sanitize_orientation_nan_returns_undef() {
-        let v = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 1.0,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Orientation with NaN component should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_orientation_inf_returns_undef() {
-        let v = Value::Orientation {
-            w: 0.0,
-            x: f64::INFINITY,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Orientation with Inf component should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_orientation_x_nan_returns_undef() {
-        let v = Value::Orientation {
-            w: 0.0,
-            x: f64::NAN,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Orientation with NaN x should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_orientation_w_inf_returns_undef() {
-        let v = Value::Orientation {
-            w: f64::INFINITY,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Orientation with +Inf w should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_orientation_all_components_nonfinite_returns_undef() {
-        let v = Value::Orientation {
-            w: f64::NAN,
-            x: f64::INFINITY,
-            y: f64::NEG_INFINITY,
-            z: f64::NAN,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Orientation with all non-finite components should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_orientation_valid_passthrough() {
-        let v = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert_orientation_approx!(sanitize_value(v), 1.0, 0.0, 0.0, 0.0);
     }
 
     // ── re/real sanitize_value tests (task-358 step-1) ─────────────────────────

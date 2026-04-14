@@ -8,10 +8,10 @@
 //! unreachable through .ri source (e.g., Provisional).
 
 use reify_eval::Engine;
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_test_support::{make_engine, parse_and_compile};
 use reify_types::{
-    CompiledExpr, CompiledExprKind, ContentHash, DeterminacyPredicateKind, ModulePath,
-    Satisfaction, Severity, Type, Value, ValueCellId,
+    CompiledExpr, CompiledExprKind, ContentHash, DeterminacyPredicateKind, Satisfaction, Type,
+    Value, ValueCellId,
 };
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -22,32 +22,10 @@ const EXAMPLE_PATH: &str = concat!(
 
 // -- Helper -------------------------------------------------------------------
 
-/// Parse source, assert no parse errors, compile, assert no compile errors.
-/// Returns the compiled module.
-fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    compiled
-}
-
 /// Parse, compile, eval, and return the result values map.
 fn eval_source(source: &str) -> reify_types::ValueMap {
     let compiled = parse_and_compile(source);
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
     result.values
 }
@@ -589,8 +567,7 @@ fn determinacy_in_constraint() {
         }
     "#;
     let compiled = parse_and_compile(source);
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let _eval = engine.eval(&compiled);
     let check = engine.check(&compiled);
 
@@ -634,8 +611,7 @@ fn determinacy_ri_all_constraints_satisfied() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let _eval = engine.eval(&compiled);
 
     let check = engine.check(&compiled);
@@ -893,8 +869,7 @@ fn simple_constraint_checker_evaluates_determinacy_predicate() {
     let compiled = parse_and_compile(source);
 
     // Eval to get the snapshot values (which include determinacy states).
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let eval_result = engine.eval(&compiled);
 
     // Get constraint expression from the compiled template.

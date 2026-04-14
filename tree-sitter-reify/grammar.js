@@ -414,7 +414,14 @@ module.exports = grammar({
     ),
 
     // ── Auto keyword (for solver-determined params) ───────
-    auto_keyword: $ => 'auto',
+    // Accepts bare `auto` or `auto(free)`.  The presence of the `modifier`
+    // field child indicates the free modifier is present.  The longer
+    // `auto(free)` form is given higher precedence to resolve the shift-reduce
+    // conflict that arises when `(` immediately follows `auto`.
+    auto_keyword: $ => choice(
+      prec(1, seq('auto', '(', field('modifier', 'free'), ')')),
+      'auto',
+    ),
 
     // ── Let ─────────────────────────────────────────────────
     let_declaration: $ => seq(

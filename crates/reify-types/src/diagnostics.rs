@@ -120,3 +120,22 @@ impl DiagnosticLabel {
 pub struct DiagnosticRef {
     pub index: usize,
 }
+
+/// A diagnostic (error/warning) projected to human-readable line/column positions.
+///
+/// This is a presentation type — it holds 1-based `line`/`column` positions
+/// derived from `SourceSpan` byte-offsets via `byte_offset_to_line_col`.
+/// It lives in reify-types (not reify-mcp) so that the engine layer can produce
+/// it without importing from the MCP adapter layer.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DiagnosticInfo {
+    pub file_path: String,
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub severity: String,
+    pub message: String,
+    pub code: Option<String>,
+}

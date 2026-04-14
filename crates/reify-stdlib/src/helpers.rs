@@ -1,4 +1,4 @@
-use reify_types::{DimensionVector, Value};
+use reify_types::{DimensionVector, Value, quaternion_is_finite};
 
 /// Apply a function to a single argument (by reference, for pattern matching).
 pub(crate) fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
@@ -75,19 +75,14 @@ pub(crate) fn quinary_f64(
 /// `unary_f64` and `binary_f64` to ensure domain errors (e.g., sqrt(-1),
 /// log(0), exp(1000) overflow) produce Undef instead of silently propagating
 /// NaN or infinity through the evaluation graph.
-// SYNC: mirror of reify-expr::sanitize_value — keep in sync
+// SYNC: mirror of reify-expr::sanitize_value — keep function AND tests in sync
+// NOTE: Orientation arm uses reify_types::quaternion_is_finite (shared predicate)
 pub(crate) fn sanitize_value(v: Value) -> Value {
     match &v {
-        Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
-        Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
-            Value::Undef
-        }
+        Value::Real(x) if !x.is_finite() => Value::Undef,
+        Value::Scalar { si_value, .. } if !si_value.is_finite() => Value::Undef,
         Value::Complex { re, im, .. } if !re.is_finite() || !im.is_finite() => Value::Undef,
-        Value::Orientation { w, x, y, z }
-            if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() =>
-        {
-            Value::Undef
-        }
+        Value::Orientation { w, x, y, z } if !quaternion_is_finite(*w, *x, *y, *z) => Value::Undef,
         _ => v,
     }
 }
@@ -154,4 +149,786 @@ pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVec
         }
     }
     Some((vals, first_dim))
+}
+
+// SYNC: mirror of reify-expr::sanitize.rs tests — keep in sync
+#[cfg(test)]
+mod tests {
+    use reify_types::DimensionVector;
+
+    use super::*;
+
+    fn assert_extraction(
+        input: &Value,
+        expected_vals: &[f64],
+        expected_dim: DimensionVector,
+        label: &str,
+    ) {
+        let (vals, dim) = tensor_components_f64(input)
+            .unwrap_or_else(|| panic!("{}: expected Some but got None", label));
+        assert_eq!(
+            vals.len(),
+            expected_vals.len(),
+            "{}: expected {} components but got {}",
+            label,
+            expected_vals.len(),
+            vals.len()
+        );
+        for (i, (&actual, &expected)) in vals.iter().zip(expected_vals.iter()).enumerate() {
+            assert!(
+                (actual - expected).abs() < f64::EPSILON,
+                "{}: vals[{}] expected {} but got {}",
+                label,
+                i,
+                expected,
+                actual
+            );
+        }
+        assert_eq!(dim, expected_dim, "{}: dimension mismatch", label);
+    }
+
+    // ── tensor_components_f64 rejection: non-container types ─────────────────
+
+    #[test]
+    fn tensor_components_f64_real_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Real(1.0)).is_none(),
+            "Real value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_int_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Int(42)).is_none(),
+            "Int value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_undef_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Undef).is_none(),
+            "Undef value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_bool_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Bool(true)).is_none(),
+            "Bool value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_string_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::String("hello".to_string())).is_none(),
+            "String value should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_list_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::List(vec![Value::Real(1.0)])).is_none(),
+            "List value should return None"
+        );
+    }
+
+    // ── tensor_components_f64 rejection: empty containers ────────────────────
+
+    #[test]
+    fn tensor_components_f64_empty_tensor_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Tensor(vec![])).is_none(),
+            "Empty Tensor should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_empty_point_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Point(vec![])).is_none(),
+            "Empty Point should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_empty_vector_returns_none() {
+        assert!(
+            tensor_components_f64(&Value::Vector(vec![])).is_none(),
+            "Empty Vector should return None"
+        );
+    }
+
+    // ── tensor_components_f64 rejection: non-numeric components ──────────────
+
+    #[test]
+    fn tensor_components_f64_vector_with_string_component_returns_none() {
+        let v = Value::Vector(vec![Value::String("x".to_string())]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector containing a String component should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_tensor_with_bool_component_returns_none() {
+        let v = Value::Tensor(vec![Value::Bool(true)]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Tensor containing a Bool component should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_vector_with_complex_component_returns_none() {
+        let v = Value::Vector(vec![Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector containing a Complex component should return None"
+        );
+    }
+
+    // ── tensor_components_f64 rejection: mixed dimensions ────────────────────
+
+    #[test]
+    fn tensor_components_f64_vector_mixed_dimensionless_and_length_returns_none() {
+        // First element is dimensionless (Real), second is LENGTH (Scalar).
+        let v = Value::Vector(vec![
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Vector mixing DIMENSIONLESS and LENGTH should return None"
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_tensor_mixed_length_and_mass_returns_none() {
+        let v = Value::Tensor(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
+        assert!(
+            tensor_components_f64(&v).is_none(),
+            "Tensor mixing LENGTH and MASS should return None"
+        );
+    }
+
+    // ── tensor_components_f64 success: valid extraction paths ────────────────
+
+    #[test]
+    fn tensor_components_f64_vector_of_reals_returns_values_and_dimensionless() {
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        assert_extraction(
+            &v,
+            &[1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
+            "Vector of Reals",
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_point_of_length_scalars_returns_values_and_length() {
+        let v = Value::Point(vec![
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert_extraction(
+            &v,
+            &[0.5, 1.5],
+            DimensionVector::LENGTH,
+            "Point of LENGTH Scalars",
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_single_element_tensor_of_int_returns_value_and_dimensionless() {
+        let v = Value::Tensor(vec![Value::Int(7)]);
+        assert_extraction(
+            &v,
+            &[7.0],
+            DimensionVector::DIMENSIONLESS,
+            "single-element Tensor of Int",
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_vector_of_mass_scalars_returns_values_and_mass() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 2.5,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
+        assert_extraction(
+            &v,
+            &[1.5, 2.5],
+            DimensionVector::MASS,
+            "Vector of MASS Scalars",
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_tensor_of_reals_returns_values_and_dimensionless() {
+        let v = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        assert_extraction(
+            &v,
+            &[1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
+            "Tensor of Reals",
+        );
+    }
+
+    #[test]
+    fn tensor_components_f64_vector_of_length_scalars_returns_values_and_length() {
+        let v = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 0.1,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.2,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.3,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert_extraction(
+            &v,
+            &[0.1, 0.2, 0.3],
+            DimensionVector::LENGTH,
+            "Vector of LENGTH Scalars",
+        );
+    }
+
+    #[test]
+    fn assert_extraction_borrows_input_allowing_reuse() {
+        // Passing &v must compile; after the call v must still be accessible.
+        let v = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert_extraction(
+            &v,
+            &[1.0, 2.0],
+            DimensionVector::DIMENSIONLESS,
+            "reuse test",
+        );
+        // v is still owned — reuse it here to prove it was not moved.
+        assert!(format!("{:?}", v).contains("Real"));
+    }
+
+    #[test]
+    fn assert_extraction_borrow_allows_reuse() {
+        // Construct v as an owned binding so we can pass &v and still use v afterward.
+        let v = Value::Vector(vec![Value::Real(1.0)]);
+        assert_extraction(&v, &[1.0], DimensionVector::DIMENSIONLESS, "borrow-reuse");
+        // Reusing v after the call is the whole point of the &Value signature.
+        assert!(matches!(v, Value::Vector(_)));
+    }
+
+    // SYNC: sanitize_value tests mirrored in reify-expr::sanitize tests — keep in sync
+
+    // ── sanitize_value Real arm characterization tests ───────────────────────
+
+    #[test]
+    fn sanitize_real_nan_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::NAN)).is_undef(),
+            "Real(NaN) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_inf_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::INFINITY)).is_undef(),
+            "Real(+Inf) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_neg_inf_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::NEG_INFINITY)).is_undef(),
+            "Real(-Inf) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_finite_passthrough() {
+        assert_eq!(
+            sanitize_value(Value::Real(2.72)),
+            Value::Real(2.72),
+            "Real(2.72) must pass through bit-identical"
+        );
+    }
+
+    // ── sanitize_value Scalar arm characterization tests ─────────────────────
+
+    #[test]
+    fn sanitize_scalar_nan_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with NaN si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_inf_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::INFINITY,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with +Inf si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_neg_inf_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::NEG_INFINITY,
+            dimension: DimensionVector::MASS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with -Inf si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_finite_passthrough() {
+        assert_eq!(
+            sanitize_value(Value::Scalar {
+                si_value: 0.001,
+                dimension: DimensionVector::LENGTH,
+            }),
+            Value::Scalar {
+                si_value: 0.001,
+                dimension: DimensionVector::LENGTH,
+            },
+            "Scalar(0.001, LENGTH) must pass through bit-identical"
+        );
+    }
+
+    // ── sanitize_value Complex arm characterization tests ─────────────────────
+
+    #[test]
+    fn sanitize_complex_nan_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with NaN re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_nan_im_returns_undef() {
+        let v = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with NaN im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_inf_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::INFINITY,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with +Inf re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_neg_inf_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::NEG_INFINITY,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with -Inf re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_inf_im_returns_undef() {
+        let v = Value::Complex {
+            re: 0.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with +Inf im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_neg_inf_im_returns_undef() {
+        let v = Value::Complex {
+            re: 0.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with -Inf im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_finite_passthrough() {
+        assert_eq!(
+            sanitize_value(Value::Complex {
+                re: 3.0,
+                im: -4.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }),
+            Value::Complex {
+                re: 3.0,
+                im: -4.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            "Complex(3.0, -4.0) must pass through bit-identical"
+        );
+    }
+
+    // ── sanitize_value Orientation arm characterization tests ─────────────────
+
+    #[test]
+    fn sanitize_orientation_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN w should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::INFINITY,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with +Inf x should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_neg_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: f64::NEG_INFINITY,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with -Inf z should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_nan_y_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: f64::NAN,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN y should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_x_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::NAN,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN x should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_w_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::INFINITY,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with +Inf w should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_z_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: f64::NAN,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN z should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_w_neg_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NEG_INFINITY,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with -Inf w should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_x_neg_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::NEG_INFINITY,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with -Inf x should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_y_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: f64::INFINITY,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with +Inf y should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_y_neg_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: f64::NEG_INFINITY,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with -Inf y should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_z_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: f64::INFINITY,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with +Inf z should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_all_components_nonfinite_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NAN,
+            x: f64::INFINITY,
+            y: f64::NEG_INFINITY,
+            z: f64::NAN,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with all non-finite components should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_valid_passthrough() {
+        assert_eq!(
+            sanitize_value(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            "Identity orientation must pass through bit-identical"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_non_identity_passthrough() {
+        // Unit quaternion (0.5, 0.5, 0.5, 0.5) — 120° rotation about (1,1,1)/√3.
+        // All components are exact f64 (0.5 = 2^-1), so assert_eq! is safe.
+        let v = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        assert_eq!(
+            sanitize_value(v),
+            Value::Orientation {
+                w: 0.5,
+                x: 0.5,
+                y: 0.5,
+                z: 0.5
+            },
+            "Finite non-identity orientation must pass through unchanged"
+        );
+    }
+
+    // ── sanitize_value wildcard arm (`_ => v`) characterization tests ─────────
+    // Note: *_finite_passthrough tests in the per-variant sections above also
+    // exercise this arm — finite values skip all guarded arms and reach `_ => v`.
+
+    #[test]
+    fn sanitize_undef_returns_undef() {
+        assert_eq!(
+            sanitize_value(Value::Undef),
+            Value::Undef,
+            "Undef is idempotent: sanitize_value(Undef) must return Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_wildcard_variants_passthrough() {
+        // Smoke test: representative `_ => v` variants pass through bit-identical.
+        // Bool(true/false), Int, String, Vector, Frame, List, and Transform sample seven of ~25
+        // variants that all hit the wildcard arm. Container/struct payloads intentionally carry
+        // NaN components as a non-recursion tripwire: if sanitize_value were changed to
+        // recurse into children, the inner NaN would become Undef and the assert_eq!
+        // below would fail. (Value::PartialEq uses to_bits(), so NaN == NaN here.)
+        // The *_finite_passthrough tests above cover the guarded arms.
+        let cases = [
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Int(0),
+            Value::String("x".to_string()),
+            Value::Vector(vec![Value::Real(f64::NAN)]),
+            Value::Frame {
+                origin: Box::new(Value::Point(vec![
+                    Value::Real(f64::NAN),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ])),
+                basis: Box::new(Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+            },
+            Value::List(vec![Value::Real(f64::NAN)]),
+            Value::Transform {
+                rotation: Box::new(Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+                translation: Box::new(Value::Vector(vec![
+                    Value::Real(f64::NAN),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ])),
+            },
+        ];
+        for v in &cases {
+            assert_eq!(
+                sanitize_value(v.clone()),
+                *v,
+                "wildcard variant {:?} must pass through unchanged",
+                v
+            );
+        }
+    }
 }
