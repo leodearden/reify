@@ -128,12 +128,47 @@ fn geom_ready_purpose_compiled_and_activatable() {
 /// Regression guard: a deliberately invalid source produces at least one Violated result.
 /// Mutates `constraint tx > 0mm` → `constraint tx > 1000mm` (tx = 100mm, so 100 > 1000 is false).
 /// Asserts: (1) the substitution changed the source (guards against target drift),
-///          (2) at least one constraint_result is Satisfied::Violated,
+///          (2) at least one constraint_result is Satisfaction::Violated,
 ///          (3) total count is still >= 15 (checker did not short-circuit).
 /// Mirrors m9_combined.rs::violated_constraint_detected.
 #[test]
 fn violated_constraint_detected() {
-    todo!("step-22 impl: mutate source, check, assert >= 1 Violated result")
+    // tx defaults to 100mm; raise the bound to 1000mm so 100mm > 1000mm is false (VIOLATED).
+    let violating = source().replace(
+        "constraint tx > 0mm",
+        "constraint tx > 1000mm",
+    );
+
+    // Guard: confirm the substitution actually happened.
+    // If this assertion fires, the target substring drifted; update the replace call.
+    assert_ne!(
+        violating,
+        source(),
+        "replace target drifted — 'constraint tx > 0mm' not found in source; update the test"
+    );
+
+    let check_result = check_source(&violating);
+
+    // Full check must still produce >= 15 results (not short-circuited by a compile error)
+    assert!(
+        check_result.constraint_results.len() >= 15,
+        "expected >= 15 constraint results even for violating source, got {}",
+        check_result.constraint_results.len()
+    );
+
+    // At least one constraint must be Violated
+    let violations: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction == Satisfaction::Violated)
+        .collect();
+
+    assert!(
+        !violations.is_empty(),
+        "expected at least one Violated constraint after raising tx bound above its value (100mm), \
+         got {} results with no violations",
+        check_result.constraint_results.len()
+    );
 }
 
 // ── Test 10: ad-hoc port selector let binding present ────────────────────────
