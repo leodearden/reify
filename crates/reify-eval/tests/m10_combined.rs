@@ -62,9 +62,27 @@ fn constraint_count(engine: &Engine) -> usize {
 
 /// Capstone assertion: constraint_results.len() >= 15, all Satisfied.
 /// Guards against silent regressions where constraints are silently dropped.
+/// The example produces 18 total: 15 always-active + 2 where-block + 1 compat.
 #[test]
 fn total_constraint_count_meets_threshold() {
-    todo!("step-8 impl: assert >= 15 constraint results, all Satisfied")
+    let check_result = check_source(&source());
+
+    let n = check_result.constraint_results.len();
+    assert!(
+        n >= 15,
+        "expected >= 15 total constraint results, got {n}"
+    );
+
+    // All must be Satisfied (defensive double-check complementing all_constraints_satisfied)
+    for entry in &check_result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied, got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
 }
 
 // ── Test 3: all constraints satisfied ────────────────────────────────────────
