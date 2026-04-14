@@ -540,15 +540,13 @@ fn stdlib_fn_no_args_emits_type_inference_warning() {
 
 /// Sub-component qualified member access compiles without ICE.
 ///
-/// expr.rs:1511 has `.unwrap_or(Type::Real)` when looking up the type of a
-/// sub-component's member via `scope.collection_sub_member_types`.  In valid
-/// code the scope is populated by entity.rs pass 1 so the lookup succeeds and
-/// the fallback is never reached.
+/// expr.rs resolves the member type from `scope.sub_member_types` (populated for
+/// ALL subs by entity.rs pass 1).  In valid code the lookup succeeds and the
+/// ICE diagnostic is never emitted.
 ///
 /// The syntax `parts.(MechTrait::diameter)` is `InstanceQualifiedAccess` —
 /// accessing collection sub-component `parts` (type `List<Inner>`) `diameter`
-/// member through trait `MechTrait`.  Using the collection form
-/// `sub parts : List<Inner>` ensures `collection_sub_member_types` is populated.
+/// member through trait `MechTrait`.
 #[test]
 fn sub_member_type_resolves_without_ice() {
     let source = r#"
@@ -583,14 +581,13 @@ fn sub_member_type_resolves_without_ice() {
 
 /// Sub-member qualified access on a **non-collection** sub compiles without ICE.
 ///
-/// Regression guard for expr.rs `InstanceQualifiedAccess` — previously the
-/// type lookup only consulted `scope.collection_sub_member_types`, which is
-/// only populated for `List<T>` subs.  Accessing `part.(Trait::member)` on a
-/// singular (non-collection) sub therefore hit the fallback and emitted an
-/// "internal compiler error" diagnostic.
+/// Regression guard for expr.rs `InstanceQualifiedAccess` — the type lookup
+/// uses `scope.sub_member_types`, which is populated for ALL sub-components
+/// (collection and non-collection alike).  Accessing `part.(Trait::member)` on
+/// a singular (non-collection) sub resolves correctly without hitting the ICE
+/// diagnostic fallback.
 ///
-/// The fix switched the lookup to `scope.sub_member_types`, which is populated
-/// for ALL sub-components — collection and non-collection alike.  This test
+/// This test
 /// exercises the non-collection form (`sub part = Inner()`) to lock the fix
 /// in place.  The collection form is covered by `sub_member_type_resolves_without_ice`.
 #[test]

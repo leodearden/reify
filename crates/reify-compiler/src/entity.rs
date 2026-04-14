@@ -431,20 +431,6 @@ pub(crate) fn compile_entity(
                 }
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
-                    // Populate member types from already-compiled child template
-                    if let Some(child_tmpl) = compiled_templates
-                        .iter()
-                        .find(|t| t.name == sub.structure_name)
-                    {
-                        let member_types: HashMap<String, Type> = child_tmpl
-                            .value_cells
-                            .iter()
-                            .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
-                            .collect();
-                        scope
-                            .collection_sub_member_types
-                            .insert(sub.name.clone(), member_types);
-                    }
                 }
             }
             reify_syntax::MemberDecl::MetaBlock(meta) => {
