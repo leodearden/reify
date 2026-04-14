@@ -506,6 +506,10 @@ fn range_valid_compiles_without_ice() {
 /// `Diagnostic::warning("cannot infer return type of zero-arg function…")`
 /// when `compiled_args` is empty.  This test verifies that warning is
 /// present so the silent-default is caught at compile time.
+///
+/// `__test_zero_arg_fn` is an intentionally-synthetic name chosen so that
+/// future stdlib additions (e.g. promoting `pi` to a math constant) cannot
+/// accidentally turn this into a user-fn-lookup or constant-folding test.
 #[test]
 fn stdlib_fn_no_args_emits_type_inference_warning() {
     let source = r#"
@@ -523,9 +527,7 @@ fn stdlib_fn_no_args_emits_type_inference_warning() {
 
     let warnings = warning_diagnostics(&module);
     let has_type_warning = warnings.iter().any(|d| {
-        d.message.contains("zero-arg")
-            || d.message.contains("cannot infer")
-            || d.message.contains("return type")
+        d.message.contains("zero-arg function") && d.message.contains("defaulting to Real")
     });
     assert!(
         has_type_warning,
