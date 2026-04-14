@@ -498,6 +498,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn phase_nan_im_dimensioned_returns_undef() {
+        // Complex{re:1.0, im:NaN, LENGTH}.phase → Undef
+        //
+        // phase() ignores the Complex's dimension field and applies the is_finite
+        // pre-guard uniformly regardless of dimension. This test mirrors the
+        // re_nan_dimensioned_returns_undef / im_nan_dimensioned_returns_undef pattern
+        // and locks the guard against any future split into dimensioned fast/slow paths
+        // (e.g. a specialised dimensionless fast-path that omits the guard would be
+        // caught because it would leave the dimensioned path unprotected).
+        assert!(
+            call_complex_method(1.0, f64::NAN, DimensionVector::LENGTH, Type::length(), "phase", Type::angle()).is_undef(),
+            "z.phase with NaN imaginary part (dimensioned) should return Undef"
+        );
+    }
+
     // ── method: phase (zero-vector edge case) ─────────────────────────────────
 
     #[test]
