@@ -5874,7 +5874,7 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
