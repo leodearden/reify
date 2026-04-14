@@ -30252,10 +30252,9 @@
         "updatedAt": "2026-04-14T07:04:09.744Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
-            "crates/reify-compiler/tests/collection_sub_tests.rs",
             "crates/reify-compiler/tests/silent_defaults_tests.rs"
           ]
         }
@@ -30460,7 +30459,7 @@
         "updatedAt": "2026-04-10T02:27:56.512Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
             "crates/reify-compiler/src/expr.rs",
