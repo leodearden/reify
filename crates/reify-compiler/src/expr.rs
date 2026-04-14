@@ -124,7 +124,7 @@ pub(crate) fn compile_expr_guarded(
                 None => {
                     // Check if this is a collection sub name — resolve to per-member __list_{name}__{member}
                     if scope.collection_sub_names.contains(name.as_str()) {
-                        if let Some(members) = scope.collection_sub_member_types.get(name.as_str())
+                        if let Some(members) = scope.sub_member_types.get(name.as_str())
                         {
                             // Resolve to the first member's per-member list
                             if let Some((first_member, member_ty)) = members.iter().next() {
@@ -776,9 +776,9 @@ pub(crate) fn compile_expr_guarded(
                 && let reify_syntax::ExprKind::Ident(name) = &idx_obj.kind
                 && scope.collection_sub_names.contains(name.as_str())
             {
-                // Resolve member type from pre-populated collection_sub_member_types
+                // Resolve member type from pre-populated sub_member_types
                 let member_type = match scope
-                    .collection_sub_member_types
+                    .sub_member_types
                     .get(name.as_str())
                     .and_then(|m| m.get(member.as_str()))
                     .cloned()
