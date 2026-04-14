@@ -167,6 +167,40 @@ fn compile_module_with_diagnostics(source: &str) -> CompiledModule {
     reify_compiler::compile(&parsed)
 }
 
+/// Helper: extract the SI scalar values from both sides of a BinOp expression.
+///
+/// Panics with a descriptive message if the expression is not a
+/// `BinOp { left: Literal(Scalar), right: Literal(Scalar) }`.
+/// Returns `(left_si_value, right_si_value)`.
+fn extract_binop_scalar_sides(expr: &CompiledExpr) -> (f64, f64) {
+    if let CompiledExprKind::BinOp { left, right, .. } = &expr.kind {
+        let left_val =
+            if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &left.kind {
+                *si_value
+            } else {
+                panic!(
+                    "expected Scalar literal for left side of BinOp, got {:?}",
+                    left.kind
+                )
+            };
+        let right_val =
+            if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &right.kind {
+                *si_value
+            } else {
+                panic!(
+                    "expected Scalar literal for right side of BinOp, got {:?}",
+                    right.kind
+                )
+            };
+        (left_val, right_val)
+    } else {
+        panic!(
+            "expected BinOp constraint expression, got {:?}",
+            expr.kind
+        )
+    }
+}
+
 #[test]
 fn compile_purpose_rejects_guarded_blocks() {
     // The grammar's purpose_member reuses guarded_block, so a where-guarded
@@ -267,25 +301,17 @@ purpose machining_tolerance(subject : Structure) {
     let purpose = &module.compiled_purposes[0];
     assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
     let constraint = &purpose.constraints[0];
-    if let CompiledExprKind::BinOp { left, .. } = &constraint.expr.kind {
-        if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &left.kind {
-            assert!(
-                (si_value - 0.0000254).abs() < 1e-12,
-                "1thou should compile to ≈0.0000254 m (SI), got {}",
-                si_value
-            );
-        } else {
-            panic!(
-                "expected Scalar literal for '1thou' left side, got {:?}",
-                left.kind
-            );
-        }
-    } else {
-        panic!(
-            "expected BinOp constraint expression, got {:?}",
-            constraint.expr.kind
-        );
-    }
+    let (left_si, right_si) = extract_binop_scalar_sides(&constraint.expr);
+    assert!(
+        (left_si - 0.0000254).abs() < 1e-12,
+        "1thou should compile to ≈0.0000254 m (SI), got {}",
+        left_si
+    );
+    assert!(
+        right_si.abs() < 1e-12,
+        "0mm should compile to ≈0.0 m (SI), got {}",
+        right_si
+    );
 }
 
 // ── Step 3 (task-416): unknown unit in purpose constraint emits error ─────────
@@ -358,35 +384,15 @@ purpose hot_enough(subject : Structure) {
     // The constraint is: 100degC > 200degC
     // Left side should be Literal(Scalar { si_value ≈ 373.15 }).
     // Right side should be Literal(Scalar { si_value ≈ 473.15 }).
-    if let CompiledExprKind::BinOp { left, right, .. } = &constraint.expr.kind {
-        if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &left.kind {
-            assert!(
-                (si_value - 373.15).abs() < 1e-9,
-                "100degC should compile to 373.15K, got {}",
-                si_value
-            );
-        } else {
-            panic!(
-                "expected Scalar literal for '100degC' left side, got {:?}",
-                left.kind
-            );
-        }
-        if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &right.kind {
-            assert!(
-                (si_value - 473.15).abs() < 1e-9,
-                "200degC should compile to 473.15K, got {}",
-                si_value
-            );
-        } else {
-            panic!(
-                "expected Scalar literal for '200degC' right side, got {:?}",
-                right.kind
-            );
-        }
-    } else {
-        panic!(
-            "expected BinOp constraint expression, got {:?}",
-            constraint.expr.kind
-        );
-    }
+    let (left_si, right_si) = extract_binop_scalar_sides(&constraint.expr);
+    assert!(
+        (left_si - 373.15).abs() < 1e-9,
+        "100degC should compile to 373.15K, got {}",
+        left_si
+    );
+    assert!(
+        (right_si - 473.15).abs() < 1e-9,
+        "200degC should compile to 473.15K, got {}",
+        right_si
+    );
 }
