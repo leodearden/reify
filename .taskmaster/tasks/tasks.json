@@ -16481,7 +16481,7 @@
         "description": "Task 491 added 5 tests for per-template resolution but left several coverage gaps identified by review:\n\n**Failure-mode isolation (high):**\n- Add test `eval_infeasible_in_one_template_does_not_suppress_other`: provide Infeasible result for Bracket and Solved for Bolt, assert Bolt's auto param is resolved correctly, diagnostics contain only Bracket's infeasibility info, Bolt's value is present\n\n**Cross-template wave2 propagation (medium):**\n- Add test with a derived value node whose default_expr references auto params from both Bracket and Bolt templates. After eval(), assert the derived node is re-evaluated to the correct combined value, confirming the unified wave2 propagation works\n\n**Missing output assertions (medium):**\n- concurrent_edit_resolves_per_template_not_cross_template (line 1287-1320): add assertions on result.values and result.resolved_params to verify bracket_thickness=mm(6.0) was actually written back\n\n**Missing call count assertion (low):**\n- edit_param_matches_eval_for_multi_template_module (line 1324-1456): uses SequencedMockConstraintSolver directly without asserting call count. Switch to MultiCallSpyConstraintSolver or add call_count check to detect spurious extra solver calls\n\n**Memory hints:** search for \"per-template resolution tests\", \"MultiCallSpyConstraintSolver\"; entity names: resolve_concurrent_edit, edit_param, SolveResult::Infeasible",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16499,7 +16499,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-14T12:34:45.894Z"
+        "updatedAt": "2026-04-14T12:30:58.017Z"
       },
       {
         "id": "756",
@@ -33890,11 +33890,11 @@
         "description": "Two refinements in crates/reify-eval/tests/m9_combined.rs following task 1446 review. (1) Change `source()` to return `&'static str` instead of cloning the cached String on every call; update call sites (`parse_and_compile(source())`, `source().replace(...)`) to drop the `&source()` indirection. (2) Tighten `violated_constraint_detected` (lines 391-430) so it asserts the violation corresponds specifically to the `clearance < width` constraint on entity `Bracket` (e.g. `violations.iter().any(|e| e.id.entity == \"Bracket\")`) and also confirms that other previously-passing Bracket constraints (`width < length`, `clearance > 0mm`) remain Satisfied — guards against cascade-failure regressions masking the real bug.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:30:51.127Z",
+        "updatedAt": "2026-04-14T12:34:46.109Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -34466,7 +34466,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:34:46.118Z",
+      "lastModified": "2026-04-14T12:34:46.123Z",
       "taskCount": 1661,
       "completedCount": 1338,
       "tags": [
