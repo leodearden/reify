@@ -14325,7 +14325,7 @@
         "description": "The branch in `unfold_recursive_sub` handling a guard expression that evaluates to a non-Bool type (the `other` arm, lib.rs ~3572-3577) emits an error diagnostic \"guard for recursive sub ... expected Bool\" and terminates recursion. No test exercises this path. Add a test that: (1) builds a template whose guard expression produces `Value::Int(1)` instead of `Value::Bool(true)`, (2) evaluates it, (3) asserts no child entity is created, (4) asserts an error diagnostic containing \"expected Bool\" is present.\n\nmemory_hints: search \"expected Bool\" and \"guard\" in unfold_recursive_sub; look at existing guard tests in recursive_unfold.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14337,7 +14337,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-10T00:00:00.000Z"
+        "updatedAt": "2026-04-14T20:19:50.138Z"
       },
       {
         "id": "646",
@@ -34948,7 +34948,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T20:19:47.360Z",
+      "lastModified": "2026-04-14T20:19:50.138Z",
       "taskCount": 1674,
       "completedCount": 1406,
       "tags": [
