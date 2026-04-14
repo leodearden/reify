@@ -358,6 +358,7 @@ module.exports = grammar({
       $.connect_statement,
       $.chain_statement,
       $.meta_block,
+      $.annotation,
       $.pragma,
     ),
 
