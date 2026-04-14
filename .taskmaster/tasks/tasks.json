@@ -24843,7 +24843,8 @@
             "crates/reify-compiler/tests/pragma_compile_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
           ],
           "bundled_from": [
             "1164",
