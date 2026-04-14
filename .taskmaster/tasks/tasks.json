@@ -12125,11 +12125,11 @@
         "description": "Five of eight traits (Flexible, Plastic, ThermallyConductive, ElectricallyConductive, Sealed) only tested for name presence. Need member, type, constraint, and conformance tests.",
         "details": "Add per-trait tests covering: (a) required_member names and types, (b) conforming structure compiles without errors, (c) constraints injected correctly. Add missing-member negative tests for Rigid (moment_of_inertia) and ElasticallyDeformable (max_elastic_strain). Add centroid_y/z assertions to rigid_cross_module_three_level_refinement_chain.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T15:39:08.123Z",
+        "updatedAt": "2026-04-14T19:07:22.138Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -34640,9 +34640,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T15:39:43.828Z",
+      "lastModified": "2026-04-14T19:07:22.145Z",
       "taskCount": 1661,
-      "completedCount": 1383,
+      "completedCount": 1384,
       "tags": [
         "master"
       ]
