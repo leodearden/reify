@@ -11787,13 +11787,12 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-runtime/src/concurrent_eval.rs"
+            "crates/reify-runtime/src/concurrent_eval.rs",
+            "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-eval/tests",
-            "crates/reify-runtime/src",
-            "crates/reify-runtime/tests"
+            "crates/reify-runtime",
+            "crates/reify-eval"
           ],
           "memory_hints": {
             "entities": [],
@@ -12021,8 +12020,8 @@
         "updatedAt": "2026-03-27T09:16:59.191Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-eval/tests"
+            "crates/reify-compiler",
+            "crates/reify-eval"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
