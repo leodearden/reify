@@ -34735,15 +34735,16 @@
         "description": "Two improvements to `stdlib_fn_no_args_emits_type_inference_warning` in silent_defaults_tests.rs:\n\n1. **Tighten assertion predicate (line ~529-531):** The `any` predicate matches any warning containing \"zero-arg function\" and \"defaulting to Real\" but doesn't verify the warning references `__test_zero_arg_fn`. Add `&& d.message.contains(\"__test_zero_arg_fn\")` so the warning must be about the specific call site under test.\n\n2. **Add negative counterpart test:** Add a sibling test that compiles a single-arg stdlib call (e.g. `sqrt(1.0)`) and asserts `warnings.iter().all(|d| !d.message.contains(\"zero-arg function\"))` — verifying no false positive. Without this, a regression that unconditionally emits the warning would not be caught.\n\nmemory_hints: search(\"silent_defaults_tests zero-arg warning\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-14T19:29:20.640Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T19:29:17.142Z",
+      "lastModified": "2026-04-14T19:29:20.640Z",
       "taskCount": 1666,
       "completedCount": 1388,
       "tags": [
