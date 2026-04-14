@@ -261,6 +261,49 @@ fn stdlib_units_module_contains_fl_oz_and_gal_with_volume_dimension() {
     assert!(gal.offset.is_none(), "gal should have no offset");
 }
 
+// ─── cross-relationships: dimensional identities across imperial units ────────
+
+#[test]
+fn cross_relationships_between_imperial_units() {
+    /// Assert `a ≈ b` within `max(|a|, |b|) * rel_tol`.
+    fn assert_eq_rel(a: f64, b: f64, rel_tol: f64, msg: &str) {
+        let scale = a.abs().max(b.abs());
+        let tol = scale * rel_tol;
+        assert!(
+            (a - b).abs() < tol,
+            "{}: expected {} ≈ {} (tol {})",
+            msg,
+            a,
+            b,
+            tol
+        );
+    }
+
+    // 1 yd == 3 ft
+    let (yd_si, _) = stdlib_param_si_value("Length", "1yd");
+    let (ft3_si, _) = stdlib_param_si_value("Length", "3ft");
+    assert_eq_rel(yd_si, ft3_si, 1e-12, "1yd should equal 3ft in SI");
+
+    // 1 ksi == 1000 psi
+    let (ksi_si, _) = stdlib_param_si_value("Pressure", "1ksi");
+    let (psi1000_si, _) = stdlib_param_si_value("Pressure", "1000psi");
+    assert_eq_rel(ksi_si, psi1000_si, 1e-12, "1ksi should equal 1000psi in SI");
+
+    // 1 gal == 128 fl_oz
+    let (gal_si, _) = stdlib_param_si_value("Volume", "1gal");
+    let (fl_oz128_si, _) = stdlib_param_si_value("Volume", "128fl_oz");
+    assert_eq_rel(gal_si, fl_oz128_si, 1e-12, "1gal should equal 128fl_oz in SI");
+
+    // 1 psi == 1 lbf / (1 in * 1 in)
+    // Compound Reify arithmetic compiles to BinOp (not a Literal), so compute
+    // the RHS in Rust from separately compiled SI values.
+    let (psi_si, _) = stdlib_param_si_value("Pressure", "1psi");
+    let (lbf_si, _) = stdlib_param_si_value("Force", "1lbf");
+    let (in_si, _) = stdlib_param_si_value("Length", "1in");
+    let psi_from_lbf_in2 = lbf_si / (in_si * in_si);
+    assert_eq_rel(psi_si, psi_from_lbf_in2, 1e-12, "1psi should equal 1lbf/(1in²) in SI");
+}
+
 // ─── step-9: cross-unit arithmetic lbf * mm → Energy ─────────────────────────
 
 #[test]
