@@ -1214,6 +1214,102 @@ fn build_modify_missing_arg_no_kernel_error() {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: assert compile-time rejection of a geometry operation
+// ---------------------------------------------------------------------------
+
+/// Asserts that a geometry operation was rejected at compile time (before kernel
+/// dispatch), producing the expected 5-signal pattern in `result` / `ops`.
+///
+/// Arguments:
+/// - `result` — the `BuildResult` returned by `engine.build()`.
+/// - `ops` — the slice from `ops_ref.lock().unwrap()` (the kernel's recorded ops).
+/// - `expected_primitive` — a fn pointer returning `true` when the **sole** kernel
+///   op is the expected primitive (e.g. `|op| matches!(op, GeometryOp::Box { .. })`).
+/// - `warning_needles` — every string that must appear in the Warning message
+///   (e.g. `&["scale dropped", "negative"]`).
+///
+/// The five assertions are:
+/// 1. Kernel received exactly one op, and that op matches `expected_primitive`.
+/// 2. `result.geometry_output` is `None`.
+/// 3. A `Severity::Warning` diagnostic exists whose message contains every needle.
+/// 4. An `Error`-level diagnostic exists containing 'failed to compile geometry operation'.
+/// 5. No diagnostic contains 'geometry error' (kernel was never called for the rejected op).
+fn assert_rejected_at_compile(
+    result: &reify_eval::BuildResult,
+    ops: &[reify_test_support::GeometryOpRecord],
+    expected_primitive: fn(&reify_types::GeometryOp) -> bool,
+    warning_needles: &[&str],
+) {
+    // (1) Kernel called exactly once — for the preceding primitive, not the rejected op
+    assert_eq!(
+        ops.len(),
+        1,
+        "kernel.execute() should be called only for the preceding primitive (not the rejected op), \
+         got {} kernel ops",
+        ops.len()
+    );
+    assert!(
+        expected_primitive(&ops[0].op),
+        "expected the only recorded kernel op to match expected_primitive, got: {:?}",
+        ops[0].op
+    );
+
+    // (2) No geometry output — rejected op caused the whole realization to fail
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when the op is rejected at compile time"
+    );
+
+    // (3) Warning containing all provided needles
+    let has_warning = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning
+            && warning_needles.iter().all(|needle| d.message.contains(needle))
+    });
+    assert!(
+        has_warning,
+        "expected a Warning diagnostic containing all needles {:?}, got: {:?}",
+        warning_needles,
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (4) Error about failed compile
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (5) No 'geometry error' diagnostic — kernel was never called for the rejected op
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for the rejected op), \
+         but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("geometry error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Regression guard: negative scale factor → compile-time rejection, specific Warning
 // ---------------------------------------------------------------------------
 
