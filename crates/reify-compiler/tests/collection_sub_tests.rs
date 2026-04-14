@@ -421,6 +421,58 @@ fn compile_dynamic_index_collection_member_access() {
     );
 }
 
+// ─── task-1441 regression: multi-member child resolution ───
+
+#[test]
+fn compile_indexed_member_access_multi_member_child() {
+    // Bolt has two members: diameter (Scalar) and grade (Scalar).
+    // Accessing the SECOND member (grade) via bolts[0].grade must compile to
+    // a ValueRef with the correct member name and type — pinning that
+    // member-type resolution works for non-first members of collection subs.
+    let source = r#"
+        structure Bolt {
+            param diameter : Scalar = 10mm
+            param grade : Scalar = 8.8
+        }
+        structure S {
+            sub bolts : List<Bolt>
+            constraint bolts.count == 4
+            let g = bolts[0].grade
+        }
+    "#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("should have template S");
+
+    let g_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "g")
+        .expect("should have let binding 'g'");
+
+    let expr = g_cell
+        .default_expr
+        .as_ref()
+        .expect("g should have an expression");
+
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id.entity, "S.bolts[0]", "entity should be S.bolts[0]");
+            assert_eq!(id.member, "grade", "member should be grade (the second member)");
+        }
+        other => panic!("expected ValueRef(S.bolts[0].grade), got {:?}", other),
+    }
+    // grade is declared as Scalar — in the Reify type system Scalar means a length-dimension scalar
+    assert_eq!(
+        expr.result_type,
+        reify_types::Type::length(),
+        "grade member should have Scalar/length type matching its 'Scalar' declaration"
+    );
+}
+
 // ─── step-29: collection sub as standalone identifier ───
 
 #[test]
