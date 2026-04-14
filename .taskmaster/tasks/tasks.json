@@ -6974,15 +6974,15 @@
           "milestone": "stdlib-M8.3",
           "modules": [
             "examples",
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "examples/materials.ri",
-            "examples/ports.ri",
-            "examples/tolerancing.ri",
-            "examples/units.ri",
-            "crates/reify-eval/tests/m8_stdlib_integration.rs"
+            "examples/materials_integration.ri",
+            "examples/ports_integration.ri",
+            "examples/tolerancing_integration.ri",
+            "examples/units_integration.ri",
+            "crates/reify-eval/tests/m8_3_stdlib_integration.rs"
           ]
         },
         "subtasks": [],
@@ -7091,14 +7091,14 @@
         "metadata": {
           "milestone": "stdlib-M8.4",
           "modules": [
-            "crates/reify-stdlib",
-            "crates/reify-expr",
-            "crates/reify-compiler"
+            "crates/reify-eval/src",
+            "crates/reify-stdlib/src",
+            "crates/reify-compiler/src"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
+            "crates/reify-eval/src/lib.rs",
             "crates/reify-stdlib/src/lib.rs",
-            "crates/reify-expr/src/lib.rs",
             "crates/reify-compiler/src/stdlib_loader.rs"
           ]
         },
