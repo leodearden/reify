@@ -14305,7 +14305,7 @@
         "description": "The `node_budget` exhaustion path in `unfold_recursive_sub` (lib.rs:3523-3530) is never exercised by any test. When `set_max_unfold_nodes(N)` is called with a small N on a template with multiple recursive subs (e.g., binary tree), the budget can exhaust independently of the depth limit. Add a test that: (1) calls `engine.set_max_unfold_nodes(3)` on a binary-tree template, (2) asserts the diagnostic \"total node budget exhausted\" is present, (3) verifies some levels that would exist under unlimited budget are absent.\n\nmemory_hints: search \"max_unfold_nodes\" and \"node_budget\" in lib.rs; look at existing depth-limit tests in recursive_unfold.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14317,7 +14317,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-14T19:15:23.357Z"
+        "updatedAt": "2026-04-14T20:19:47.360Z"
       },
       {
         "id": "645",
@@ -34948,9 +34948,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T20:19:46.403Z",
+      "lastModified": "2026-04-14T20:19:47.360Z",
       "taskCount": 1674,
-      "completedCount": 1405,
+      "completedCount": 1406,
       "tags": [
         "master"
       ]
