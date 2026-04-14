@@ -560,21 +560,21 @@ structure S {
 
     let (_, diagnostics) = compile_first_template(source);
 
-    let bad_errors: Vec<_> = diagnostics
+    // Assert no Error-severity diagnostics at all — `ConstraintInst` inside a
+    // `where {}` block is silently dropped, so the full absence of errors is the
+    // precise characterization of "silently ignored".  This also avoids the
+    // fragile substring check for "ice" which could false-positive on words like
+    // "service" or "notice" in future diagnostic messages.
+    let errors: Vec<_> = diagnostics
         .iter()
-        .filter(|d| {
-            let msg = d.message.to_lowercase();
-            d.severity == Severity::Error
-                && (msg.contains("not yet supported")
-                    || msg.contains("internal compiler error")
-                    || msg.contains("ice"))
-        })
+        .filter(|d| d.severity == Severity::Error)
         .collect();
 
     assert!(
-        bad_errors.is_empty(),
-        "expected no 'not yet supported' or ICE error for constraint inst in block guard, got: {:?}",
-        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        errors.is_empty(),
+        "expected no error diagnostics for constraint inst in block guard \
+         (should be silently dropped), got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
