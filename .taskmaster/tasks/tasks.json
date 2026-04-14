@@ -23888,7 +23888,13 @@
           ],
           "files": [
             "crates/reify-compiler/tests/qualified_access_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add edge-case tests for let-binding OptionNone fixup guard conditions"
+            ]
+          }
         }
       },
       {
