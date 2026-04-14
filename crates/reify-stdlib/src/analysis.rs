@@ -169,4 +169,41 @@ mod tests {
         let m2x2 = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
         assert!(eval_analysis("von_mises", &[m2x2]).unwrap().is_undef());
     }
+
+    // ── principal_stresses tests ────────────────────────────────────────────
+
+    #[test]
+    fn principal_stresses_diagonal_dimensionless() {
+        // Diagonal tensor [[100,0,0],[0,50,0],[0,0,25]] → sorted [25, 50, 100]
+        let tensor = make_matrix(&[&[100.0, 0.0, 0.0], &[0.0, 50.0, 0.0], &[0.0, 0.0, 25.0]]);
+        let result = eval_analysis("principal_stresses", &[tensor]).unwrap();
+        match result {
+            Value::List(items) => {
+                assert_eq!(items.len(), 3);
+                assert_real_approx!(items[0].clone(), 25.0);
+                assert_real_approx!(items[1].clone(), 50.0);
+                assert_real_approx!(items[2].clone(), 100.0);
+            }
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn principal_stresses_diagonal_pressure() {
+        // Diagonal tensor with PRESSURE dimension → sorted List of Scalar
+        let tensor = make_dimensioned_matrix(
+            &[&[100.0, 0.0, 0.0], &[0.0, 50.0, 0.0], &[0.0, 0.0, 25.0]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("principal_stresses", &[tensor]).unwrap();
+        match result {
+            Value::List(items) => {
+                assert_eq!(items.len(), 3);
+                assert_scalar_approx!(items[0].clone(), 25.0, DimensionVector::PRESSURE);
+                assert_scalar_approx!(items[1].clone(), 50.0, DimensionVector::PRESSURE);
+                assert_scalar_approx!(items[2].clone(), 100.0, DimensionVector::PRESSURE);
+            }
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
 }
