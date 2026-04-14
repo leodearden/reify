@@ -33,12 +33,21 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
                     if *re == 0.0 && *im == 0.0 {
                         return Some(Value::Undef);
                     }
-                    // The pre-guard above is essential: atan2(y, Inf) = 0.0 and
-                    // atan2(y, -Inf) = ±π are both finite, so sanitize_value alone
-                    // cannot detect Inf inputs — it would silently return a wrong result.
-                    // After the guard, atan2(finite, finite) with at least one non-zero
-                    // argument always returns a value in [-π, π], so no output
-                    // sanitization is needed here.
+                    // Both pre-guards above are essential — they catch finite-output
+                    // cases that would otherwise slip past sanitize_value:
+                    //
+                    //   • is_finite guard (line 30): atan2(y, ±Inf) = 0.0 or ±π, and
+                    //     atan2(±Inf, x) = ±π/2 — all finite. sanitize_value cannot
+                    //     detect NaN/Inf inputs from these outputs alone.
+                    //
+                    //   • zero-vector guard (line 33): atan2(0.0, 0.0) = 0.0 which is
+                    //     also finite, so sanitize_value cannot distinguish the
+                    //     mathematically-undefined zero-vector case from a legitimate
+                    //     zero-angle result.
+                    //
+                    // After both guards, atan2(finite, finite) with at least one
+                    // non-zero argument always returns a value in [-π, π], so no
+                    // output sanitization is needed here.
                     let angle = im.atan2(*re);
                     Some(Value::Scalar {
                         si_value: angle,
