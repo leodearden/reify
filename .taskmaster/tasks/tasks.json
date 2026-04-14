@@ -8030,10 +8030,12 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
+            "crates/reify-stdlib/src/geometry.rs",
             "crates/reify-eval/src/lib.rs",
             "crates/reify-eval/tests/sweep_e2e.rs"
           ],
           "modules": [
+            "crates/reify-stdlib",
             "crates/reify-eval"
           ]
         }
