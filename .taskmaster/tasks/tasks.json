@@ -34245,7 +34245,7 @@
         "updatedAt": "2026-04-14T05:12:07.562Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/src"
           ],
           "files": [
             "crates/reify-eval/src/lib.rs"
@@ -34265,7 +34265,7 @@
         "updatedAt": "2026-04-14T05:08:29.022Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "files": [
             "crates/reify-compiler/src/annotations.rs"
