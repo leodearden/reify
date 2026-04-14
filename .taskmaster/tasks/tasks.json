@@ -5905,7 +5905,7 @@
           "266",
           "280"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -5917,7 +5917,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:45:52.000Z"
+        "updatedAt": "2026-04-14T05:05:38.213Z"
       },
       {
         "id": "295",
@@ -34273,7 +34273,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T05:05:37.784Z",
+      "lastModified": "2026-04-14T05:05:38.213Z",
       "taskCount": 1657,
       "completedCount": 1325,
       "tags": [
