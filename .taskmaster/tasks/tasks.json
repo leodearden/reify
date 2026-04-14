@@ -33629,7 +33629,7 @@
             "crates/reify-eval/tests/stress_sweep_degenerate.rs"
           ],
           "modules": [
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ]
         }
       },
@@ -33646,13 +33646,11 @@
         "updatedAt": "2026-04-11T16:05:43.576Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-expr/src",
-            "crates/reify-expr/tests",
-            "crates/reify-stdlib/src",
-            "crates/reify-test-support/src",
-            "crates/reify-types/src",
-            "gui/src-tauri/src"
+            "crates/reify-types",
+            "crates/reify-expr",
+            "crates/reify-eval",
+            "crates/reify-stdlib",
+            "crates/reify-test-support"
           ],
           "memory_hints": {
             "entities": [
@@ -33664,7 +33662,17 @@
               "compute_gradient compute_divergence compute_curl compute_laplacian lambda field_val clone",
               "task 412 Value::Field optimization Arc refcount"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-types/src/value.rs",
+            "crates/reify-expr/src/calculus.rs",
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-stdlib/src/lib.rs",
+            "crates/reify-test-support/src/lib.rs",
+            "crates/reify-expr/tests/field_eval_tests.rs",
+            "crates/reify-expr/tests/field_calculus_tests.rs"
+          ]
         }
       },
       {
