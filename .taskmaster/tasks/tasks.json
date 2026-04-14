@@ -34516,11 +34516,11 @@
         "description": "Two related cleanups in crates/reify-compiler/src/annotations.rs:\n\n1. optimized_target (lines 196-208) short-circuits on the first @optimized annotation and returns None if that first one is malformed — silently dropping any later valid @optimized(\"kernel::foo\"). This contradicts validate_annotations' \"first wins, rest are duplicates\" rule: a user with `@optimized` then `@optimized(\"valid\")` gets two warnings AND loses the valid target. Fix: continue scanning for a string-literal @optimized when the first is malformed, bringing the extractor into agreement with the validator's precedence.\n\n2. validate_annotations' \"missing string-literal target\" warning (lines 80-106) fires for @optimized on structure and occurrence contexts even though the target is only consumed in constraint_def. Users on structures/occurrences see a warning telling them to add a string that nothing reads. Fix: narrow the missing-target warning to `context == \"constraint_def\"` only, and update the inline comment to match (it currently already says \"constraint_def is the only context where this target is actually consumed, but we warn regardless for consistency\" — remove the \"consistency\" justification since it actually misleads users).",
         "details": "Source: esc-273-83 suggestions #2 (robustness) and #6 (design_coherence) from reviewer_comprehensive.\n\nBoth touch the same file and both concern the @optimized annotation's compiler-side contract, so bundling is appropriate.\n\nFor (1), update the for-loop in optimized_target to continue past malformed entries:\n```rust\nfor ann in annotations {\n    if ann.name == \"optimized\"\n        && let Some(first) = ann.args.first()\n        && let reify_syntax::ExprKind::StringLiteral(s) = &first.kind\n    {\n        return Some(s.clone());\n    }\n}\nNone\n```\nThen add/update tests in crates/reify-compiler/tests/optimized_annotation_tests.rs asserting that `@optimized` followed by `@optimized(\"valid\")` still resolves to Some(\"valid\").\n\nFor (2), in validate_annotations' \"optimized\" arm, move the missing-target warning inside a `context == \"constraint_def\"` guard.\n\nCoordinate with Task 274 test-coverage followups (compiler-side assertions on CompiledConstraint::optimized_target).\n\nModules: crates/reify-compiler/src, crates/reify-compiler/tests",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T15:39:01.212Z",
+        "updatedAt": "2026-04-14T19:13:31.291Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -34661,7 +34661,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T19:13:28.680Z",
+      "lastModified": "2026-04-14T19:13:31.296Z",
       "taskCount": 1661,
       "completedCount": 1385,
       "tags": [
