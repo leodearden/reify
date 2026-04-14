@@ -12,7 +12,7 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_types::*;
 
 /// Build the canonical Bolt + Parent (collection sub) templates and return
-/// `(parent, TopologyTemplate)` in `(parent, bolt)` order.
+/// `(TopologyTemplate, TopologyTemplate)` in `(parent, bolt)` order.
 ///
 /// - Bolt has a single `diameter: Scalar = 10mm` param.
 /// - Parent has `param n : Int` (default controlled by `n_default`), a
