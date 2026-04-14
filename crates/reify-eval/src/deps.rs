@@ -439,7 +439,7 @@ mod tests {
     /// `extract_dependency_trace` is a thin wrapper over
     /// `CompiledExpr::collect_value_refs`, which *preserves duplicates* (it pushes
     /// each `ValueRef` without deduping). The sibling helper [`extract_value_deps`]
-    /// (defined later in this file) is the deduplicating variant; `extract_dependency_trace`
+    /// (defined later in this file) is the deduplicating-and-sorting variant; `extract_dependency_trace`
     /// intentionally keeps raw duplicates. This test pins that split so callers
     /// know whether they need to dedupe downstream.
     #[test]
