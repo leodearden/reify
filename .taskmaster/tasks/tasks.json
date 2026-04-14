@@ -8642,7 +8642,7 @@
             "crates/reify-compiler/tests/termination_check_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ]
         }
       },
@@ -8827,14 +8827,13 @@
             ]
           },
           "files": [
+            "crates/reify-compiler/src/units.rs",
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/scope.rs",
-            "crates/reify-compiler/src/units.rs",
             "crates/reify-compiler/tests/unit_registry_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ],
           "bundled_from": [
             "418",
