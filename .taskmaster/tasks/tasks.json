@@ -6012,7 +6012,7 @@
           "291",
           "269"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-cli/src"
@@ -6024,7 +6024,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-14T14:18:48.335Z"
       },
       {
         "id": "298",
@@ -34620,7 +34620,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T14:18:32.541Z",
+      "lastModified": "2026-04-14T14:18:48.335Z",
       "taskCount": 1661,
       "completedCount": 1380,
       "tags": [
