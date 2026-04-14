@@ -46,7 +46,18 @@ structure S {
 }
 "#;
 
-    let (template, _diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
+
+    // Task 410 item 1: assert compilation produces no errors.
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for valid recursive sub with guard, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 
     let child_sub = template
         .sub_components
@@ -642,5 +653,100 @@ structure S {
         1,
         "expected exactly one 'not yet supported' error for sub in block guard, got: {:?}",
         diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── Task 410 item 2: is_recursive flag set on recursive structures ─────────
+
+/// A directly recursive structure (S contains sub S) should have is_recursive == true
+/// after the post-compilation SCC pass.
+#[test]
+fn recursive_structure_has_is_recursive_true() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where n > 0
+}
+"#;
+
+    let (template, _) = compile_first_template(source);
+
+    assert!(
+        template.is_recursive,
+        "expected is_recursive == true for a directly recursive structure"
+    );
+}
+
+// ─── Task 410 item 3: cycle detection warning diagnostic ────────────────────
+
+/// The SCC pass should emit a warning diagnostic containing
+/// "recursive structure cycle detected: ..." for recursive structures.
+#[test]
+fn recursive_structure_emits_cycle_warning() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let cycle_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message
+                    .to_lowercase()
+                    .contains("recursive structure cycle detected")
+        })
+        .collect();
+
+    assert!(
+        !cycle_warnings.is_empty(),
+        "expected 'recursive structure cycle detected' warning, got diagnostics: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── Task 410 item 4: undef in recursive sub args WITHOUT guard ─────────────
+
+/// A recursive sub with undef args and NO guard should emit the "no termination
+/// condition" error (not a undef-specific error). The existing test at step 13
+/// covers undef WITH a guard; this covers the guardless case.
+#[test]
+fn recursive_sub_with_undef_arg_without_guard_emits_error() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: undef)
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "expected error for recursive sub with undef arg and no guard, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Should get the "no termination condition" error since there's no guard at all.
+    let has_termination_error = errors.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        (msg.contains("recursive") || msg.contains("recursion"))
+            && (msg.contains("termination")
+                || msg.contains("no termination")
+                || msg.contains("guard"))
+    });
+    assert!(
+        has_termination_error,
+        "error should mention missing termination condition, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
