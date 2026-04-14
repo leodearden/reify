@@ -5117,7 +5117,7 @@
         "status": "in-progress",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ],
           "milestone": "M10",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
