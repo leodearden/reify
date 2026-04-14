@@ -6693,13 +6693,13 @@
           "milestone": "stdlib-M8.2",
           "modules": [
             "examples",
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "examples/advanced_geometry.ri",
             "examples/measurement_queries.ri",
-            "crates/reify-eval/tests/m8_stdlib_integration.rs"
+            "crates/reify-eval/tests/m8_2_stdlib_integration.rs"
           ]
         },
         "subtasks": [],
@@ -6876,8 +6876,7 @@
         "metadata": {
           "milestone": "stdlib-M8.3",
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-stdlib"
+            "crates/reify-compiler/src"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
