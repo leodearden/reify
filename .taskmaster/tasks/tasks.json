@@ -34093,11 +34093,11 @@
         "description": "In crates/reify-expr/src/complex.rs around line 41, the comment on the is_finite pre-guard says \"sanitize_value cannot detect NaN/Inf inputs from these outputs alone\". That is accurate for Inf inputs (atan2 collapses ±Inf to finite quadrant boundaries like 0, ±π, ±π/2), but NOT for NaN inputs — NaN propagates through atan2 and would be caught downstream by sanitize_value. The is_finite pre-guard is strictly necessary only for Inf; for NaN it is defense-in-depth for stylistic parity. Reword to make this precise. Suggested: \"sanitize_value cannot detect Inf inputs from these outputs alone (NaN inputs would propagate through atan2 and be caught downstream, but for stylistic parity and defense-in-depth we reject both up-front).\" Comment-only change, no behaviour change, no new tests needed.",
         "details": "Source: post-merge review of Task 953 (esc-953-22, suggestion S1, reviewer_comprehensive). Location: crates/reify-expr/src/complex.rs:41. Category: documentation_precision.\n<info added on 2026-04-14T05:56:38.729Z>\nVerify the current content of crates/reify-expr/src/complex.rs around line 41 to check if the comment was already updated by Task 1650 to distinguish NaN propagation from Inf collapse. If the update is present and correct, mark Task 1648 as done without further changes.\n</info added on 2026-04-14T05:56:38.729Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T06:17:07.288Z",
+        "updatedAt": "2026-04-14T06:19:55.414Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src"
@@ -34324,9 +34324,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T06:17:10.254Z",
+      "lastModified": "2026-04-14T06:19:55.422Z",
       "taskCount": 1658,
-      "completedCount": 1328,
+      "completedCount": 1329,
       "tags": [
         "master"
       ]
