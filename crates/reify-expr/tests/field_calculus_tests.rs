@@ -4226,6 +4226,11 @@ fn check_ignore_reasons(source: &str) -> Result<(), String> {
         let trimmed = line.trim_start();
         // Skip doc-comment lines (`///`, `//!`) — they may mention the
         // bare-ignore form in prose without it being an actual attribute.
+        // NOTE: regular `//` line comments and `/* */` block comments are NOT
+        // skipped.  The file currently has no bare-ignore forms in regular
+        // comments; if a future bare-ignore example inside a `//` comment
+        // causes a spurious meta-test failure, rewrite it as a `///` doc
+        // comment instead (doc comments ARE skipped).
         if trimmed.starts_with("///") || trimmed.starts_with("//!") {
             continue;
         }
@@ -4245,12 +4250,11 @@ fn check_ignore_reasons(source: &str) -> Result<(), String> {
                 let preview: String = reason_start.chars().take(80).collect();
                 if !reason_start.starts_with("known bug:") {
                     return Err(format!(
-                        "An {} reason string does not begin with \"known bug:\":\
-                         \n  {preview:?}\nReason strings must be self-contained inline \
-                         summaries (Task 1622 convention).\nAffected tests: \
-                         divergence_sample_mixed_length_to_real_placeholder, \
-                         laplacian_sample_mixed_length_to_real_placeholder.",
+                        "An {} reason string at line {} does not begin with \
+                         \"known bug:\":\n  {preview:?}\nReason strings must be \
+                         self-contained inline summaries (Task 1622 convention).",
                         ["#[", "ignore]"].concat(),
+                        line_idx + 1,
                     ));
                 }
             }
@@ -4269,9 +4273,7 @@ fn check_ignore_reasons(source: &str) -> Result<(), String> {
             "Found stale-pointer substring in source. \
              Update any affected {} reason string to a self-contained inline summary \
              (e.g. \"known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
-             losing the 1/Length result dimension; expected Value::Scalar{{1/Length}}\"). \
-             Affected tests: divergence_sample_mixed_length_to_real_placeholder, \
-             laplacian_sample_mixed_length_to_real_placeholder.",
+             losing the 1/Length result dimension; expected Value::Scalar{{1/Length}}\").",
             ["#[", "ignore]"].concat(),
         ));
     }
@@ -4317,7 +4319,13 @@ fn ignore_reason_strings_have_no_stale_plan_pointers() {
     );
     let source = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("failed to read {path} for meta-inspection: {e}"));
-    check_ignore_reasons(&source).unwrap_or_else(|msg| panic!("{msg}"));
+    check_ignore_reasons(&source).unwrap_or_else(|msg| {
+        panic!(
+            "{msg}\nAffected tests in this file: \
+             divergence_sample_mixed_length_to_real_placeholder, \
+             laplacian_sample_mixed_length_to_real_placeholder."
+        )
+    });
 }
 
 // ── check_ignore_reasons unit tests ──────────────────────────────────────────
@@ -4330,11 +4338,15 @@ fn ignore_reason_strings_have_no_stale_plan_pointers() {
 fn check_ignore_reasons_rejects_bare_ignore_in_code() {
     // A bare-ignore attribute (no reason string) in non-comment code must be
     // rejected outright.  Source assembled at runtime so this file does not
-    // contain the guarded adjacent sequences.
+    // contain the guarded adjacent sequences.  The error must mention "bare"
+    // so we can tell the bare-ignore guard fired (not the positive-invariant
+    // guard or the stale-pointer sentinel).
     let src = ["#[", "ignore]\n#[test]\nfn foo() {}"].concat();
+    let err = check_ignore_reasons(&src)
+        .expect_err("expected bare-ignore attribute (no reason string) to be rejected");
     assert!(
-        check_ignore_reasons(&src).is_err(),
-        "expected bare-ignore attribute (no reason string) to be rejected",
+        err.contains("bare"),
+        "expected error message to identify the bare-ignore guard: {err:?}",
     );
 }
 
@@ -4367,11 +4379,15 @@ fn check_ignore_reasons_rejects_non_known_bug_reason() {
     // A reason string that does NOT begin with "known bug:" must be rejected
     // by the positive-invariant guard.  The reason deliberately does not
     // contain the stale-pointer needle so only the positive guard fires.
+    // The error must mention "known bug:" so we can tell the positive-invariant
+    // guard fired (not the bare-ignore guard or the stale-pointer sentinel).
     // Source assembled at runtime.
     let src = ["#[", "ignore = \"some other prefix here\"]"].concat();
+    let err = check_ignore_reasons(&src)
+        .expect_err("expected a non-\"known bug:\" reason string to be rejected");
     assert!(
-        check_ignore_reasons(&src).is_err(),
-        "expected a non-\"known bug:\" reason string to be rejected",
+        err.contains("known bug:"),
+        "expected error message to identify the positive-invariant guard: {err:?}",
     );
 }
 
@@ -4379,11 +4395,55 @@ fn check_ignore_reasons_rejects_non_known_bug_reason() {
 fn check_ignore_reasons_rejects_stale_plan_step_needle() {
     // A source containing the stale-pointer needle (assembled at runtime)
     // must be rejected by the belt-and-suspenders negative sentinel.
-    // Needle and source assembled at runtime so this file does not contain
-    // the literal sequence as adjacent characters.
+    // The error must mention "stale-pointer" so we can tell the negative
+    // sentinel fired (not the bare-ignore guard or the positive-invariant
+    // guard).  Needle and source assembled at runtime so this file does not
+    // contain the literal sequence as adjacent characters.
     let src = ["# source containing the needle: ", "plan", " step-", "5\n"].concat();
+    let err = check_ignore_reasons(&src)
+        .expect_err("expected source containing the stale-pointer needle to be rejected");
+    assert!(
+        err.contains("stale-pointer"),
+        "expected error message to identify the negative-sentinel guard: {err:?}",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_allows_bare_ignore_in_inner_doc_comment() {
+    // A bare-ignore form that appears only inside a `//!` inner-doc-comment
+    // line must NOT trigger a rejection — `//!` lines are skipped alongside
+    // `///` lines.  This complements the outer-doc-comment test above and
+    // pins the `//!` branch of the skip logic separately so neither branch
+    // can be removed silently.  Source assembled at runtime.
+    let src = ["//! example: ", "#[", "ignore] is load-bearing\n"].concat();
+    assert!(
+        check_ignore_reasons(&src).is_ok(),
+        "expected bare-ignore inside an inner doc comment (//!) to be allowed",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_regular_comment_is_not_skipped() {
+    // Regular `//` line comments are NOT skipped — only `///` and `//!` are.
+    // This pins the documented limitation so a future refactor that
+    // accidentally starts skipping `//` is caught immediately.
+    // Source assembled at runtime to avoid self-triggering.
+    let src = ["// regular comment: ", "#[", "ignore]\n"].concat();
     assert!(
         check_ignore_reasons(&src).is_err(),
-        "expected source containing the stale-pointer needle to be rejected",
+        "expected bare-ignore inside a regular // comment to be rejected \
+         (// comments are not skipped; only /// and //! are)",
+    );
+}
+
+#[test]
+fn check_ignore_reasons_accepts_source_with_no_ignore_attributes() {
+    // A source string containing no ignore attributes at all must be accepted,
+    // pinning the empty-input / no-match contract.  If the loop logic ever
+    // regressed (e.g. find always returning Some), this test would catch it.
+    let src = "fn main() {}\nstruct Foo;\nfn bar() -> i32 { 42 }\n";
+    assert!(
+        check_ignore_reasons(src).is_ok(),
+        "expected source with no ignore attributes to be accepted",
     );
 }
