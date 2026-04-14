@@ -33851,9 +33851,15 @@
         "updatedAt": "2026-04-11T21:41:17.782Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval/tests",
-            "crates/reify-test-support/Cargo.toml",
-            "crates/reify-test-support/src"
+            "crates/reify-test-support",
+            "crates/reify-eval"
+          ],
+          "files": [
+            "crates/reify-test-support/src/lib.rs",
+            "crates/reify-eval/tests/m9_combined.rs",
+            "crates/reify-eval/tests/m9_trait_conformance.rs",
+            "crates/reify-eval/tests/m9_integration.rs",
+            "crates/reify-eval/tests/m9_constraint_def.rs"
           ]
         }
       },
@@ -33957,10 +33963,10 @@
         "updatedAt": "2026-04-14T06:17:05.648Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr/tests",
-            "crates/reify-test-support/Cargo.toml",
-            "crates/reify-test-support/src",
-            "crates/reify-test-support/tests"
+            "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/tests/field_calculus_tests.rs"
           ]
         }
       },
