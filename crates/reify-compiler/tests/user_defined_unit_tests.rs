@@ -476,3 +476,100 @@ fn local_unit_duplicating_imported_pub_unit_produces_error() {
         errors
     );
 }
+
+// ─── step-19: transitive pub unit NOT visible two hops via ModuleDag ──────────
+
+#[test]
+fn transitive_pub_unit_not_visible_via_module_dag() {
+    // One-hop limitation pinning test via filesystem ModuleDag path.
+    // a.ri declares `pub unit mil`, b.ri has `import a` (no local units),
+    // c.ri has `import b` and uses `5mil`.
+    // The DAG seeds A's `mil` into B's registry, but B's CompiledModule.units
+    // is empty (B has no locally-declared units). When C is compiled, prelude-seeding
+    // from B.units yields nothing, so `mil` is unknown in C.
+    let dir = test_dir("transitive_pub_unit_module_dag");
+
+    fs::write(dir.join("a.ri"), "pub unit mil : Length = 0.0000254").unwrap();
+    fs::write(dir.join("b.ri"), "import a").unwrap();
+    fs::write(
+        dir.join("c.ri"),
+        "import b\nstructure S { param w : Length = 5mil }",
+    )
+    .unwrap();
+
+    let resolver =
+        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = reify_compiler::module_dag::ModuleDag::new();
+    // compile_module succeeds (no parse errors); semantic errors appear in the module.
+    let result = dag.compile_module("c", &resolver);
+    assert!(
+        result.is_ok(),
+        "compile_module should succeed (no parse errors): {:?}",
+        result
+    );
+
+    let module_c = dag.modules.get("c").expect("module c not in dag");
+    let errors = errors_only(module_c);
+    assert!(
+        !errors.is_empty(),
+        "expected 'unknown unit' error: `mil` should not be visible two hops away (one-hop limitation)"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.to_lowercase().contains("unknown unit")
+                && d.message.contains("mil")),
+        "error should mention 'unknown unit' and 'mil'; got: {:?}",
+        errors
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ─── step-21: transitive pub unit NOT visible two hops via compile_project ────
+
+#[test]
+fn transitive_pub_unit_not_visible_via_compile_project() {
+    // One-hop limitation pinning test via compile_project entry path.
+    // Same three-module chain: a.ri → b.ri → c.ri (c.ri is the entry file).
+    // C's entry-point compilation cannot see `mil` from A because B's
+    // CompiledModule.units is empty (B has no locally-declared units).
+    let dir = test_dir("transitive_pub_unit_compile_project");
+
+    fs::write(dir.join("a.ri"), "pub unit mil : Length = 0.0000254").unwrap();
+    fs::write(dir.join("b.ri"), "import a").unwrap();
+    fs::write(
+        dir.join("c.ri"),
+        "import b\nstructure S { param w : Length = 5mil }",
+    )
+    .unwrap();
+
+    let resolver =
+        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result =
+        reify_compiler::module_dag::compile_project(&dir.join("c.ri"), &resolver);
+    // Parse succeeds; semantic errors are attached to the module, not returned as Err.
+    assert!(
+        result.is_ok(),
+        "compile_project should succeed (no parse errors): {:?}",
+        result
+    );
+
+    let modules = result.unwrap();
+    let entry_module = modules.last().expect("no modules returned");
+    let errors = errors_only(entry_module);
+    assert!(
+        !errors.is_empty(),
+        "expected 'unknown unit' error: `mil` should not be visible two hops away (one-hop limitation)"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.to_lowercase().contains("unknown unit")
+                && d.message.contains("mil")),
+        "error should mention 'unknown unit' and 'mil'; got: {:?}",
+        errors
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
