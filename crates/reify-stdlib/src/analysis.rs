@@ -269,4 +269,52 @@ mod tests {
             other => panic!("expected List, got {:?}", other),
         }
     }
+
+    #[test]
+    fn principal_stresses_symmetric_tensor() {
+        // Symmetric tensor [[2,1,0],[1,3,1],[0,1,2]] → eigenvalues [1, 2, 4]
+        let tensor = make_matrix(&[&[2.0, 1.0, 0.0], &[1.0, 3.0, 1.0], &[0.0, 1.0, 2.0]]);
+        let result = eval_analysis("principal_stresses", &[tensor]).unwrap();
+        match result {
+            Value::List(items) => {
+                assert_eq!(items.len(), 3);
+                assert_real_approx!(items[0].clone(), 1.0);
+                assert_real_approx!(items[1].clone(), 2.0);
+                assert_real_approx!(items[2].clone(), 4.0);
+            }
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn principal_stresses_hydrostatic() {
+        // Hydrostatic [[p,0,0],[0,p,0],[0,0,p]] → [p, p, p]
+        let p = 100e6;
+        let tensor = make_dimensioned_matrix(
+            &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("principal_stresses", &[tensor]).unwrap();
+        match result {
+            Value::List(items) => {
+                assert_eq!(items.len(), 3);
+                assert_scalar_approx!(items[0].clone(), p, DimensionVector::PRESSURE);
+                assert_scalar_approx!(items[1].clone(), p, DimensionVector::PRESSURE);
+                assert_scalar_approx!(items[2].clone(), p, DimensionVector::PRESSURE);
+            }
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn principal_stresses_wrong_args_return_undef() {
+        assert!(eval_analysis("principal_stresses", &[]).unwrap().is_undef());
+        assert!(eval_analysis("principal_stresses", &[Value::Real(1.0)])
+            .unwrap()
+            .is_undef());
+        let m2x2 = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
+        assert!(eval_analysis("principal_stresses", &[m2x2])
+            .unwrap()
+            .is_undef());
+    }
 }
