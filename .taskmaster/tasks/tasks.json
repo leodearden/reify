@@ -8126,13 +8126,12 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/src/traits.rs",
-            "crates/reify-compiler/src/conformance.rs",
             "crates/reify-compiler/tests/trait_conformance_tests.rs"
           ]
         },
@@ -8150,7 +8149,7 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
