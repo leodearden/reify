@@ -1,0 +1,141 @@
+// integration_full_v01.ri — comprehensive v0.1 language feature integration.
+//
+// A realistic multi-structure engineering assembly that exercises every v0.1
+// language feature in a single cohesive example. Companion to the milestone
+// combined files (m9_combined, m10_combined, m11_*.ri).
+//
+// Features exercised:
+//   type alias, custom units (mil, thou, degC with offset),
+//   enum (Grade), fn overloads (safety_factor for Real and Int),
+//   field def with analytical source (temperature_profile),
+//   traits (Physical + Locatable), multi-trait conformance,
+//   constraint defs (InRange multi-predicate, Positive single-predicate),
+//   connector structure (PipeConnector), recursive structure (RecursiveBeam),
+//   Assembly body: meta block, auto/auto(free), geometric lets (point3/vec3/
+//   orient_identity/frame3/transform3/arithmetic), meta access lets, complex(),
+//   some/none lets, match, lambda let, range let, collection .count/.sum,
+//   fn overload dispatch, field sample/gradient, if-then-else, conjunction,
+//   disjunction (implies form), ports (in/out + frame), connect+mapping,
+//   where-block, determinacy predicates, forall/exists quantifiers, minimize,
+//   @test structures (sub + self + constraint defs), purpose with forall.
+
+// ── Type alias ───────────────────────────────────────────────────────────────
+
+/// Pressure is Force per Area (SI unit: Pa).
+type Pressure = Force / Area
+
+// ── Custom units ─────────────────────────────────────────────────────────────
+
+/// One mil = 1/1000 inch = 0.0000254 m (common in PCB/manufacturing tolerancing).
+unit mil : Length = 0.0000254
+
+/// Thou is an alternative name for mil (same scale factor).
+unit thou : Length = 0.0000254
+
+/// Degrees Celsius: scale factor 1 (same size as Kelvin), offset 273.15 from absolute zero.
+unit degC : Temperature = 1 offset 273.15
+
+// ── Enum ─────────────────────────────────────────────────────────────────────
+
+/// Material grade classification for structural members.
+enum Grade { Standard, Reinforced, Premium }
+
+// ── Function overloads ───────────────────────────────────────────────────────
+
+/// Safety factor for real-valued (continuous) loads: multiplies by 1.5.
+fn safety_factor(load: Real) -> Real { load * 1.5 }
+
+/// Safety factor for integer (discrete) loads: multiplies by 2.
+fn safety_factor(load: Int) -> Int { load * 2 }
+
+// ── Field definition ─────────────────────────────────────────────────────────
+
+/// Analytical temperature profile along the beam axis: T(x) = x² + 10.
+/// At x=3.0 → T=19.0; gradient at x=3.0 → 2*3 = 6.0 (central differences).
+field def temperature_profile : Real -> Real {
+    source = analytical { |x| x * x + 10.0 }
+}
+
+// ── Traits ───────────────────────────────────────────────────────────────────
+
+/// Trait for objects with a measurable mass.
+trait Physical {
+    param mass : Mass = 1kg
+    constraint mass > 0kg
+}
+
+/// Trait for objects with a 2-D Cartesian position.
+trait Locatable {
+    param position_x : Length = 0mm
+    param position_y : Length = 0mm
+}
+
+/// Trait for fluid-carrying ports (diameter required for compatibility checks).
+trait FluidInterface {
+    param diameter : Length
+}
+
+// ── Constraint definitions ────────────────────────────────────────────────────
+
+/// Checks that a Length value v is within the closed interval [lo, hi].
+constraint def InRange {
+    param v  : Length
+    param lo : Length
+    param hi : Length
+    v >= lo
+    v <= hi
+}
+
+/// Checks that a Length value v is strictly positive.
+constraint def Positive {
+    param v : Length
+    v > 0mm
+}
+
+// ── PipeConnector ─────────────────────────────────────────────────────────────
+
+/// Connector structure for pipe joints; carries grade and nominal diameter.
+structure def PipeConnector {
+    param grade    : Real   = 8.8
+    param diameter : Length = 25mm
+}
+
+// ── RecursiveBeam ─────────────────────────────────────────────────────────────
+
+/// A beam that recursively halves its span at each depth level.
+/// Guard `depth > 0` stops unfolding when depth reaches 0.
+structure def RecursiveBeam {
+    param depth : Int    = 2
+    param span  : Length = 300mm
+
+    sub child = RecursiveBeam(depth: depth - 1, span: span / 2) where depth > 0
+
+    constraint span > 0mm
+    constraint determined(span)
+}
+
+// ── Assembly ──────────────────────────────────────────────────────────────────
+
+/// Main integration assembly: implements Physical + Locatable, exercises all
+/// v0.1 language features in a single realistic engineering structure.
+structure def Assembly : Physical + Locatable {
+    // Placeholder body for step-2; full body added in step-4.
+    param height : Length = 300mm
+}
+
+// ── @test structures ──────────────────────────────────────────────────────────
+
+// (Added in step-22; placeholder comment only.)
+
+// ── Purposes ─────────────────────────────────────────────────────────────────
+
+/// Manufacturing readiness: all params of the subject structure must be determined.
+purpose mfg_ready(subject : Structure) {
+    constraint forall p in subject.params: determined(p)
+}
+
+/// Weight minimization target for a structural part.
+pub purpose weight_target(part : Structure) {
+    constraint 1mm > 0mm
+    minimize part.mass
+}
