@@ -5902,7 +5902,7 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
@@ -5926,12 +5926,12 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-eval/tests/incremental.rs"
+            "crates/reify-eval/tests/m11_incremental_eval.rs"
           ]
         },
         "subtasks": [],
