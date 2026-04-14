@@ -30480,7 +30480,7 @@
         "updatedAt": "2026-04-10T02:27:50.401Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/tests/silent_defaults_tests.rs"
