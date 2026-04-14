@@ -527,7 +527,9 @@ fn stdlib_fn_no_args_emits_type_inference_warning() {
 
     let warnings = warning_diagnostics(&module);
     let has_type_warning = warnings.iter().any(|d| {
-        d.message.contains("zero-arg function") && d.message.contains("defaulting to Real")
+        d.message.contains("zero-arg function")
+            && d.message.contains("defaulting to Real")
+            && d.message.contains("__test_zero_arg_fn")
     });
     assert!(
         has_type_warning,
