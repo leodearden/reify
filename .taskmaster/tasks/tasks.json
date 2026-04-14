@@ -33904,7 +33904,7 @@
         }
       },
       {
-        "id": "1640",
+        "id": 1640,
         "title": "Extend make_field_with_source round-trip test to cover all FieldSourceKind variants",
         "description": "Follow-up from Task 1612 review triage (esc-1612-15, S1).\n\nIn crates/reify-expr/tests/field_calculus_tests.rs, the `make_field_with_source_builds_field_with_given_source` test (~lines 102-144) iterates over only 3 of the 8 current `FieldSourceKind` variants: Analytical, Composed, Laplacian. The unchecked variants are Sampled, Imported, Gradient, Divergence, and Curl.\n\nSince the loop already iterates and the per-iteration assertions are constant, extending the array to all variants is essentially free and would protect against future enum additions silently bypassing the helper (the `[...]` array is not an exhaustive match, so new variants would not force an update here).\n\nPreferred fix: iterate over the full FieldSourceKind enum (all 8 current variants). Alternative: add a brief comment explaining why these three are representative.\n\nVerification: `cargo test -p reify-expr --test field_calculus_tests make_field_with_source_builds_field_with_given_source`.",
         "status": "pending",
@@ -33956,20 +33956,20 @@
         }
       },
       {
-        "id": 1643,
+        "id": "1643",
         "title": "Fix asymmetric SYNC comment in reify-expr sanitize.rs",
         "description": "The SYNC comment at crates/reify-expr/src/sanitize.rs:40 still reads 'sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync', but task 892 consolidated all sanitize_value tests from reify-stdlib/src/complex.rs into reify-stdlib/src/helpers.rs. The companion comment in helpers.rs:459 was updated ('sanitize_value tests mirrored in reify-expr::sanitize tests — keep in sync'), but reify-expr's side was missed — leaving the two ends of the mirror asymmetric and pointing future maintainers to a file that no longer holds the mirrored tests.",
-        "details": "Update crates/reify-expr/src/sanitize.rs:40 from:\n\n    // SYNC: sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync\n\nto:\n\n    // SYNC: sanitize_value tests mirrored in reify-stdlib::helpers tests — keep in sync\n\nso both ends of the mirror agree. One-line doc fix. No behavior changes, no new tests. Run `cargo check -p reify-expr` to confirm nothing broke and verify sync_comments_test.sh (if it gates this comment) still passes.\n\nMemory hints: search \"sanitize_value SYNC comment reify-expr reify-stdlib\", search \"task 892 sanitize_value consolidation complex.rs helpers.rs\"",
-        "testStrategy": "",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "Update crates/reify-expr/src/sanitize.rs:40 from:\n\n    // SYNC: sanitize_value tests mirrored in reify-stdlib (helpers.rs Real/Scalar, complex.rs Complex/Orientation) — keep in sync\n\nto:\n\n    // SYNC: sanitize_value tests mirrored in reify-stdlib::helpers tests — keep in sync\n\nso both ends of the mirror agree. One-line doc fix. No behavior changes, no new tests. Run `cargo check -p reify-expr` to confirm nothing broke and verify sync_comments_test.sh (if it gates this comment) still passes.\n\nMemory hints: search \"sanitize_value SYNC comment reify-expr reify-stdlib\", search \"task 892 sanitize_value consolidation complex.rs helpers.rs\", search: 'sanitize.rs SYNC comment complex helpers consolidation Task 892'",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-13T23:56:08.901Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src"
-          ]
+          ],
+          "memory_hints": "Task 892 consolidated complex.rs tests into helpers.rs (see task 892 for commit); search: 'sanitize.rs SYNC comment consolidation Task 892 complex helpers'; file: crates/reify-expr/src/sanitize.rs line ~40 vs crates/reify-expr/tests/helpers.rs line ~459"
         }
       },
       {
