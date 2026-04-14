@@ -34216,8 +34216,8 @@
         "updatedAt": "2026-04-14T06:21:39.232Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr/src",
-            "crates/reify-stdlib/src"
+            "crates/reify-expr",
+            "crates/reify-stdlib"
           ],
           "memory_hints": {
             "entities": [
@@ -34229,7 +34229,11 @@
               "task 892 sanitize_value consolidation complex.rs helpers.rs",
               "Value::List Value::Transform variants reify-expr value.rs shape"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-expr/src/sanitize.rs",
+            "crates/reify-stdlib/src/helpers.rs"
+          ]
         }
       },
       {
