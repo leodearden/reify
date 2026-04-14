@@ -26525,15 +26525,12 @@
         "updatedAt": "2026-04-11T07:44:49.000Z",
         "metadata": {
           "modules": [
-            "crates/reify-types",
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-compiler/src",
+            "crates/reify-types/src"
           ],
           "files": [
-            "crates/reify-types/src/lib.rs",
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/tests/test_runner.rs"
+            "crates/reify-types/src/lib.rs"
           ],
           "bundled_from": [
             "1252",
@@ -26811,7 +26808,7 @@
         "updatedAt": "2026-04-14T07:05:34.457Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/tests/deprecated_use_tests.rs"
