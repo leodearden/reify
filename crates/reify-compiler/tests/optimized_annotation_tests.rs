@@ -234,6 +234,63 @@ fn optimized_on_unsupported_context_still_warns() {
     );
 }
 
+// ── Missing-target warning must not fire on non-consuming contexts ───────────
+
+/// `@optimized` with no string-literal arg on a *structure* must NOT emit the
+/// missing-target warning — the target is only consumed in constraint_def context.
+/// Telling a user to add a string that nothing reads is actively harmful.
+#[test]
+fn optimized_missing_target_on_structure_does_not_warn() {
+    let module = compile_module(
+        r#"
+@optimized
+structure S {
+    param x: Real
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("requires a string literal target"))
+        .collect();
+    assert!(
+        missing_target_warnings.is_empty(),
+        "@optimized (no target) on structure must not warn about missing target; got: {:?}",
+        missing_target_warnings
+    );
+}
+
+/// `@optimized` with no string-literal arg on an *occurrence def* must NOT emit
+/// the missing-target warning — same reasoning as for structures above.
+#[test]
+fn optimized_missing_target_on_occurrence_does_not_warn() {
+    let module = compile_module(
+        r#"
+@optimized
+occurrence def O {
+    param y: Real = 1.0
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("requires a string literal target"))
+        .collect();
+    assert!(
+        missing_target_warnings.is_empty(),
+        "@optimized (no target) on occurrence must not warn about missing target; got: {:?}",
+        missing_target_warnings
+    );
+}
+
 // ── Malformed-annotation diagnostics (reviewer suggestion S4) ───────────────
 
 /// `@optimized` with no string-literal first arg silently routes to the
