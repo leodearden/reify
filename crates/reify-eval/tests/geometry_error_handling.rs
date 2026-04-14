@@ -1372,75 +1372,11 @@ fn build_scale_negative_factor_emits_diagnostic() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (1) Kernel was called exactly once — for the Box — but never for the Scale
-    {
-        let ops = ops_ref.lock().unwrap();
-        assert_eq!(
-            ops.len(),
-            1,
-            "kernel.execute() should be called only for the Box (not the Scale), \
-             got {} kernel ops",
-            ops.len()
-        );
-        assert!(
-            matches!(ops[0].op, reify_types::GeometryOp::Box { .. }),
-            "expected the only recorded kernel op to be Box, got: {:?}",
-            ops[0].op
-        );
-    }
-
-    // (2) No geometry output — Scale failed to compile
-    assert!(
-        result.geometry_output.is_none(),
-        "expected geometry_output to be None when Scale factor is negative"
-    );
-
-    // (3) Warning: 'scale dropped' and 'negative'
-    let has_scale_warning = result.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Warning
-            && d.message.contains("scale dropped")
-            && d.message.contains("negative")
-    });
-    assert!(
-        has_scale_warning,
-        "expected a Warning diagnostic containing 'scale dropped' and 'negative', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| (&d.severity, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    // (4) Error about failed compile
-    let has_compile_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("failed to compile geometry operation"));
-    assert!(
-        has_compile_error,
-        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    // (5) No 'geometry error' diagnostic — kernel was never called for the Scale
-    let has_kernel_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("geometry error"));
-    assert!(
-        !has_kernel_error,
-        "should NOT have a 'geometry error' diagnostic (kernel was never called for Scale), \
-         but got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .filter(|d| d.message.contains("geometry error"))
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        |op| matches!(op, reify_types::GeometryOp::Box { .. }),
+        &["scale dropped", "negative"],
     );
 }
 
