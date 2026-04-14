@@ -8,7 +8,7 @@ use reify_eval::{ConcurrentEditResult, Engine};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
     MultiCallSpyConstraintSolver, SpyConstraintSolver, TopologyTemplateBuilder, binop, gt, literal,
-    lt, mm, value_ref,
+    lt, make_simple_engine, mm, value_ref,
 };
 use reify_types::{
     DeterminacyState, ModulePath, OptimizationObjective, SnapshotId,
@@ -188,7 +188,6 @@ fn let_binding_re_evaluated_after_resolution() {
 
 #[test]
 fn check_reports_satisfied_after_resolution() {
-    use reify_constraints::SimpleConstraintChecker;
     use reify_types::Satisfaction;
 
     let thickness_id = ValueCellId::new("S", "thickness");
@@ -213,8 +212,7 @@ fn check_reports_satisfied_after_resolution() {
         .template(template)
         .build();
 
-    let mut engine =
-        Engine::new(Box::new(SimpleConstraintChecker), None).with_solver(Box::new(solver));
+    let mut engine = make_simple_engine().with_solver(Box::new(solver));
 
     let result = engine.check(&module);
 
