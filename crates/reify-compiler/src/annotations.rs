@@ -85,16 +85,21 @@ pub(crate) fn validate_annotations(
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
                     );
-                } else if !matches!(
-                    ann.args.first(),
-                    Some(reify_types::AnnotationArg::String(_))
-                ) {
-                    // @optimized without a string-literal target silently
-                    // routes to the language-level checker, which confuses
-                    // users who think they wired up an optimized impl. Warn
-                    // explicitly. Constraint_def is the only context where
-                    // this target is actually consumed (Task 273), but we
-                    // warn regardless for consistency.
+                } else if context == "constraint_def"
+                    && !matches!(
+                        ann.args.first(),
+                        Some(reify_types::AnnotationArg::String(_))
+                    )
+                {
+                    // @optimized without a string-literal target on a constraint_def
+                    // silently routes to the language-level checker, which confuses
+                    // users who think they wired up an optimized impl. Warn explicitly.
+                    //
+                    // The target is only consumed in constraint_def context: entity.rs
+                    // reads optimized_target when lowering a ConstraintDef to a
+                    // CompiledConstraint. On structure/occurrence contexts the annotation
+                    // is stored but nothing downstream reads the target string, so warning
+                    // there would tell the user to add a string that nothing uses.
                     diagnostics.push(
                         Diagnostic::warning(
                             "annotation @optimized requires a string literal target, e.g. @optimized(\"kernel::foo\")"
