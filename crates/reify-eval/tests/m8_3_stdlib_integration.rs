@@ -114,6 +114,54 @@ fn m8_materials_smoke() {
     );
 }
 
+// ── step-3: materials_bracket_mass_computed ───────────────────────────────────
+
+/// Asserts AluminumBracket.mass = volume * density = 0.0004 * 2700 = 1.08 (Value::Real).
+/// Both volume and density are Real (dimensionless) per the stdlib convention,
+/// so mass is also Value::Real(1.08), not a Scalar.
+#[test]
+fn materials_bracket_mass_computed() {
+    let result = eval_ri_file(PATH_MATERIALS, "m8_materials");
+
+    // mass = volume * density (let computed inside the Physical trait)
+    let mass_id = ValueCellId::new("AluminumBracket", "mass");
+    let mass_val = result
+        .values
+        .get(&mass_id)
+        .unwrap_or_else(|| panic!("AluminumBracket.mass not found in eval result"));
+
+    match mass_val {
+        Value::Real(v) => {
+            assert!(
+                (v - 1.08).abs() < 1e-9,
+                "AluminumBracket.mass should be ≈1.08 (= 0.0004 * 2700), got {}",
+                v
+            );
+        }
+        other => panic!(
+            "AluminumBracket.mass should be Value::Real (Real*Real=Real), got {:?}",
+            other
+        ),
+    }
+
+    // density param (Reify stores whole-number float literals as Int in the evaluator)
+    let density_id = ValueCellId::new("AluminumBracket", "density");
+    let density_val = result
+        .values
+        .get(&density_id)
+        .unwrap_or_else(|| panic!("AluminumBracket.density not found"));
+    let density_f64 = match density_val {
+        Value::Real(v) => *v,
+        Value::Int(i) => *i as f64,
+        other => panic!("AluminumBracket.density should be Real or Int, got {:?}", other),
+    };
+    assert!(
+        (density_f64 - 2700.0).abs() < 1e-9,
+        "AluminumBracket.density should be 2700.0, got {}",
+        density_f64
+    );
+}
+
 // ── Section 2: m8_ports.ri ───────────────────────────────────────────────────
 
 /// Smoke test: m8_ports.ri parses, compiles (stdlib), evals without errors,
@@ -152,3 +200,4 @@ fn m8_units_smoke() {
         "m8_units.ri eval should produce non-empty values"
     );
 }
+
