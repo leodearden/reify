@@ -419,9 +419,13 @@ impl Engine {
         //
         // We move `(ConstraintNodeId, &CompiledExpr)` directly into the
         // buckets so the dispatch path never clones a `ConstraintNodeId`.
-        let mut optimized_groups: BTreeMap<&'a str, Vec<(usize, (ConstraintNodeId, &'a CompiledExpr))>> =
-            BTreeMap::new();
-        let mut fallback: Vec<(usize, (ConstraintNodeId, &'a CompiledExpr))> = Vec::new();
+        //
+        // Each bucket entry keeps the *original index* alongside the payload
+        // so the merge step below can weave results back into the caller-
+        // visible order regardless of which group they were dispatched to.
+        type BucketEntry<'b> = (usize, (ConstraintNodeId, &'b CompiledExpr));
+        let mut optimized_groups: BTreeMap<&'a str, Vec<BucketEntry<'a>>> = BTreeMap::new();
+        let mut fallback: Vec<BucketEntry<'a>> = Vec::new();
         for (i, (id, expr, target)) in entries.into_iter().enumerate() {
             match target {
                 Some(t) if self.optimization_registry.contains_key(t) => {
