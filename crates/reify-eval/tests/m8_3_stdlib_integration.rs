@@ -95,7 +95,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
 /// Read a .ri fixture file, parse, and compile with stdlib.
 /// Panics if there are any Severity::Error diagnostics.
 /// Returns the CompiledModule for compile-level assertions.
-fn compiled_ri(path: &str, module_name: &str) -> CompiledModule {
+fn compiled_ri(path: &str) -> CompiledModule {
     let source = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
     parse_and_compile_with_stdlib(&source)
@@ -117,8 +117,11 @@ fn m8_materials_smoke() {
 // ── step-3: materials_bracket_mass_computed ───────────────────────────────────
 
 /// Asserts AluminumBracket.mass = volume * density = 0.0004 * 2700 = 1.08 (Value::Real).
-/// Both volume and density are Real (dimensionless) per the stdlib convention,
-/// so mass is also Value::Real(1.08), not a Scalar.
+/// The stdlib Physical trait declares both fields as `Real` (dimensionless).
+/// The evaluator represents whole-number float literals (e.g., `2700.0`) as `Value::Int`,
+/// while fractional literals like `0.0004` are stored as `Value::Real`.
+/// Their product — `let mass = volume * density` inside Physical — yields `Value::Real(1.08)`
+/// (Real × Int → Real). The test below handles both storage cases for `density`.
 #[test]
 fn materials_bracket_mass_computed() {
     let result = eval_ri_file(PATH_MATERIALS, "m8_materials");
@@ -170,8 +173,7 @@ fn materials_bracket_mass_computed() {
 /// (Physical.volume > 0, Strong.uts >= yield_strength).
 #[test]
 fn materials_trait_conformance_checks() {
-    use reify_compiler::CompiledModule;
-    let compiled: CompiledModule = compiled_ri(PATH_MATERIALS, "m8_materials");
+    let compiled: CompiledModule = compiled_ri(PATH_MATERIALS);
 
     let template = compiled
         .templates
@@ -228,8 +230,7 @@ fn m8_ports_smoke() {
 ///   - Gearbox template has an "input" port with type_name "RotaryPort"
 #[test]
 fn ports_rotary_connection_compiles() {
-    use reify_compiler::CompiledModule;
-    let compiled: CompiledModule = compiled_ri(PATH_PORTS, "m8_ports");
+    let compiled: CompiledModule = compiled_ri(PATH_PORTS);
 
     // --- DriveTrain assembly: connection motor.shaft → gearbox.input ---
     let drivetrain = compiled
@@ -243,12 +244,10 @@ fn ports_rotary_connection_compiles() {
         "DriveTrain should have >= 1 connection"
     );
 
-    let conn = drivetrain
-        .connections
-        .iter()
-        .find(|c| c.left_port == "motor.shaft" && c.right_port == "gearbox.input")
-        .expect("DriveTrain should have a connection from motor.shaft to gearbox.input");
-    let _ = conn; // successfully found
+    assert!(
+        drivetrain.connections.iter().any(|c| c.left_port == "motor.shaft" && c.right_port == "gearbox.input"),
+        "DriveTrain should have a connection from motor.shaft to gearbox.input"
+    );
 
     // --- Motor template: shaft port (RotaryPort) + mount port (ThreadedPort) ---
     let motor = compiled
@@ -306,7 +305,7 @@ fn ports_rotary_connection_compiles() {
 ///   - thread_pitch     : default_expr Literal(Scalar(0.00125 m, LENGTH)) = 1.25mm
 #[test]
 fn ports_threaded_m8_port_values() {
-    let compiled = compiled_ri(PATH_PORTS, "m8_ports");
+    let compiled = compiled_ri(PATH_PORTS);
 
     let motor = compiled
         .templates
@@ -788,73 +787,4 @@ fn units_cross_system_arithmetic() {
     );
 }
 
-// ── step-21: m8_3_all_four_fixtures_green ────────────────────────────────────
-
-/// Capstone regression guard: re-runs all four M8.3 fixtures through the full
-/// parse → compile_with_stdlib → eval pipeline and asserts:
-///   1. No Severity::Error diagnostics at any stage (parse, compile, eval).
-///   2. At least 1 value cell populated per fixture (non-empty eval result).
-///   3. The expected top-level structure name is present in compiled.templates.
-///
-/// Acts as a single-command smoke check for future regressions across the
-/// entire M8.3 milestone. Relies on the same `eval_ri_file` + `compiled_ri`
-/// helpers as the individual tests above.
-#[test]
-fn m8_3_all_four_fixtures_green() {
-    // ── m8_materials.ri ───────────────────────────────────────────────────────
-    {
-        let result = eval_ri_file(PATH_MATERIALS, "m8_materials");
-        assert!(
-            !result.values.is_empty(),
-            "m8_materials.ri: eval result should be non-empty"
-        );
-        let compiled = compiled_ri(PATH_MATERIALS, "m8_materials");
-        assert!(
-            compiled.templates.iter().any(|t| t.name == "AluminumBracket"),
-            "m8_materials.ri: AluminumBracket should be present in compiled templates"
-        );
-    }
-
-    // ── m8_ports.ri ───────────────────────────────────────────────────────────
-    {
-        let result = eval_ri_file(PATH_PORTS, "m8_ports");
-        assert!(
-            !result.values.is_empty(),
-            "m8_ports.ri: eval result should be non-empty"
-        );
-        let compiled = compiled_ri(PATH_PORTS, "m8_ports");
-        assert!(
-            compiled.templates.iter().any(|t| t.name == "DriveTrain"),
-            "m8_ports.ri: DriveTrain should be present in compiled templates"
-        );
-    }
-
-    // ── m8_tolerancing.ri ─────────────────────────────────────────────────────
-    {
-        let result = eval_ri_file(PATH_TOLERANCING, "m8_tolerancing");
-        assert!(
-            !result.values.is_empty(),
-            "m8_tolerancing.ri: eval result should be non-empty"
-        );
-        let compiled = compiled_ri(PATH_TOLERANCING, "m8_tolerancing");
-        assert!(
-            compiled.templates.iter().any(|t| t.name == "Flange"),
-            "m8_tolerancing.ri: Flange should be present in compiled templates"
-        );
-    }
-
-    // ── m8_units.ri ───────────────────────────────────────────────────────────
-    {
-        let result = eval_ri_file(PATH_UNITS, "m8_units");
-        assert!(
-            !result.values.is_empty(),
-            "m8_units.ri: eval result should be non-empty"
-        );
-        let compiled = compiled_ri(PATH_UNITS, "m8_units");
-        assert!(
-            compiled.templates.iter().any(|t| t.name == "UnitShowcase"),
-            "m8_units.ri: UnitShowcase should be present in compiled templates"
-        );
-    }
-}
 

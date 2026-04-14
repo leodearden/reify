@@ -18,6 +18,16 @@
 // definitions during resolution; the local structure declarations shadow the
 // stdlib ones in the user module's template list without causing errors.
 //
+// TODO: This re-declaration is a WORKAROUND for a product coupling gap.  Every
+// consumer of stdlib structures must copy-paste stdlib definitions into their
+// .ri file when they need eval-time sub resolution.  A proper fix requires
+// either:
+//   (a) compile_with_stdlib includes used stdlib templates in the output
+//       CompiledModule (so the eval engine can find them without re-declaration), or
+//   (b) the eval engine consults a stdlib template registry when resolving subs.
+// Track as a follow-up issue so this pattern is not mistaken for a permanent
+// convention.
+//
 // Flange structure contains:
 //   sub pos      — Position (location tolerance, MMC modifier)
 //   sub flat     — Flatness (form tolerance)
