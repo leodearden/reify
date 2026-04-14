@@ -1442,76 +1442,11 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (1) Kernel was called exactly once — for the Sphere — but never for the Extrude
-    {
-        let ops = ops_ref.lock().unwrap();
-        assert_eq!(
-            ops.len(),
-            1,
-            "kernel.execute() should be called only for the Sphere (not the Extrude), \
-             got {} kernel ops",
-            ops.len()
-        );
-        assert!(
-            matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
-            "expected the only recorded kernel op to be Sphere, got: {:?}",
-            ops[0].op
-        );
-    }
-
-    // (2) No geometry output — Extrude failed to compile
-    assert!(
-        result.geometry_output.is_none(),
-        "expected geometry_output to be None when Extrude distance is NaN"
-    );
-
-    // (3) Warning: 'extrude dropped', 'degenerate', and 'NaN' (pins the non-finite arm)
-    let has_extrude_warning = result.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Warning
-            && d.message.contains("extrude dropped")
-            && d.message.contains("degenerate")
-            && d.message.contains("NaN")
-    });
-    assert!(
-        has_extrude_warning,
-        "expected a Warning diagnostic containing 'extrude dropped', 'degenerate', and 'NaN', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| (&d.severity, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    // (4) Error about failed compile
-    let has_compile_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("failed to compile geometry operation"));
-    assert!(
-        has_compile_error,
-        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    // (5) No 'geometry error' diagnostic — kernel was never called for the Extrude
-    let has_kernel_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("geometry error"));
-    assert!(
-        !has_kernel_error,
-        "should NOT have a 'geometry error' diagnostic (kernel was never called for Extrude), \
-         but got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .filter(|d| d.message.contains("geometry error"))
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        |op| matches!(op, reify_types::GeometryOp::Sphere { .. }),
+        &["extrude dropped", "degenerate", "NaN"],
     );
 }
 
