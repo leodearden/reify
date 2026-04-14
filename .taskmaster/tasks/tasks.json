@@ -8365,7 +8365,6 @@
           },
           "files": [
             "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/tests/e2e_meta.rs",
             "crates/reify-eval/tests/meta_eval_integration.rs"
           ]
         },
@@ -8441,33 +8440,16 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-test-support/src/lib.rs",
-            "crates/reify-eval/tests/e2e_meta.rs",
-            "crates/reify-eval/tests/m5_integration.rs",
-            "crates/reify-eval/tests/purpose_eval.rs",
-            "crates/reify-compiler/tests/meta_compile_tests.rs",
-            "crates/reify-compiler/tests/connect_compile_tests.rs",
-            "crates/reify-compiler/tests/field_compile_tests.rs",
+            "crates/reify-test-support/src/helpers.rs",
             "crates/reify-compiler/tests/common/mod.rs",
-            "crates/reify-syntax/tests/common/mod.rs",
-            "crates/reify-compiler/tests/guard_compilation.rs",
-            "crates/reify-compiler/tests/collection_sub_tests.rs",
-            "crates/reify-eval/tests/m9_trait_conformance.rs",
-            "crates/reify-compiler/tests/stdlib_loader_tests.rs",
-            "crates/reify-eval/tests/stdlib_prelude_tests.rs",
-            "crates/reify-compiler/tests/constraint_def_compile_tests.rs",
-            "crates/reify-compiler/tests/constraint_inst_tests.rs",
-            "crates/reify-eval/tests/m9_constraint_def.rs",
-            "crates/reify-compiler/tests/port_compile_tests.rs",
-            "crates/reify-compiler/tests/unit_declaration_tests.rs",
-            "crates/reify-compiler/tests/user_defined_unit_tests.rs",
-            "crates/reify-compiler/tests/unit_registry_tests.rs"
+            "crates/reify-eval/tests/resolution.rs",
+            "crates/reify-runtime/src/lib.rs"
           ],
           "modules": [
             "crates/reify-test-support",
-            "crates/reify-eval/tests",
-            "crates/reify-compiler/tests",
-            "crates/reify-syntax/tests",
-            "crates/reify-test-support/src"
+            "crates/reify-compiler",
+            "crates/reify-eval",
+            "crates/reify-runtime"
           ],
           "bundled_from": [
             "371",
