@@ -8268,13 +8268,11 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/connect.rs",
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/connect_compile_tests.rs"
+            "crates/reify-compiler/src/lib.rs"
           ]
         },
         "subtasks": [],
