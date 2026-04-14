@@ -16682,7 +16682,7 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/src"
           ]
         },
         "updatedAt": "2026-04-10T00:00:00.000Z"
@@ -16700,7 +16700,7 @@
         "updatedAt": "2026-03-31T03:10:24.677Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
           "files": [
             "crates/reify-compiler/tests/unit_registry_tests.rs"
