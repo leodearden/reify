@@ -12036,11 +12036,11 @@
         "description": "Five of eight traits (Flexible, Plastic, ThermallyConductive, ElectricallyConductive, Sealed) only tested for name presence. Need member, type, constraint, and conformance tests.",
         "details": "Add per-trait tests covering: (a) required_member names and types, (b) conforming structure compiles without errors, (c) constraints injected correctly. Add missing-member negative tests for Rigid (moment_of_inertia) and ElasticallyDeformable (max_elastic_strain). Add centroid_y/z assertions to rigid_cross_module_three_level_refinement_chain.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:37.564Z",
+        "updatedAt": "2026-04-14T12:30:23.166Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -13826,11 +13826,11 @@
         "description": "Refactor Value::Field to eliminate inner_field: Option<Box<Value>>. Change FieldSourceKind::Gradient to FieldSourceKind::Gradient(Box<Value>). This removes 16 bytes from all non-gradient Field instances, eliminates the redundant guard in the sample handler, and makes impossible state (Gradient + inner_field=None) unrepresentable. Update match arms in value.rs (PartialEq, Ord, ContentHash, Display), compute_gradient_field and sample dispatch in reify-expr/src/lib.rs. Also fix the stale doc comment on sample_gradient_field that says 'lambda slot' — should say 'inner_field'.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:38.415Z",
+        "updatedAt": "2026-04-14T12:30:23.250Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src",
@@ -34460,7 +34460,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T12:30:23.085Z",
+      "lastModified": "2026-04-14T12:30:23.250Z",
       "taskCount": 1661,
       "completedCount": 1338,
       "tags": [
