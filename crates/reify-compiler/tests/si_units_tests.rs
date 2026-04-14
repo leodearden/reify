@@ -720,4 +720,25 @@ fn si_prefix_bases_restricted_entries_only_generate_specified_prefixes() {
             src
         );
     }
+
+    // Exact-count assertions: restricted bases must emit ONLY their allowed
+    // prefixes — a stale or over-inclusive filter would still pass the
+    // presence checks above but fail these.
+    let k_count = si_units::SI_PREFIXES
+        .iter()
+        .filter(|(p, _)| src.contains(&format!("pub unit {}K ", p)))
+        .count();
+    assert_eq!(k_count, 3, "K must emit exactly 3 prefixed units (n, u, m); got {}", k_count);
+
+    let cd_count = si_units::SI_PREFIXES
+        .iter()
+        .filter(|(p, _)| src.contains(&format!("pub unit {}cd ", p)))
+        .count();
+    assert_eq!(cd_count, 2, "cd must emit exactly 2 prefixed units (m, u); got {}", cd_count);
+
+    let rad_count = si_units::SI_PREFIXES
+        .iter()
+        .filter(|(p, _)| src.contains(&format!("pub unit {}rad ", p)))
+        .count();
+    assert_eq!(rad_count, 3, "rad must emit exactly 3 prefixed units (m, u, n); got {}", rad_count);
 }

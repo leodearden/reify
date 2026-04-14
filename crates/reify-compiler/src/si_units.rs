@@ -2,7 +2,7 @@
 //!
 //! Provides const tables for the 20 power-of-1000 SI prefixes (quecto..quetta)
 //! and the standard SI derived units (N, Pa, J, W, Hz, V, ohm, S, F, H, Wb,
-//! T, lm, lx, Bq, Gy, Sv, C, eV, bar, mbar, rpm, rad_per_s, Pa_s), together
+//! T, lm, lx, Bq, Gy, Sv, C, eV, bar, mbar, rpm, rad_per_s, Pa_s, sr), together
 //! with a programmatic generator that emits Reify unit declarations at
 //! `load_stdlib()` time.
 
@@ -88,8 +88,8 @@ pub struct SiDerivedUnit {
     pub prefix_combos: &'static [&'static str],
 }
 
-/// The 25 standard SI derived units plus non-SI accepted engineering units
-/// (`eV`, `bar`, `mbar`, `rpm`, `rad_per_s`, `Pa_s`).
+/// The 25 SI and engineering-derived units (19 standard SI plus `eV`, `bar`,
+/// `mbar`, `rpm`, `rad_per_s`, `Pa_s`).
 ///
 /// Ordering matches the task spec. `prefix_combos` holds only the
 /// commonly-used engineering prefixes per unit; the generator expands each
