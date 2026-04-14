@@ -1263,7 +1263,9 @@ fn assert_rejected_at_compile(
     // (3) Warning containing all provided needles
     let has_warning = result.diagnostics.iter().any(|d| {
         d.severity == reify_types::Severity::Warning
-            && warning_needles.iter().all(|needle| d.message.contains(needle))
+            && warning_needles
+                .iter()
+                .all(|needle| d.message.contains(needle))
     });
     assert!(
         has_warning,
