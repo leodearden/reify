@@ -5374,7 +5374,7 @@
         "dependencies": [
           "273"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -5388,7 +5388,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:04.533Z"
+        "updatedAt": "2026-04-14T07:04:05.681Z"
       },
       {
         "id": "275",
@@ -6421,7 +6421,7 @@
         "dependencies": [
           "314"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6436,7 +6436,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T07:04:05.654Z"
+        "updatedAt": "2026-04-14T05:35:52.985Z"
       },
       {
         "id": "316",
@@ -34340,9 +34340,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T07:04:05.654Z",
+      "lastModified": "2026-04-14T07:04:05.709Z",
       "taskCount": 1658,
-      "completedCount": 1331,
+      "completedCount": 1332,
       "tags": [
         "master"
       ]
