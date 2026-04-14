@@ -1342,6 +1342,16 @@ fn unfold_mutual_recursion_heterogeneous_members() {
         "A.b.a.width should be 5 (A's default). \
          If absent, depth-2 template alternation (B→A lookup) is broken."
     );
+    // Symmetric leakage check: B-specific member 'height' must NOT appear on the depth-2
+    // A instance. Task 553 amendment: closes the heterogeneous leakage check analogously
+    // to the explicit leakage assertions in unfold_mutual_recursion_with_let_bindings.
+    assert!(
+        !result.values.contains(&ValueCellId::new("A.b.a", "height")),
+        "A.b.a.height must NOT exist: A.b.a is an A instance (no 'height' member). \
+         Its presence indicates B-specific members leaking into a depth-2 A instance. \
+         Got: {:?}",
+        result.values.get(&ValueCellId::new("A.b.a", "height"))
+    );
 }
 
 // ─── step-39: cyclic let-binding dependency detection ─────────────────────────
@@ -1845,8 +1855,8 @@ fn non_recursive_child_guarded_sub_not_unfolded() {
 ///   Template S: is_recursive=false, param n: Int = 1, sub child = C(x: n) where n > 0
 ///   Template C: param y: Int = 99
 ///
-/// Evaluate (module-level evaluation picks S as root):
-///   S is NOT recursive, so Phase 2 must not recursively unfold S's guarded sub `child`.
+/// Evaluate (module-level evaluation iterates every template at the root frame; S is one
+/// of them and its guarded sub must not elaborate because is_recursive=false):
 ///
 /// Assert: (a) S.n == 1 (Phase 1 params work normally)
 ///         (b) S.child.y does NOT exist (Phase 2 must be gated on is_recursive at the top frame)
