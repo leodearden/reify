@@ -6,8 +6,33 @@ use std::path::{Path, PathBuf};
 ///
 /// The marker and needle are assembled at runtime so this source file does not
 /// contain the literal substrings and does not self-trigger when scanned.
-pub fn find_stale_plan_pointers_in_source(_source: &str) -> Vec<String> {
-    unimplemented!()
+pub fn find_stale_plan_pointers_in_source(source: &str) -> Vec<String> {
+    // Assembled at runtime — do not inline these as literals.
+    let marker = ["#[ignore", " = \""].concat();
+    let needle = ["plan", " step-"].concat();
+
+    let mut violations = Vec::new();
+    let mut remaining = source;
+    let mut byte_offset: usize = 0;
+
+    while let Some(rel_pos) = remaining.find(marker.as_str()) {
+        let abs_pos = byte_offset + rel_pos;
+        let line_num = source[..abs_pos].bytes().filter(|&b| b == b'\n').count() + 1;
+
+        let after_marker = &remaining[rel_pos + marker.len()..];
+        if let Some(end) = after_marker.find('"') {
+            let reason = &after_marker[..end];
+            if reason.contains(needle.as_str()) {
+                let preview: String = reason.chars().take(80).collect();
+                violations.push(format!("line {line_num}: {preview:?}"));
+            }
+        }
+
+        byte_offset += rel_pos + 1;
+        remaining = &remaining[rel_pos + 1..];
+    }
+
+    violations
 }
 
 /// Recursively walk `workspace_root` collecting every `.rs` file whose path
