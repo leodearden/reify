@@ -317,4 +317,18 @@ mod tests {
             .unwrap()
             .is_undef());
     }
+
+    // ── max_shear tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn max_shear_hydrostatic_returns_zero() {
+        // Hydrostatic: all principal stresses equal → (σ₁−σ₃)/2 = 0
+        let p = 100e6;
+        let tensor = make_dimensioned_matrix(
+            &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("max_shear", &[tensor]).unwrap();
+        assert_scalar_approx!(result, 0.0, DimensionVector::PRESSURE);
+    }
 }
