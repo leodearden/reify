@@ -33800,11 +33800,11 @@
         "description": "Two refinements in crates/reify-eval/tests/m9_combined.rs following task 1446 review. (1) Change `source()` to return `&'static str` instead of cloning the cached String on every call; update call sites (`parse_and_compile(source())`, `source().replace(...)`) to drop the `&source()` indirection. (2) Tighten `violated_constraint_detected` (lines 391-430) so it asserts the violation corresponds specifically to the `clearance < width` constraint on entity `Bracket` (e.g. `violations.iter().any(|e| e.id.entity == \"Bracket\")`) and also confirms that other previously-passing Bracket constraints (`width < length`, `clearance > 0mm`) remain Satisfied — guards against cascade-failure regressions masking the real bug.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:25.972Z",
+        "updatedAt": "2026-04-14T09:52:54.027Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -33991,13 +33991,13 @@
         "description": "Five test-quality improvements to crates/reify-eval/tests/purpose_activation.rs from Task 260 review (reviewer_comprehensive). All targeting the same file.",
         "details": "Follow-up bundle from Task 260 review suggestions (esc-260-17). All changes live in a single file.\n\n**S1 — `compiler_always_emits_params_query_per_structure_purpose_param` overstates behavior (line 226/280)**\nIn `crates/reify-compiler/src/traits.rs:345`, the resolved query is only pushed when `!param_ids.is_empty()`. A struct with zero params would NOT emit a query, so the test name lies. Fix: either rename (e.g. `compiler_emits_params_query_when_structure_has_params`) OR add a complementary `compiler_omits_params_query_for_zero_param_structure` case that constructs a param-less structure and asserts `resolved_queries.len() == 0`. Prefer adding the complementary case so the empty branch is covered.\n\n**S2 — Incorrect comment at purpose_activation.rs:498-500**\nComment claims `make_engine()` uses `MockConstraintChecker` that returns `Unchecked`. But `MockConstraintChecker::new()` defaults to `Satisfaction::Satisfied` (crates/reify-test-support/src/mocks.rs:48). So the stated rationale for switching to `SimpleConstraintChecker` is wrong. Fix: verify whether the test actually passes with `make_engine()`. If yes, drop the manual `Engine::new(...)` and use `make_engine()`. If `SimpleConstraintChecker` is required for real dimensional checks, rewrite the comment with the correct reason.\n\n**S3 — `injected_constraint_ids_have_purpose_prefix` weak assertion (lines 215-224/253-270)**\n`crates/reify-eval/src/lib.rs:433` constructs each injected entity as exactly `format!(\"purpose:{}@{}\", purpose_name, entity_ref)`. Every injected id's entity should equal `\"purpose:mfg_ready@Bracket\"` — but the test uses `any` + `starts_with`, which is looser than the contract. Fix:\n```rust\nlet entities: Vec<&str> = snapshot.graph.constraints.keys()\n    .filter(|id| id.entity.starts_with(\"purpose:\"))\n    .map(|id| id.entity.as_str())\n    .collect();\nassert!(!entities.is_empty(), \"expected at least one injected constraint\");\nassert!(entities.iter().all(|e| *e == \"purpose:mfg_ready@Bracket\"),\n    \"all purpose-injected constraints should have entity 'purpose:mfg_ready@Bracket'; got: {:?}\", entities);\n```\n\n**S4 — Coverage regression: `expr.remap_entity` path not exercised (lines 78-94)**\nThe deleted `purpose_eval.rs::activate_purpose_with_minimize_objective` used `minimize subject + subject`, which forced `expr.remap_entity` at `crates/reify-eval/src/lib.rs:440,446` to run on a non-literal expression. Every new fixture in purpose_activation.rs uses only literal expressions (`80mm + 60mm`, `5mm * 2`, `1 > 0`), so the rewrite path is uncovered. S5 note (line 620-625) explains why `subject.<param>` member access can't be tested yet — but bare `subject` (the pattern the deleted test used) stays within current compiler limits. Fix: add a test with fixture `purpose p(subject: Structure) { minimize subject + subject }`, activate against Bracket, and assert the resulting objective's expression has been remapped from the purpose name to the bound entity (inspect via `engine.active_objectives()` and check the inner expression's entity references equal `Bracket`).\n\n**S5 — Weak `>=` counts on example-file tests (lines 485-494)**\n`m10_purpose_activation_example_parses_and_compiles` asserts `>= 5` purposes and `m10_purpose_activation_example_constraints_satisfied` asserts `>= 8` constraint results. The example declares exactly 5 purposes and exactly 8 structural constraints on Bracket. Fix: change both to `==` so drift in the example file (accidental stray purpose/constraint) gets caught. Also consider asserting that `names` (after the named-purpose loop) has no duplicates.\n\n**Verification**: `cargo test -p reify-eval --test purpose_activation` should pass all tests after changes.\n\n**Scope**: Only modify `crates/reify-eval/tests/purpose_activation.rs`. No changes to production code.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "260"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:26.140Z",
+        "updatedAt": "2026-04-14T09:52:54.817Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -34380,7 +34380,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T09:52:52.948Z",
+      "lastModified": "2026-04-14T09:52:54.817Z",
       "taskCount": 1661,
       "completedCount": 1334,
       "tags": [
