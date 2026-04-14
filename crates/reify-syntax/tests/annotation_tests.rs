@@ -604,6 +604,36 @@ fn parse_multiple_annotations_on_param_member() {
     assert_eq!(param.annotations[1].args.len(), 2);
 }
 
+#[test]
+fn parse_member_annotation_does_not_leak() {
+    // Annotation on a constraint (non-param/non-let) should be consumed
+    // and NOT leak to the following param y.
+    let source = r#"structure S { @solver_hint("discrete_set", vals) constraint x > 0 param y : Real }"#;
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let s = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let param = s
+        .members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Param(p) => Some(p),
+            _ => None,
+        })
+        .expect("expected a Param member");
+
+    assert_eq!(param.name, "y");
+    assert!(
+        param.annotations.is_empty(),
+        "param y should have no annotations (annotation was consumed by constraint), got {:?}",
+        param.annotations
+    );
+}
+
 // ── Step 23/24: annotation leakage on failed lowering ────────────────────────
 //
 // Bug: when a declaration node is encountered but its lower_* function returns
