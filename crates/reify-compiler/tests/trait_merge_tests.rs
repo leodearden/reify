@@ -1070,3 +1070,64 @@ structure def S : HasParam + HasConstraint {
         template.constraints.len()
     );
 }
+
+/// Documents order-sensitivity of the pre-registration guard (known design limitation).
+///
+/// The pre-registration loop uses first-registration-wins semantics: the first trait
+/// bound in the `structure def S : ... {}` declaration wins the scope type for a
+/// shared name. Reversing the bound order (`S : TraitB + TraitA` instead of
+/// `S : TraitA + TraitB`) changes which type gets registered.
+///
+/// In this scenario:
+/// - TraitA provides `param x : Length = 10mm` + `constraint x - 1mm > 0mm`
+/// - TraitB provides `let x = 5.0` (type Real)
+/// - Structure lists TraitB first: `S : TraitB + TraitA`
+///
+/// With TraitB first, the pre-registration loop visits the Let default before the
+/// Param default. It registers x as Real. When TraitA's Param default is visited
+/// next, `scope.names.contains_key("x")` is already true, so it is skipped.
+/// The constraint `x - 1mm > 0mm` from TraitA then sees x as Real, and the
+/// subtraction `x - 1mm` (Real - Length) produces an 'incompatible types' error.
+///
+/// This test asserts that the reversed order DOES produce an error, documenting
+/// the order-sensitivity as expected (not silent or undefined) behavior. Users who
+/// hit this should reorder trait bounds so the Param-typed trait appears first.
+#[test]
+fn cross_kind_pre_registration_order_sensitivity_reversed_order_produces_error() {
+    let source = r#"
+trait TraitA {
+    param x : Length = 10mm
+    constraint x - 1mm > 0mm
+}
+
+trait TraitB {
+    let x = 5.0
+}
+
+structure def S : TraitB + TraitA {
+}
+"#;
+
+    let (_template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // With TraitB listed first, the Let default (type Real) registers x before the
+    // Param default (type Length). The contains_key guard then skips the Param
+    // registration, leaving x as Real in scope. The constraint `x - 1mm > 0mm`
+    // performs Real - Length, which the expression compiler rejects.
+    //
+    // This documents order-sensitivity as a known design limitation of the
+    // first-registration-wins approach. To avoid this, users should list the
+    // Param-typed trait before the Let-typed trait.
+    assert!(
+        !errors.is_empty(),
+        "expected at least one type error when the Let-typed trait (TraitB) is listed \
+         before the Param-typed trait (TraitA): the constraint `x - 1mm > 0mm` should \
+         see x as Real (not Length) and fail. This documents the order-sensitivity of \
+         the pre-registration guard."
+    );
+}
