@@ -644,6 +644,33 @@ fn checkpoint_value_variant_coverage() {
     }
 }
 
-// ── Test-count floor checkpoint (step-5 stub) ────────────────────────────────
-//
-// Step-5 adds the #[ignore]-annotated test-count floor. Not yet present.
+// ── Test-count floor checkpoint ───────────────────────────────────────────────
+
+/// Baseline test-count floor guard.
+///
+/// Invokes `cargo test --workspace` as a subprocess, parses the aggregate
+/// PASS/FAIL/SKIP summary line, and asserts:
+///   - PASS count is at least 5400 (floor below the M8–M11 baseline of 5455+9=5464)
+///   - FAIL count is exactly 0
+///
+/// The floor of 5400 tolerates normal fluctuation (toggling `#[ignore]`
+/// annotations, adding tests in other tasks) while catching mass regression.
+///
+/// # Notes
+/// Marked `#[ignore]` because spawning a nested `cargo test` invocation is slow
+/// (~30 s) and redundant with CI. Run explicitly with:
+/// ```
+/// cargo test -p reify-eval --test m8_m11_regression_checkpoint -- --include-ignored
+/// ```
+///
+/// **Fails (panics) in step-5** because the body is `todo!()`.
+/// Step-6 replaces the `todo!()` with the subprocess invocation.
+#[test]
+#[ignore = "slow subprocess; run explicitly with --include-ignored to verify test count floor"]
+fn test_count_floor() {
+    // Step-6 will replace this todo! with the subprocess invocation.
+    todo!(
+        "step-6: implement subprocess invocation of `cargo test --workspace` \
+         and assert PASS >= 5400, FAIL == 0"
+    )
+}
