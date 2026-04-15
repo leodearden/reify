@@ -12,7 +12,7 @@
 //! Uses `examples/m9_integration.ri` as the capstone source file and inline source
 //! strings for focused per-scenario assertions.
 
-use reify_test_support::{make_simple_engine, parse_and_compile};
+use reify_test_support::{check_source, make_simple_engine, parse_and_compile};
 use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the integration example file, resolved at compile time from crate root.
@@ -29,14 +29,6 @@ fn eval_source(source: &str) -> reify_eval::EvalResult {
     let compiled = parse_and_compile(source);
     let mut engine = make_simple_engine();
     engine.eval(&compiled)
-}
-
-/// Parse, compile, check with SimpleConstraintChecker, return CheckResult.
-/// Use when asserting on constraint satisfaction, labels, and counts.
-fn check_source(source: &str) -> reify_eval::CheckResult {
-    let compiled = parse_and_compile(source);
-    let mut engine = make_simple_engine();
-    engine.check(&compiled)
 }
 
 // ── Step 1: .ri file parses and compiles ─────────────────────────────────────
