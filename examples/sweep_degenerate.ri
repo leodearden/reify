@@ -24,5 +24,8 @@ structure def ValidLoftThreeProfiles {
     param p1 : Length = 5mm
     param p2 : Length = 10mm
     param p3 : Length = 15mm
-    let result = loft(p1, p2, p3)
+    let s1 = extrude(p1, p1)
+    let s2 = extrude(p2, p2)
+    let s3 = extrude(p3, p3)
+    let result = loft(s1, s2, s3)
 }
