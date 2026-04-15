@@ -5,7 +5,12 @@ import type { MeshData } from '../../types';
 // Track all created mocks.
 // mockBasicMaterials uses vi.hoisted so it is initialized before the async
 // vi.mock factory runs (async factories run before module-level const declarations).
+// The argument `makeMockMeshBasicMaterial(mockBasicMaterials)` is evaluated eagerly
+// at factory-execution time, so the array must already exist at that point.
 const mockBasicMaterials = vi.hoisted<any[]>(() => []);
+// These arrays do NOT need vi.hoisted: each is only referenced by a class
+// constructor closure (captured by reference, dereferenced at construction time
+// rather than during factory execution), so plain const declarations are fine.
 const mockGeometries: any[] = [];
 const mockMaterials: any[] = [];
 const mockMeshes: any[] = [];
@@ -919,6 +924,26 @@ describe('meshManager', () => {
       expect(() => manager.sync({})).not.toThrow();
       expect((manager as any).getGhostMeshes().has('Z')).toBe(false);
       expect(manager.getSceneMeshes().has('Z')).toBe(false);
+    });
+
+    it('(n) orphan visibility: pre-stored ghost state is applied when entity later arrives via sync', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Pre-store ghost visibility before the entity has any mesh data
+      (manager as any).setVisibility('Z', 'ghost');
+
+      // Entity arrives via sync: meshManager.ts:276-281 reads the stored state
+      // and calls addGhostClone instead of scene.add
+      manager.sync({ Z: makeMeshData('Z') });
+
+      // Entity should be in ghost map (ghost clone was added), not scene map
+      expect((manager as any).getGhostMeshes().has('Z')).toBe(true);
+      expect(manager.getSceneMeshes().has('Z')).toBe(false);
+      // Ghost clone was added to ghostGroup, not directly to scene
+      expect(mockGroupAdd).toHaveBeenCalledTimes(1);
+      expect(mockSceneAdd).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'Z' }));
     });
   });
 });
