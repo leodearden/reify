@@ -509,17 +509,58 @@ impl OcctKernel {
                 ffi::ffi::make_pipe(profile_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            GeometryOp::LinearPattern2D { .. } => {
-                // TODO: implement in step-22
-                return Err(GeometryError::OperationFailed(
-                    "linear_pattern_2d not yet implemented".into(),
-                ));
+            GeometryOp::LinearPattern2D {
+                target,
+                direction1,
+                count1,
+                spacing1,
+                direction2,
+                count2,
+                spacing2,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let sp1 = extract_f64(spacing1)?;
+                let sp2 = extract_f64(spacing2)?;
+                if *count1 == 0 {
+                    return Err(GeometryError::OperationFailed(
+                        "linear_pattern_2d count1 must be >= 1".into(),
+                    ));
+                }
+                if *count2 == 0 {
+                    return Err(GeometryError::OperationFailed(
+                        "linear_pattern_2d count2 must be >= 1".into(),
+                    ));
+                }
+                ffi::ffi::linear_pattern_2d(
+                    shape,
+                    direction1[0],
+                    direction1[1],
+                    direction1[2],
+                    *count1 as u32,
+                    sp1,
+                    direction2[0],
+                    direction2[1],
+                    direction2[2],
+                    *count2 as u32,
+                    sp2,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            GeometryOp::ArbitraryPattern { .. } => {
-                // TODO: implement in step-22
-                return Err(GeometryError::OperationFailed(
-                    "arbitrary_pattern not yet implemented".into(),
-                ));
+            GeometryOp::ArbitraryPattern {
+                target,
+                transforms,
+            } => {
+                let shape = self.get_shape(*target)?;
+                if transforms.is_empty() {
+                    return Err(GeometryError::OperationFailed(
+                        "arbitrary_pattern requires at least one transform".into(),
+                    ));
+                }
+                let flat_transforms: Vec<f64> =
+                    transforms.iter().flat_map(|t| t.iter().copied()).collect();
+                let num_transforms = transforms.len() as u32;
+                ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
         };
         Ok(self.store(shape))
