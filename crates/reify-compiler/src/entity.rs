@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 
 /// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
 pub(crate) struct EntityDefRef<'a> {
@@ -448,8 +449,19 @@ pub(crate) fn compile_entity(
                     );
                 } else {
                     first_meta_span = Some(meta.span);
+                    let mut seen_meta_keys: HashSet<&str> = HashSet::new();
                     for (key, value) in &meta.entries {
-                        scope.meta_entries.insert(key.clone(), value.clone());
+                        if !seen_meta_keys.insert(key.as_str()) {
+                            diagnostics.push(
+                                Diagnostic::error(format!("duplicate meta key '{}'", key))
+                                    .with_label(DiagnosticLabel::new(
+                                        meta.span,
+                                        "in this meta block",
+                                    )),
+                            );
+                        } else {
+                            scope.meta_entries.insert(key.clone(), value.clone());
+                        }
                     }
                 }
             }
@@ -1294,13 +1306,30 @@ pub(crate) fn compile_entity(
                 ))
         });
 
+        // Meta entry hashes: sort by key for deterministic ordering (HashMap is unordered).
+        // Hash both key and value so that key renames and value changes are both detected.
+        let mut sorted_meta_keys: Vec<&str> =
+            scope.meta_entries.keys().map(String::as_str).collect();
+        sorted_meta_keys.sort_unstable();
+        let meta_hashes = sorted_meta_keys.into_iter().flat_map(|k| {
+            // `k` was collected from this map's keys() above and the map is not
+            // mutated between collection and lookup, so get() always succeeds.
+            let v = scope
+                .meta_entries
+                .get(k)
+                .expect("key collected from this map")
+                .as_str();
+            [ContentHash::of_str(k), ContentHash::of_str(v)]
+        });
+
         let all_hashes = std::iter::once(name_hash)
             .chain(vc_hashes)
             .chain(constraint_hashes)
             .chain(sub_hashes)
             .chain(guard_hashes)
             .chain(port_hashes)
-            .chain(connection_hashes);
+            .chain(connection_hashes)
+            .chain(meta_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -1534,7 +1563,7 @@ pub(crate) fn compile_entity(
         guarded_groups,
         structure_controlling,
         objective,
-        meta: scope.meta_entries.clone(),
+        meta: std::mem::take(&mut scope.meta_entries),
         content_hash,
         is_recursive: false,
         annotations,

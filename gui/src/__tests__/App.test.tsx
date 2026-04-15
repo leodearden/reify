@@ -1315,6 +1315,54 @@ describe('App re-evaluate error toast', () => {
   });
 });
 
+describe('App F5 re-evaluate multi-file', () => {
+  it('F5 re-evaluate sends only the active file content when multiple files are open', async () => {
+    // Arrange: two files — after init, mount.ri is activeFile (last opened)
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [
+        { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+        { path: '/project/mount.ri', content: 'structure Mount {}' },
+      ],
+    });
+    vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
+
+    render(() => <App />);
+
+    // Wait for ready state (both files opened, activeFile = '/project/mount.ri')
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Modify the non-active file's content via the captured editor store
+    capturedEditorStore!.updateFileContent('/project/bracket.ri', 'MODIFIED CONTENT');
+    // Also modify the active file's content — F5 should send this updated content, not a stale snapshot
+    capturedEditorStore!.updateFileContent('/project/mount.ri', 'structure Mount { updated: true }');
+
+    // Clear any prior updateSource calls (e.g. from initial file load) so the assertion is self-contained
+    vi.mocked(bridge.updateSource).mockClear();
+
+    // Act: press F5 to trigger handleReEvaluate
+    fireEvent.keyDown(document, { key: 'F5' });
+
+    // Assert: updateSource called exactly once with the ACTIVE file (mount.ri) and its CURRENT content
+    await waitFor(() => {
+      expect(vi.mocked(bridge.updateSource)).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(bridge.updateSource)).toHaveBeenCalledWith(
+      '/project/mount.ri',
+      'structure Mount { updated: true }',
+    );
+    // The non-active file (bracket.ri) must not have been sent
+    expect(vi.mocked(bridge.updateSource)).not.toHaveBeenCalledWith(
+      '/project/bracket.ri',
+      expect.anything(),
+    );
+  });
+});
+
 describe('App event subscription error toast', () => {
   it('shows warning toast when subscribeToEvents fails', async () => {
     await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {

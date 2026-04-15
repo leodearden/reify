@@ -17,6 +17,7 @@ mod guards;
 mod conformance;
 mod functions;
 mod geometry;
+mod constants;
 
 pub use types::*;
 pub use type_compat::{implicitly_converts_to, type_compatible};

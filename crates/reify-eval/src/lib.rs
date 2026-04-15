@@ -37,6 +37,14 @@ use crate::snapshot::Snapshot;
 pub enum EngineError {
     /// The engine has not been initialized — call eval() first.
     NotInitialized,
+    /// The specified ValueCellId does not exist in the evaluation graph.
+    CellNotFound { cell: reify_types::ValueCellId },
+    /// The supplied value's dimension does not match the cell's declared type.
+    DimensionMismatch {
+        cell: reify_types::ValueCellId,
+        expected: reify_types::DimensionVector,
+        got: reify_types::DimensionVector,
+    },
 }
 
 impl std::fmt::Display for EngineError {
@@ -46,6 +54,19 @@ impl std::fmt::Display for EngineError {
                 write!(
                     f,
                     "engine not initialized: call eval() before this operation"
+                )
+            }
+            EngineError::CellNotFound { cell } => {
+                write!(
+                    f,
+                    "value cell not found in evaluation graph: {cell}"
+                )
+            }
+            EngineError::DimensionMismatch { cell, expected, got } => {
+                write!(
+                    f,
+                    "dimension mismatch for {cell}: expected {:?}, got {:?}",
+                    expected, got
                 )
             }
         }
@@ -403,14 +424,36 @@ impl Engine {
         values: &'a ValueMap,
         functions: &'a [CompiledFunction],
         determinacy: Option<&'a PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
-    ) -> Vec<ConstraintResult> {
+    ) -> (Vec<ConstraintResult>, Vec<Diagnostic>) {
         if entries.is_empty() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
+        }
+
+        // Fast path: when no optimized impls are registered every entry goes to
+        // the language-level fallback. Skip the BTreeMap/Option-Vec/unzip
+        // allocations and go directly to the checker — same code path as before
+        // Task 273 introduced the bucketing logic.
+        if self.optimization_registry.is_empty() {
+            let constraints = entries
+                .into_iter()
+                .map(|(id, expr, _target)| (id, expr))
+                .collect();
+            let input = ConstraintInput {
+                constraints,
+                values,
+                functions,
+                determinacy,
+            };
+            return (self.constraint_checker.check(&input), Vec::new());
         }
 
         // Results in input order. We fill slots as each path completes.
         let mut results: Vec<Option<ConstraintResult>> =
             (0..entries.len()).map(|_| None).collect();
+
+        // Diagnostics emitted by this function (contract violations only —
+        // per-constraint diagnostics remain inside ConstraintResult).
+        let mut dispatch_diagnostics: Vec<Diagnostic> = Vec::new();
 
         // Bucket entries by registered target. Keys borrow from the entry's
         // `Option<&'a str>` — no allocation. A `BTreeMap` gives deterministic
@@ -439,6 +482,11 @@ impl Engine {
         // contract is that the impl returns one `ConstraintResult` per input
         // constraint, in the same order. We weave results back into the
         // original result vector via each entry's recorded original index.
+        //
+        // On a count mismatch (third-party impl bug): emit a Diagnostic::error
+        // and fall back to the language-level ConstraintChecker for this batch.
+        // The entire batch is discarded — partial results cannot be reliably
+        // correlated when we don't know which constraints they correspond to.
         for (target, bucket) in optimized_groups {
             let imp = self
                 .optimization_registry
@@ -453,16 +501,39 @@ impl Engine {
                 determinacy,
             };
             let output = imp.check(&input);
-            assert_eq!(
-                output.results.len(),
-                indices.len(),
-                "OptimizedImpl for target {:?} returned {} results for {} constraints",
-                target,
-                output.results.len(),
-                indices.len(),
-            );
-            for (orig_idx, result) in indices.into_iter().zip(output.results) {
-                results[orig_idx] = Some(result);
+            if output.results.len() != indices.len() {
+                // Contract violation: the impl returned the wrong number of
+                // results. Emit an error diagnostic and fall back to the
+                // language-level checker for this entire batch.
+                dispatch_diagnostics.push(Diagnostic::error(format!(
+                    "OptimizedImpl for target {:?} returned {} results for {} constraints \
+                     — falling back to language-level checker for this batch",
+                    target,
+                    output.results.len(),
+                    indices.len(),
+                )));
+                let fallback_input = ConstraintInput {
+                    constraints: input.constraints,
+                    values,
+                    functions,
+                    determinacy,
+                };
+                let fallback_results = self.constraint_checker.check(&fallback_input);
+                assert_eq!(
+                    fallback_results.len(),
+                    indices.len(),
+                    "ConstraintChecker returned {} results for {} constraints during \
+                     OptimizedImpl fallback",
+                    fallback_results.len(),
+                    indices.len(),
+                );
+                for (orig_idx, result) in indices.into_iter().zip(fallback_results) {
+                    results[orig_idx] = Some(result);
+                }
+            } else {
+                for (orig_idx, result) in indices.into_iter().zip(output.results) {
+                    results[orig_idx] = Some(result);
+                }
             }
         }
 
@@ -490,10 +561,11 @@ impl Engine {
             }
         }
 
-        results
+        let constraint_results = results
             .into_iter()
             .map(|r| r.expect("dispatch_constraints: every slot must be filled"))
-            .collect()
+            .collect();
+        (constraint_results, dispatch_diagnostics)
     }
 
     /// Returns the compiled stdlib prelude modules stored by this engine.
@@ -1755,6 +1827,29 @@ impl Engine {
             .as_ref()
             .ok_or(EngineError::NotInitialized)?;
 
+        // Single lookup: validate existence and retrieve the node in one traversal.
+        // This eliminates the earlier double-lookup (contains_key + get().unwrap()).
+        let cell_node = match state.snapshot.graph.value_cells.get(&cell) {
+            Some(node) => node,
+            None => return Err(EngineError::CellNotFound { cell }),
+        };
+
+        // Validate dimension compatibility for Scalar cells.
+        // If the cell is Type::Scalar { dimension: expected } and the supplied
+        // value is Value::Scalar { dimension: got } where got != expected,
+        // reject the edit immediately rather than propagating a dimension-corrupt
+        // value through the eval graph.
+        if let reify_types::Type::Scalar { dimension: expected } = cell_node.cell_type
+            && let reify_types::Value::Scalar { dimension: got, .. } = &new_value
+            && *got != expected
+        {
+            return Err(EngineError::DimensionMismatch {
+                cell,
+                expected,
+                got: *got,
+            });
+        }
+
         // Clone snapshot and extract references (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
         let mut new_snapshot = state.snapshot.clone();
@@ -2515,12 +2610,13 @@ impl Engine {
                 })
                 .collect();
 
-            let results = self.dispatch_constraints(
+            let (results, dispatch_diags) = self.dispatch_constraints(
                 entries,
                 values,
                 &self.functions,
                 Some(&state.snapshot.values),
             );
+            diagnostics.extend(dispatch_diags);
             for (result, cnode) in results.into_iter().zip(constraint_nodes.iter()) {
                 diagnostics.extend(Self::labeled_diagnostics(
                     result.diagnostics.messages,
@@ -2902,12 +2998,13 @@ impl Engine {
                 .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
                 .collect();
 
-            let results = self.dispatch_constraints(
+            let (results, dispatch_diags) = self.dispatch_constraints(
                 entries,
                 &values,
                 &module.functions,
                 Some(&state.snapshot.values),
             );
+            diagnostics.extend(dispatch_diags);
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                 diagnostics.extend(Self::labeled_diagnostics(
@@ -2996,12 +3093,13 @@ impl Engine {
 
             // After eval(), eval_state is always Some — unwrap is safe here.
             let det_values = &self.eval_state.as_ref().unwrap().snapshot.values;
-            let results = self.dispatch_constraints(
+            let (results, dispatch_diags) = self.dispatch_constraints(
                 entries,
                 &eval_result.values,
                 &module.functions,
                 Some(det_values),
             );
+            diagnostics.extend(dispatch_diags);
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                 diagnostics.extend(Self::labeled_diagnostics(
@@ -3058,12 +3156,13 @@ impl Engine {
                     .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
                     .collect();
 
-                let results = self.dispatch_constraints(
+                let (results, dispatch_diags) = self.dispatch_constraints(
                     entries,
                     &values,
                     &module.functions,
                     Some(&state.snapshot.values),
                 );
+                diagnostics.extend(dispatch_diags);
 
                 for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                     diagnostics.extend(Self::labeled_diagnostics(
@@ -3394,12 +3493,13 @@ impl Engine {
                     .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
                     .collect();
 
-                let results = self.dispatch_constraints(
+                let (results, dispatch_diags) = self.dispatch_constraints(
                     entries,
                     &values,
                     &module.functions,
                     Some(&state.snapshot.values),
                 );
+                diagnostics.extend(dispatch_diags);
 
                 for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                     diagnostics.extend(Self::labeled_diagnostics(

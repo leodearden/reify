@@ -1131,3 +1131,72 @@ structure def S : TraitB + TraitA {
          the pre-registration guard."
     );
 }
+
+/// Verifies that a single trait providing BOTH `param x` and `constraint x > 0` compiles
+/// cleanly when a structure uses that trait with no override.
+///
+/// Unlike `constraint_default_coexists_with_param_default` (which uses two separate traits),
+/// this test exercises the intra-trait pre-registration path: both defaults come from the
+/// same trait's defaults list, so the pre-registration loop must register `x` before the
+/// constraint expression `x > 0` is compiled. If `x` were not pre-registered, the constraint
+/// expression compilation would fail with an "unresolved name" error.
+#[test]
+fn constraint_and_param_coexist_same_trait_same_name() {
+    let source = r#"
+trait HasParamAndConstraint {
+    param x : Real = 1.0
+    constraint x > 0
+}
+
+structure def S : HasParamAndConstraint {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors when a single trait provides both param x and constraint x > 0: {:?}",
+        errors
+    );
+
+    // Exactly 1 'x' value cell (the Param from HasParamAndConstraint).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell (Param from HasParamAndConstraint), got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the 'x' cell should be a Param, got {:?}",
+        x_cells[0].kind
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Real,
+        "the Param 'x' should have type Real, got {:?}",
+        x_cells[0].cell_type
+    );
+    assert!(
+        x_cells[0].default_expr.is_some(),
+        "the Param 'x' should have a default expression (= 1.0)"
+    );
+
+    // At least 1 constraint injected (the `x > 0` from HasParamAndConstraint).
+    assert!(
+        template.constraints.len() >= 1,
+        "expected at least 1 constraint injected from HasParamAndConstraint, got {}",
+        template.constraints.len()
+    );
+}

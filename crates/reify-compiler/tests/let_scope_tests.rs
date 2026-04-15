@@ -226,6 +226,15 @@ fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
     reify_compiler::compile(&parsed)
 }
 
+/// Helper: collect all error-severity diagnostics from a compiled module.
+fn error_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
+    compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
 
 // ─── step-1: geometry let should be in scope for subsequent let ───
 
@@ -1440,5 +1449,156 @@ fn cyclic_ident_alias_does_not_crash() {
         template.realizations.len(),
         0,
         "cyclic ident aliases must not produce realizations"
+    );
+}
+
+// ─── task-1733 step-1: loft with 3+ profiles ────────────────────────────────
+
+#[test]
+fn loft_three_profiles_ops() {
+    // loft(p1, p2, p3) with three let-bound geometry lets.
+    // Expected: [Cylinder(p1), Cylinder(p2), Cylinder(p3), Sweep(Loft, [0, 1, 2])]
+    let source = r#"structure S {
+    param r1: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param r3: Scalar = 1mm
+    param h: Scalar = 10mm
+    let p1 = cylinder(r1, h)
+    let p2 = cylinder(r2, h)
+    let p3 = cylinder(r3, h)
+    let result = loft(p1, p2, p3)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["p1", "p2", "p3", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Cylinder,
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sweep(SweepKind::Loft, vec![0, 1, 2]),
+        ],
+    );
+}
+
+// ─── task-1733 step-2: error-path tests for non-geometry args ───────────────
+
+#[test]
+fn sweep_non_geometry_profile_emits_error() {
+    // sweep(42, helix(5, 2, 10)): arg 0 is a literal, not a geometry expression.
+    // sweep() should emit a "profile … must be a geometry expression" diagnostic.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    param pitch: Scalar = 2mm
+    let path = helix(r, pitch, h)
+    let result = sweep(42, path)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("sweep()") && d.message.contains("profile")),
+        "expected sweep() profile error diagnostic, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn sweep_non_geometry_path_emits_error() {
+    // sweep(cylinder(r, h), 42): arg 1 is a literal, not a geometry expression.
+    // sweep() should emit a "path … must be a geometry expression" diagnostic.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let profile = cylinder(r, h)
+    let result = sweep(profile, 42)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("sweep()") && d.message.contains("path")),
+        "expected sweep() path error diagnostic, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn translate_non_geometry_target_uses_fallback() {
+    // translate(42, 1, 0, 0): arg 0 is a literal number, not a geometry expression.
+    // The geom_ref fallback silently uses GeomRef::Step(step_offset). This should
+    // compile without errors (the fallback is intentional for single-geom-arg functions).
+    let source = r#"structure S {
+    let result = translate(42, 1, 0, 0)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    // No error expected — the geom_ref closure falls back silently.
+    assert!(
+        errors.is_empty(),
+        "translate() with non-geometry target should not produce errors (silent fallback), got: {:?}",
+        errors
+    );
+    // Should still produce a realization with a Transform op.
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    assert_op_sequence(
+        &template.realizations[0].operations,
+        &[ExpectedOp::Transform(TransformKind::Translate, 0)],
+    );
+}
+
+#[test]
+fn loft_non_geometry_profiles_uses_fallback() {
+    // loft(42, 43): both args are literal numbers, not geometry expressions.
+    // loft silently falls back with GeomRef::Step offsets (matching geom_ref convention).
+    // This should compile without errors.
+    let source = r#"structure S {
+    let result = loft(42, 43)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    // No error expected — loft silently falls back (consistent with extrude/revolve_full).
+    assert!(
+        errors.is_empty(),
+        "loft() with non-geometry profiles should not produce errors (silent fallback), got: {:?}",
+        errors
+    );
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    assert_op_sequence(
+        &template.realizations[0].operations,
+        &[ExpectedOp::Sweep(SweepKind::Loft, vec![0, 1])],
+    );
+}
+
+#[test]
+fn extrude_non_geometry_target_uses_fallback() {
+    // extrude(42, 10): arg 0 is a literal number, not a geometry expression.
+    // extrude() uses the same geom_ref fallback path as translate() and other
+    // single-geom-arg functions — it silently falls back to GeomRef::Step(step_offset).
+    // This verifies the silent-fallback behavior is consistent across the category,
+    // not just for transform functions.
+    let source = r#"structure S {
+    let result = extrude(42, 10)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    // No error expected — the geom_ref closure falls back silently.
+    assert!(
+        errors.is_empty(),
+        "extrude() with non-geometry target should not produce errors (silent fallback), got: {:?}",
+        errors
+    );
+    // Should still produce a realization with an Extrude (Sweep) op.
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    assert_op_sequence(
+        &template.realizations[0].operations,
+        &[ExpectedOp::Sweep(SweepKind::Extrude, vec![0])],
     );
 }

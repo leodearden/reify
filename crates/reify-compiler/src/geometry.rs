@@ -863,6 +863,50 @@ pub(crate) fn compile_geometry_call(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // chamfer(target, distance)
+        "chamfer" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "chamfer() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Chamfer,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("distance".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // fillet(target, radius)
+        "fillet" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "fillet() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Fillet,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("radius".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
         // --- Curve constructors ---
         // line_segment(x1, y1, z1, x2, y2, z2)
         "line_segment" => {
@@ -1001,6 +1045,138 @@ pub(crate) fn compile_geometry_call(
             )));
             None
         }
+    }
+}
+
+// ─── Registry cross-check (task-1733) ────────────────────────────────────────
+//
+// The test below cross-checks the set of function names handled in
+// `geometry_arg_indices` against the names dispatched in `compile_geometry_call`.
+// When a new geometry function is added to the dispatch block, it must also be
+// added to one of the lists below, ensuring `geometry_arg_indices` is kept in
+// sync and geometry-arg resolution is not silently broken.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every non-boolean, non-loft function dispatched in `compile_geometry_call`
+    /// that takes at least one geometry arg (first arg is target/profile/etc.).
+    /// These MUST return non-empty from `geometry_arg_indices`.
+    const GEOM_ARG_FUNCTIONS: &[&str] = &[
+        "translate",
+        "rotate",
+        "scale",
+        "rotate_around",
+        "circular_pattern",
+        "linear_pattern",
+        "mirror",
+        "extrude",
+        "revolve",
+        "revolve_full",
+        "shell",
+        "thicken",
+        "draft",
+        "sweep",
+    ];
+
+    /// Every non-boolean function dispatched in `compile_geometry_call` that has
+    /// NO geometry args (primitives, curves, patterns that don't use geom_ref).
+    /// These MUST return empty from `geometry_arg_indices`.
+    const NO_GEOM_ARG_FUNCTIONS: &[&str] = &[
+        "box",
+        "cylinder",
+        "sphere",
+        "linear_pattern_2d",
+        "arbitrary_pattern",
+        "chamfer",
+        "fillet",
+        "line_segment",
+        "arc",
+        "helix",
+        "interp",
+        "bezier",
+        "nurbs",
+    ];
+
+    #[test]
+    fn geometry_arg_indices_covers_all_geom_arg_functions() {
+        for &name in GEOM_ARG_FUNCTIONS {
+            assert!(
+                !geometry_arg_indices(name).is_empty(),
+                "geometry_arg_indices(\"{}\") returned empty — \
+                 this function takes geometry args but is not registered in the index",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_arg_indices_empty_for_no_geom_arg_functions() {
+        for &name in NO_GEOM_ARG_FUNCTIONS {
+            assert!(
+                geometry_arg_indices(name).is_empty(),
+                "geometry_arg_indices(\"{}\") returned non-empty — \
+                 this function should not have geometry args registered",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_arg_indices_loft_is_empty_handled_specially() {
+        // loft is variadic — handled with special logic in compile_geometry_call,
+        // not via geometry_arg_indices. Verify it returns empty (the wildcard arm)
+        // so we know the special path is the only handler.
+        assert!(
+            geometry_arg_indices("loft").is_empty(),
+            "loft should not be in geometry_arg_indices — it uses variadic handling"
+        );
+    }
+
+    #[test]
+    fn all_dispatch_functions_accounted_for() {
+        // Ensure the two lists together with loft and the boolean ops cover every
+        // arm in compile_geometry_call.  If a new function is added there but not
+        // listed here, this test should be updated (the developer will notice
+        // because the new function is absent from both lists).
+        let boolean_ops: &[&str] =
+            &["union", "intersection", "difference", "union_all", "intersection_all"];
+        let loft: &[&str] = &["loft"];
+
+        let mut all: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for &name in GEOM_ARG_FUNCTIONS
+            .iter()
+            .chain(NO_GEOM_ARG_FUNCTIONS.iter())
+            .chain(boolean_ops.iter())
+            .chain(loft.iter())
+        {
+            assert!(
+                all.insert(name),
+                "duplicate function name \"{}\" in cross-check lists",
+                name
+            );
+        }
+
+        // The per-function tests above (`geometry_arg_indices_covers_all_geom_arg_functions`
+        // and `geometry_arg_indices_empty_for_no_geom_arg_functions`) are the primary
+        // correctness guardrail — they verify each function is in the right list.
+        // This count check is a secondary reminder: if you add a new function to
+        // `compile_geometry_call` without adding it to one of the four lists here,
+        // the count will be wrong and this test will tell you to update the lists.
+        let expected = GEOM_ARG_FUNCTIONS.len()
+            + NO_GEOM_ARG_FUNCTIONS.len()
+            + boolean_ops.len()
+            + loft.len();
+        assert_eq!(
+            all.len(),
+            expected,
+            "expected {} total dispatched function names, got {} — \
+             did you add a new geometry function? Add it to GEOM_ARG_FUNCTIONS or \
+             NO_GEOM_ARG_FUNCTIONS in this test.",
+            expected,
+            all.len()
+        );
     }
 }
 

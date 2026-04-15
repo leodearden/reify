@@ -50,11 +50,13 @@ pub(crate) fn compile_expr(
 /// 3. Return `ValueCellId(entity, "__list_{sub}__{first_member}")` with `Type::List(member_ty)`.
 ///
 /// Fallback (no entry or empty inner map): returns `__list_{sub}` with
-/// `List(StructureRef(sub_name))`.  Note that this uses the **sub field name**
-/// (e.g. `"bolts"`) not the structure type name (e.g. `"Bolt"`).  This path is
-/// legitimately reached when the sub's structure template has not yet been compiled
-/// (e.g. ad-hoc structures or forward references), so it must not panic.
-/// The caller receives a coarse `List(StructureRef(field_name))` type in that case.
+/// `List(StructureRef(type_name))`.  The structure type name (e.g. `"Bolt"`) is
+/// looked up from `scope.sub_component_types` (populated unconditionally for every
+/// sub declaration in the `MemberDecl::Sub` arm of `compile_entity_members` in entity.rs).
+/// If absent (e.g. manually constructed scopes in unit tests), the field name is used as
+/// a safety fallback.
+/// This path is legitimately reached when the sub's structure template has not yet
+/// been compiled (e.g. ad-hoc structures or forward references), so it must not panic.
 fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> CompiledExpr {
     if let Some(members) = scope.sub_member_types.get(sub_name) {
         // sub_member_types inner map is BTreeMap — iteration order is lexicographic.
@@ -68,11 +70,17 @@ fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> C
         }
     }
     // Fallback: sub_member_types has no entry for this sub (structure not yet compiled,
-    // ad-hoc structure, or empty params).  Produce a coarse List(StructureRef(sub_name))
-    // using the field name — callers that need the precise member type must ensure the
-    // sub structure is compiled before resolving.
+    // ad-hoc structure, or empty params).  Use the structure type name from
+    // sub_component_types so the StructureRef carries the correct type name, not the
+    // field name.  Fall back to field name only if the map has no entry (safety net for
+    // manually-constructed CompilationScope in unit tests).
+    let type_name = scope
+        .sub_component_types
+        .get(sub_name)
+        .cloned()
+        .unwrap_or_else(|| sub_name.to_owned());
     let list_id = ValueCellId::new(&scope.entity_name, format!("__list_{}", sub_name));
-    let list_type = Type::List(Box::new(Type::StructureRef(sub_name.to_owned())));
+    let list_type = Type::List(Box::new(Type::StructureRef(type_name)));
     CompiledExpr::value_ref(list_id, list_type)
 }
 
@@ -169,8 +177,16 @@ pub(crate) fn compile_expr_guarded(
                 None => {
                     // Check if this is a collection sub name — delegate to shared helper
                     // that also handles `self.sub_name` in the MemberAccess arm.
+                    // Collection sub-names originate from user-declared structures, so they take
+                    // precedence over built-in constants (mirroring how scope.resolve already
+                    // prioritises user definitions).
                     if scope.collection_sub_names.contains(name.as_str()) {
                         return resolve_collection_sub_to_list(scope, name.as_str());
+                    }
+                    // Check built-in constants (pi, tau, …) after scope and collection
+                    // sub-name resolution so that user definitions always shadow builtins.
+                    if let Some(ce) = crate::constants::resolve_builtin_constant(name) {
+                        return ce;
                     }
                     diagnostics.push(
                         Diagnostic::error(format!("unresolved name: {}", name))
@@ -1754,6 +1770,50 @@ pub(crate) fn compile_expr_guarded(
                     Type::Real
                 });
             CompiledExpr::value_ref(id, ty)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify the `unwrap_or_else` safety fallback in `resolve_collection_sub_to_list`:
+    /// when `sub_component_types` has no entry for the sub name (as in a manually-constructed
+    /// CompilationScope used in unit tests), the field name is used as the StructureRef name.
+    ///
+    /// This path cannot be triggered by the full compilation pipeline (entity.rs always
+    /// populates `sub_component_types` for every sub declaration), but it must not panic —
+    /// and this test documents and guards that contract.
+    #[test]
+    fn collection_sub_fallback_missing_sub_component_types_uses_field_name() {
+        let mut scope = CompilationScope::new("S");
+        // Populate collection_sub_names so the name is recognised as a collection sub,
+        // but leave sub_component_types and sub_member_types empty.
+        scope.collection_sub_names.insert("parts".to_string());
+
+        let result = resolve_collection_sub_to_list(&scope, "parts");
+
+        // Cell ID should be S.__list_parts
+        let expected_id = ValueCellId::new("S", "__list_parts");
+        let refs = result.collect_value_refs();
+        assert!(
+            refs.contains(&expected_id),
+            "safety-fallback cell ID should be S.__list_parts, got: {:?}",
+            refs
+        );
+
+        // Type should be List(StructureRef("parts")) — the field name, not a structure type name
+        match &result.result_type {
+            Type::List(inner) => {
+                assert_eq!(
+                    inner.as_ref(),
+                    &Type::StructureRef("parts".to_string()),
+                    "safety-fallback inner type should be StructureRef(\"parts\") (field name), got: {:?}",
+                    inner
+                );
+            }
+            other => panic!("expected List type, got: {:?}", other),
         }
     }
 }
