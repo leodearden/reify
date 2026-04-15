@@ -37581,11 +37581,11 @@
         "description": "The four menu sections (File, Edit, View, Help) in MenuBar.tsx follow an identical structural pattern repeated 4 times: wrapper div with position:relative, trigger button with open/hover logic, Show guard with dropdown. Only the menu items differ.\n\nRefactor to a data-driven approach: define a MenuDef type with id, label, and items array, then render menus with a For loop. Also add a guard to handleMouseDown: `if (containerRef && e.target instanceof Node && !containerRef.contains(e.target))` for robustness.\n\nmemory_hints: search \"MenuBar data-driven refactor menu definition\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:52:49.433Z"
+        "updatedAt": "2026-04-15T17:45:39.318Z"
       },
       {
         "id": "1795",
@@ -37854,9 +37854,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:36:11.929Z",
+      "lastModified": "2026-04-15T17:45:39.319Z",
       "taskCount": 1804,
-      "completedCount": 1543,
+      "completedCount": 1544,
       "tags": [
         "master"
       ]
