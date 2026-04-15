@@ -183,15 +183,11 @@ pub(crate) fn compile_connection(
         }
     };
 
-    // Look up port directions for compatibility checking
-    let dir_of = |name: &str| {
-        ctx.ports
-            .iter()
-            .find(|p| p.name == name)
-            .map(|p| p.direction)
-    };
-    let left_dir = dir_of(&left_port);
-    let right_dir = dir_of(&right_port);
+    // Hoist port lookups once — used for both direction checking and auto-matching.
+    let left_compiled = ctx.ports.iter().find(|p| p.name == left_port);
+    let right_compiled = ctx.ports.iter().find(|p| p.name == right_port);
+    let left_dir = left_compiled.map(|p| p.direction);
+    let right_dir = right_compiled.map(|p| p.direction);
 
     // Bare ident (no dot) that doesn't match any port is undefined
     let is_bare = |name: &str| !name.contains('.');
