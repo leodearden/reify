@@ -220,6 +220,39 @@ fn compiled_module_test_templates_returns_only_marked() {
     assert_eq!(non_test_tmpls[0].name, "B");
 }
 
+// ── Filter helpers return iterators (not Vec) ──────────────────────────────
+
+#[test]
+fn filter_helpers_return_iterators() {
+    let source = r#"
+        @test structure A { param x : Real }
+        structure B { param y : Real }
+        @test constraint def TC { param x : Length
+            x > 0
+        }
+        constraint def NC { param y : Length
+            y > 0
+        }
+    "#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    // These calls use iterator chaining (.map, .count, .any) directly on the
+    // return value — this only compiles if the return type is an iterator,
+    // not Vec (Vec doesn't have .map() or .count()).
+    let test_count = module.test_templates().count();
+    assert_eq!(test_count, 1);
+
+    let has_b = module.non_test_templates().any(|t| t.name == "B");
+    assert!(has_b);
+
+    let test_cd_names: Vec<&str> = module.test_constraint_defs().map(|d| d.name.as_str()).collect();
+    assert_eq!(test_cd_names, vec!["TC"]);
+
+    let non_test_cd_count = module.non_test_constraint_defs().count();
+    assert_eq!(non_test_cd_count, 1);
+}
+
 // ── Steps 14-15: CompiledModule::test_constraint_defs() / non_test_constraint_defs() ──
 
 #[test]
