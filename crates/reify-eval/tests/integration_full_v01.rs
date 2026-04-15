@@ -74,7 +74,7 @@ fn check_source(src: &str) -> reify_eval::CheckResult {
 ///
 /// `OnceLock<T>` requires `T: Send + Sync`. If a future refactor adds a
 /// non-Send field to either type, this function — rather than the OnceLock
-/// statics below — will produce the compiler error with a clear diagnosis.
+/// statics above — will produce the compiler error with a clear diagnosis.
 fn _assert_send_sync() {
     fn _assert<T: Send + Sync>() {}
     _assert::<reify_eval::EvalResult>();
