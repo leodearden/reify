@@ -2255,4 +2255,48 @@ structure S {
         assert!(result.is_none(), "expected None for wrong arg count");
         assert!(!diagnostics.is_empty(), "expected diagnostic for wrong arg count");
     }
+
+    // --- compile_modify_op direct tests (step-5) ---
+
+    #[test]
+    fn compile_modify_op_shell_direct() {
+        // shell(target, thickness, face_0) — 3 args, target = GeomRef::Step(5)
+        let args: Vec<CompiledExpr> = (1..=3).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(5);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_op("shell", args, target.clone(), span, &mut diagnostics, vec![]);
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("compile_modify_op shell should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify { kind: ModifyKind::Shell, target: op_target, args: op_args } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "thickness", "face_0"]);
+            }
+            other => panic!("expected Modify(Shell), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_modify_op_chamfer_preserves_step0() {
+        // chamfer(target, distance) — known bug: always uses GeomRef::Step(0), not the passed target
+        let args: Vec<CompiledExpr> = (1..=2).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(99); // pass a non-zero target
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_op("chamfer", args, target, span, &mut diagnostics, vec![]);
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("compile_modify_op chamfer should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify { kind: ModifyKind::Chamfer, target: op_target, .. } => {
+                // Preserves the known bug: chamfer always uses GeomRef::Step(0)
+                assert_eq!(*op_target, GeomRef::Step(0),
+                    "chamfer must use GeomRef::Step(0) to preserve bug compatibility, got {:?}", op_target);
+            }
+            other => panic!("expected Modify(Chamfer), got {:?}", other),
+        }
+    }
 }
