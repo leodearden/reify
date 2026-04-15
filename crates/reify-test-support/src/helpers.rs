@@ -335,6 +335,16 @@ mod tests {
 
     #[cfg(feature = "eval-helpers")]
     #[test]
+    fn test_eval_source() {
+        let result = super::eval_source(bracket_source());
+        assert!(
+            !result.values.is_empty(),
+            "eval_source should produce non-empty values for bracket source"
+        );
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
     fn test_make_engine() {
         let compiled = super::parse_and_compile(bracket_source());
         let mut engine = super::make_engine();
