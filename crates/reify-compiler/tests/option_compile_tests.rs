@@ -731,3 +731,147 @@ structure S {
         default.kind
     );
 }
+
+// ---------------------------------------------------------------------------
+// task 1726: port param Option<MyLen> = none with type alias → typed OptionNone
+// (analogous to guarded_param_option_type_alias_none_gets_correct_type)
+// ---------------------------------------------------------------------------
+
+/// Port param using a type alias `Option<MyLen> = none` should resolve the alias
+/// and produce cell_type == Option<Length> with OptionNone result_type ==
+/// Option<Length>.
+///
+/// This exercises the resolve_type_expr_with_aliases call at entity.rs:368 (pass-1
+/// registration) and fixup_option_none_for_param (pass-2) for port params with a
+/// type alias.  The existing port test uses Option<Length> directly; this test
+/// specifically exercises the alias-resolution code path.
+#[test]
+fn port_param_option_type_alias_none_gets_correct_type() {
+    let source = r#"
+type MyLen = Length
+
+trait MyPort {
+    param x : Length
+}
+
+structure def S {
+    port p : MyPort {
+        param x : Option<MyLen> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(template.ports.len(), 1, "expected 1 port");
+    let port = &template.ports[0];
+    assert_eq!(port.name, "p");
+
+    let member = port
+        .members
+        .iter()
+        .find(|m| m.id.member.contains("p.x"))
+        .expect("should have port member 'p.x'");
+
+    // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "port param (alias) cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("port member 'p.x' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "port param (alias) default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone for port param with type alias, got {:?}",
+        default.kind
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task 1726: port let Option<MyLen> = none with type alias → typed OptionNone
+// (analogous to guarded_param_option_type_alias_none_gets_correct_type)
+// ---------------------------------------------------------------------------
+
+/// Port let using a type alias `Option<MyLen> = none` should resolve the alias
+/// and produce cell_type == Option<Length> with OptionNone result_type ==
+/// Option<Length>.
+///
+/// This exercises the fixup_option_none_for_let path, which independently calls
+/// resolve_type_expr_with_aliases for port let members.  The existing port let
+/// test uses Option<Length> directly; this test specifically exercises the
+/// alias-resolution code path.
+#[test]
+fn port_let_option_type_alias_none_gets_correct_type() {
+    let source = r#"
+type MyLen = Length
+
+trait MyPort {
+    param x : Length
+}
+
+structure def S {
+    port p : MyPort {
+        param x : Length = 5mm
+        let y : Option<MyLen> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(template.ports.len(), 1, "expected 1 port");
+    let port = &template.ports[0];
+
+    let member = port
+        .members
+        .iter()
+        .find(|m| m.id.member.contains("p.y"))
+        .expect("should have port member 'p.y'");
+
+    // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "port let (alias) cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("port member 'p.y' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "port let (alias) default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone for port let with type alias, got {:?}",
+        default.kind
+    );
+}
