@@ -940,17 +940,7 @@ structure S {
         .as_ref()
         .expect("x default_expr")
         .result_type;
-    match x_ty {
-        reify_types::Type::List(inner) => {
-            assert_eq!(
-                inner.as_ref(),
-                &reify_types::Type::StructureRef("Empty".to_string()),
-                "fallback type inner should be StructureRef(\"Empty\"), got: {:?}",
-                inner
-            );
-        }
-        other => panic!("expected List type, got: {:?}", other),
-    }
+    assert_list_of_struct_ref(x_ty, "Empty");
 }
 
 // ─── task-1770 step-3: fallback path — forward reference (sub_member_types returns None) ───
@@ -1005,17 +995,7 @@ structure Bolt {
         .as_ref()
         .expect("x default_expr")
         .result_type;
-    match x_ty {
-        reify_types::Type::List(inner) => {
-            assert_eq!(
-                inner.as_ref(),
-                &reify_types::Type::StructureRef("Bolt".to_string()),
-                "forward-ref fallback inner type should be StructureRef(\"Bolt\"), got: {:?}",
-                inner
-            );
-        }
-        other => panic!("expected List type, got: {:?}", other),
-    }
+    assert_list_of_struct_ref(x_ty, "Bolt");
 }
 
 // ─── task-1770 step-4: self/bare equivalence on the fallback path ───
@@ -1090,30 +1070,8 @@ structure S {
         .expect("via_bare default_expr")
         .result_type;
 
-    let expected_inner = reify_types::Type::StructureRef("Empty".to_string());
-
-    match self_ty {
-        reify_types::Type::List(inner) => {
-            assert_eq!(
-                inner.as_ref(),
-                &expected_inner,
-                "via_self fallback type inner should be StructureRef(\"Empty\"), got: {:?}",
-                inner
-            );
-        }
-        other => panic!("via_self: expected List type, got: {:?}", other),
-    }
-    match bare_ty {
-        reify_types::Type::List(inner) => {
-            assert_eq!(
-                inner.as_ref(),
-                &expected_inner,
-                "via_bare fallback type inner should be StructureRef(\"Empty\"), got: {:?}",
-                inner
-            );
-        }
-        other => panic!("via_bare: expected List type, got: {:?}", other),
-    }
+    assert_list_of_struct_ref(self_ty, "Empty");
+    assert_list_of_struct_ref(bare_ty, "Empty");
 }
 
 // ─── task-1281 step-3: self.collection_sub.member error uses correct fallback type ───
