@@ -35263,7 +35263,7 @@
         "description": "Two small assertion gaps in guard_compilation.rs characterization tests (from task 1682 review):\n\n1. **meta_block_in_block_guard_silently_ignored** (line ~816): Only asserts `!template.meta.contains_key(\"guarded\")` (negative). Add a positive assertion that the top-level meta entry compiled correctly:\n   ```rust\n   assert_eq!(\n       template.meta.get(\"tag\").map(String::as_str),\n       Some(\"top\"),\n       \"top-level meta should still compile — only the guarded meta block should be dropped\"\n   );\n   ```\n   Without this, if the entire template compilation silently failed, `template.meta` would be empty and the negative assertion would trivially pass.\n\n2. **chain_in_block_guard_silently_ignored** (line ~118-124): Asserts `group.members.is_empty()` but not `group.constraints.is_empty()`. The comment on line 112 explicitly says \"members and constraints inside the group must both be empty\" — add the missing constraints assertion:\n   ```rust\n   assert!(\n       group.constraints.is_empty(),\n       \"chain inside guarded block should produce no compiled constraints in the guard, got: {:?}\",\n       group.constraints\n   );\n   ```\n\nmemory_hints:\n- search: \"guard_compilation characterization test silent drop\"\n- search: \"meta_block_in_block_guard_silently_ignored\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -35275,7 +35275,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-15T00:25:50.870Z"
+        "updatedAt": "2026-04-15T00:36:17.287Z"
       },
       {
         "id": "1690",
@@ -35336,9 +35336,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:35:33.141Z",
+      "lastModified": "2026-04-15T00:36:17.287Z",
       "taskCount": 1693,
-      "completedCount": 1431,
+      "completedCount": 1432,
       "tags": [
         "master"
       ]
