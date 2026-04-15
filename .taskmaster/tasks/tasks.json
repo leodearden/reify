@@ -37312,10 +37312,11 @@
         "description": "In gui/src-tauri/src/engine.rs: (1) Replace the empty parent field in structural_fingerprint for template roots (line 515) with a sentinel like 'root' to avoid the double-colon ambiguity 'structure::3:hash'. (2) Add a debug_assert! or doc comment in build_template_node (lines 695-716) asserting template names are unique within a compiled module. (3) Rename or document the content_hash field in EntityIdentity for value-cell entries (line 537) — it hashes the cell ID, not its content, which is inconsistent with template-level content_hash semantics; rename to identity_hash or add a doc comment explaining the distinction. Update any affected tests in engine_tests.rs.\n\n### memory_hints\n- search: \"structural_fingerprint content_hash EntityIdentity\"\n- search: \"build_template_node template names unique\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:43:09.193Z"
       },
       {
         "id": "1784",
@@ -37331,7 +37332,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T12:43:06.282Z",
+      "lastModified": "2026-04-15T12:43:09.193Z",
       "taskCount": 1779,
       "completedCount": 1513,
       "tags": [
