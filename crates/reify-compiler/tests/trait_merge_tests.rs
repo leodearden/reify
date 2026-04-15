@@ -913,3 +913,82 @@ structure def S : FirstParam + SecondParam {
         "the surviving cell should be Param"
     );
 }
+
+/// Cross-kind pre-registration must not overwrite an already-registered name.
+///
+/// Trait A provides `param x : Length = 10mm` and `constraint x - 1mm > 0mm`.
+/// Trait B provides `let x = 5.0` (type Real).
+/// Structure implements both with no override.
+///
+/// Without the guard, the pre-registration loop registers x as Length (from Param A),
+/// then overwrites it with Real (from Let B). The subtraction `x - 1mm` then sees
+/// x as Real and emits an 'incompatible types in subtraction: Real vs Length' error.
+///
+/// With the guard (`!scope.names.contains_key(name)`), the second registration is
+/// skipped, x stays Length, and the constraint compiles cleanly.
+///
+/// Note: comparison operators (>, <, etc.) have no type checking in the compiler
+/// (only Add/Sub do). The subtraction in `x - 1mm > 0mm` is what triggers the
+/// observable type error when x is overwritten from Length to Real.
+#[test]
+fn cross_kind_pre_registration_preserves_first_type() {
+    let source = r#"
+trait TraitA {
+    param x : Length = 10mm
+    constraint x - 1mm > 0mm
+}
+
+trait TraitB {
+    let x = 5.0
+}
+
+structure def S : TraitA + TraitB {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: the constraint `x - 1mm > 0mm` should compile cleanly \
+         because x is registered as Length (not overwritten to Real by the Let default). \
+         Got errors: {:?}",
+        errors
+    );
+
+    // At least 1 constraint injected (from TraitA).
+    assert!(
+        template.constraints.len() >= 1,
+        "expected at least 1 constraint injected from TraitA, got {}",
+        template.constraints.len()
+    );
+
+    // 2 'x' value cells: one Param (from TraitA), one Let (from TraitB).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        2,
+        "expected 2 'x' value cells (one Param from TraitA, one Let from TraitB), got {}",
+        x_cells.len()
+    );
+
+    let param_cells: Vec<_> = x_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Param)
+        .collect();
+    assert_eq!(param_cells.len(), 1, "expected exactly 1 Param 'x' cell");
+
+    let let_cells: Vec<_> = x_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Let)
+        .collect();
+    assert_eq!(let_cells.len(), 1, "expected exactly 1 Let 'x' cell");
+}
