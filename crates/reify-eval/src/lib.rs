@@ -3104,6 +3104,11 @@ impl Engine {
                                 Ok(handle) => {
                                     step_handles.push(handle.id);
                                 }
+                                // Kernel errors break immediately: a geometry engine failure
+                                // is often unrecoverable (e.g. corrupt state), and subsequent
+                                // ops that depend on the failed handle would fail too. Compile
+                                // errors (None branch below) are cheaper to continue past because
+                                // we can push a sentinel and still attempt independent ops.
                                 Err(e) => {
                                     diagnostics
                                         .push(Diagnostic::error(format!("geometry error: {}", e)));
@@ -3186,6 +3191,11 @@ impl Engine {
                                 Ok(handle) => {
                                     step_handles.push(handle.id);
                                 }
+                                // Kernel errors break immediately: a geometry engine failure
+                                // is often unrecoverable (e.g. corrupt state), and subsequent
+                                // ops that depend on the failed handle would fail too. Compile
+                                // errors (None branch below) are cheaper to continue past because
+                                // we can push a sentinel and still attempt independent ops.
                                 Err(e) => {
                                     diagnostics
                                         .push(Diagnostic::error(format!("geometry error: {}", e)));
@@ -3309,6 +3319,11 @@ impl Engine {
                             Ok(handle) => {
                                 step_handles.push(handle.id);
                             }
+                            // Kernel errors break immediately: a geometry engine failure
+                            // is often unrecoverable (e.g. corrupt state), and subsequent
+                            // ops that depend on the failed handle would fail too. Compile
+                            // errors (None branch below) are cheaper to continue past because
+                            // we can push a sentinel and still attempt independent ops.
                             Err(e) => {
                                 diagnostics
                                     .push(Diagnostic::error(format!("geometry error: {}", e)));
@@ -3730,7 +3745,9 @@ fn compile_geometry_op(
                     // plane is passed as an expression that evaluates to a value;
                     // at this level we don't have the geometry handle yet, so we
                     // use step_handles.last() as a placeholder for the plane reference.
-                    let plane_id = step_handles.last().copied();
+                    // Filter INVALID so a preceding compile failure (sentinel) propagates
+                    // as None here rather than forwarding INVALID to the kernel.
+                    let plane_id = step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID);
                     Some(reify_types::GeometryOp::Draft {
                         target: target_id,
                         angle,

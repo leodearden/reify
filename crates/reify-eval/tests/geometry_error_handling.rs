@@ -1676,3 +1676,113 @@ fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
             .collect::<Vec<_>>()
     );
 }
+
+/// Regression test for the Draft plane resolution missing INVALID filter.
+///
+/// Scenario: 3 ops in a realization:
+///   Op 0 — Sphere → succeeds, pushes a valid handle into step_handles[0]
+///   Op 1 — Boolean(Step(5), Step(5)) → fails compile (indices OOB) → pushes
+///           INVALID sentinel into step_handles[1]
+///   Op 2 — Draft(target=Step(0)) → target_id resolves to the sphere handle (valid),
+///           but step_handles.last() is INVALID (the sentinel from op 1).
+///           After the fix, the INVALID filter causes plane_id to be None,
+///           so compile_geometry_op returns None for the Draft.
+///
+/// Before the fix: INVALID was forwarded as `plane` to the kernel, leading to
+/// undefined behaviour. After the fix: the Draft is also treated as a compile
+/// failure (sentinel pushed, had_failure=true), geometry_output remains None.
+#[test]
+fn draft_plane_invalid_sentinel_causes_compile_failure() {
+    use reify_compiler::ModifyKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+
+    // Op 0: Sphere — succeeds, produces a valid handle at step_handles[0]
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(10.0))],
+    };
+
+    // Op 1: Boolean with out-of-bounds Step refs — fails compile → INVALID sentinel
+    // pushed at step_handles[1], had_failure=true.
+    let bad_bool_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(5),
+        right: GeomRef::Step(5),
+    };
+
+    // Op 2: Draft targeting Step(0) (the sphere).
+    //   target_id resolves to the sphere handle (valid, not INVALID).
+    //   step_handles.last() = INVALID (sentinel from op 1).
+    //   After the fix: .filter(|h| *h != GeometryHandleId::INVALID) → None
+    //   → compile_geometry_op returns None → another sentinel pushed.
+    let draft_op = CompiledGeometryOp::Modify {
+        kind: ModifyKind::Draft,
+        target: GeomRef::Step(0),
+        args: vec![
+            // "target" arg (not used for target_id resolution — that comes from `target` field)
+            ("target".into(), mm_literal(10.0)),
+            // "angle" arg must evaluate to a Value so the `eval_arg("angle")?` succeeds
+            ("angle".into(), real_literal(5.0)),
+            // "plane" arg is in args but not used for plane resolution (step_handles.last() is used)
+            ("plane".into(), real_literal(0.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "radius", Type::length(), Some(mm_literal(10.0)))
+        .realization(e, 0, vec![sphere_op, bad_bool_op, draft_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_draft_invalid_plane"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (a) Kernel received exactly 1 execute call — only the Sphere from op0.
+    //     Op1 fails compile (not sent to kernel). Op2 fails compile because
+    //     plane_id is INVALID (not sent to kernel).
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected only 1 kernel execute call (Sphere), got {}: {:?}",
+        ops.len(),
+        ops
+    );
+
+    // (b) geometry_output is None: all handles are rolled back because had_failure=true.
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None — Draft with INVALID plane must trigger rollback"
+    );
+
+    // (c) Exactly 2 compile-failure diagnostics: one for op1 (bad bool refs) and one
+    //     for op2 (Draft with INVALID plane).
+    let compile_failures: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .collect();
+    assert_eq!(
+        compile_failures.len(),
+        2,
+        "expected 2 compile-failure diagnostics (op1 bad refs + op2 INVALID plane), got {}: {:?}",
+        compile_failures.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
