@@ -106,3 +106,31 @@ fn cos_tau_is_approximately_one() {
         other => panic!("expected Real(~1), got {:?}", other),
     }
 }
+
+// ─── step-13: arithmetic consistency between 2*pi and tau ───────────────────
+
+#[test]
+fn two_pi_equals_tau() {
+    let result = eval_source("structure S {\n  let x = 2 * pi\n  let y = tau\n}");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+    let x_val = result
+        .values
+        .get(&x_id)
+        .unwrap_or_else(|| panic!("'x' not found in eval result"));
+    let y_val = result
+        .values
+        .get(&y_id)
+        .unwrap_or_else(|| panic!("'y' not found in eval result"));
+    match (x_val, y_val) {
+        (Value::Real(x), Value::Real(y)) => {
+            assert!(
+                (x - y).abs() < 1e-15,
+                "2*pi ({:.16}) should equal tau ({:.16})",
+                x,
+                y
+            );
+        }
+        other => panic!("expected (Real, Real), got {:?}", other),
+    }
+}
