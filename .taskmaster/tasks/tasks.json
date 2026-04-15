@@ -35616,11 +35616,11 @@
         "description": "Three minor improvements to crates/reify-eval/tests/m8_4_stdlib_integration.rs from task 344 review:\n\n1. **Fix doc comment** (lines 7-8): Says \"Follows the same pattern as m8_3_stdlib_integration.rs: `parse_and_compile_with_stdlib` + `SimpleConstraintChecker`\" but the code uses its own `eval_ri_file` helper, not `parse_and_compile_with_stdlib`. Change to: \"Follows the same `eval_ri_file` pattern as m8_3_stdlib_integration.rs: parse → compile_with_stdlib → eval with `SimpleConstraintChecker`.\"\n\n2. **Extract expect_real_or_int helper** (lines 298-310, 345-352, 374-381, 403-410, 432-439): The pattern `match val { Value::Real(v) => *v, Value::Int(i) => *i as f64, other => panic!(...) }` is repeated 5+ times. Extract a file-level helper: `fn expect_real_or_int(val: &Value, label: &str) -> f64`.\n\n3. **NaN-safe eigenvalue sort** (line 166): `actuals.sort_by(|a, b| a.partial_cmp(b).unwrap())` panics on NaN. Use `a.total_cmp(b)` (stable since Rust 1.62) for a clear failure message instead of opaque unwrap panic.\n\nmemory_hints: search \"m8_4_stdlib_integration eval_ri_file\" entity \"m8_4_stdlib_integration\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T02:09:11.854Z",
+        "updatedAt": "2026-04-15T05:15:18.895Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/m8_4_stdlib_integration.rs"
@@ -35642,7 +35642,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T05:12:45.698Z",
+      "lastModified": "2026-04-15T05:15:18.895Z",
       "taskCount": 1704,
       "completedCount": 1467,
       "tags": [
