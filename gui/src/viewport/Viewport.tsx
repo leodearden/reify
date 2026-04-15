@@ -100,7 +100,11 @@ export function Viewport(props: ViewportProps) {
       requestRender();
     });
 
-    // Sync entity visibility reactively, resetting removed entities to 'show'
+    // Sync entity visibility reactively, resetting removed entities to 'show'.
+    // prevVisKeys is intentionally non-reactive (plain Set, not a signal) — it tracks
+    // previously-seen keys purely for diff logic. SolidJS does not track it, which is correct:
+    // the effect is re-triggered by props.entityVisibility changes, and prevVisKeys is updated
+    // synchronously as a side effect. No other code path touches prevVisKeys.
     let prevVisKeys = new Set<string>();
     createEffect(() => {
       const visibility = props.entityVisibility ?? {};

@@ -700,9 +700,18 @@ describe('meshManager', () => {
   });
 
   describe('ghost visibility', () => {
-    // Helper: create manager, add one mesh, then reset mock call history.
-    // NOTE: does NOT clear mockBasicMaterials — ghost material created by
-    // createMeshManager stays in the array so test (c) can find it.
+    // Helper: create manager, add one mesh, then reset mock call history so tests
+    // start with zero recorded call counts.
+    //
+    // State cleared by vi.clearAllMocks():
+    //   - Call counts and arguments for all vi.fn() mocks (scene.add, scene.remove, Group.add, etc.)
+    //   - Spy call counts, including .dispose spies on individual MeshBasicMaterial instances
+    //     (so tests that check .dispose after setupWithMesh must know counts were reset to 0).
+    //
+    // State NOT cleared by vi.clearAllMocks():
+    //   - mockBasicMaterials array (purposefully preserved so test (c) can find the ghost
+    //     material instance created during createMeshManager, which precedes the clearAllMocks calls).
+    //   - mockGroups array (likewise preserved for Group identity checks).
     function setupWithMesh(entityPath = 'A') {
       const scene = new Scene();
       const manager = createMeshManager(scene);

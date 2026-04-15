@@ -447,6 +447,10 @@ describe('Viewport accessibility', () => {
   });
 });
 
+// Note: these tests assert on mock call counts synchronously after calling the signal setter.
+// SolidJS createSignal setters synchronously flush effects in the default owner context used
+// by @solidjs/testing-library's render(), so the assertions are reliable. If that ever changes
+// (e.g. under batch() or Suspense), wrap assertions in a waitFor() from the testing library.
 describe('Viewport entityVisibility reset', () => {
   it('resets removed entities to show when entityVisibility prop drops keys', () => {
     const [entityVisibility, setEntityVisibility] = createSignal<Record<string, VisibilityState> | undefined>(
