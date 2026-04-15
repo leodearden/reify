@@ -4,7 +4,7 @@
 //! CompiledExprKind::OptionNone with correct types instead of falling through
 //! to generic function call resolution.
 
-use reify_compiler::{CompiledGuardedGroup, TopologyTemplate};
+use reify_compiler::{CompiledGuardedGroup, TopologyTemplate, ValueCellDecl};
 use reify_types::{CompiledExprKind, DimensionVector, Severity, Type};
 
 /// Helper: compile source, return the first topology template and diagnostics.
@@ -56,6 +56,34 @@ fn compile_expecting_errors(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
     reify_compiler::compile(&parsed)
+}
+
+/// Helper: assert that `member` has cell_type == Option<Length>, a default_expr
+/// of kind OptionNone, and that default_expr.result_type == Option<Length>.
+/// `label` is incorporated into assertion failure messages for diagnostics.
+fn assert_option_none_length(member: &ValueCellDecl, label: &str) {
+    let option_length = Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }));
+    assert_eq!(
+        member.cell_type,
+        option_length,
+        "{label}: cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+    let default = member
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{label}: member should have a default_expr"));
+    assert_eq!(
+        default.result_type,
+        option_length,
+        "{label}: default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "{label}: expected OptionNone, got {:?}",
+        default.kind
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -503,29 +531,7 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have guarded member 'x'");
 
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded param cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("guarded member 'x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded param default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for guarded param, got {:?}",
-        default.kind
-    );
+    assert_option_none_length(member, "guarded param");
 }
 
 // ---------------------------------------------------------------------------
