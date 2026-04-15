@@ -45,8 +45,9 @@ pub(crate) fn compile_expr(
 /// Fallback (no entry or empty inner map): returns `__list_{sub}` with
 /// `List(StructureRef(type_name))`.  The structure type name (e.g. `"Bolt"`) is
 /// looked up from `scope.sub_component_types` (populated unconditionally for every
-/// sub declaration at entity.rs:399-400).  If absent (e.g. manually constructed
-/// scopes in unit tests), the field name is used as a safety fallback.
+/// sub declaration in the `MemberDecl::Sub` arm of `compile_entity_members` in entity.rs).
+/// If absent (e.g. manually constructed scopes in unit tests), the field name is used as
+/// a safety fallback.
 /// This path is legitimately reached when the sub's structure template has not yet
 /// been compiled (e.g. ad-hoc structures or forward references), so it must not panic.
 fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> CompiledExpr {
@@ -1712,6 +1713,50 @@ pub(crate) fn compile_expr_guarded(
                     Type::Real
                 });
             CompiledExpr::value_ref(id, ty)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify the `unwrap_or_else` safety fallback in `resolve_collection_sub_to_list`:
+    /// when `sub_component_types` has no entry for the sub name (as in a manually-constructed
+    /// CompilationScope used in unit tests), the field name is used as the StructureRef name.
+    ///
+    /// This path cannot be triggered by the full compilation pipeline (entity.rs always
+    /// populates `sub_component_types` for every sub declaration), but it must not panic —
+    /// and this test documents and guards that contract.
+    #[test]
+    fn collection_sub_fallback_missing_sub_component_types_uses_field_name() {
+        let mut scope = CompilationScope::new("S");
+        // Populate collection_sub_names so the name is recognised as a collection sub,
+        // but leave sub_component_types and sub_member_types empty.
+        scope.collection_sub_names.insert("parts".to_string());
+
+        let result = resolve_collection_sub_to_list(&scope, "parts");
+
+        // Cell ID should be S.__list_parts
+        let expected_id = ValueCellId::new("S", "__list_parts");
+        let refs = result.collect_value_refs();
+        assert!(
+            refs.contains(&expected_id),
+            "safety-fallback cell ID should be S.__list_parts, got: {:?}",
+            refs
+        );
+
+        // Type should be List(StructureRef("parts")) — the field name, not a structure type name
+        match &result.result_type {
+            Type::List(inner) => {
+                assert_eq!(
+                    inner.as_ref(),
+                    &Type::StructureRef("parts".to_string()),
+                    "safety-fallback inner type should be StructureRef(\"parts\") (field name), got: {:?}",
+                    inner
+                );
+            }
+            other => panic!("expected List type, got: {:?}", other),
         }
     }
 }
