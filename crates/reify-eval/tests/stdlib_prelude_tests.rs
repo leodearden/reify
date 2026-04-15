@@ -49,21 +49,39 @@ fn eval_with_prelude_trait_conformance() {
         eval_errors
     );
 
-    // Verify all 3 Elastic params are present in the result
+    // Verify all 3 Elastic params are present with correct values
     let entity = "Steel";
-    let expected_params = ["youngs_modulus", "poissons_ratio", "shear_modulus"];
-    for param in &expected_params {
+    let expected_params: &[(&str, f64)] = &[
+        ("youngs_modulus", 200.0),
+        ("poissons_ratio", 0.3),
+        ("shear_modulus", 77.0),
+    ];
+    for (param, expected_val) in expected_params {
         let cell_id = ValueCellId::new(entity, *param);
+        let value = result.values.get(&cell_id).unwrap_or_else(|| {
+            panic!(
+                "eval should produce a value for Elastic param '{}', but it was missing. \
+                 Available values: {:?}",
+                param,
+                result
+                    .values
+                    .iter()
+                    .map(|(k, _)| k.to_string())
+                    .collect::<Vec<_>>()
+            )
+        });
+        let actual = value.as_f64().unwrap_or_else(|| {
+            panic!(
+                "Elastic param '{}' should be numeric, got: {:?}",
+                param, value
+            )
+        });
         assert!(
-            result.values.get(&cell_id).is_some(),
-            "eval should produce a value for Elastic param '{}', but it was missing. \
-             Available values: {:?}",
+            (actual - expected_val).abs() < 1e-9,
+            "Elastic param '{}' should be {}, got {}",
             param,
-            result
-                .values
-                .iter()
-                .map(|(k, _)| k.to_string())
-                .collect::<Vec<_>>()
+            expected_val,
+            actual
         );
     }
 }

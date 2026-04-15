@@ -6,8 +6,23 @@ use reify_test_support::{
     steel_strong_source,
 };
 use reify_types::{
-    CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash, ModulePath, Type,
+    BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash,
+    ModulePath, Type,
 };
+
+/// Recursively collect ValueRef member names from a compiled expression tree.
+fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let mut refs = collect_value_ref_members(left);
+            refs.extend(collect_value_ref_members(right));
+            refs
+        }
+        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
+        _ => vec![],
+    }
+}
 
 // ─── step-1: basic loading ──────────────────────────────────────────────
 
@@ -227,22 +242,31 @@ fn compile_with_prelude_injects_trait_constraints() {
         "expected constraint from Strong trait (uts >= yield_strength) injected into Steel, but constraints is empty"
     );
 
-    // Verify the constraint content encodes the uts >= yield_strength relationship.
-    // The Debug representation of the BinOp expr contains the ValueRef operands.
-    let constraint_debug_strs: Vec<String> = template
-        .constraints
-        .iter()
-        .map(|c| format!("{:?}", c.expr))
-        .collect();
-    let has_uts_ref = constraint_debug_strs.iter().any(|s| s.contains("uts"));
-    let has_yield_ref = constraint_debug_strs
-        .iter()
-        .any(|s| s.contains("yield_strength"));
+    // Structurally verify the constraint encodes uts >= yield_strength.
+    // Pattern-match on CompiledExprKind variants rather than relying on Debug formatting.
+    let ge_constraint = template.constraints.iter().find(|c| {
+        matches!(&c.expr.kind, CompiledExprKind::BinOp { op: BinOp::Ge, .. })
+    });
     assert!(
-        has_uts_ref && has_yield_ref,
-        "expected constraint expression to reference both 'uts' and 'yield_strength', \
-         got constraint exprs: {:?}",
-        constraint_debug_strs
+        ge_constraint.is_some(),
+        "expected a >= constraint from Strong trait, got constraint kinds: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| format!("{:?}", c.expr.kind))
+            .collect::<Vec<_>>()
+    );
+    let ge_expr = &ge_constraint.unwrap().expr;
+    let refs = collect_value_ref_members(ge_expr);
+    assert!(
+        refs.contains(&"uts"),
+        "expected 'uts' ValueRef in >= constraint, got refs: {:?}",
+        refs
+    );
+    assert!(
+        refs.contains(&"yield_strength"),
+        "expected 'yield_strength' ValueRef in >= constraint, got refs: {:?}",
+        refs
     );
 }
 
@@ -453,10 +477,35 @@ structure def S {
     );
 
     // The output module should contain the user's template.
-    assert!(
-        !compiled.templates.is_empty(),
-        "output module should contain the user's S template"
-    );
+    let template = compiled
+        .templates
+        .first()
+        .expect("output module should contain the user's S template");
+
+    // Verify param 'x' has a default expression that is a call to 'double'.
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("template S should have param 'x'");
+    let default_expr = x_cell
+        .default_expr
+        .as_ref()
+        .expect("param 'x' should have a default expression");
+    match &default_expr.kind {
+        CompiledExprKind::UserFunctionCall { function_name, .. } => {
+            assert_eq!(function_name, "double", "expected call to 'double'");
+        }
+        CompiledExprKind::FunctionCall { function, .. } => {
+            assert_eq!(function.name, "double", "expected resolved call to 'double'");
+        }
+        other => {
+            panic!(
+                "param 'x' default should be a function call to 'double', got: {:?}",
+                other
+            );
+        }
+    }
 
     // Prelude functions should NOT be duplicated in the output module.
     assert!(
