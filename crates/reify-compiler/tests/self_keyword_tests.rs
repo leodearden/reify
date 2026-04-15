@@ -35,6 +35,26 @@ fn msgs_mention_self(msgs: &[String]) -> bool {
     mentions_word(msgs.iter().map(String::as_str), "self")
 }
 
+/// Asserts that `ty` is `Type::List(Box::new(Type::StructureRef(expected_name)))`.
+///
+/// Panics with a descriptive message if the type does not match.
+/// Extracted from duplicated match-assert blocks that appeared in the three
+/// collection-sub fallback tests added in task 1770.
+fn assert_list_of_struct_ref(ty: &reify_types::Type, expected_name: &str) {
+    match ty {
+        reify_types::Type::List(inner) => {
+            assert_eq!(
+                inner.as_ref(),
+                &reify_types::Type::StructureRef(expected_name.to_string()),
+                "expected List(StructureRef({:?})), got List({:?})",
+                expected_name,
+                inner,
+            );
+        }
+        other => panic!("expected List type, got: {:?}", other),
+    }
+}
+
 #[test]
 fn test_mentions_word() {
     // (1) exact match: the word 'self' appears as its own token
@@ -72,6 +92,20 @@ fn test_mentions_word() {
     ));
 }
 
+#[test]
+fn test_assert_list_of_struct_ref_valid() {
+    // Calling with a List(StructureRef("Foo")) and expected name "Foo" should not panic.
+    let ty = reify_types::Type::List(Box::new(reify_types::Type::StructureRef("Foo".to_string())));
+    assert_list_of_struct_ref(&ty, "Foo");
+}
+
+#[test]
+#[should_panic(expected = "expected List type")]
+fn test_assert_list_of_struct_ref_non_list_panics() {
+    // Calling with a non-List type should panic with "expected List type".
+    let ty = reify_types::Type::Bool;
+    assert_list_of_struct_ref(&ty, "Foo");
+}
 
 // ─── step-1: self.param resolves to correct ValueRef ───
 
