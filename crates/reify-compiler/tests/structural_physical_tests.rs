@@ -671,18 +671,7 @@ structure def PlasticBody : Plastic {
         .first()
         .expect("expected at least 1 template");
 
-    // Confirm the injected constraint for plastic_strain uses Ge (>=), not Gt (>).
-    let ps_constraint = template.constraints.iter().find(|cc| {
-        matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
-            if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "plastic_strain")
-        )
-    });
-    let cc = ps_constraint.expect("expected a constraint referencing plastic_strain");
-    assert!(
-        matches!(&cc.expr.kind, CompiledExprKind::BinOp { op: BinOp::Ge, .. }),
-        "plastic_strain constraint must use BinOp::Ge (>=), not BinOp::Gt (>), got: {:?}",
-        cc.expr.kind
-    );
+    assert_constraint_op(template, "plastic_strain", BinOp::Ge);
 }
 
 // ─── task-1688: hardening_modulus=0.0 boundary value compiles ────────────────
