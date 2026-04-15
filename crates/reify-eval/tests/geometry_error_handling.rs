@@ -313,13 +313,14 @@ fn loft_through_full_eval_pipeline() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: abort realization on first geometry failure
+// Tests: sentinel placeholder behavior for compile failures
 // ---------------------------------------------------------------------------
 
-/// When a realization contains multiple ops that all fail to compile, only the
-/// first failure should be reported. The loop should abort after the first
-/// compile_geometry_op returns None, preventing cascading diagnostics from
-/// downstream ops that reference the missing step handle.
+/// When a realization contains multiple ops that all fail to compile, all
+/// failures should be reported. With the sentinel fix, the loop pushes
+/// GeometryHandleId::INVALID and continues (does not break), so all ops are
+/// attempted and each emits its own diagnostic.
+/// The realization is still rolled back because had_failure=true.
 #[test]
 fn cascading_compile_failures_aborted_after_first() {
     use reify_types::Type;
@@ -329,6 +330,7 @@ fn cascading_compile_failures_aborted_after_first() {
 
     // Three Boolean(Union) ops, all referencing non-existent Step indices.
     // compile_geometry_op returns None for each because step_handles is empty.
+    // With the sentinel fix, all 3 ops are attempted → 3 compile-failure diagnostics.
     let union_op_0 = CompiledGeometryOp::Boolean {
         op: BooleanOp::Union,
         left: GeomRef::Step(0),
@@ -359,6 +361,7 @@ fn cascading_compile_failures_aborted_after_first() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
+    // All 3 ops are attempted with sentinel — each emits its own diagnostic
     let compile_failures: Vec<_> = result
         .diagnostics
         .iter()
@@ -367,14 +370,21 @@ fn cascading_compile_failures_aborted_after_first() {
 
     assert_eq!(
         compile_failures.len(),
-        1,
-        "expected exactly 1 compile-failure diagnostic (abort after first), got {}: {:?}",
+        3,
+        "expected exactly 3 compile-failure diagnostics (sentinel continues after each failure), \
+         got {}: {:?}",
         compile_failures.len(),
         result
             .diagnostics
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+
+    // Realization must be rolled back (had_failure=true) — no geometry output
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when all ops fail (realization rolled back)"
     );
 }
 
@@ -533,8 +543,9 @@ fn realization_abort_is_per_realization() {
 }
 
 /// The tessellate path (tessellate_realizations → tessellate_from_values) should
-/// also abort on the first compile failure, producing exactly 1 diagnostic and
-/// no meshes for the failing realization.
+/// also use the sentinel approach: all 3 ops are attempted, each emits a
+/// compile-failure diagnostic, and no meshes are produced for the failing
+/// realization because it is rolled back.
 #[test]
 fn tessellate_aborts_cascading_compile_failures() {
     use reify_types::Type;
@@ -543,6 +554,7 @@ fn tessellate_aborts_cascading_compile_failures() {
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
     // Three Boolean(Union) ops, all referencing non-existent Step indices.
+    // With the sentinel fix, all 3 are attempted → 3 compile-failure diagnostics.
     let union_op_0 = CompiledGeometryOp::Boolean {
         op: BooleanOp::Union,
         left: GeomRef::Step(0),
@@ -573,6 +585,7 @@ fn tessellate_aborts_cascading_compile_failures() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.tessellate_realizations(&module);
 
+    // All 3 ops attempted with sentinel → 3 compile-failure diagnostics
     let compile_failures: Vec<_> = result
         .diagnostics
         .iter()
@@ -581,8 +594,9 @@ fn tessellate_aborts_cascading_compile_failures() {
 
     assert_eq!(
         compile_failures.len(),
-        1,
-        "expected exactly 1 compile-failure diagnostic from tessellate, got {}: {:?}",
+        3,
+        "expected exactly 3 compile-failure diagnostics from tessellate \
+         (sentinel continues after each failure), got {}: {:?}",
         compile_failures.len(),
         result
             .diagnostics
@@ -591,16 +605,18 @@ fn tessellate_aborts_cascading_compile_failures() {
             .collect::<Vec<_>>()
     );
 
+    // Realization rolled back — no meshes
     assert!(
         result.meshes.is_empty(),
-        "expected no meshes when all ops fail to compile"
+        "expected no meshes when all ops fail to compile (realization rolled back)"
     );
 }
 
-/// The exact scenario from the task description: a mid-sequence compile failure
-/// prevents downstream dependent ops from running. op0 (Box) succeeds, op1
-/// (Boolean referencing non-existent steps) fails to compile, and op2 (Fillet
-/// on Step(1)) would also fail but should never execute because the loop aborted.
+/// Sentinel behavior for mixed-failure sequence: op0 (Box) succeeds, op1
+/// (Boolean referencing non-existent steps) fails to compile → INVALID sentinel
+/// pushed at step[1], loop continues. op2 (Fillet on Step(1)) is attempted;
+/// Step(1) resolves to INVALID so compile_geometry_op returns None → second
+/// compile-failure diagnostic. Kernel only receives the Box from op0.
 #[test]
 fn mixed_failure_then_dependent_ops_aborted() {
     use reify_compiler::ModifyKind;
@@ -609,7 +625,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
-    // Op 0: Box (succeeds)
+    // Op 0: Box (succeeds) → handle at step[0]
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
@@ -620,13 +636,15 @@ fn mixed_failure_then_dependent_ops_aborted() {
     };
 
     // Op 1: Boolean union referencing non-existent Step(5) and Step(6) → compile failure
+    // Sentinel INVALID pushed at step[1], loop continues.
     let union_op = CompiledGeometryOp::Boolean {
         op: BooleanOp::Union,
         left: GeomRef::Step(5),
         right: GeomRef::Step(6),
     };
 
-    // Op 2: Fillet on Step(1) — depends on the boolean result, should never run
+    // Op 2: Fillet on Step(1) — IS attempted (sentinel loop continues), but
+    // Step(1) is INVALID so compile_geometry_op returns None → second failure.
     let fillet_op = CompiledGeometryOp::Modify {
         kind: ModifyKind::Fillet,
         target: GeomRef::Step(1),
@@ -659,7 +677,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
         ops.len()
     );
 
-    // (b) exactly 1 compile-failure diagnostic (from op1)
+    // (b) 2 compile-failure diagnostics: op1 (bad refs) and op2 (INVALID target)
     let compile_failures: Vec<_> = result
         .diagnostics
         .iter()
@@ -667,8 +685,9 @@ fn mixed_failure_then_dependent_ops_aborted() {
         .collect();
     assert_eq!(
         compile_failures.len(),
-        1,
-        "expected exactly 1 compile-failure diagnostic, got {}: {:?}",
+        2,
+        "expected 2 compile-failure diagnostics (op1 bad refs + op2 INVALID target), \
+         got {}: {:?}",
         compile_failures.len(),
         result
             .diagnostics
@@ -677,8 +696,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
             .collect::<Vec<_>>()
     );
 
-    // (c) op2 never ran — no second compile-failure diagnostic
-    // (already verified by count == 1 above, but also verify no kernel errors)
+    // (c) no kernel errors — op2's compile failure happens before kernel dispatch
     let kernel_errors: Vec<_> = result
         .diagnostics
         .iter()
@@ -687,7 +705,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
     assert_eq!(
         kernel_errors.len(),
         0,
-        "expected no geometry error diagnostics (op2 should not have run)"
+        "expected no geometry error diagnostics (kernel was never called for op1 or op2)"
     );
 }
 
