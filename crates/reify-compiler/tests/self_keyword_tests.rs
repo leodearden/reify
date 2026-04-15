@@ -720,3 +720,84 @@ fn self_inside_lambda_in_fn_body_errors() {
         );
     }
 }
+
+// ─── task-1280 step-1: self.collection_sub equivalence with bare collection sub ───
+
+#[test]
+fn self_dot_collection_sub_equivalence_with_bare() {
+    // `self.bolts` and bare `bolts` (a collection sub) should compile to the same
+    // ValueRef, mirroring how `self.param` ≡ bare `param` (step-11).
+    // Both should resolve to S.__list_bolts__diameter with type List<T>.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub bolts : List<Bolt>
+    let via_self = self.bolts
+    let via_bare = bolts
+}"#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let via_self_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_self")
+        .expect("via_self value cell");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    let expected_id = ValueCellId::new("S", "__list_bolts__diameter");
+
+    let self_refs = via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .collect_value_refs();
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        self_refs.contains(&expected_id),
+        "via_self should reference S.__list_bolts__diameter, got: {:?}",
+        self_refs
+    );
+    assert!(
+        bare_refs.contains(&expected_id),
+        "via_bare should reference S.__list_bolts__diameter, got: {:?}",
+        bare_refs
+    );
+
+    // Both should resolve to List type
+    let self_ty = &via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .result_type;
+    let bare_ty = &via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .result_type;
+
+    assert!(
+        matches!(self_ty, reify_types::Type::List(_)),
+        "via_self should have List type, got: {:?}",
+        self_ty
+    );
+    assert!(
+        matches!(bare_ty, reify_types::Type::List(_)),
+        "via_bare should have List type, got: {:?}",
+        bare_ty
+    );
+}
