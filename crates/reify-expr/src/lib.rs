@@ -677,14 +677,20 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
     }
 }
 
-/// Apply a lambda to a point, handling multi-param unpacking.
+/// Apply a lambda to a point or vector, handling multi-param unpacking.
 ///
-/// When the lambda has multiple params (e.g., `|x, y, z|`) and the point is a
-/// `Value::Point` with matching length, unpacks the point components into
-/// individual scalar arguments. A single-param lambda receives the whole Point.
+/// Accept both `Value::Point` and `Value::Vector` — they share structural
+/// representation (both wrap `Vec<Value>`).  Mirrors the calculus convention
+/// established in `extract_point_coords`, `compute_numerical_divergence_at_point`,
+/// and `compute_numerical_curl_at_point`.
 ///
-/// Mirrors the unpacking convention in the `sample` handler's `Value::Lambda`
-/// arm and `calculus.rs::detect_single_point_param`.
+/// When the lambda has `params.len() > 1` and the input is a `Point` or `Vector`
+/// with matching length, unpacks the components into individual scalar arguments
+/// so the arity check in `apply_lambda` passes.  A single-param lambda
+/// (`params.len() == 1`) always receives the whole Point/Vector unchanged (no
+/// unpacking), preserving the single-param binding contract.
+///
+/// See also: `calculus.rs::extract_point_coords`.
 pub(crate) fn apply_lambda_with_point_unpacking(
     lambda: &Value,
     point: &Value,
@@ -692,7 +698,7 @@ pub(crate) fn apply_lambda_with_point_unpacking(
 ) -> Value {
     if let Value::Lambda { params, .. } = lambda {
         if params.len() > 1
-            && let Value::Point(items) = point
+            && let Value::Point(items) | Value::Vector(items) = point
             && params.len() == items.len()
         {
             return apply_lambda(lambda, items.as_slice(), ctx);
