@@ -35183,11 +35183,11 @@
         "description": "Follow-up from esc-1672-43 (reviewer_comprehensive, task 1672). The acquire_lsp_test_lock() at cli_lsp_protocol.rs:19 calls .lock().unwrap(), which panics with opaque 'PoisonError' if a prior test panicked while holding the lock. This was observed in practice during post-merge verify (esc-1672-40) where lsp_initialize_returns_capabilities failed with PoisonError after lsp_full_interactive_loop_through_binary timed out. Fix: use .lock().unwrap_or_else(|e| e.into_inner()) to recover from poisoned mutex, or at minimum .expect(\"LSP test lock poisoned — a prior LSP test panicked\") for a clearer diagnostic.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:54:17.466Z",
+        "updatedAt": "2026-04-15T00:39:30.430Z",
         "metadata": {
           "files": [
             "crates/reify-cli/tests/cli_lsp_protocol.rs"
@@ -35341,9 +35341,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:37:52.607Z",
+      "lastModified": "2026-04-15T00:39:30.431Z",
       "taskCount": 1693,
-      "completedCount": 1432,
+      "completedCount": 1433,
       "tags": [
         "master"
       ]
