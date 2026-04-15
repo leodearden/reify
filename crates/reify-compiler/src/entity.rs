@@ -1300,7 +1300,13 @@ pub(crate) fn compile_entity(
             scope.meta_entries.keys().map(String::as_str).collect();
         sorted_meta_keys.sort_unstable();
         let meta_hashes = sorted_meta_keys.into_iter().flat_map(|k| {
-            let v = scope.meta_entries.get(k).map(String::as_str).unwrap_or("");
+            // `k` was collected from this map's keys() above and the map is not
+            // mutated between collection and lookup, so get() always succeeds.
+            let v = scope
+                .meta_entries
+                .get(k)
+                .expect("key collected from this map")
+                .as_str();
             [ContentHash::of_str(k), ContentHash::of_str(v)]
         });
 
