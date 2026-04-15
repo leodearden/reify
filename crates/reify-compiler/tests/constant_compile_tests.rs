@@ -1,7 +1,7 @@
 //! Compiler tests for built-in mathematical constants (pi, tau).
 
-use reify_test_support::{compile_source, errors_only, parse_and_compile};
-use reify_types::{CompiledExprKind, Value};
+use reify_test_support::{compile_source, errors_only};
+use reify_types::{BinOp, CompiledExprKind, Value};
 
 /// Helper: get the default_expr for a value cell by member name.
 fn get_cell_expr<'a>(
@@ -54,5 +54,49 @@ fn tau_compiles_to_literal_real() {
             );
         }
         other => panic!("expected Literal(Real(TAU)), got {:?}", other),
+    }
+}
+
+// ─── step-3: pi and tau in arithmetic expressions ────────────────────────────
+
+#[test]
+fn pi_in_multiplication() {
+    let compiled = compile_source("structure S { let y = 2 * pi }");
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    let expr = get_cell_expr(&compiled, "y");
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(*op, BinOp::Mul, "expected Mul, got {:?}", op);
+        }
+        other => panic!("expected BinOp(Mul), got {:?}", other),
+    }
+}
+
+#[test]
+fn pi_in_division() {
+    let compiled = compile_source("structure S { let z = pi / 2 }");
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    let expr = get_cell_expr(&compiled, "z");
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(*op, BinOp::Div, "expected Div, got {:?}", op);
+        }
+        other => panic!("expected BinOp(Div), got {:?}", other),
+    }
+}
+
+#[test]
+fn pi_plus_tau_expression() {
+    let compiled = compile_source("structure S { let w = pi + tau }");
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    let expr = get_cell_expr(&compiled, "w");
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, .. } => {
+            assert_eq!(*op, BinOp::Add, "expected Add, got {:?}", op);
+        }
+        other => panic!("expected BinOp(Add), got {:?}", other),
     }
 }
