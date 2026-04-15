@@ -847,3 +847,64 @@ structure S {
         bare_refs
     );
 }
+
+// ─── task-1770 step-1: fallback path — empty-params structure ───
+
+#[test]
+fn collection_sub_fallback_empty_structure_cell_id_and_type() {
+    // `structure Empty {}` has no params, so sub_member_types["parts"] is Some(empty BTreeMap).
+    // resolve_collection_sub_to_list falls back to the coarse path and should produce:
+    //   (a) cell ID  : S.__list_parts  (not __list_parts__<member>, since there is no member)
+    //   (b) type     : List(StructureRef("Empty"))  ← structure TYPE name, not field name
+    //
+    // Before the fix this test FAILS because the fallback produces StructureRef("parts")
+    // (the field name) instead of StructureRef("Empty") (the structure type name).
+    let source = r#"structure Empty {}
+structure S {
+    sub parts : List<Empty>
+    let x = self.parts
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let x_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("x value cell");
+
+    // (a) cell ID must be S.__list_parts (fallback coarse ID)
+    let expected_id = ValueCellId::new("S", "__list_parts");
+    let x_refs = x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .collect_value_refs();
+    assert!(
+        x_refs.contains(&expected_id),
+        "self.parts should reference S.__list_parts (fallback coarse ID), got: {:?}",
+        x_refs
+    );
+
+    // (b) type must be List(StructureRef("Empty")) — the structure type name, not the field name
+    let x_ty = &x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .result_type;
+    match x_ty {
+        reify_types::Type::List(inner) => {
+            assert_eq!(
+                inner.as_ref(),
+                &reify_types::Type::StructureRef("Empty".to_string()),
+                "fallback type inner should be StructureRef(\"Empty\"), got: {:?}",
+                inner
+            );
+        }
+        other => panic!("expected List type, got: {:?}", other),
+    }
+}
