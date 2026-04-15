@@ -218,3 +218,112 @@ fn von_mises_field_stores_original_field_in_lambda_slot() {
         lambda
     );
 }
+
+// ── Step 19: sampling a VonMises-wrapped field ──────────────────────────────
+
+#[test]
+fn sample_von_mises_field_uniaxial_returns_sigma() {
+    // Uniaxial stress [[σ,0,0],[0,0,0],[0,0,0]]: von Mises = σ
+    let sigma = 100e6_f64;
+    let tensor = make_stress_tensor(
+        &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+        DimensionVector::PRESSURE,
+    );
+    let (field, field_type) = make_constant_stress_field(tensor);
+
+    // Build: von_mises(field)
+    let vm_field_type = Type::Field {
+        domain: Box::new(Type::point3(Type::Real)),
+        codomain: Box::new(pressure_scalar_type()),
+    };
+    let vm_expr = make_function_call(
+        "von_mises",
+        vec![CompiledExpr::literal(field, field_type)],
+        vm_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let vm_field = eval_expr(&vm_expr, &EvalContext::simple(&values));
+
+    // Build: sample(vm_field, Point3(1.0, 2.0, 3.0))
+    let sample_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(vm_field, vm_field_type),
+            CompiledExpr::literal(sample_point, Type::point3(Type::Real)),
+        ],
+        pressure_scalar_type(),
+    );
+
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Should return Scalar { si_value ≈ sigma, dimension: PRESSURE }
+    match &result {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::PRESSURE,
+                "result should have PRESSURE dimension"
+            );
+            assert!(
+                (si_value - sigma).abs() < 1e-3,
+                "expected ≈{sigma}, got {si_value}"
+            );
+        }
+        _ => panic!(
+            "sample(von_mises(field), point) should return Scalar, got {:?}",
+            result
+        ),
+    }
+}
+
+#[test]
+fn sample_von_mises_field_hydrostatic_returns_zero() {
+    // Hydrostatic stress [[p,0,0],[0,p,0],[0,0,p]]: von Mises = 0
+    let p = 100e6_f64;
+    let tensor = make_stress_tensor(
+        &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
+        DimensionVector::PRESSURE,
+    );
+    let (field, field_type) = make_constant_stress_field(tensor);
+
+    let vm_field_type = Type::Field {
+        domain: Box::new(Type::point3(Type::Real)),
+        codomain: Box::new(pressure_scalar_type()),
+    };
+    let vm_expr = make_function_call(
+        "von_mises",
+        vec![CompiledExpr::literal(field, field_type)],
+        vm_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let vm_field = eval_expr(&vm_expr, &EvalContext::simple(&values));
+
+    let sample_point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(vm_field, vm_field_type),
+            CompiledExpr::literal(sample_point, Type::point3(Type::Real)),
+        ],
+        pressure_scalar_type(),
+    );
+
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &result {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(*dimension, DimensionVector::PRESSURE);
+            assert!(
+                si_value.abs() < 1e-6,
+                "hydrostatic von Mises should be ≈0, got {si_value}"
+            );
+        }
+        _ => panic!(
+            "sample(von_mises(field), point) should return Scalar, got {:?}",
+            result
+        ),
+    }
+}
