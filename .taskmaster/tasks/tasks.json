@@ -35879,6 +35879,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1722,
+        "title": "value.rs: extend guard or add exclusion comment for Value::Point/Vector variants",
+        "description": "Code review (task 1588, mem0 004caee9): a guard pattern in crates/reify-types/src/value.rs omits Value::Point and Value::Vector without explanation. Either extend to cover them or add a comment explaining the intentional exclusion. memory_hints: search \\\"Value::Point Value::Vector guard pattern exclusion\\\".",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35891,7 +35902,7 @@
       ],
       "created": "2026-04-15T06:10:05.461Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T06:11:11.886Z"
+      "updated": "2026-04-15T06:12:15.535Z"
     }
   }
 }
