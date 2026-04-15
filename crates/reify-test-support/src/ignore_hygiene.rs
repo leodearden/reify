@@ -598,6 +598,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn check_ignore_reasons_non_canonical_form_is_silently_ignored() {
+        // The scanner recognises only the canonical rustfmt form (space-equals-space-quote:
+        // ` = "`).  A non-canonical `#[ignore="..."]` (no spaces around `=`) does not
+        // match any guard branch and is silently passed over — this test pins that
+        // behavior so any future tightening (e.g. stripping whitespace before matching)
+        // must first update this test.
+        // Source assembled at runtime so this file does not contain the guarded adjacent
+        // sequences and does not self-trigger the meta-test scanner.
+        let src = ["#[", "ignore=\"known bug: placeholder summary\"]"].concat();
+        assert!(
+            check_ignore_reasons(&src).is_ok(),
+            "expected non-canonical #[ignore=\"...\"] (no spaces around =) to be silently ignored",
+        );
+    }
+
     /// Guard 3 "no-marker" path: a `///` doc-comment line that contains the
     /// stale needle but no `#[ignore]` marker must be accepted.  After the
     /// delegation refactor, guard 3 calls `find_stale_plan_pointers_in_source`,
