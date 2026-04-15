@@ -527,3 +527,67 @@ structure S {
         default.kind
     );
 }
+
+// ---------------------------------------------------------------------------
+// task 1098: guarded let Option<Length> = none → typed OptionNone (step-7)
+// ---------------------------------------------------------------------------
+
+/// Guarded let with Option<Length> annotation and none value should produce
+/// a ValueCellDecl in guarded_groups[0].members with cell_type == Option<Length>
+/// and default_expr that is OptionNone with result_type == Option<Length>
+/// (not the fallback Option<Real>).
+#[test]
+fn guarded_let_none_with_typed_annotation_gets_correct_type() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    where active {
+        let y : Option<Length> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(
+        template.guarded_groups.len(),
+        1,
+        "expected 1 guarded group"
+    );
+    let group: &CompiledGuardedGroup = &template.guarded_groups[0];
+
+    let member = group
+        .members
+        .iter()
+        .find(|m| m.id.member == "y")
+        .expect("should have guarded member 'y'");
+
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "guarded let cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("guarded member 'y' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "guarded let default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone for guarded let, got {:?}",
+        default.kind
+    );
+}
