@@ -35203,7 +35203,7 @@
         "description": "Four test quality improvements in `crates/reify-eval/tests/integration_corner_cases.rs` (from Task 292 review):\n\n1. **Check eval diagnostics in `eval_and_check_ri()`** (correctness, lines 92-98): Currently discards the `EvalResult` with `let _ = engine.eval(&compiled)`, silently swallowing eval errors. Three tests (`auto_free_multiple_solutions`, `all_non_auto_constraints_satisfied`, `assertion_count_at_least_25`) rely solely on this function and will not detect eval errors. Fix: assert no eval-severity diagnostics, matching `eval_ri_file()`.\n\n2. **Assert range inclusivity in `range_equal_bounds_value`** (test-coverage, lines 448-466): `lower_inclusive` and `upper_inclusive` are destructured then discarded with `let _ = ...`. For a degenerate range `5mm..5mm`, assert the expected inclusivity values.\n\n3. **Tighten `option_some_undef_is_determined` assertion** (test-coverage, lines 315-325): Currently only checks `matches!(s_val, Value::Option(Some(_)))` but never verifies the inner value is `Value::Undef`. Tighten to verify `inner == Value::Undef`.\n\n4. **Eliminate double eval in `trait_all_member_kinds`** (performance, lines 147-203): Calls both `eval_ri_file()` and `eval_and_check_ri()`, each creating a fresh Engine and evaluating the module. Inline the engine setup so eval and check share one engine instance.\n\nmemory_hints: search for \"integration_corner_cases\" and \"eval_and_check_ri\"; get_entity for \"Task 292\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -35215,7 +35215,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-15T00:25:50.229Z"
+        "updatedAt": "2026-04-15T00:33:02.752Z"
       },
       {
         "id": "1687",
@@ -35300,9 +35300,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:31:43.128Z",
+      "lastModified": "2026-04-15T00:33:02.775Z",
       "taskCount": 1690,
-      "completedCount": 1430,
+      "completedCount": 1431,
       "tags": [
         "master"
       ]
