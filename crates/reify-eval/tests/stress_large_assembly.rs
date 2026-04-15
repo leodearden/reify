@@ -176,24 +176,15 @@ fn mass_propagation_steel_beam() {
         .get(&den_id)
         .unwrap_or_else(|| panic!("SteelBeam.density not found in eval result"));
 
-    let mass_val = match mass {
-        Value::Real(v) => *v,
-        Value::Int(v) => *v as f64,
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("SteelBeam.mass should be Real or Scalar, got {:?}", other),
-    };
-    let vol_val = match volume {
-        Value::Real(v) => *v,
-        Value::Int(v) => *v as f64,
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("SteelBeam.volume should be Real or Scalar, got {:?}", other),
-    };
-    let den_val = match density {
-        Value::Real(v) => *v,
-        Value::Int(v) => *v as f64,
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("SteelBeam.density should be Real or Scalar, got {:?}", other),
-    };
+    let mass_val = mass
+        .as_f64()
+        .unwrap_or_else(|| panic!("SteelBeam.mass should be numeric, got {:?}", mass));
+    let vol_val = volume
+        .as_f64()
+        .unwrap_or_else(|| panic!("SteelBeam.volume should be numeric, got {:?}", volume));
+    let den_val = density
+        .as_f64()
+        .unwrap_or_else(|| panic!("SteelBeam.density should be numeric, got {:?}", density));
 
     let expected = vol_val * den_val;
     assert!(
@@ -225,24 +216,15 @@ fn mass_propagation_aluminum_plate() {
         .get(&den_id)
         .unwrap_or_else(|| panic!("AluminumPlate.density not found in eval result"));
 
-    let mass_val = match mass {
-        Value::Real(v) => *v,
-        Value::Int(v) => *v as f64,
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("AluminumPlate.mass should be Real or Scalar, got {:?}", other),
-    };
-    let vol_val = match volume {
-        Value::Real(v) => *v,
-        Value::Int(v) => *v as f64,
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("AluminumPlate.volume should be Real or Scalar, got {:?}", other),
-    };
-    let den_val = match density {
-        Value::Real(v) => *v,
-        Value::Int(v) => *v as f64,
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("AluminumPlate.density should be Real or Scalar, got {:?}", other),
-    };
+    let mass_val = mass
+        .as_f64()
+        .unwrap_or_else(|| panic!("AluminumPlate.mass should be numeric, got {:?}", mass));
+    let vol_val = volume
+        .as_f64()
+        .unwrap_or_else(|| panic!("AluminumPlate.volume should be numeric, got {:?}", volume));
+    let den_val = density
+        .as_f64()
+        .unwrap_or_else(|| panic!("AluminumPlate.density should be numeric, got {:?}", density));
 
     let expected = vol_val * den_val;
     assert!(
@@ -262,12 +244,9 @@ fn total_mass_computed() {
         .values
         .get(&id)
         .unwrap_or_else(|| panic!("LargeAssembly.total_mass not found in eval result"));
-    let val = match total {
-        Value::Real(v) => *v,
-        Value::Int(v) => *v as f64,
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("LargeAssembly.total_mass should be Real or Scalar, got {:?}", other),
-    };
+    let val = total
+        .as_f64()
+        .unwrap_or_else(|| panic!("LargeAssembly.total_mass should be numeric, got {:?}", total));
     assert!(
         val > 0.0,
         "LargeAssembly.total_mass should be > 0, got {}",
