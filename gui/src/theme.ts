@@ -24,7 +24,7 @@ export const THEME_TOKENS: Record<string, string> = {
   red: '#f38ba8',
   mauve: '#cba6f7',
   yellow: '#f9e2af',
-  sky: '#89dcfe',
+  sky: '#89dceb',
   lavender: '#b4befe',
   peach: '#fab387',
   // Spacing scale

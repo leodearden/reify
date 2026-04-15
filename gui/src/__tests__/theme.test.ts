@@ -35,7 +35,7 @@ describe('THEME_TOKENS', () => {
   it('has correct Catppuccin Mocha values for syntax palette tokens', () => {
     expect(THEME_TOKENS.mauve).toBe('#cba6f7');
     expect(THEME_TOKENS.yellow).toBe('#f9e2af');
-    expect(THEME_TOKENS.sky).toBe('#89dcfe');
+    expect(THEME_TOKENS.sky).toBe('#89dceb');
     expect(THEME_TOKENS.lavender).toBe('#b4befe');
     expect(THEME_TOKENS.peach).toBe('#fab387');
   });
