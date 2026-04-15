@@ -33578,7 +33578,17 @@
           "files": [
             "crates/reify-compiler/src/geometry.rs",
             "crates/reify-eval/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "compile_geometry_call"
+            ],
+            "queries": [
+              "compile_geometry_call boolean op arguments",
+              "geometry variable reference let binding scope resolution",
+              "reify-compiler geometry.rs identifier resolution"
+            ]
+          }
         }
       },
       {
