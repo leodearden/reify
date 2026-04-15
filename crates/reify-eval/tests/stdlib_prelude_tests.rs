@@ -2,8 +2,8 @@
 
 use reify_compiler::stdlib_loader;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{collect_errors, steel_elastic_source};
-use reify_types::{ModulePath, Severity, ValueCellId};
+use reify_test_support::{collect_errors, steel_elastic_source, steel_material_elastic_source};
+use reify_types::{ModulePath, ValueCellId};
 
 // ─── step-7: Engine stores prelude ──────────────────────────────────
 
@@ -76,15 +76,7 @@ fn eval_with_prelude_trait_conformance() {
 /// (3) trait_bounds on template include both Material and Elastic.
 #[test]
 fn end_to_end_material_elastic_conformance() {
-    let source = r#"
-structure def Steel : Material + Elastic {
-    param density : Real = 7800.0
-    param name : String = "A36"
-    param youngs_modulus : Real = 200.0
-    param poissons_ratio : Real = 0.3
-    param shear_modulus : Real = 77.0
-}
-"#;
+    let source = steel_material_elastic_source();
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
@@ -95,11 +87,7 @@ structure def Steel : Material + Elastic {
 
     // (1) No error diagnostics from compilation
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
-    let compile_errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let compile_errors = collect_errors(&compiled.diagnostics);
     assert!(
         compile_errors.is_empty(),
         "compile should produce no error diagnostics, got: {:?}",
@@ -128,11 +116,7 @@ structure def Steel : Material + Elastic {
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let eval_errors = collect_errors(&result.diagnostics);
     assert!(
         eval_errors.is_empty(),
         "eval should produce no error diagnostics, got: {:?}",

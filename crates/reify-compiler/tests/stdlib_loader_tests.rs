@@ -2,11 +2,11 @@
 
 use reify_compiler::stdlib_loader;
 use reify_test_support::{
-    CompiledModuleBuilder, collect_errors, steel_elastic_source, steel_strong_source,
+    CompiledModuleBuilder, EXPECTED_MATERIAL_TRAITS, collect_errors, steel_elastic_source,
+    steel_strong_source,
 };
 use reify_types::{
-    CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash, ModulePath,
-    Severity, Type,
+    CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash, ModulePath, Type,
 };
 
 // ─── step-1: basic loading ──────────────────────────────────────────────
@@ -26,11 +26,7 @@ fn load_stdlib_returns_non_empty_slice() {
 fn all_stdlib_modules_have_no_errors() {
     let modules = stdlib_loader::load_stdlib();
     for module in modules {
-        let errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
+        let errors = collect_errors(&module.diagnostics);
         assert!(
             errors.is_empty(),
             "stdlib module '{}' has error diagnostics: {:?}",
@@ -52,19 +48,7 @@ fn materials_mechanical_traits_present() {
         .flat_map(|m| m.trait_defs.iter().map(|t| t.name.as_str()))
         .collect();
 
-    let expected = [
-        "Material",
-        "Elastic",
-        "Strong",
-        "Hard",
-        "FatigueRated",
-        "FractureTough",
-        "Ductile",
-        "ImpactResistant",
-        "Damping",
-    ];
-
-    for name in &expected {
+    for name in EXPECTED_MATERIAL_TRAITS {
         assert!(
             all_traits.contains(name),
             "expected trait '{}' in stdlib, found: {:?}",
@@ -122,11 +106,7 @@ fn std_units_module_has_expected_units() {
         .expect("std.units module not found in stdlib");
 
     // No error diagnostics
-    let errors: Vec<_> = units_module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = collect_errors(&units_module.diagnostics);
     assert!(
         errors.is_empty(),
         "std.units should have zero error diagnostics, got: {:?}",
@@ -183,13 +163,7 @@ fn std_units_module_has_expected_units() {
 /// errors and has 'Elastic' in trait_bounds.
 #[test]
 fn compile_with_prelude_makes_traits_visible() {
-    let source = r#"
-structure def Steel : Elastic {
-    param youngs_modulus : Real = 200.0
-    param poissons_ratio : Real = 0.3
-    param shear_modulus : Real = 77.0
-}
-"#;
+    let source = steel_elastic_source();
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
@@ -200,11 +174,7 @@ structure def Steel : Elastic {
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(
         errors.is_empty(),
         "compile_with_prelude should produce no errors for Elastic-conforming Steel, got: {:?}",
