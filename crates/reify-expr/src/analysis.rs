@@ -10,6 +10,8 @@
 
 use reify_types::{DimensionVector, FieldSourceKind, Type, Value};
 
+use super::{EvalContext, apply_lambda};
+
 /// Extract the element dimension from a 3×3 matrix/tensor codomain type.
 ///
 /// Returns `Some(dimension)` for:
@@ -126,4 +128,43 @@ pub(crate) fn compute_von_mises(field_val: &Value) -> Value {
         source: FieldSourceKind::VonMises,
         lambda: Box::new(field_val.clone()),
     }
+}
+
+/// Sample the inner field at a point, handling the multi-param unpacking convention.
+///
+/// When the inner lambda has multiple params (e.g., `|x, y, z|`) and the point
+/// is a `Value::Point` with matching length, unpacks the point components into
+/// individual scalar arguments. A single-param lambda receives the whole Point.
+///
+/// Mirrors the unpacking logic in the `sample` handler for `Value::Lambda` fields.
+fn sample_inner_field(lambda: &Value, point: &Value, ctx: &EvalContext) -> Value {
+    if let Value::Lambda { params, .. } = lambda {
+        if params.len() > 1 {
+            if let Value::Point(items) = point {
+                if params.len() == items.len() {
+                    return apply_lambda(lambda, items.as_slice(), ctx);
+                }
+            }
+        }
+        apply_lambda(lambda, std::slice::from_ref(point), ctx)
+    } else {
+        Value::Undef
+    }
+}
+
+/// Sample a VonMises-wrapped field at a point.
+///
+/// Evaluates the original tensor field's lambda at the given point, then
+/// applies `von_mises` pointwise via `reify_stdlib::eval_builtin`.
+pub(crate) fn sample_von_mises_at_point(
+    inner_lambda: &Value,
+    point: &Value,
+    _codomain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    let tensor = sample_inner_field(inner_lambda, point, ctx);
+    if tensor.is_undef() {
+        return Value::Undef;
+    }
+    reify_stdlib::eval_builtin("von_mises", &[tensor])
 }

@@ -206,6 +206,20 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 codomain_type,
                                 ctx,
                             ),
+                            // Analysis field wrappers: sample the inner field, then
+                            // apply the analysis builtin pointwise.
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::VonMises,
+                            ) => analysis::sample_von_mises_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                codomain_type,
+                                ctx,
+                            ),
                             _ => {
                                 #[cfg(debug_assertions)]
                                 eprintln!(
