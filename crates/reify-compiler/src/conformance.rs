@@ -372,7 +372,7 @@ pub(crate) fn check_trait_conformance(
 /// `AvailableDefaultKind` (used for requirement matching) intentionally has no
 /// `Constraint` variant — constraints are never candidates for satisfying requirements.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum DefaultKindTag {
+pub(crate) enum DefaultKindTag {
     Param,
     Let,
     Constraint,
