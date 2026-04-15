@@ -768,14 +768,14 @@ impl Value {
     /// Returns the type of this value if it can be unambiguously inferred,
     /// or `None` for genuinely ambiguous cases.
     ///
-    /// The ambiguous cases are:
-    /// - Empty `List` — element type is unknown
-    /// - Empty `Set` — element type is unknown
-    /// - Empty `Map` — key and value types are unknown
-    /// - `Option(None)` — inner type is unknown
+    /// Returns `None` for:
+    /// - Empty `List`, `Set`, `Map` — element/key/value types unknown
+    /// - `Option(None)` — inner type unknown
+    /// - Empty `Point`, `Vector` — quantity type unknown
+    /// - Fully-unbounded `Range` (both bounds `None`) — element type unknown
+    /// - `Tensor`, `Matrix`, `Frame`, `Transform` — structurally uninferrable
     ///
-    /// For all other variants this returns `Some(type)`, using the same logic
-    /// as [`infer_type()`]. Internal recursive calls propagate ambiguity: if a
+    /// Ambiguity propagates recursively through container variants: if a
     /// non-empty `List` contains an element that is itself ambiguous (e.g.,
     /// `List([Option(None)])`), this method returns `None` rather than guessing
     /// a default. Use [`infer_type()`] if you want compiler-aligned defaults
