@@ -654,20 +654,27 @@ pub(crate) fn compile_expr_guarded(
                             Type::StructureRef(structure_name),
                         );
                     }
-                    // Error: collection sub accessed directly through self.
+                    // Collection sub accessed through self: resolve to per-member List<T> value cell,
+                    // mirroring the bare-ident path (lines 126-144). `self.bolts` ≡ bare `bolts`.
                     if scope.collection_sub_names.contains(member.as_str()) {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "cannot access collection sub '{}' directly through self; \
-                                 use indexed access like `{}[i].<field>` or aggregation like `{}.count`",
-                                member, member, member
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "collection sub requires indexing",
-                            )),
-                        );
-                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                        if let Some(members) = scope.sub_member_types.get(member.as_str()) {
+                            // Resolve to the lexicographically-first member's per-member list.
+                            // sub_member_types inner map is BTreeMap, so iteration order is deterministic.
+                            if let Some((first_member, member_ty)) = members.iter().next() {
+                                let list_id = ValueCellId::new(
+                                    &scope.entity_name,
+                                    format!("__list_{}__{}", member, first_member),
+                                );
+                                let list_type = Type::List(Box::new(member_ty.clone()));
+                                return CompiledExpr::value_ref(list_id, list_type);
+                            }
+                        }
+                        // Fallback: no member types available
+                        let list_id =
+                            ValueCellId::new(&scope.entity_name, format!("__list_{}", member));
+                        let list_type =
+                            Type::List(Box::new(Type::StructureRef(member.clone())));
+                        return CompiledExpr::value_ref(list_id, list_type);
                     }
                     // Resolve member from the entity scope (same as bare identifier).
                     match scope.resolve(member) {
