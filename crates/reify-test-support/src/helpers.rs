@@ -180,21 +180,9 @@ pub fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic
 /// # Panics
 /// Panics if there are any parse errors or error-severity compile diagnostics.
 pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let compiled = compile_source(source);
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
     compiled
 }
 
@@ -207,21 +195,9 @@ pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
 /// # Panics
 /// Panics if there are any parse errors or error-severity compile diagnostics.
 pub fn parse_and_compile_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let compiled = compile_source_with_stdlib(source);
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
     compiled
 }
 
@@ -233,19 +209,8 @@ pub fn parse_and_compile_with_stdlib(source: &str) -> reify_compiler::CompiledMo
 /// Panics if there are parse errors, if no compile errors are produced, or
 /// if `needle` is non-empty and no error message contains it.
 pub fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let compiled = compile_source(source);
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(!errors.is_empty(), "expected at least one compile error");
     if !needle.is_empty() {
         assert!(
