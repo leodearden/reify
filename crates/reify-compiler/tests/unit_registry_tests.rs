@@ -1746,3 +1746,35 @@ fn affine_unit_in_conversion_referencing_other_affine_rejected() {
         errors
     );
 }
+
+// ─── helper-extraction tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_expect_scalar_extracts_si_value_and_dimension() {
+    // Compile a simple Length param and verify that common::expect_scalar
+    // can extract the si_value and dimension without nested if-let boilerplate.
+    let module = parse_and_compile("structure S { param x : Length = 10mm }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "x")
+        .expect("x not found");
+    let expr = cell.default_expr.as_ref().expect("x has no default_expr");
+    let (si_value, dimension) = common::expect_scalar(expr);
+    assert!(
+        (si_value - 0.01).abs() < 1e-9,
+        "expected si_value≈0.01 (10mm), got {}",
+        si_value
+    );
+    assert_eq!(dimension, DimensionVector::LENGTH);
+}
