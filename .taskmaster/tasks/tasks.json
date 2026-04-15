@@ -35317,7 +35317,9 @@
         "details": "",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "1693"
+        ],
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-15T00:46:24.713Z",
