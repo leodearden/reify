@@ -4,8 +4,8 @@
 //! through the full parse → compile_with_stdlib → eval pipeline using
 //! .ri fixture files in examples/.
 //!
-//! Follows the same pattern as m8_3_stdlib_integration.rs:
-//! `parse_and_compile_with_stdlib` + `SimpleConstraintChecker`.
+//! Follows the same `eval_ri_file` pattern as m8_3_stdlib_integration.rs:
+//! parse → compile_with_stdlib → eval with `SimpleConstraintChecker`.
 //! The three fixtures exercise:
 //!   linalg.ri         — advanced matrix ops (outer, determinant, inverse, transpose,
 //!                        eigenvalues) + complex number builtins
@@ -81,6 +81,16 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     );
 
     result
+}
+
+/// Extract a numeric `f64` from `Value::Real` or `Value::Int`.
+/// Panics with a descriptive message including `label` for any other variant.
+fn expect_real_or_int(val: &Value, label: &str) -> f64 {
+    match val {
+        Value::Real(v) => *v,
+        Value::Int(i) => *i as f64,
+        other => panic!("{label} should be Real or Int, got {other:?}"),
+    }
 }
 
 /// Assert that the `Value::Scalar` stored at `entity.member` in `result` matches
@@ -216,16 +226,9 @@ fn linalg_eigenvalues_of_diagonal() {
             let mut actuals: Vec<f64> = items
                 .iter()
                 .enumerate()
-                .map(|(i, item)| match item {
-                    Value::Real(v) => *v,
-                    Value::Int(n) => *n as f64,
-                    other => panic!(
-                        "eigenvalue[{}] should be Real or Int, got {:?}",
-                        i, other
-                    ),
-                })
+                .map(|(i, item)| expect_real_or_int(item, &format!("eigenvalue[{i}]")))
                 .collect();
-            actuals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            actuals.sort_by(|a, b| a.total_cmp(b));
             for (i, (&actual, &exp)) in actuals.iter().zip(expected.iter()).enumerate() {
                 assert!(
                     (actual - exp).abs() < 1e-9,
@@ -425,14 +428,7 @@ fn fields_temperature_sample() {
         .get(&id)
         .unwrap_or_else(|| panic!("FieldsAnalysisDemo.temp_at_5 not found"));
 
-    let v = match val {
-        Value::Real(v) => *v,
-        Value::Int(i) => *i as f64,
-        other => panic!(
-            "FieldsAnalysisDemo.temp_at_5 should be Real or Int, got {:?}",
-            other
-        ),
-    };
+    let v = expect_real_or_int(val, "FieldsAnalysisDemo.temp_at_5");
     assert!(
         (v - 45.0).abs() < 1e-9,
         "temp_at_5 should be ≈45.0 (= 5²+20), got {}",
@@ -454,14 +450,7 @@ fn fields_temperature_gradient() {
         .get(&id)
         .unwrap_or_else(|| panic!("FieldsAnalysisDemo.dtemp_at_5 not found"));
 
-    let v = match val {
-        Value::Real(v) => *v,
-        Value::Int(i) => *i as f64,
-        other => panic!(
-            "FieldsAnalysisDemo.dtemp_at_5 should be Real or Int, got {:?}",
-            other
-        ),
-    };
+    let v = expect_real_or_int(val, "FieldsAnalysisDemo.dtemp_at_5");
     assert!(
         (v - 10.0).abs() < 1e-4,
         "dtemp_at_5 should be ≈10.0 (= 2*5, central differences), got {}",
@@ -483,14 +472,7 @@ fn fields_von_mises_uniaxial() {
         .get(&id)
         .unwrap_or_else(|| panic!("FieldsAnalysisDemo.vm_stress not found"));
 
-    let v = match val {
-        Value::Real(v) => *v,
-        Value::Int(i) => *i as f64,
-        other => panic!(
-            "FieldsAnalysisDemo.vm_stress should be Real or Int, got {:?}",
-            other
-        ),
-    };
+    let v = expect_real_or_int(val, "FieldsAnalysisDemo.vm_stress");
     assert!(
         (v - 100.0).abs() < 1e-9,
         "vm_stress should be ≈100.0 (uniaxial von Mises = σ), got {}",
@@ -512,14 +494,7 @@ fn fields_safety_factor() {
         .get(&id)
         .unwrap_or_else(|| panic!("FieldsAnalysisDemo.sf not found"));
 
-    let v = match val {
-        Value::Real(v) => *v,
-        Value::Int(i) => *i as f64,
-        other => panic!(
-            "FieldsAnalysisDemo.sf should be Real (dimensionless), got {:?}",
-            other
-        ),
-    };
+    let v = expect_real_or_int(val, "FieldsAnalysisDemo.sf");
     assert!(
         (v - 2.5).abs() < 1e-9,
         "sf should be ≈2.5 (= 250/100), got {}",
@@ -609,6 +584,29 @@ fn io_export_flatness_tolerance() {
 fn io_export_surface_finish() {
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
     assert_scalar(&result, "ExportPart.finish", "value", 8e-7, 1e-12, DimensionVector::LENGTH);
+}
+
+// ── Helper unit tests ────────────────────────────────────────────────────────
+
+#[test]
+fn expect_real_or_int_extracts_real() {
+    let val = Value::Real(3.14);
+    let result = expect_real_or_int(&val, "test_label");
+    assert!((result - 3.14).abs() < 1e-15, "expected 3.14, got {}", result);
+}
+
+#[test]
+fn expect_real_or_int_extracts_int() {
+    let val = Value::Int(42);
+    let result = expect_real_or_int(&val, "test_label");
+    assert!((result - 42.0).abs() < 1e-15, "expected 42.0, got {}", result);
+}
+
+#[test]
+#[should_panic(expected = "should be Real or Int")]
+fn expect_real_or_int_panics_on_non_numeric() {
+    let val = Value::Bool(true);
+    expect_real_or_int(&val, "test_label");
 }
 
 // NOTE: each test independently calls eval_ri_file, re-parsing and re-compiling
