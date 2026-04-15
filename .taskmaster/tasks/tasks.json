@@ -12695,7 +12695,7 @@
         "description": "Add tests that confirm values just above AXIS_MAG_SQ_MIN and ANGLE_ABS_MIN thresholds are accepted (not just that values below are rejected). Without these, an inverted comparison or off-by-one in the constant would go undetected.\n\nSuggested tests:\n- `revolve_just_above_axis_threshold_accepted`: axis_dir=[1e-3, 0, 0] (mag_sq=1e-6 >> 1e-12) succeeds\n- `revolve_just_above_angle_threshold_accepted`: angle_rad=1e-25 (>> 1e-30) succeeds\n\nmemory_hints: search \"AXIS_MAG_SQ_MIN ANGLE_ABS_MIN revolve validation thresholds\", get_entity \"OcctKernel\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12708,7 +12708,7 @@
             "crates/reify-kernel-occt/src/lib.rs"
           ]
         },
-        "updatedAt": "2026-04-15T00:07:08.841Z"
+        "updatedAt": "2026-04-15T00:21:09.385Z"
       },
       {
         "id": "575",
@@ -35224,9 +35224,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:20:47.036Z",
+      "lastModified": "2026-04-15T00:21:09.385Z",
       "taskCount": 1688,
-      "completedCount": 1429,
+      "completedCount": 1430,
       "tags": [
         "master"
       ]
