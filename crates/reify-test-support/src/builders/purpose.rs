@@ -132,16 +132,16 @@ mod annotation_tests {
     #[test]
     fn compiled_purpose_builder_single_annotation() {
         let p = CompiledPurposeBuilder::new("p")
-            .annotation(annotation("test"))
+            .annotation(annotation(TEST_ANNOTATION))
             .build();
         assert_eq!(p.annotations.len(), 1);
-        assert_eq!(p.annotations[0].name, "test");
+        assert_eq!(p.annotations[0].name, TEST_ANNOTATION);
     }
 
     #[test]
     fn compiled_purpose_builder_annotation_with_args() {
         let p = CompiledPurposeBuilder::new("p")
-            .annotation(annotation_with_args("deprecated", vec![ann_str("use q")]))
+            .annotation(annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use q")]))
             .build();
         assert_eq!(p.annotations.len(), 1);
         assert_eq!(p.annotations[0].args.len(), 1);
@@ -159,7 +159,7 @@ mod annotation_tests {
     fn compiled_purpose_builder_annotation_does_not_affect_content_hash() {
         let p1 = CompiledPurposeBuilder::new("p").build();
         let p2 = CompiledPurposeBuilder::new("p")
-            .annotation(annotation("test"))
+            .annotation(annotation(TEST_ANNOTATION))
             .build();
         assert_eq!(p1.content_hash, p2.content_hash);
     }
