@@ -6,15 +6,15 @@ use std::path::{Path, PathBuf};
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
-    ConstraintChecker, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel, ModulePath,
-    Satisfaction, Severity, Value, ValueCellId,
+    ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel,
+    ModulePath, Satisfaction, Severity, Value, ValueCellId,
 };
 
 use reify_types::{DiagnosticInfo, SourceLocationInfo};
 
 use crate::types::{
-    ConstraintData, EntityTreeNode, FileData, GuiState, MeshData, ValueData, format_determinacy,
-    format_value,
+    ConstraintData, EntityIdentity, EntityTreeNode, FileData, GuiState, MeshData, SourceSpanInfo,
+    ValueData, format_determinacy, format_value,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -526,6 +526,81 @@ impl EngineSession {
             .iter()
             .map(|t| build_template_node(t, &t.name, compiled))
             .collect()
+    }
+
+    /// Return a map from `entity_path` to `EntityIdentity` for every entity
+    /// in the currently loaded module.
+    ///
+    /// The map contains two kinds of entries:
+    ///
+    /// - **Template roots** — keyed by `template.name` (e.g. `"Bracket"`).
+    ///   `content_hash` = `template.content_hash.to_string()` (32-char hex).
+    ///   `structural_fingerprint` = `"{entity_kind}::{sub_count}:{children_hash}"`.
+    ///   `source_span` = `None` (TopologyTemplate has no span in the compiled IR).
+    ///
+    /// - **Value cells** — keyed by `"{template.name}.{cell.id.member}"`.
+    ///   `content_hash` = hex of `ContentHash::of_str(cell_id_string)`.
+    ///   `structural_fingerprint` = `"{cell_kind}:{template.name}:0:{cell_type_hash}"`.
+    ///   `source_span` = `Some(SourceSpanInfo { start, end })` from `cell.span`.
+    ///
+    /// Returns an empty map when no module is loaded.
+    pub fn get_entity_identity_map(&self) -> HashMap<String, EntityIdentity> {
+        let compiled = match self.compiled.as_ref() {
+            Some(c) => c,
+            None => return HashMap::new(),
+        };
+
+        let mut map = HashMap::new();
+
+        for template in &compiled.templates {
+            let entity_kind = match template.entity_kind {
+                EntityKind::Structure => "structure",
+                EntityKind::Occurrence => "occurrence",
+            };
+
+            // Template-level entry
+            let sub_count = template.sub_components.len();
+            let children_hash =
+                ContentHash::combine_all(template.sub_components.iter().map(|s| s.content_hash));
+            let structural_fingerprint =
+                format!("{}:{}:{}:{}", entity_kind, "", sub_count, children_hash);
+
+            map.insert(
+                template.name.clone(),
+                EntityIdentity {
+                    content_hash: template.content_hash.to_string(),
+                    structural_fingerprint,
+                    source_span: None,
+                },
+            );
+
+            // Value-cell entries
+            for cell in &template.value_cells {
+                let cell_kind = match cell.kind {
+                    ValueCellKind::Param => "param",
+                    ValueCellKind::Let => "let",
+                    ValueCellKind::Auto { .. } => "auto",
+                };
+                let cell_path = format!("{}.{}", template.name, cell.id.member);
+                let cell_type_hash = ContentHash::of_str(&cell.cell_type.to_string());
+                let structural_fingerprint =
+                    format!("{}:{}:{}:{}", cell_kind, template.name, 0, cell_type_hash);
+
+                map.insert(
+                    cell_path,
+                    EntityIdentity {
+                        content_hash: ContentHash::of_str(&cell.id.to_string()).to_string(),
+                        structural_fingerprint,
+                        source_span: Some(SourceSpanInfo {
+                            start: cell.span.start,
+                            end: cell.span.end,
+                        }),
+                    },
+                );
+            }
+        }
+
+        map
     }
 }
 
