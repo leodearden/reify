@@ -36512,6 +36512,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1756,
+        "title": "Add sentinel test coverage for tessellate_from_values and build_snapshot paths",
+        "description": "The new geometry error handling tests (crates/reify-eval/tests/geometry_error_handling.rs ~lines 1512-1788) thoroughly cover the build() path (sentinel_placeholder_continues_independent_ops, sentinel_had_failure_triggers_rollback, draft_plane_invalid_sentinel), but there are no corresponding tests for tessellate_from_values() or build_snapshot() paths.\n\nSince the sentinel logic was duplicated across all three loops, at least one test per additional loop would provide confidence against copy-paste divergence. Add a test calling engine.tessellate_realizations() with the same mixed-success scenario to verify sentinel behavior in the tessellate path (similar to tessellate_aborts_cascading_compile_failures which was updated but tests all-fail, not mixed-fail).\n\nmemory_hints: search \"tessellate_from_values build_snapshot sentinel test\", search \"geometry_error_handling mixed-success test\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36524,7 +36535,7 @@
       ],
       "created": "2026-04-15T09:54:32.566Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T10:28:43.174Z"
+      "updated": "2026-04-15T10:29:19.453Z"
     }
   }
 }
