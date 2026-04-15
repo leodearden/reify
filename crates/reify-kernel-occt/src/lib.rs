@@ -518,15 +518,108 @@ impl OcctKernel {
                 ffi::ffi::make_pipe(profile_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            GeometryOp::LineSegment { .. }
-            | GeometryOp::Arc { .. }
-            | GeometryOp::Helix { .. }
-            | GeometryOp::InterpCurve { .. }
-            | GeometryOp::BezierCurve { .. }
-            | GeometryOp::NurbsCurve { .. } => {
-                return Err(GeometryError::OperationFailed(
-                    "curve constructor not yet implemented".into(),
-                ));
+            GeometryOp::LineSegment {
+                x1, y1, z1, x2, y2, z2,
+            } => {
+                let dx = x2 - x1;
+                let dy = y2 - y1;
+                let dz = z2 - z1;
+                let dist_sq = dx * dx + dy * dy + dz * dz;
+                if dist_sq < 1e-12 {
+                    return Err(GeometryError::OperationFailed(
+                        "line_segment endpoints are coincident (zero length)".into(),
+                    ));
+                }
+                let shape = ffi::ffi::make_line_wire(*x1, *y1, *z1, *x2, *y2, *z2)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, ReprKind::Wire));
+            }
+            GeometryOp::Arc {
+                center, radius, start_angle, end_angle, axis,
+            } => {
+                if !radius.is_finite() || *radius <= 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "arc radius must be finite and positive".into(),
+                    ));
+                }
+                let mag_sq = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
+                if mag_sq < AXIS_MAG_SQ_MIN {
+                    return Err(GeometryError::OperationFailed(
+                        "arc axis must not be zero-length".into(),
+                    ));
+                }
+                let shape = ffi::ffi::make_arc_wire(
+                    center[0], center[1], center[2],
+                    *radius,
+                    *start_angle, *end_angle,
+                    axis[0], axis[1], axis[2],
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, ReprKind::Wire));
+            }
+            GeometryOp::Helix { radius, pitch, height } => {
+                if !radius.is_finite() || *radius <= 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "helix radius must be finite and positive".into(),
+                    ));
+                }
+                if !pitch.is_finite() || *pitch <= 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "helix pitch must be finite and positive".into(),
+                    ));
+                }
+                if !height.is_finite() || *height <= 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "helix height must be finite and positive".into(),
+                    ));
+                }
+                let shape = ffi::ffi::make_helix_wire(*radius, *pitch, *height)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, ReprKind::Wire));
+            }
+            GeometryOp::InterpCurve { points } => {
+                if points.len() < 2 {
+                    return Err(GeometryError::OperationFailed(
+                        "interp_curve requires at least 2 points".into(),
+                    ));
+                }
+                let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
+                let shape = ffi::ffi::make_interp_curve(&coords, points.len())
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, ReprKind::Wire));
+            }
+            GeometryOp::BezierCurve { control_points } => {
+                if control_points.len() < 2 {
+                    return Err(GeometryError::OperationFailed(
+                        "bezier_curve requires at least 2 control points".into(),
+                    ));
+                }
+                let coords: Vec<f64> = control_points.iter().flat_map(|p| p.iter().copied()).collect();
+                let shape = ffi::ffi::make_bezier_curve(&coords, control_points.len())
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, ReprKind::Wire));
+            }
+            GeometryOp::NurbsCurve {
+                control_points, weights, knots, degree,
+            } => {
+                if control_points.len() < 2 {
+                    return Err(GeometryError::OperationFailed(
+                        "nurbs_curve requires at least 2 control points".into(),
+                    ));
+                }
+                if *degree < 1 {
+                    return Err(GeometryError::OperationFailed(
+                        "nurbs_curve degree must be >= 1".into(),
+                    ));
+                }
+                let coords: Vec<f64> = control_points.iter().flat_map(|p| p.iter().copied()).collect();
+                let shape = ffi::ffi::make_nurbs_curve(
+                    &coords, control_points.len(),
+                    weights, knots,
+                    *degree as i32,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, ReprKind::Wire));
             }
         };
         Ok(self.store(shape))
