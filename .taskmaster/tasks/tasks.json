@@ -35261,7 +35261,17 @@
           ],
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "searches": [
+              "compile_with_stdlib_helper common helper test pattern reify-compiler",
+              "errors_only helper test support module"
+            ],
+            "entities": [
+              "structural_physical_tests"
+            ]
+          },
+          "_causation_id": "8a9210de-78df-4834-a133-09f74785f437"
         },
         "updatedAt": "2026-04-15T00:58:04.672Z"
       },
