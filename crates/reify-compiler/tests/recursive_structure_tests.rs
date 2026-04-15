@@ -4,30 +4,8 @@
 //! definitions and tags them with `is_recursive = true`, emitting a warning
 //! diagnostic with the cycle path.
 
+use reify_test_support::parse_and_compile;
 use reify_types::Severity;
-
-/// Helper: parse + compile source, allowing warnings but not errors.
-/// Returns the compiled module.
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_recursive"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no error diagnostics, got: {:?}",
-        errors
-    );
-    compiled
-}
 
 // ─── step-1: direct self-reference ───
 
@@ -41,7 +19,7 @@ fn direct_self_reference_tagged_recursive() {
             sub x = A(n: n - 1) where n > 0
         }
     "#;
-    let compiled = compile_module(source);
+    let compiled = parse_and_compile(source);
 
     let a_template = compiled
         .templates
@@ -82,7 +60,7 @@ fn mutual_recursion_both_tagged() {
             sub a = A(n: n - 1) where n > 0
         }
     "#;
-    let compiled = compile_module(source);
+    let compiled = parse_and_compile(source);
 
     let a_template = compiled
         .templates
@@ -125,7 +103,7 @@ fn indirect_cycle_three_structures_all_tagged() {
             sub a = A(n: n - 1) where n > 0
         }
     "#;
-    let compiled = compile_module(source);
+    let compiled = parse_and_compile(source);
 
     let a_template = compiled
         .templates
@@ -177,7 +155,7 @@ fn non_recursive_dag_no_false_positives() {
         structure D { param y : Scalar = 2mm }
         structure C { sub d = D() }
     "#;
-    let compiled = compile_module(source);
+    let compiled = parse_and_compile(source);
 
     for template in &compiled.templates {
         assert!(
@@ -216,7 +194,7 @@ fn mixed_recursive_and_non_recursive_only_cycle_tagged() {
         structure D { param z : Scalar = 1mm }
         structure C { sub d = D() }
     "#;
-    let compiled = compile_module(source);
+    let compiled = parse_and_compile(source);
 
     let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
     let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
@@ -290,7 +268,7 @@ fn multiple_subs_one_cycle_correct_tagging() {
             sub c = C()
         }
     "#;
-    let compiled = compile_module(source);
+    let compiled = parse_and_compile(source);
 
     let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
     let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
@@ -334,7 +312,7 @@ fn multi_path_convergence_all_cycle_participants_tagged() {
             sub a = A(n: n - 1) where n > 0
         }
     "#;
-    let compiled = compile_module(source);
+    let compiled = parse_and_compile(source);
 
     let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
     let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
@@ -374,7 +352,7 @@ fn no_subs_not_recursive() {
             param height : Scalar = 5mm
         }
     "#;
-    let compiled = compile_module(source);
+    let compiled = parse_and_compile(source);
 
     let leaf_template = compiled
         .templates
@@ -422,7 +400,7 @@ fn pointer_into_cycle_not_tagged_recursive() {
             sub a = A()
         }
     "#;
-    let compiled = compile_module(source);
+    let compiled = parse_and_compile(source);
 
     let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
     let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");

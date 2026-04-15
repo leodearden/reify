@@ -1,5 +1,6 @@
 //! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
 
+use reify_compiler::TopologyTemplate;
 use reify_types::{Diagnostic, ModulePath, Severity};
 
 #[cfg(feature = "eval-helpers")]
@@ -23,43 +24,174 @@ pub fn make_simple_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
 }
 
-/// Parse, compile, eval with `SimpleConstraintChecker`, return `EvalResult`.
+/// Parse, compile (asserting no errors), and evaluate `source` using a
+/// `MockConstraintChecker` engine. Returns the `EvalResult`.
 ///
-/// Convenience helper for tests that need to go straight from source text
-/// to evaluated values without manually constructing an engine.
+/// Convenience pipeline for eval tests that need value evaluation without
+/// real constraint semantics.
 ///
 /// # Panics
-/// Panics if there are any parse or compile errors.
+/// Panics on parse errors, compile errors, or eval-phase diagnostics.
 #[cfg(feature = "eval-helpers")]
-pub fn eval_source(src: &str) -> reify_eval::EvalResult {
-    let compiled = parse_and_compile(src);
-    let mut engine = make_simple_engine();
-    engine.eval(&compiled)
+pub fn eval_source(source: &str) -> reify_eval::EvalResult {
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval-phase errors: {:?}",
+        eval_errors
+    );
+    result
 }
 
-/// Parse, compile, check with `SimpleConstraintChecker`, return `CheckResult`.
+/// Parse, compile (asserting no errors), and check `source` using a
+/// `SimpleConstraintChecker` engine. Returns the `CheckResult`.
 ///
-/// Convenience helper for tests that need to go straight from source text
-/// to constraint check results without manually constructing an engine.
+/// Convenience pipeline for tests that need real constraint satisfaction
+/// semantics (Satisfied/Violated/Indeterminate).
 ///
 /// # Panics
-/// Panics if there are any parse or compile errors.
+/// Panics on parse errors or compile errors.
 #[cfg(feature = "eval-helpers")]
-pub fn check_source(src: &str) -> reify_eval::CheckResult {
-    let compiled = parse_and_compile(src);
+pub fn check_source(source: &str) -> reify_eval::CheckResult {
+    let compiled = parse_and_compile(source);
     let mut engine = make_simple_engine();
     engine.check(&compiled)
 }
 
-/// Filter diagnostics to only those with [`Severity::Error`].
+/// Parse, compile with stdlib (asserting no errors), and check `source`
+/// using a `SimpleConstraintChecker` engine. Returns the `CheckResult`.
 ///
-/// This replaces the duplicated `error_diags` helper found across multiple
-/// test files (`constraint_inst_tests`, `optimized_annotation_tests`,
-/// `constraint_def_compile_tests`).
+/// Like [`check_source`] but uses `parse_and_compile_with_stdlib` so that
+/// stdlib types and traits are available during compilation.
+///
+/// # Panics
+/// Panics on parse errors or compile errors.
+#[cfg(feature = "eval-helpers")]
+pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    engine.check(&compiled)
+}
+
+/// Parse `source` with the given `module_name` module path, asserting no parse errors.
+///
+/// # Panics
+/// Panics if there are any parse errors.
+fn parse_or_panic_named(source: &str, module_name: &str) -> reify_syntax::ParsedModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    parsed
+}
+
+/// Parse `source` with the canonical `"test"` module path, asserting no parse errors.
+///
+/// # Panics
+/// Panics if there are any parse errors.
+fn parse_or_panic(source: &str) -> reify_syntax::ParsedModule {
+    parse_or_panic_named(source, "test")
+}
+
+/// Parse and compile `source` without asserting absence of compile errors.
+/// Returns the compiled module with whatever diagnostics were produced.
+///
+/// Use this for tests that expect compilation errors/warnings. For tests
+/// that expect clean compilation, use [`parse_and_compile`] instead.
+///
+/// # Panics
+/// Panics if there are any parse errors (but NOT compile errors).
+pub fn compile_source(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = parse_or_panic(source);
+    reify_compiler::compile(&parsed)
+}
+
+/// Like [`compile_source`] but uses a custom `module_name` for the module path
+/// instead of the default `"test"`.
+///
+/// Useful when diagnostic or debug output should show a descriptive module name
+/// rather than the generic `"test"`.
+///
+/// # Panics
+/// Panics if there are any parse errors (but NOT compile errors).
+pub fn compile_source_named(source: &str, module_name: &str) -> reify_compiler::CompiledModule {
+    let parsed = parse_or_panic_named(source, module_name);
+    reify_compiler::compile(&parsed)
+}
+
+/// Parse and compile `source` with stdlib, without asserting absence of compile errors.
+///
+/// Like [`compile_source`] but uses `reify_compiler::compile_with_stdlib` so that
+/// stdlib types and traits are available during compilation.
+///
+/// # Panics
+/// Panics if there are any parse errors (but NOT compile errors).
+pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = parse_or_panic(source);
+    reify_compiler::compile_with_stdlib(&parsed)
+}
+
+/// Parse and compile `source`, then extract the first template.
+/// Returns the template and the full list of diagnostics.
+///
+/// # Panics
+/// Panics if there are parse errors or if the compiled module has no templates.
+pub fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
+    let compiled = compile_source(source);
+    let diagnostics = compiled.diagnostics;
+    let template = compiled
+        .templates
+        .into_iter()
+        .next()
+        .expect("compile_first_template: no templates in compiled module");
+    (template, diagnostics)
+}
+
+/// Parse and compile `source`, then extract the template with the given `name`.
+/// Returns the template and the full list of diagnostics.
+///
+/// # Panics
+/// Panics if there are parse errors or if no template with `name` is found.
+pub fn compile_template(source: &str, name: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
+    let compiled = compile_source(source);
+    let diagnostics = compiled.diagnostics;
+    let template = compiled
+        .templates
+        .into_iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("compile_template: template {:?} not found", name));
+    (template, diagnostics)
+}
+
+/// Filter a diagnostic slice to only `Severity::Error` entries.
+///
+/// This is the primitive; [`errors_only`] is the convenience wrapper
+/// that takes a `&CompiledModule`.
 pub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
     diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
+/// Return only the `Severity::Error` diagnostics from a compiled module.
+///
+/// Convenience wrapper around [`collect_errors`].
+pub fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    collect_errors(&module.diagnostics)
+}
+
+/// Return only the `Severity::Warning` diagnostics from a compiled module.
+pub fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
         .collect()
 }
 
@@ -105,17 +237,9 @@ pub fn assert_eval_clean(result: &reify_eval::EvalResult) {
 /// # Panics
 /// Panics if there are any parse errors or error-severity compile diagnostics.
 pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
+    let compiled = compile_source(source);
     let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
     compiled
 }
 
@@ -128,17 +252,9 @@ pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
 /// # Panics
 /// Panics if there are any parse errors or error-severity compile diagnostics.
 pub fn parse_and_compile_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let compiled = compile_source_with_stdlib(source);
     let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
     compiled
 }
 
@@ -150,14 +266,7 @@ pub fn parse_and_compile_with_stdlib(source: &str) -> reify_compiler::CompiledMo
 /// Panics if there are parse errors, if no compile errors are produced, or
 /// if `needle` is non-empty and no error message contains it.
 pub fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
+    let compiled = compile_source(source);
     let errors = collect_errors(&compiled.diagnostics);
     assert!(!errors.is_empty(), "expected at least one compile error");
     if !needle.is_empty() {
@@ -171,9 +280,105 @@ pub fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::C
     compiled
 }
 
+/// Assert that `diagnostics` contains at least one entry whose severity equals
+/// `severity` and whose message contains `contains`.
+///
+/// Use this to verify that a specific diagnostic was emitted — for example, to
+/// confirm that a particular error or warning appears after a compile step.
+///
+/// # Panics
+/// Panics if no diagnostic matches both `severity` and `contains`. The panic
+/// message includes the full `diagnostics` list for debugging.
+#[track_caller]
+pub fn assert_has_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.severity == severity && d.message.contains(contains)),
+        "expected diagnostic with severity={:?} containing {:?}, got: {:?}",
+        severity,
+        contains,
+        diagnostics
+    );
+}
+
+/// Assert that `diagnostics` contains no entry whose severity equals `severity`
+/// and whose message contains `contains`.
+///
+/// Use this as a negative assertion — for example, to confirm that a specific
+/// warning was suppressed, or that a particular error was not emitted.
+///
+/// # Panics
+/// Panics if any diagnostic matches both `severity` and `contains`. The panic
+/// message includes the matching diagnostics so it's clear which ones violated
+/// the assertion.
+#[track_caller]
+pub fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
+    let matched: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == severity && d.message.contains(contains))
+        .collect();
+    assert!(
+        matched.is_empty(),
+        "expected no diagnostic with severity={:?} containing {:?}, got: {:?}",
+        severity,
+        contains,
+        matched
+    );
+}
+
+/// Assert that `diagnostics` contains no `Severity::Error` entries.
+///
+/// `context` is a short label that appears in the panic message to identify
+/// which compilation or evaluation phase failed — e.g. `"compile"`, `"eval"`,
+/// or `"post-link"`. This is useful when a single test exercises multiple
+/// pipeline stages and you need to identify which one produced errors.
+///
+/// Warnings, Info, and other non-Error severities are allowed and do not
+/// cause a panic. Use [`assert_no_diagnostics`] instead when all severities
+/// must be absent.
+///
+/// # Panics
+/// Panics if any `Severity::Error` diagnostic is present. The panic message
+/// includes `context` and the list of error messages.
+#[track_caller]
+pub fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{context}: expected no error diagnostics, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Assert that `diagnostics` is completely empty — no diagnostics of any severity.
+///
+/// This is stricter than [`assert_no_error_diagnostics`]: it fails on Warnings,
+/// Info, and any other severity in addition to Errors. Use this for
+/// characterization tests where the intent is "absolutely nothing is emitted".
+///
+/// `context` is a short label that appears in the panic message to identify
+/// which compilation or evaluation phase failed — e.g. `"compile"`, `"guard block"`.
+///
+/// # Panics
+/// Panics if `diagnostics` is non-empty. The panic message includes `context`
+/// and the full list of diagnostic messages.
+#[track_caller]
+pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
+    assert!(
+        diagnostics.is_empty(),
+        "{context}: expected no diagnostics at all, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
+    use reify_types::{Diagnostic, Severity};
 
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
     #[cfg(feature = "eval-helpers")]
@@ -251,15 +456,175 @@ mod tests {
         super::assert_eval_clean(&result);
     }
 
+    #[test]
+    fn test_compile_source_valid() {
+        let compiled = super::compile_source(bracket_source());
+        assert!(
+            !compiled.templates.is_empty(),
+            "compile_source should produce at least one template for bracket source"
+        );
+    }
+
+    #[test]
+    fn test_compile_source_with_errors() {
+        // Source with an undefined reference — compile_source should NOT panic,
+        // instead it returns the module WITH error diagnostics.
+        let source = r#"structure Bad {
+            let x = unknown_variable
+        }"#;
+        let compiled = super::compile_source(source);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            !errors.is_empty(),
+            "compile_source with invalid source should produce error diagnostics"
+        );
+    }
+
+    #[test]
+    fn test_compile_source_with_stdlib() {
+        // Source referencing stdlib trait Material — should compile without errors
+        // only when stdlib is loaded.
+        let source = r#"structure Steel : Material {
+            param density: Real = 7850
+            param name: String = "Steel"
+        }"#;
+        let compiled = super::compile_source_with_stdlib(source);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "compile_source_with_stdlib should compile stdlib-dependent source without errors: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_compile_first_template() {
+        let (template, diagnostics) = super::compile_first_template(bracket_source());
+        assert_eq!(template.name, "Bracket", "first template should be Bracket");
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn test_compile_template_by_name() {
+        let source = r#"
+            structure Alpha { param x: Scalar = 1 }
+            structure Beta { param y: Scalar = 2 }
+        "#;
+        let (template, _diags) = super::compile_template(source, "Beta");
+        assert_eq!(template.name, "Beta", "should extract template named Beta");
+    }
+
+    #[test]
+    #[should_panic(expected = "not found")]
+    fn test_compile_template_panics_on_missing_name() {
+        super::compile_template(bracket_source(), "NonExistent");
+    }
+
+    #[test]
+    fn test_collect_errors_filters_correctly() {
+        // Source with an undefined reference produces Error diagnostics.
+        let source = r#"structure Bad {
+            let x = unknown_variable
+        }"#;
+        let compiled = super::compile_source(source);
+        let errors = super::collect_errors(&compiled.diagnostics);
+        assert!(
+            !errors.is_empty(),
+            "collect_errors should return error diagnostics for invalid source"
+        );
+        // All returned diagnostics must be Error severity.
+        for d in &errors {
+            assert_eq!(d.severity, Severity::Error, "collect_errors returned non-Error: {:?}", d);
+        }
+    }
+
+    #[test]
+    fn test_errors_only_convenience() {
+        let source = r#"structure Bad {
+            let x = unknown_variable
+        }"#;
+        let compiled = super::compile_source(source);
+        let errors = super::errors_only(&compiled);
+        assert!(
+            !errors.is_empty(),
+            "errors_only should return error diagnostics for invalid source"
+        );
+    }
+
+    #[test]
+    fn test_warnings_only_filters_correctly() {
+        // Use warn_source_with_unknown_port_type which produces warnings.
+        let source = crate::fixtures::warn_source_with_unknown_port_type();
+        let compiled = super::compile_source(source);
+        let warnings = super::warnings_only(&compiled);
+        assert!(
+            !warnings.is_empty(),
+            "warnings_only should return warning diagnostics for warn source"
+        );
+        for d in &warnings {
+            assert_eq!(d.severity, Severity::Warning, "warnings_only returned non-Warning: {:?}", d);
+        }
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_eval_source() {
+        let result = super::eval_source(bracket_source());
+        assert!(
+            !result.values.is_empty(),
+            "eval_source should produce non-empty values for bracket source"
+        );
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_check_source() {
+        let result = super::check_source(bracket_source());
+        assert!(
+            !result.constraint_results.is_empty(),
+            "check_source should produce non-empty constraint_results for bracket source"
+        );
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_check_source_with_stdlib() {
+        // Source referencing stdlib trait Material with a constraint.
+        let source = r#"structure Steel : Material {
+            param density: Real = 7850
+            param name: String = "Steel"
+            constraint density > 0
+        }"#;
+        let result = super::check_source_with_stdlib(source);
+        assert!(
+            !result.constraint_results.is_empty(),
+            "check_source_with_stdlib should produce constraint_results"
+        );
+    }
+
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_make_engine() {
-        let compiled = super::parse_and_compile(bracket_source());
+        // Use a simple non-geometry source to avoid coupling to bracket fixture shape.
+        let source = "structure S { param x: Scalar = 42 }";
+        let compiled = super::parse_and_compile(source);
         let mut engine = super::make_engine();
         let result = engine.eval(&compiled);
         assert!(
             !result.values.is_empty(),
-            "engine.eval should produce non-empty values for bracket source"
+            "engine.eval should produce non-empty values"
         );
     }
 
@@ -329,39 +694,32 @@ mod tests {
 
     #[test]
     fn test_parse_compile_expect_err_needle_match() {
-        // Source with an undefined reference; needle should match the error message.
+        // Use a controlled needle that matches a specific known error message.
         let source = r#"structure Bad {
-            let x = unknown_variable
+            let x = totally_undefined_name
         }"#;
-        let _compiled = super::parse_compile_expect_err(source, "unknown");
+        let _compiled = super::parse_compile_expect_err(source, "totally_undefined_name");
     }
 
     #[test]
     fn test_parse_and_compile_with_stdlib() {
-        // Source that references the stdlib trait `Material`.
-        // This should compile only when stdlib is loaded.
-        let source = r#"structure Steel : Material {
-            param density: Real = 7850
-            param name: String = "Steel"
+        // Use a simple source that requires stdlib (Material trait) without
+        // coupling to specific stdlib field values or shape details.
+        let source = r#"structure S : Material {
+            param density: Real = 1
+            param name: String = "S"
         }"#;
+        // parse_and_compile_with_stdlib panics on errors, so reaching here means success.
         let compiled = super::parse_and_compile_with_stdlib(source);
-        let errors = super::collect_errors(&compiled.diagnostics);
-        assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
-    }
-
-    #[cfg(feature = "eval-helpers")]
-    #[test]
-    fn test_eval_source() {
-        let result = super::eval_source(bracket_source());
         assert!(
-            !result.values.is_empty(),
-            "eval_source should produce non-empty values for bracket source"
+            !compiled.templates.is_empty(),
+            "should produce at least one template"
         );
     }
 
     #[cfg(feature = "eval-helpers")]
     #[test]
-    fn test_check_source() {
+    fn test_check_source_satisfied() {
         use reify_types::Satisfaction;
         let result = super::check_source(bracket_source());
         assert!(
@@ -401,5 +759,119 @@ mod tests {
             !compiled.templates.is_empty(),
             "bracket source should produce at least one template"
         );
+    }
+
+    // ── assert_has_diagnostic ──────────────────────────────────────────────
+
+    /// assert_has_diagnostic should not panic when the diagnostics slice contains
+    /// an entry matching the requested severity and message substring.
+    #[test]
+    fn test_assert_has_diagnostic_passes_on_match() {
+        let diags = vec![
+            Diagnostic::warning("unused port x"),
+            Diagnostic::error("type mismatch for y"),
+        ];
+        // Should not panic — there is an Error-severity entry containing "type mismatch".
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    /// assert_has_diagnostic should panic when no diagnostic in the slice matches
+    /// the requested severity + message substring.
+    #[test]
+    #[should_panic(expected = "expected diagnostic")]
+    fn test_assert_has_diagnostic_panics_when_no_match() {
+        let diags = vec![Diagnostic::warning("unused port x")];
+        // Should panic — no Error-severity diagnostic exists.
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    /// assert_has_diagnostic should panic when the message substring matches but
+    /// the severity is wrong — confirming the severity filter applies in the
+    /// positive-assertion path.
+    #[test]
+    #[should_panic(expected = "expected diagnostic")]
+    fn test_assert_has_diagnostic_panics_when_wrong_severity() {
+        let diags = vec![Diagnostic::warning("type mismatch")];
+        // Should panic — the message matches but severity is Warning, not Error.
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    // ── assert_no_diagnostic ──────────────────────────────────────────────
+
+    /// assert_no_diagnostic should not panic when the slice is empty.
+    #[test]
+    fn test_assert_no_diagnostic_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_diagnostic(&diags, Severity::Error, "anything");
+    }
+
+    /// assert_no_diagnostic should not panic when diagnostics exist but none match
+    /// the requested severity + message substring.
+    #[test]
+    fn test_assert_no_diagnostic_passes_when_wrong_severity_or_message() {
+        let diags = vec![
+            Diagnostic::warning("type mismatch for x"),
+            Diagnostic::error("unrelated error"),
+        ];
+        // Warning has the phrase but is wrong severity; Error has wrong message — no match.
+        super::assert_no_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    /// assert_no_diagnostic should panic when a diagnostic matches both severity
+    /// and message substring.
+    #[test]
+    #[should_panic(expected = "expected no diagnostic")]
+    fn test_assert_no_diagnostic_panics_on_match() {
+        let diags = vec![Diagnostic::error("type mismatch for x")];
+        // Should panic — an Error-severity diagnostic containing "type mismatch" exists.
+        super::assert_no_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    // ── assert_no_error_diagnostics ───────────────────────────────────────
+
+    /// assert_no_error_diagnostics should not panic when the slice contains only
+    /// Warning diagnostics (no Error-severity entries).
+    #[test]
+    fn test_assert_no_error_diagnostics_passes_with_only_warnings() {
+        let diags = vec![
+            Diagnostic::warning("unused port x"),
+            Diagnostic::warning("deprecated syntax"),
+        ];
+        super::assert_no_error_diagnostics(&diags, "compile phase");
+    }
+
+    /// assert_no_error_diagnostics should not panic on an empty slice.
+    #[test]
+    fn test_assert_no_error_diagnostics_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_error_diagnostics(&diags, "eval phase");
+    }
+
+    /// assert_no_error_diagnostics should panic when an Error-severity diagnostic
+    /// is present; the panic message must include the context label.
+    #[test]
+    #[should_panic(expected = "compile phase")]
+    fn test_assert_no_error_diagnostics_panics_on_error() {
+        let diags = vec![Diagnostic::error("undefined identifier")];
+        super::assert_no_error_diagnostics(&diags, "compile phase");
+    }
+
+    // ── assert_no_diagnostics ─────────────────────────────────────────────
+
+    /// assert_no_diagnostics should not panic when the slice is empty.
+    #[test]
+    fn test_assert_no_diagnostics_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_diagnostics(&diags, "guard compile");
+    }
+
+    /// assert_no_diagnostics should panic even on an Info-severity diagnostic;
+    /// it is stricter than assert_no_error_diagnostics. The panic message must
+    /// include the context label.
+    #[test]
+    #[should_panic(expected = "guard compile")]
+    fn test_assert_no_diagnostics_panics_on_any_diagnostic() {
+        let diags = vec![Diagnostic::info("informational note")];
+        super::assert_no_diagnostics(&diags, "guard compile");
     }
 }

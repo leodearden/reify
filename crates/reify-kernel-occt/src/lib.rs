@@ -227,12 +227,15 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Chamfer { target, distance } => {
-                // Chamfer not yet implemented via OCCT wrapper
-                let _ = self.get_shape(*target)?;
-                let _ = extract_f64(distance)?;
-                return Err(GeometryError::OperationFailed(
-                    "Chamfer not yet implemented".into(),
-                ));
+                let shape = self.get_shape(*target)?;
+                let d = extract_f64(distance)?;
+                if !(d.is_finite() && d > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "chamfer distance must be a finite positive value".into(),
+                    ));
+                }
+                ffi::ffi::chamfer_all_edges(shape, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Translate { target, dx, dy, dz } => {
                 let shape = self.get_shape(*target)?;
@@ -639,6 +642,77 @@ impl OcctKernel {
                 )
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, ReprKind::Wire));
+            }
+            GeometryOp::LinearPattern2D {
+                target,
+                direction1,
+                count1,
+                spacing1,
+                direction2,
+                count2,
+                spacing2,
+            } => {
+                let shape = self.get_shape(*target)?;
+                let sp1 = extract_f64(spacing1)?;
+                let sp2 = extract_f64(spacing2)?;
+                // Validate direction vectors are finite (NaN/Inf would cause
+                // undefined OCCT behavior).  Consistent with Mirror arm.
+                if !direction1[0].is_finite()
+                    || !direction1[1].is_finite()
+                    || !direction1[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(
+                        "linear_pattern_2d direction1 must contain finite values".into(),
+                    ));
+                }
+                if !direction2[0].is_finite()
+                    || !direction2[1].is_finite()
+                    || !direction2[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(
+                        "linear_pattern_2d direction2 must contain finite values".into(),
+                    ));
+                }
+                if *count1 == 0 {
+                    return Err(GeometryError::OperationFailed(
+                        "linear_pattern_2d count1 must be >= 1".into(),
+                    ));
+                }
+                if *count2 == 0 {
+                    return Err(GeometryError::OperationFailed(
+                        "linear_pattern_2d count2 must be >= 1".into(),
+                    ));
+                }
+                ffi::ffi::linear_pattern_2d(
+                    shape,
+                    direction1[0],
+                    direction1[1],
+                    direction1[2],
+                    *count1 as u32,
+                    sp1,
+                    direction2[0],
+                    direction2[1],
+                    direction2[2],
+                    *count2 as u32,
+                    sp2,
+                )
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::ArbitraryPattern {
+                target,
+                transforms,
+            } => {
+                let shape = self.get_shape(*target)?;
+                if transforms.is_empty() {
+                    return Err(GeometryError::OperationFailed(
+                        "arbitrary_pattern requires at least one transform".into(),
+                    ));
+                }
+                let flat_transforms: Vec<f64> =
+                    transforms.iter().flat_map(|t| t.iter().copied()).collect();
+                let num_transforms = transforms.len() as u32;
+                ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
         };
         Ok(self.store(shape))
@@ -1662,6 +1736,92 @@ mod tests {
         }
     }
 
+    // --- Chamfer distance validation tests ---
+
+    #[test]
+    fn execute_chamfer_zero_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(0.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-distance chamfer"),
+        }
+    }
+
+    #[test]
+    fn execute_chamfer_negative_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(-1.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for negative-distance chamfer"),
+        }
+    }
+
+    #[test]
+    fn execute_chamfer_nan_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(f64::NAN),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-distance chamfer"),
+        }
+    }
+
+    #[test]
+    fn execute_chamfer_infinity_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(f64::INFINITY),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-distance chamfer"),
+        }
+    }
+
     // --- Rotate NaN/infinity/zero-axis rejection tests (step-3) ---
 
     #[test]
@@ -2071,6 +2231,215 @@ mod tests {
                 );
             }
             other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn linear_pattern_2d_3x4_grid() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box (volume = 1000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Apply LinearPattern2D: 3×4 grid along X and Y with 20mm spacing
+        let pattern_h = kernel
+            .execute(&GeometryOp::LinearPattern2D {
+                target: box_h.id,
+                direction1: [1.0, 0.0, 0.0],
+                count1: 3,
+                spacing1: Value::Real(20.0),
+                direction2: [0.0, 1.0, 0.0],
+                count2: 4,
+                spacing2: Value::Real(20.0),
+            })
+            .unwrap();
+        // Volume should be approximately 3*4 * 1000 = 12000
+        let vol = kernel.query(&GeometryQuery::Volume(pattern_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 12000.0).abs() < 200.0,
+                    "expected linear_pattern_2d volume ~12000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn arbitrary_pattern_3_transforms() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box (volume = 1000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Apply ArbitraryPattern with 3 non-overlapping translations
+        let pattern_h = kernel
+            .execute(&GeometryOp::ArbitraryPattern {
+                target: box_h.id,
+                transforms: vec![
+                    [20.0, 0.0, 0.0],
+                    [0.0, 20.0, 0.0],
+                    [20.0, 20.0, 0.0],
+                ],
+            })
+            .unwrap();
+        // Volume should be approximately 4 * 1000 = 4000 (original + 3 copies)
+        let vol = kernel.query(&GeometryQuery::Volume(pattern_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 4000.0).abs() < 200.0,
+                    "expected arbitrary_pattern volume ~4000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn linear_pattern_2d_count1_zero_errors() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::LinearPattern2D {
+            target: box_h.id,
+            direction1: [1.0, 0.0, 0.0],
+            count1: 0,
+            spacing1: Value::Real(20.0),
+            direction2: [0.0, 1.0, 0.0],
+            count2: 3,
+            spacing2: Value::Real(20.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("count1"),
+                    "error should mention count1, got: {msg}"
+                );
+            }
+            other => panic!("expected OperationFailed for count1==0, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn linear_pattern_2d_count2_zero_errors() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::LinearPattern2D {
+            target: box_h.id,
+            direction1: [1.0, 0.0, 0.0],
+            count1: 3,
+            spacing1: Value::Real(20.0),
+            direction2: [0.0, 1.0, 0.0],
+            count2: 0,
+            spacing2: Value::Real(20.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("count2"),
+                    "error should mention count2, got: {msg}"
+                );
+            }
+            other => panic!("expected OperationFailed for count2==0, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn linear_pattern_2d_nan_direction_errors() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // NaN in direction1 should fail
+        let result = kernel.execute(&GeometryOp::LinearPattern2D {
+            target: box_h.id,
+            direction1: [f64::NAN, 0.0, 0.0],
+            count1: 3,
+            spacing1: Value::Real(20.0),
+            direction2: [0.0, 1.0, 0.0],
+            count2: 3,
+            spacing2: Value::Real(20.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("direction1"),
+                    "error should mention direction1, got: {msg}"
+                );
+            }
+            other => panic!("expected OperationFailed for NaN direction1, got {:?}", other),
+        }
+        // Inf in direction2 should fail
+        let result = kernel.execute(&GeometryOp::LinearPattern2D {
+            target: box_h.id,
+            direction1: [1.0, 0.0, 0.0],
+            count1: 3,
+            spacing1: Value::Real(20.0),
+            direction2: [0.0, f64::INFINITY, 0.0],
+            count2: 3,
+            spacing2: Value::Real(20.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("direction2"),
+                    "error should mention direction2, got: {msg}"
+                );
+            }
+            other => panic!("expected OperationFailed for Inf direction2, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn arbitrary_pattern_zero_transforms_errors() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::ArbitraryPattern {
+            target: box_h.id,
+            transforms: vec![],
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("transform"),
+                    "error should mention transform, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected OperationFailed for empty transforms, got {:?}",
+                other
+            ),
         }
     }
 

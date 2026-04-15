@@ -1,5 +1,6 @@
 // Tauri command handlers — thin wrappers around EngineSession methods.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -7,7 +8,7 @@ use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
-use crate::types::{FileData, GuiState};
+use crate::types::{DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState};
 use crate::watcher::FileWatcher;
 
 /// Application state shared across all Tauri commands.
@@ -97,4 +98,49 @@ pub fn open_file_engine_impl(
 ) -> Result<GuiState, String> {
     let mut session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
     session.load_file(Path::new(path))
+}
+
+/// Return the hierarchical entity tree for the currently loaded module.
+///
+/// Returns an empty vec when no module is loaded.
+pub fn get_entity_tree_impl(
+    engine: &Mutex<EngineSession>,
+) -> Result<Vec<EntityTreeNode>, String> {
+    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(s.get_entity_tree())
+}
+
+/// Return the entity identity map (entity_path → EntityIdentity) for the loaded module.
+///
+/// Returns an empty map when no module is loaded.
+pub fn get_entity_identity_map_impl(
+    engine: &Mutex<EngineSession>,
+) -> Result<HashMap<String, EntityIdentity>, String> {
+    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(s.get_entity_identity_map())
+}
+
+/// Return a preview GuiState for a single named definition evaluated with its defaults.
+///
+/// Returns `Err` when no module is loaded or the definition name is not found.
+pub fn get_def_preview_impl(
+    engine: &Mutex<EngineSession>,
+    def_name: &str,
+) -> Result<GuiState, String> {
+    let mut session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    session.get_def_preview(def_name)
+}
+
+/// Return the innermost definition (structure/occurrence) containing the given
+/// 1-based (line, col) source position.
+///
+/// Returns `Ok(None)` when no module is loaded or the position is outside any definition.
+/// Returns `Err` when the engine mutex is poisoned.
+pub fn get_containing_definition_impl(
+    engine: &Mutex<EngineSession>,
+    line: u32,
+    col: u32,
+) -> Result<Option<DefInfo>, String> {
+    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(s.get_containing_definition(line, col))
 }

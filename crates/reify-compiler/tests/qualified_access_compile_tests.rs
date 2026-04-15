@@ -9,24 +9,8 @@
 //! project_regression_c88ca9635.md).
 
 use reify_compiler::*;
+use reify_test_support::{compile_first_template, compile_source};
 use reify_types::*;
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Parse `source` and compile, returning the full CompiledModule.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    reify_compiler::compile(&parsed)
-}
-
-/// Parse `source`, compile, and return the first template together with all
-/// diagnostics emitted during compilation.
-fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let module = compile_module(source);
-    let template = module.templates.into_iter().next().expect("expected at least 1 template");
-    (template, module.diagnostics)
-}
 
 // ── step-1 ────────────────────────────────────────────────────────────────────
 
@@ -140,7 +124,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors: Vec<_> =
         module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
@@ -176,7 +160,7 @@ structure def S : A {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors: Vec<_> =
         module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
@@ -255,7 +239,7 @@ structure def Outer {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors: Vec<_> =
         module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();

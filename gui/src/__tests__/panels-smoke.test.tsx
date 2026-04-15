@@ -10,6 +10,7 @@ import {
   ExportDialog,
   ReloadPrompt,
   ChatPanel,
+  MenuBar,
 } from '../panels';
 import { createClaudeStore } from '../stores';
 
@@ -67,5 +68,10 @@ describe('panels smoke integration', () => {
     const store = createClaudeStore({ onSend: vi.fn(), onAbort: vi.fn() });
     render(() => <ChatPanel store={store} />);
     expect(screen.getByTestId('chat-panel')).toBeTruthy();
+  });
+
+  it('MenuBar mounts with data-testid="menu-bar"', () => {
+    render(() => <MenuBar />);
+    expect(screen.getByTestId('menu-bar')).toBeTruthy();
   });
 });

@@ -3,26 +3,8 @@
 //! Tests for compiling purpose declarations into CompiledPurpose entries.
 
 use reify_compiler::*;
+use reify_test_support::parse_and_compile;
 use reify_types::*;
-
-/// Helper: parse source and compile, returning the CompiledModule.
-/// Asserts no parse errors and no compile-level Severity::Error diagnostics.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-    compiled
-}
 
 // ── Step 9: basic purpose compilation ───────────────────────────
 
@@ -40,7 +22,7 @@ purpose mfg_ready(subject : Structure) {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = parse_and_compile(source);
 
     // Should have 1 template (Bracket) and 1 compiled purpose
     assert_eq!(module.templates.len(), 1, "expected 1 template");
@@ -77,7 +59,7 @@ purpose check_params(subject : Widget) {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = parse_and_compile(source);
 
     assert_eq!(
         module.compiled_purposes.len(),
@@ -127,7 +109,7 @@ purpose broken(subject : Structure) {
 }
 "#;
 
-    let _module = compile_module(source);
+    let _module = parse_and_compile(source);
 }
 
 // ── Step 23: let bindings in purposes should emit error ───────────────
@@ -150,7 +132,7 @@ purpose check(subject : Structure) {
 }
 "#;
 
-    let _module = compile_module(source);
+    let _module = parse_and_compile(source);
 }
 
 // ── Step 25: unsupported member variants should emit error ───────────────
@@ -288,7 +270,7 @@ purpose machining_tolerance(subject : Structure) {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = parse_and_compile(source);
     assert_eq!(
         module.compiled_purposes.len(),
         1,
@@ -371,7 +353,7 @@ purpose hot_enough(subject : Structure) {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = parse_and_compile(source);
     assert_eq!(
         module.compiled_purposes.len(),
         1,

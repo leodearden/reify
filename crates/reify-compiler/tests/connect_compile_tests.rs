@@ -3,29 +3,8 @@
 //! Tests for compiling connect and chain declarations into CompiledConnection entries.
 
 use reify_compiler::*;
+use reify_test_support::{assert_has_diagnostic, assert_no_diagnostic, compile_first_template, compile_source};
 use reify_types::*;
-
-/// Helper: parse source and compile, returning the CompiledModule.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: parse source and compile, returning first template + diagnostics.
-fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let module = compile_module(source);
-    let template = module
-        .templates
-        .into_iter()
-        .next()
-        .expect("expected 1 template");
-    (template, module.diagnostics)
-}
 
 // ── Step 13: compile_connect_generates_connection ────────────────────
 
@@ -85,7 +64,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     // Get the S template (second one, after BoltSet)
     let s_template = module
         .templates
@@ -222,7 +201,7 @@ structure def S2 {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -493,7 +472,7 @@ structure def S2 {
     connect a -> b : BoltSet { grade = 10.9 }
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -628,7 +607,7 @@ structure def Assembly {
     connect motor.shaft -> gear.input
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let asm = module
         .templates
         .iter()
@@ -866,7 +845,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let s_template = module
         .templates
         .iter()
@@ -1186,7 +1165,7 @@ structure def S {
     connect a -> b : BoltSet { grade = 10.9, count = 6.0, d -> d, length_m -> length_m }
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let s_template = module
         .templates
         .iter()
@@ -1350,7 +1329,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let s_template = module
         .templates
         .iter()
@@ -1382,4 +1361,112 @@ structure def S {
         vec![("d".to_string(), "d".to_string())],
         "expected explicit port mapping d->d"
     );
+}
+
+// ── task-393/step-1: incompatible_directions_suppresses_auto_match_warning ──
+
+#[test]
+fn incompatible_directions_suppresses_auto_match_warning() {
+    // Two In ports with same trait T but different members (a has {d,l}, b has {d,r}).
+    // Forward connect (In->In) is direction-incompatible, which should suppress auto-matching.
+    // Expected: direction-error IS emitted; unmatched-members Warning is NOT emitted.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : in T {
+        param d : Length = 5mm
+        param l : Length = 1mm
+    }
+    port b : in T {
+        param d : Length = 5mm
+        param r : Length = 1mm
+    }
+    connect a -> b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+
+    assert_has_diagnostic(&diagnostics, Severity::Error, "incompatible port directions");
+    assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
+}
+
+// ── task-393/step-3: incompatible_directions_reverse_suppresses_warning ──
+
+#[test]
+fn incompatible_directions_reverse_suppresses_warning() {
+    // Two Out ports with same trait T but different members (a has {d,l}, b has {d,r}).
+    // Reverse connect (Out <- Out, i.e. checking is_forward_compatible(Out, Out)) is
+    // direction-incompatible. Auto-match should be skipped; no unmatched-members warning.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T {
+        param d : Length = 5mm
+        param l : Length = 1mm
+    }
+    port b : out T {
+        param d : Length = 5mm
+        param r : Length = 1mm
+    }
+    connect a <- b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+
+    assert_has_diagnostic(&diagnostics, Severity::Error, "incompatible port directions");
+    assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
+}
+
+// ── task-393/step-4: incompatible_bidi_suppresses_warning ────────────────
+
+#[test]
+fn incompatible_bidi_suppresses_warning() {
+    // An In port and an Out port with same trait T but different members connected via <->.
+    // Bidirectional requires both ports to be bidi, so this is direction-incompatible.
+    // Auto-match should be skipped; no unmatched-members warning should be emitted.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : in T {
+        param d : Length = 5mm
+        param l : Length = 1mm
+    }
+    port b : out T {
+        param d : Length = 5mm
+        param r : Length = 1mm
+    }
+    connect a <-> b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+
+    assert_has_diagnostic(&diagnostics, Severity::Error, "bidirectional connect requires both ports to be bidi");
+    assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
+}
+
+// ── task-393/step-5: compatible_directions_still_emits_unmatched_warning ──
+
+#[test]
+fn compatible_directions_still_emits_unmatched_warning() {
+    // Out->In (compatible directions) with same trait T but different members (a has {d,l}, b has {d,r}).
+    // The direction check passes, so auto-match IS invoked and should emit the unmatched-members warning.
+    // This regression test ensures the guard doesn't suppress the valid warning path.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T {
+        param d : Length = 5mm
+        param l : Length = 1mm
+    }
+    port b : in T {
+        param d : Length = 5mm
+        param r : Length = 1mm
+    }
+    connect a -> b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+
+    assert_no_diagnostic(&diagnostics, Severity::Error, "incompatible port directions");
+    assert_has_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }

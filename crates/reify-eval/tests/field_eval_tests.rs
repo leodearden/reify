@@ -4,32 +4,11 @@
 //! and applying field operations (sample, gradient, etc.).
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_test_support::{eval_source, make_engine, parse_and_compile};
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type,
-    ValueMap, FIELD_ENTITY_PREFIX, ModulePath, Severity, Value, ValueCellId,
+    ValueMap, FIELD_ENTITY_PREFIX, Value, ValueCellId,
 };
-
-/// Helper: parse, compile, and eval source, return eval result.
-fn eval_source(source: &str) -> reify_eval::EvalResult {
-    let parsed = reify_syntax::parse(source, ModulePath::single("field_eval_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    engine.eval(&compiled)
-}
 
 /// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
 ///
@@ -161,22 +140,8 @@ fn eval_field_snapshot_consistency() {
     // This ensures incremental re-evaluation via edit_param/warm-starting
     // can see field values.
     let source = "field def temp : Point3 -> Scalar { source = analytical { |p| p } }";
-    let parsed = reify_syntax::parse(source, ModulePath::single("field_snapshot_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
     let _result = engine.eval(&compiled);
 
     // The field should be in the snapshot values
@@ -398,13 +363,18 @@ fn test_make_sample_at_produces_sample_call() {
 // ── Helper test: assert_real_approx behavior ─────────────────────────────────
 
 #[test]
+#[allow(clippy::assertions_on_constants)]
 fn test_assert_real_approx_passes_within_tolerance() {
     // Should not panic: value matches expected within REAL_TOLERANCE
-    assert_real_approx(&Value::Real(3.14), 3.14, "pi");
+    assert_real_approx(&Value::Real(std::f64::consts::PI), std::f64::consts::PI, "pi");
     // Should not panic: difference is exactly at zero
     assert_real_approx(&Value::Real(0.0), 0.0, "zero");
     // Should not panic: value is just inside tolerance (90% of REAL_TOLERANCE)
-    assert_real_approx(&Value::Real(3.14 + REAL_TOLERANCE * 0.9), 3.14, "near-boundary");
+    assert_real_approx(
+        &Value::Real(std::f64::consts::PI + REAL_TOLERANCE * 0.9),
+        std::f64::consts::PI,
+        "near-boundary",
+    );
     // Verify REAL_TOLERANCE constant exists and has the expected magnitude
     assert!(REAL_TOLERANCE > 0.0, "REAL_TOLERANCE must be positive");
     assert!(REAL_TOLERANCE <= 1e-10, "REAL_TOLERANCE should be small (≤1e-10)");
@@ -421,7 +391,11 @@ fn test_assert_real_approx_panics_outside_tolerance() {
 #[should_panic(expected = "diff =")]
 fn test_assert_real_approx_panics_at_exact_boundary() {
     // Difference of exactly REAL_TOLERANCE is NOT strictly less-than, so must panic
-    assert_real_approx(&Value::Real(3.14 + REAL_TOLERANCE), 3.14, "boundary");
+    assert_real_approx(
+        &Value::Real(std::f64::consts::PI + REAL_TOLERANCE),
+        std::f64::consts::PI,
+        "boundary",
+    );
 }
 
 #[test]
@@ -430,7 +404,11 @@ fn test_assert_real_approx_panics_at_exact_boundary_negative() {
     // Negative-direction: subtracting REAL_TOLERANCE also yields a difference of exactly
     // REAL_TOLERANCE (via .abs()), which is NOT strictly less-than, so must panic.
     // Guards against a regression where .abs() is removed from assert_real_approx.
-    assert_real_approx(&Value::Real(3.14 - REAL_TOLERANCE), 3.14, "boundary-neg");
+    assert_real_approx(
+        &Value::Real(std::f64::consts::PI - REAL_TOLERANCE),
+        std::f64::consts::PI,
+        "boundary-neg",
+    );
 }
 
 #[test]

@@ -1,47 +1,60 @@
-/// Shared test helpers for unit-related integration test binaries.
-///
-/// Include in a test binary with `mod common;` at the top of the file.
-/// All three helper functions are `pub` so they are visible after `use common::{...}`.
-use reify_compiler::{CompiledModule, compile, compile_with_prelude, stdlib_loader};
-use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, Diagnostic, DimensionVector, ModulePath, Severity,
-    SourceSpan, Value,
-};
+//! Shared test helpers for unit-related integration test binaries.
+//!
+//! Include in a test binary with `mod common;` at the top of the file.
+//! Helpers are `pub` so they are visible after `use common::{...}`.
+//!
+//! Most helpers have migrated to `reify_test_support`. This module retains only:
+//! - `compile_with_stdlib_helper` — delegates to `reify_test_support::compile_source_with_stdlib`
+//! - `assert_single_non_empty_label` — specific to unit collision diagnostic tests
+//! - `compile_errors` / `compile_errors_with_stdlib` — compile a project and return Error-severity diagnostics
 
-/// Parse `source` and compile it as a single module named `"unit_test"`.
-/// Panics if the parser returns any errors.
+use std::path::Path;
+
+use reify_compiler::module_dag::ModuleResolver;
+use reify_types::{Diagnostic, Severity, SourceSpan};
+
+/// Parse `source` and compile it with the full stdlib prelude seeded into the
+/// unit registry.  Panics if the parser returns any errors.
+///
+/// Delegates to [`reify_test_support::compile_source_with_stdlib`]; kept as a
+/// thin wrapper so that `imperial_units_tests.rs` (outside this task's scope)
+/// can continue importing via `mod common`.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
-pub fn parse_and_compile(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile(&parsed)
+pub fn compile_with_stdlib_helper(source: &str) -> reify_compiler::CompiledModule {
+    reify_test_support::compile_source_with_stdlib(source)
 }
 
-/// Return only the `Severity::Error` diagnostics from a compiled module.
+/// Compile the named entry file within `dir` using `stdlib` as the stdlib root
+/// and return the Error-severity diagnostics from the last (entry) module.
+///
+/// This is the flexible variant used when the test needs a custom stdlib
+/// directory (e.g. one built inside the test's temp dir).  Panics if
+/// `compile_project` returns `Err` or yields no modules.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
-pub fn errors_only(module: &CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
+pub fn compile_errors_with_stdlib(
+    dir: &Path,
+    entry: &str,
+    stdlib: &Path,
+) -> Vec<Diagnostic> {
+    let resolver = ModuleResolver::new(dir, stdlib);
+    let result = reify_compiler::module_dag::compile_project(&dir.join(entry), &resolver);
+    let modules = result.expect("compile_project should return Ok even with diagnostics");
+    let last = modules.into_iter().last().expect("no modules returned");
+    last.diagnostics
+        .into_iter()
         .filter(|d| d.severity == Severity::Error)
         .collect()
 }
 
-/// Parse `source` and compile it with the full stdlib prelude seeded into the
-/// unit registry.  Panics if the parser returns any errors.
+/// Compile the named entry file within `dir` using `dir/stdlib` as the stdlib
+/// root and return the Error-severity diagnostics from the last (entry) module.
+///
+/// Delegates to [`compile_errors_with_stdlib`] with the conventional default
+/// stdlib path `dir.join("stdlib")`.  Panics if `compile_project` returns
+/// `Err` or yields no modules.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
-pub fn compile_with_stdlib_helper(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile_with_prelude(&parsed, stdlib_loader::load_stdlib())
+pub fn compile_errors(dir: &Path, entry: &str) -> Vec<Diagnostic> {
+    compile_errors_with_stdlib(dir, entry, &dir.join("stdlib"))
 }
 
 /// Assert that `diag` emits exactly one label and that the label's span is not
@@ -84,9 +97,9 @@ pub const UNIT_EPSILON: f64 = 1e-9;
 /// the three-level `if let` / `else panic!` pattern that previously appeared
 /// at every scalar-assertion site.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
-pub fn expect_scalar(expr: &CompiledExpr) -> (f64, DimensionVector) {
+pub fn expect_scalar(expr: &reify_types::CompiledExpr) -> (f64, reify_types::DimensionVector) {
     match &expr.kind {
-        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, dimension }) => {
             (*si_value, *dimension)
         }
         other => panic!(
@@ -103,9 +116,9 @@ pub fn expect_scalar(expr: &CompiledExpr) -> (f64, DimensionVector) {
 /// `if let` / `else panic!` pattern that previously appeared at every
 /// BinOp-assertion site.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
-pub fn expect_binop(expr: &CompiledExpr) -> (&BinOp, &CompiledExpr, &CompiledExpr) {
+pub fn expect_binop(expr: &reify_types::CompiledExpr) -> (&reify_types::BinOp, &reify_types::CompiledExpr, &reify_types::CompiledExpr) {
     match &expr.kind {
-        CompiledExprKind::BinOp { op, left, right } => (op, left, right),
+        reify_types::CompiledExprKind::BinOp { op, left, right } => (op, left, right),
         other => panic!(
             "expected CompiledExprKind::BinOp {{ .. }}, got {:?}",
             other

@@ -52,6 +52,7 @@ pub mod ffi {
 
         // --- Modifications ---
         fn fillet_all_edges(shape: &OcctShape, radius: f64) -> Result<UniquePtr<OcctShape>>;
+        fn chamfer_all_edges(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Transforms ---
         fn translate_shape(
@@ -115,6 +116,26 @@ pub mod ffi {
             az: f64,
             count: u32,
             total_angle: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        fn linear_pattern_2d(
+            shape: &OcctShape,
+            dx1: f64,
+            dy1: f64,
+            dz1: f64,
+            count1: u32,
+            spacing1: f64,
+            dx2: f64,
+            dy2: f64,
+            dz2: f64,
+            count2: u32,
+            spacing2: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        fn arbitrary_pattern(
+            shape: &OcctShape,
+            flat_transforms: &Vec<f64>,
+            num_transforms: u32,
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Draft ---

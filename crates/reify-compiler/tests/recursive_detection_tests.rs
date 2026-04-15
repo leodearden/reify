@@ -11,17 +11,12 @@
 //! 8. References to unknown structures do not crash.
 
 use reify_compiler::*;
+use reify_test_support::compile_source;
 use reify_types::*;
 
-/// Helper: parse source and compile, returning all templates and diagnostics.
+/// Helper: compile and destructure into templates + diagnostics.
 fn compile_all(source: &str) -> (Vec<TopologyTemplate>, Vec<Diagnostic>) {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
+    let compiled = compile_source(source);
     (compiled.templates, compiled.diagnostics)
 }
 
@@ -662,17 +657,6 @@ structure S {
 
 // ─── Task 367: is_recursive mixed into content_hash ──────────────────────────
 
-/// Helper: parse source and compile, returning the full CompiledModule.
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
 /// A recursive template's content_hash must differ from an identical template
 /// that is not recursive. This verifies that `is_recursive` is mixed into the hash,
 /// preventing incorrect incremental compilation cache hits.
@@ -825,8 +809,8 @@ structure C {
 }
 "#;
 
-    let cyclic_module = compile_module(cyclic_source);
-    let acyclic_module = compile_module(acyclic_source);
+    let cyclic_module = compile_source(cyclic_source);
+    let acyclic_module = compile_source(acyclic_source);
 
     // The module hashes must differ: the cyclic module has recursive templates
     // whose hashes were remixed, so the aggregated module hash differs.

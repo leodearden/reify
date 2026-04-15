@@ -4,60 +4,8 @@
 //! CompiledGuardedGroup entries in TopologyTemplate.
 
 use reify_compiler::*;
+use reify_test_support::{assert_no_diagnostics, assert_no_error_diagnostics, compile_first_template};
 use reify_types::*;
-
-/// Helper: parse source and compile, returning first template.
-fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let template = compiled
-        .templates
-        .into_iter()
-        .next()
-        .expect("expected 1 template");
-    (template, compiled.diagnostics)
-}
-
-/// Helper: assert that no Error-severity diagnostics are present.
-///
-/// Centralises the repeated filter→assert pattern used by the silent-drop
-/// characterization tests so changes to the assertion message only need to
-/// happen in one place.
-///
-/// Kept alongside `assert_no_diagnostics` for tests that legitimately need to
-/// allow warnings while rejecting errors — e.g. a variant that emits a
-/// deprecation warning but must not error.
-#[allow(dead_code)]
-fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "{context}: expected no error diagnostics, got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-}
-
-/// Helper: assert that zero diagnostics of ANY severity are present.
-///
-/// Stricter than `assert_no_error_diagnostics` — checks that the diagnostics
-/// slice is completely empty (no Errors, Warnings, or Info). Use this for
-/// silent-drop characterization tests where the intent is "absolutely nothing
-/// is emitted".
-fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
-    assert!(
-        diagnostics.is_empty(),
-        "{context}: expected no diagnostics at all, got: {:?}",
-        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-}
 
 /// Characterization test: `Chain` inside a `where {}` block is silently ignored
 /// by `compile_guarded_members` — no diagnostic of any severity is emitted.
@@ -130,6 +78,7 @@ structure def S {
         group.constraints
     );
 }
+
 
 /// Parse `param x : Scalar = 5mm where active` — the per-declaration where clause
 /// should compile into a CompiledGuardedGroup with x as a guarded member.

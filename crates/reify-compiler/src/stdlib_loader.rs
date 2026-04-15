@@ -82,16 +82,19 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             // Fail fast: Error-severity diagnostics in embedded stdlib are always
             // programming errors. Without this check, a broken module gets permanently
             // cached in OnceLock, producing confusing downstream errors.
-            let error_diagnostics: Vec<_> = compiled
+            let has_errors = compiled
                 .diagnostics
                 .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .collect();
+                .any(|d| d.severity == Severity::Error);
             assert!(
-                error_diagnostics.is_empty(),
+                !has_errors,
                 "stdlib module '{}' has Error-severity diagnostics: {:?}",
                 module_name,
-                error_diagnostics
+                compiled
+                    .diagnostics
+                    .iter()
+                    .filter(|d| d.severity == Severity::Error)
+                    .collect::<Vec<_>>()
             );
 
             modules.push(compiled);

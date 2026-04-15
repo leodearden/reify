@@ -1,29 +1,8 @@
 //! Tests for meta block compilation — `meta { key = "value" }` and `meta.key` access.
 
-use reify_compiler::{CompiledModule, TopologyTemplate};
-use reify_types::{CompiledExpr, CompiledExprKind, Diagnostic, ModulePath, Severity};
-
-/// Helper: parse source and compile, returning the CompiledModule.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("meta_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: parse source and compile, returning first template + diagnostics.
-fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let module = compile_module(source);
-    let template = module
-        .templates
-        .into_iter()
-        .next()
-        .expect("expected 1 template");
-    (template, module.diagnostics)
-}
+use reify_compiler::TopologyTemplate;
+use reify_test_support::{compile_first_template, compile_source};
+use reify_types::{CompiledExpr, CompiledExprKind, Severity};
 
 /// Helper: get the default_expr for a value cell by member name.
 fn get_cell_expr<'a>(
@@ -189,6 +168,116 @@ fn duplicate_meta_block_error() {
 }
 
 // ---------------------------------------------------------------------------
+// step-1: duplicate meta key within a single meta block produces error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn duplicate_meta_key_error() {
+    let source = r#"
+        structure def Bracket {
+            meta {
+                a = "1",
+                a = "2"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 1, "expected exactly one error for duplicate meta key, got: {:?}", errors);
+    assert!(
+        errors.iter().any(|d| d.message.contains("duplicate meta key")),
+        "expected 'duplicate meta key' error, got: {:?}",
+        errors
+    );
+
+    // First occurrence should be kept; second (duplicate) should be discarded.
+    assert_eq!(
+        template.meta.get("a").map(|s| s.as_str()),
+        Some("1"),
+        "first value should be kept, not the duplicate"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-3: multiple distinct duplicate meta keys each produce an error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn duplicate_meta_key_multiple_duplicates() {
+    let source = r#"
+        structure def Bracket {
+            meta {
+                x = "1",
+                y = "2",
+                x = "3",
+                y = "4"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    // One error for the duplicate "x" and one for the duplicate "y".
+    assert_eq!(
+        errors.len(),
+        2,
+        "expected exactly two errors (one per duplicated key), got: {:?}",
+        errors
+    );
+    assert!(
+        errors.iter().all(|d| d.message.contains("duplicate meta key")),
+        "all errors should be 'duplicate meta key' errors, got: {:?}",
+        errors
+    );
+
+    // First values should be kept.
+    assert_eq!(template.meta.get("x").map(|s| s.as_str()), Some("1"));
+    assert_eq!(template.meta.get("y").map(|s| s.as_str()), Some("2"));
+}
+
+// ---------------------------------------------------------------------------
+// step-5: unique meta keys produce no errors (regression guard)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn meta_block_no_duplicate_keys_no_error() {
+    let source = r#"
+        structure def Bracket {
+            meta {
+                a = "1",
+                b = "2",
+                c = "3"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected errors for unique meta keys: {:?}",
+        errors
+    );
+
+    assert_eq!(template.meta.get("a").map(|s| s.as_str()), Some("1"));
+    assert_eq!(template.meta.get("b").map(|s| s.as_str()), Some("2"));
+    assert_eq!(template.meta.get("c").map(|s| s.as_str()), Some("3"));
+}
+
+// ---------------------------------------------------------------------------
 // step-11: meta.key works inside constraint expressions
 // ---------------------------------------------------------------------------
 
@@ -249,4 +338,214 @@ fn meta_access_in_constraint_context() {
         }
         other => panic!("expected BinOp at top level of constraint, got {:?}", other),
     }
+}
+
+// ---------------------------------------------------------------------------
+// step-1 (task-389): meta value change affects content_hash
+// ---------------------------------------------------------------------------
+
+/// Two entities identical except for a meta entry value must produce different
+/// content_hashes. This test FAILS until meta entries are included in the hash.
+#[test]
+fn meta_change_affects_content_hash() {
+    let source_a = r#"
+        structure def Widget {
+            meta {
+                description = "Version A"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+    let source_b = r#"
+        structure def Widget {
+            meta {
+                description = "Version B"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+
+    let (template_a, diags_a) = compile_first_template(source_a);
+    let (template_b, diags_b) = compile_first_template(source_b);
+
+    let errors_a: Vec<_> = diags_a.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors_b: Vec<_> = diags_b.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors_a.is_empty(), "unexpected errors in source_a: {:?}", errors_a);
+    assert!(errors_b.is_empty(), "unexpected errors in source_b: {:?}", errors_b);
+
+    assert_ne!(
+        template_a.content_hash,
+        template_b.content_hash,
+        "entities differing only in meta value must have different content_hashes"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-2 (task-389): meta presence/absence affects content_hash
+// ---------------------------------------------------------------------------
+
+/// An entity with a meta block and the same entity without one must produce
+/// different content_hashes. This test FAILS until meta entries are included
+/// in the hash.
+#[test]
+fn meta_presence_affects_content_hash() {
+    let source_with_meta = r#"
+        structure def Gadget {
+            meta {
+                part_number = "G-001"
+            }
+            param height : Length = 5mm
+        }
+    "#;
+    let source_without_meta = r#"
+        structure def Gadget {
+            param height : Length = 5mm
+        }
+    "#;
+
+    let (template_with, diags_with) = compile_first_template(source_with_meta);
+    let (template_without, diags_without) = compile_first_template(source_without_meta);
+
+    let errors_with: Vec<_> = diags_with.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors_without: Vec<_> = diags_without.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors_with.is_empty(), "unexpected errors (with meta): {:?}", errors_with);
+    assert!(errors_without.is_empty(), "unexpected errors (without meta): {:?}", errors_without);
+
+    assert_ne!(
+        template_with.content_hash,
+        template_without.content_hash,
+        "entity with meta block must have a different content_hash than the same entity without one"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-4 (task-389): meta content_hash is deterministic across compilations
+// ---------------------------------------------------------------------------
+
+/// Compiling the same source twice must yield identical content_hashes.
+///
+/// Note: Rust's HashMap uses a random hasher seeded once per process, so
+/// within a single process the iteration order for the same map tends to be
+/// consistent.  This test is a useful regression guard but cannot reliably
+/// catch a *missing* sort on its own.  The stronger determinism property is
+/// covered by `meta_content_hash_key_order_independent` below, which compiles
+/// two sources whose keys are listed in reverse lexicographic order and asserts
+/// they produce the same hash.
+#[test]
+fn meta_content_hash_is_deterministic() {
+    let source = r#"
+        structure def Plate {
+            meta {
+                material = "steel",
+                finish = "anodized",
+                part_number = "PL-007"
+            }
+            param thickness : Length = 3mm
+        }
+    "#;
+
+    let (template1, diags1) = compile_first_template(source);
+    let (template2, diags2) = compile_first_template(source);
+
+    let errors1: Vec<_> = diags1.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors2: Vec<_> = diags2.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors1.is_empty(), "unexpected errors (run 1): {:?}", errors1);
+    assert!(errors2.is_empty(), "unexpected errors (run 2): {:?}", errors2);
+
+    assert_eq!(
+        template1.content_hash,
+        template2.content_hash,
+        "two compilations of identical source must produce the same content_hash"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// amend (task-389): meta key rename affects content_hash
+// ---------------------------------------------------------------------------
+
+/// Two entities with the same meta *value* but different *keys* must produce
+/// different content_hashes.  This closes the gap between the stated intent
+/// ("hash both key and value so that key renames and value changes are both
+/// detected") and the test coverage — the value-change case is covered by
+/// `meta_change_affects_content_hash`, this covers the key-rename case.
+#[test]
+fn meta_key_rename_affects_content_hash() {
+    let source_author = r#"
+        structure def Widget {
+            meta {
+                author = "Alice"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+    let source_creator = r#"
+        structure def Widget {
+            meta {
+                creator = "Alice"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+
+    let (template_author, diags_author) = compile_first_template(source_author);
+    let (template_creator, diags_creator) = compile_first_template(source_creator);
+
+    let errors_author: Vec<_> =
+        diags_author.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors_creator: Vec<_> =
+        diags_creator.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors_author.is_empty(), "unexpected errors (author): {:?}", errors_author);
+    assert!(errors_creator.is_empty(), "unexpected errors (creator): {:?}", errors_creator);
+
+    assert_ne!(
+        template_author.content_hash,
+        template_creator.content_hash,
+        "entities differing only in meta key name must have different content_hashes"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// amend (task-389): meta content_hash is independent of source key order
+// ---------------------------------------------------------------------------
+
+/// Two entities with the same meta entries listed in different lexicographic
+/// orders (e.g., z-key before a-key vs a-key before z-key) must produce
+/// *identical* content_hashes.  This is the strongest determinism test: it
+/// can only pass if the implementation sorts keys before hashing, regardless
+/// of HashMap iteration order within a single process.
+#[test]
+fn meta_content_hash_key_order_independent() {
+    // Same two entries, listed in opposite source order.
+    let source_z_first = r#"
+        structure def Bolt {
+            meta {
+                zinc_plated = "yes",
+                alloy = "steel"
+            }
+            param length : Length = 20mm
+        }
+    "#;
+    let source_a_first = r#"
+        structure def Bolt {
+            meta {
+                alloy = "steel",
+                zinc_plated = "yes"
+            }
+            param length : Length = 20mm
+        }
+    "#;
+
+    let (template_z, diags_z) = compile_first_template(source_z_first);
+    let (template_a, diags_a) = compile_first_template(source_a_first);
+
+    let errors_z: Vec<_> = diags_z.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors_a: Vec<_> = diags_a.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors_z.is_empty(), "unexpected errors (z-first): {:?}", errors_z);
+    assert!(errors_a.is_empty(), "unexpected errors (a-first): {:?}", errors_a);
+
+    assert_eq!(
+        template_z.content_hash,
+        template_a.content_hash,
+        "meta entries listed in different source order must produce the same content_hash"
+    );
 }

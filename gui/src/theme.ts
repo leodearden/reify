@@ -22,6 +22,11 @@ export const THEME_TOKENS: Record<string, string> = {
   overlay0: '#6c7086',
   green: '#a6e3a1',
   red: '#f38ba8',
+  mauve: '#cba6f7',
+  yellow: '#f9e2af',
+  sky: '#89dceb',
+  lavender: '#b4befe',
+  peach: '#fab387',
   // Spacing scale
   spaceXs: '2px',
   spaceSm: '4px',

@@ -9,19 +9,10 @@
 //!   - An un-annotated constraint def yields `optimized_target = None`.
 
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
-use reify_types::{Diagnostic, ModulePath, Severity};
+use reify_test_support::compile_source;
+use reify_types::{Diagnostic, Severity};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("optimized_ann_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
 
 fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
     diags
@@ -60,7 +51,7 @@ structure S {
     constraint MinWall(w: t)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -108,7 +99,7 @@ structure S {
     constraint Coincident(a: x, b: y)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -142,7 +133,7 @@ structure S {
     constraint Plain(a: x, b: y)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -163,7 +154,7 @@ structure S {
 /// where the new arm might have accidentally replaced the old list.
 #[test]
 fn optimized_on_structure_is_accepted() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized("kernel::fast")
 structure S {
@@ -190,7 +181,7 @@ structure S {
 /// validator.
 #[test]
 fn optimized_on_occurrence_is_accepted() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized("kernel::fast")
 occurrence def Outer {
@@ -218,7 +209,7 @@ occurrence def Outer {
 /// the entire context check.
 #[test]
 fn optimized_on_unsupported_context_still_warns() {
-    let module = compile_module(r#"@optimized("x") fn f(x: Real) -> Real { x }"#);
+    let module = compile_source(r#"@optimized("x") fn f(x: Real) -> Real { x }"#);
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -241,7 +232,7 @@ fn optimized_on_unsupported_context_still_warns() {
 /// Telling a user to add a string that nothing reads is actively harmful.
 #[test]
 fn optimized_missing_target_on_structure_does_not_warn() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized
 structure S {
@@ -268,7 +259,7 @@ structure S {
 /// the missing-target warning — same reasoning as for structures above.
 #[test]
 fn optimized_missing_target_on_occurrence_does_not_warn() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized
 occurrence def O {
@@ -298,7 +289,7 @@ occurrence def O {
 /// wondering why their registered impl isn't being called.
 #[test]
 fn optimized_without_string_target_warns() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized()
 constraint def Plain {
@@ -326,7 +317,7 @@ constraint def Plain {
 /// `@optimized(123)` (non-string first arg) should trip the same warning.
 #[test]
 fn optimized_with_non_string_target_warns() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized(123)
 constraint def Plain {
@@ -355,7 +346,7 @@ constraint def Plain {
 /// `optimized_target`, so warn on every duplicate past the first.
 #[test]
 fn multiple_optimized_annotations_warn() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized("new_target")
 @optimized("legacy_target")
@@ -407,7 +398,7 @@ structure S {
     constraint PlainC(a: x, b: y)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -471,7 +462,7 @@ structure S {
     constraint PlainC(a: x, b: y)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -534,7 +525,7 @@ structure S {
     constraint PlainC(a: x, b: y)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -580,7 +571,7 @@ structure S {
 /// lowering constraint defs), so there is nothing being "shadowed".
 #[test]
 fn multiple_valid_optimized_on_structure_does_not_warn() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized("kernel::fast")
 @optimized("kernel::slow")
@@ -608,7 +599,7 @@ structure S {
 /// malformed-annotation warnings.
 #[test]
 fn well_formed_optimized_has_no_malformed_warnings() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized("kernel::foo")
 constraint def Plain {

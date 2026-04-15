@@ -12,9 +12,7 @@
 //!   4. User unit in quantity literal → SI   (test 1, multi-unit)
 //!   5. Unit with compound dimension         (tests 2)
 
-mod common;
-
-use common::{compile_with_stdlib_helper, errors_only, parse_and_compile};
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 use reify_types::DimensionVector;
 
 // ─── category 1: basic unit declaration ───────────────────────────────────────
@@ -24,7 +22,7 @@ fn custom_unit_declaration_registers_name_dimension_factor() {
     // Declare a simple length unit with an explicit SI factor.
     // The compiled module's unit list must contain the entry with the correct
     // name, dimension, factor, and no offset.
-    let module = parse_and_compile("unit thou : Length = 0.0000254");
+    let module = compile_source("unit thou : Length = 0.0000254");
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
     let unit = module
@@ -52,7 +50,7 @@ fn offset_unit_degc_compiles_with_factor_and_offset() {
     // Also verifies the explicit `= 1 offset X` form round-trips through a
     // quantity literal (unit_registry_tests.rs::offset_unit_quantity_literal_applies_offset
     // covers the short `offset X` form; this exercises the explicit-factor path).
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit degC : Temperature = 1 offset 273.15\n\
          structure S { param t : Temperature = 5degC }",
     );
@@ -114,7 +112,7 @@ fn offset_unit_degc_compiles_with_factor_and_offset() {
 #[test]
 fn conversion_factor_arithmetic_multiplication_correct() {
     // factor = 25.4 * 0.001 = 0.0254  (BinOp Multiply in evaluate_const_expr).
-    let module = parse_and_compile("unit inch : Length = 25.4 * 0.001");
+    let module = compile_source("unit inch : Length = 25.4 * 0.001");
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
     let unit = module
@@ -132,7 +130,7 @@ fn conversion_factor_arithmetic_multiplication_correct() {
 #[test]
 fn conversion_factor_division_correct() {
     // factor = 1 / 1000 = 0.001  (BinOp Divide in evaluate_const_expr).
-    let module = parse_and_compile("unit milli : Length = 1 / 1000");
+    let module = compile_source("unit milli : Length = 1 / 1000");
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
     let unit = module
@@ -153,7 +151,7 @@ fn conversion_factor_division_correct() {
 fn user_unit_in_quantity_literal_evaluates_to_si_value_multiple_units() {
     // Two user units in the same module, each used in a separate param.
     // km → 2000 m,  ms → 0.5 s.
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit km : Length = 1000\n\
          unit ms : Time = 0.001\n\
          structure S {\n\
@@ -221,7 +219,7 @@ fn custom_unit_with_compound_dimension_force() {
     // kN: Force = kg·m·s⁻² × 1000.
     // Verifies that resolve_dimension_type handles the compound FORCE dimension
     // and that the conversion factor is stored correctly.
-    let module = parse_and_compile("unit kN : Force = 1000");
+    let module = compile_source("unit kN : Force = 1000");
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
     let unit = module
@@ -249,7 +247,7 @@ fn negative_factor_unit_in_quantity_literal() {
     // unit_registry_tests.rs::valid_negative_factor_still_compiles verifies the
     // negative factor is registered, but no existing test verifies it is applied
     // correctly in a runtime quantity literal.
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit neg_m : Length = 0 - 0.5\n\
          structure S { param x : Length = 10neg_m }",
     );
@@ -305,7 +303,7 @@ fn compound_dimension_volume_unit_in_quantity_literal() {
     // mm3: Volume = 1e-9 m³;  5mm3 → si_value = 5 * 1e-9 = 5e-9 m³.
     // Covers the Volume compound dimension in a quantity literal — not exercised
     // by any existing test in unit_registry_tests.rs or unit_declaration_tests.rs.
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit mm3 : Volume = 0.000000001\n\
          structure S { param v : Volume = 5mm3 }",
     );
@@ -360,7 +358,7 @@ fn custom_unit_with_compound_dimension_force_in_quantity_literal() {
     // Extends custom_unit_with_compound_dimension_force (which only checks the
     // unit-table entry) by verifying the full quantity-literal-to-scalar pipeline
     // including the dimension carried by the compiled scalar value.
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit kN : Force = 1000\n\
          structure S { param f : Force = 2kN }",
     );
@@ -405,7 +403,7 @@ fn custom_unit_with_compound_dimension_area_in_quantity_literal() {
     // cm2: Area = 0.0001 m²;  50cm2 → si_value = 50 * 0.0001 = 0.005 m².
     // Exercises the full pipeline for a compound-dimension custom unit used in
     // a quantity literal.
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit cm2 : Area = 0.0001\n\
          structure S { param a : Area = 50cm2 }",
     );
@@ -467,7 +465,7 @@ fn user_defined_angle_unit_via_stdlib_deg() {
     // unit_registry_tests.rs::prelude_unit_resolves_in_unit_conversion_expr
     // covers the same cross-registry path for the Length/mm variant; this test
     // extends coverage to the affine-free Angle dimension via stdlib deg.
-    let module = compile_with_stdlib_helper("unit quarter_turn : Angle = 90deg");
+    let module = compile_source_with_stdlib("unit quarter_turn : Angle = 90deg");
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
     let unit = module

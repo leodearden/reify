@@ -1,11 +1,21 @@
 use super::*;
 
-pub(crate) fn is_geometry_let(expr: &reify_syntax::Expr, functions: &[CompiledFunction]) -> bool {
-    matches!(
-        &expr.kind,
-        reify_syntax::ExprKind::FunctionCall { name, .. }
-            if is_geometry_function(name) && !functions.iter().any(|f| f.name == *name)
-    )
+pub(crate) fn is_geometry_let(
+    expr: &reify_syntax::Expr,
+    functions: &[CompiledFunction],
+    known_geometry_lets: &HashSet<&str>,
+) -> bool {
+    match &expr.kind {
+        reify_syntax::ExprKind::FunctionCall { name, .. } => {
+            is_geometry_function(name) && !functions.iter().any(|f| f.name == *name)
+        }
+        // No `!functions.iter().any(...)` guard needed: `known_geometry_lets` is
+        // populated only from let-binding names (never function names), and an Ident
+        // expression is syntactically distinct from FunctionCall, so a user-defined
+        // function cannot collide with a geometry let via this branch.
+        reify_syntax::ExprKind::Ident(name) => known_geometry_lets.contains(name.as_str()),
+        _ => false,
+    }
 }
 
 /// Returns the arg indices that are geometry refs for each non-boolean geometry function.
@@ -440,6 +450,57 @@ pub(crate) fn compile_geometry_call(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1, dx2, dy2, dz2, count2, spacing2)
+        "linear_pattern_2d" => {
+            if compiled_args.len() != 11 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "linear_pattern_2d() expects 11 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Linear2D,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("dx1".to_string(), it.next().unwrap()),
+                    ("dy1".to_string(), it.next().unwrap()),
+                    ("dz1".to_string(), it.next().unwrap()),
+                    ("count1".to_string(), it.next().unwrap()),
+                    ("spacing1".to_string(), it.next().unwrap()),
+                    ("dx2".to_string(), it.next().unwrap()),
+                    ("dy2".to_string(), it.next().unwrap()),
+                    ("dz2".to_string(), it.next().unwrap()),
+                    ("count2".to_string(), it.next().unwrap()),
+                    ("spacing2".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // arbitrary_pattern(target, dx1, dy1, dz1, dx2, dy2, dz2, ...)
+        "arbitrary_pattern" => {
+            if compiled_args.len() < 4 || !(compiled_args.len() - 1).is_multiple_of(3) {
+                diagnostics.push(Diagnostic::error(format!(
+                    "arbitrary_pattern() expects target + N*(dx,dy,dz) triples (>= 4 args, (len-1) % 3 == 0), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let mut args = vec![("target".to_string(), it.next().unwrap())];
+            let coords: Vec<_> = it.collect();
+            for (idx, chunk) in coords.chunks_exact(3).enumerate() {
+                args.push((format!("t{}_dx", idx), chunk[0].clone()));
+                args.push((format!("t{}_dy", idx), chunk[1].clone()));
+                args.push((format!("t{}_dz", idx), chunk[2].clone()));
+            }
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Arbitrary,
+                target: GeomRef::Step(0),
+                args,
+            }])
+        }
         // --- Sweeps ---
         // loft(profile1, profile2, ...)
         "loft" => {
@@ -801,6 +862,50 @@ pub(crate) fn compile_geometry_call(
             };
             sub_ops.push(op);
             Some(sub_ops)
+        }
+        // chamfer(target, distance)
+        "chamfer" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "chamfer() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Chamfer,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("distance".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // fillet(target, radius)
+        "fillet" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "fillet() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Fillet,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("radius".to_string(), it.next().unwrap()),
+                ],
+            }])
         }
         // --- Curve constructors ---
         // line_segment(x1, y1, z1, x2, y2, z2)

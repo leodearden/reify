@@ -2,35 +2,14 @@
 //!
 //! Tests for compiling `field def` declarations into CompiledField entries.
 
-/// Helper: parse and compile source, return compiled module.
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(
-        source,
-        reify_types::ModulePath::single("field_compile_test"),
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: return only error-severity diagnostics (ignoring warnings).
-fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect()
-}
+use reify_test_support::{compile_source, errors_only};
 
 // ── Step 13: compile analytical field ──────────────────────────────────
 
 #[test]
 fn compile_field_analytical() {
     let module =
-        compile_module("field def temp : Point3 -> Scalar { source = analytical { |p| p } }");
+        compile_source("field def temp : Point3 -> Scalar { source = analytical { |p| p } }");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -66,7 +45,7 @@ fn compile_field_analytical() {
 
 #[test]
 fn compile_field_sampled() {
-    let module = compile_module(
+    let module = compile_source(
         "field def pressure : Point3 -> Scalar { source = sampled { resolution = 100 interpolation = linear } }",
     );
     assert!(
@@ -97,7 +76,7 @@ fn compile_field_compose_type_check_valid() {
     // Field<Point3, Scalar> composed with Field<Scalar, Scalar> is valid:
     // codomain of first (Scalar) matches domain of second (Scalar).
     // Result should be Field<Point3, Scalar>.
-    let module = compile_module(
+    let module = compile_source(
         r#"
 field def f1 : Point3 -> Scalar { source = analytical { |p| p } }
 field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
@@ -137,7 +116,7 @@ fn compile_field_compose_type_mismatch() {
     // Field<Point3, Vector3> composed with Field<Scalar, Scalar> is INVALID:
     // codomain of first (Vector3) != domain of second (Scalar).
     // Should produce a type error diagnostic.
-    let module = compile_module(
+    let module = compile_source(
         r#"
 field def f1 : Point3 -> Vector3 { source = analytical { |p| p } }
 field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
@@ -168,7 +147,7 @@ fn compose_type_check_nested_in_match() {
     // Field composition mismatch nested inside a match arm body.
     // The current walk_field_composition misses Match variants;
     // after rewriting to use CompiledExpr::walk, it will be caught.
-    let module = compile_module(
+    let module = compile_source(
         r#"
 enum Mode { A B }
 
@@ -196,7 +175,7 @@ field def bad_nested : Point3 -> Scalar {
 
 #[test]
 fn compile_duplicate_field_names() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 field def temp : Point3 -> Scalar { source = analytical { |p| p } }
 field def temp : Scalar -> Scalar { source = analytical { |x| x } }
