@@ -36828,6 +36828,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1767,
+        "title": "Fix editor color contrast and cursor visibility (too low contrast, 1px black cursor on dark bg)",
+        "description": "The CodeMirror editor has poor color contrast — syntax highlighting colors are too dim on the dark background, and the cursor is nearly invisible (1px wide black on dark grey). This makes the editor very hard to use.",
+        "details": "memory_hints: search \"editor theme CodeMirror contrast cursor\"\n\nThe cursor needs to be either wider (2px) or a light color. Syntax highlighting needs higher contrast colors. Check if a CodeMirror dark theme is applied correctly, or if the theme CSS has been overridden/broken by recent changes.\n\nFiles: gui/src/editor/Editor.tsx (CodeMirror setup), gui/src/index.css or equivalent theme file",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36840,7 +36851,7 @@
       ],
       "created": "2026-04-15T11:58:49.757Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T12:00:17.379Z"
+      "updated": "2026-04-15T12:00:38.757Z"
     }
   }
 }
