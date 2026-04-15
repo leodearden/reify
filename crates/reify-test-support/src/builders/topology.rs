@@ -388,6 +388,13 @@ impl TopologyTemplateBuilder {
 mod annotation_tests {
     use super::*;
     use crate::builders::{ann_str, annotation, annotation_with_args};
+    use reify_types::{DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION};
+
+    #[test]
+    fn annotation_constants_available() {
+        assert_eq!(OPTIMIZED_ANNOTATION, "optimized");
+        assert_eq!(DEPRECATED_ANNOTATION, "deprecated");
+    }
 
     #[test]
     fn topology_builder_single_annotation() {
