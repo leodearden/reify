@@ -37072,6 +37072,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1776,
+        "title": "Guard cross-kind scope pre-registration + constraint coexistence test",
+        "description": "From task-1287 review. (1) conformance.rs:269-280: scope.register(name,ty) overwrites when cross-kind defaults coexist. Guard with contains_key or entry API. (2) trait_merge_tests.rs: add test for Constraint+Param coexistence on same member name.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37084,7 +37095,7 @@
       ],
       "created": "2026-04-15T12:30:34.374Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T12:31:51.485Z"
+      "updated": "2026-04-15T12:32:58.654Z"
     }
   }
 }
