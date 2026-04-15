@@ -1,16 +1,17 @@
-/// Shared test helpers for unit-related integration test binaries.
-///
-/// Include in a test binary with `mod common;` at the top of the file.
-/// Helpers are `pub` so they are visible after `use common::{...}`.
-///
-/// Most helpers have migrated to `reify_test_support`. This module retains only:
-/// - `compile_with_stdlib_helper` — delegates to `reify_test_support::compile_source_with_stdlib`
-/// - `assert_single_non_empty_label` — specific to unit collision diagnostic tests
-/// - `compile_errors` / `compile_errors_with_stdlib` — compile a project and return Error-severity diagnostics
+//! Shared test helpers for unit-related integration test binaries.
+//!
+//! Include in a test binary with `mod common;` at the top of the file.
+//! Helpers are `pub` so they are visible after `use common::{...}`.
+//!
+//! Most helpers have migrated to `reify_test_support`. This module retains only:
+//! - `compile_with_stdlib_helper` — delegates to `reify_test_support::compile_source_with_stdlib`
+//! - `assert_single_non_empty_label` — specific to unit collision diagnostic tests
+//! - `compile_errors` / `compile_errors_with_stdlib` — compile a project and return Error-severity diagnostics
+
 use std::path::Path;
 
 use reify_compiler::module_dag::ModuleResolver;
-use reify_types::{Diagnostic, SourceSpan};
+use reify_types::{Diagnostic, Severity, SourceSpan};
 
 /// Parse `source` and compile it with the full stdlib prelude seeded into the
 /// unit registry.  Panics if the parser returns any errors.
@@ -34,14 +35,14 @@ pub fn compile_errors_with_stdlib(
     dir: &Path,
     entry: &str,
     stdlib: &Path,
-) -> Vec<reify_types::Diagnostic> {
+) -> Vec<Diagnostic> {
     let resolver = ModuleResolver::new(dir, stdlib);
     let result = reify_compiler::module_dag::compile_project(&dir.join(entry), &resolver);
     let modules = result.expect("compile_project should return Ok even with diagnostics");
     let last = modules.into_iter().last().expect("no modules returned");
     last.diagnostics
         .into_iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
+        .filter(|d| d.severity == Severity::Error)
         .collect()
 }
 
@@ -52,7 +53,7 @@ pub fn compile_errors_with_stdlib(
 /// stdlib path `dir.join("stdlib")`.  Panics if `compile_project` returns
 /// `Err` or yields no modules.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
-pub fn compile_errors(dir: &Path, entry: &str) -> Vec<reify_types::Diagnostic> {
+pub fn compile_errors(dir: &Path, entry: &str) -> Vec<Diagnostic> {
     compile_errors_with_stdlib(dir, entry, &dir.join("stdlib"))
 }
 
