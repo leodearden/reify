@@ -8353,7 +8353,7 @@
         "testStrategy": "",
         "priority": "medium",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -8365,7 +8365,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:11:58.379Z"
+        "updatedAt": "2026-04-15T16:54:03.280Z"
       },
       {
         "id": "391",
@@ -37630,7 +37630,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T16:54:00.824Z",
+      "lastModified": "2026-04-15T16:54:03.280Z",
       "taskCount": 1793,
       "completedCount": 1529,
       "tags": [
