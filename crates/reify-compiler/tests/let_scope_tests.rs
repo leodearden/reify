@@ -76,6 +76,7 @@ enum ExpectedOp {
     Box_,
     BoolDiff(usize, usize),
     BoolUnion(usize, usize),
+    BoolIntersect(usize, usize),
 }
 
 fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
@@ -98,6 +99,14 @@ fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
                 right: GeomRef::Step(r),
             },
             ExpectedOp::BoolUnion(el, er),
+        ) => l == el && r == er,
+        (
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Intersection,
+                left: GeomRef::Step(l),
+                right: GeomRef::Step(r),
+            },
+            ExpectedOp::BoolIntersect(el, er),
         ) => l == el && r == er,
         _ => false,
     }
