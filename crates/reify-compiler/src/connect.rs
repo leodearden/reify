@@ -358,6 +358,7 @@ pub(crate) fn compile_connection(
     // Skipping when incompatible avoids a misleading "members do not match" warning when the
     // real problem is direction incompatibility.
     let effective_mappings = if port_mappings.is_empty() {
+        // is_bare guards are defense-in-depth; dotted ports also yield None from the lookup above
         if compatible && is_bare(&left_port) && is_bare(&right_port) {
             auto_match_port_members(left_compiled, right_compiled, diagnostics, span)
         } else {

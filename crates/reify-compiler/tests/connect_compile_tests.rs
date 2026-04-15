@@ -1818,6 +1818,61 @@ structure def Assembly {
             "case (c): expected empty port_mappings for dotted port references"
         );
     }
+
+    // ── Case (d): mixed — one bare+found, one dotted → no undefined error, no auto-match ──
+    // When only one side is dotted, is_bare(&l) && is_bare(&r) is false, so auto-match
+    // never runs even though the bare side resolved successfully.  The dotted side is
+    // also exempt from the undefined-port check because is_bare returns false for it.
+    {
+        let source = r#"
+trait T { param d : Length }
+structure def Motor {
+    port shaft : in T { param d : Length = 5mm }
+}
+structure def Coupler {
+    port a : out T { param d : Length = 5mm }
+    sub motor = Motor()
+    connect a -> motor.shaft
+}
+"#;
+        let module = compile_source(source);
+        let coupler = module
+            .templates
+            .iter()
+            .find(|t| t.name == "Coupler")
+            .expect("Coupler template");
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "case (d): unexpected errors: {:?}",
+            errors
+        );
+        assert_eq!(
+            coupler.connections.len(),
+            1,
+            "case (d): expected 1 connection"
+        );
+        assert_eq!(
+            coupler.connections[0].left_port,
+            "a",
+            "case (d): expected bare left_port"
+        );
+        assert_eq!(
+            coupler.connections[0].right_port,
+            "motor.shaft",
+            "case (d): expected dotted right_port"
+        );
+        // Mixed bare+dotted: no auto-match runs, so port_mappings is empty
+        assert_eq!(
+            coupler.connections[0].port_mappings,
+            Vec::<(String, String)>::new(),
+            "case (d): expected empty port_mappings for mixed bare+dotted connect"
+        );
+    }
 }
 
 // ── task-393/step-5: compatible_directions_still_emits_unmatched_warning ──
