@@ -166,42 +166,47 @@ const App: Component = () => {
     }
   }
 
+  async function handleOpen() {
+    try {
+      const path = await pickOpenPath();
+      if (!path) return;
+      const fileData = await bridgeOpenFile(path);
+      editorStore.openFile(fileData);
+      // Load into engine for evaluation (meshes, values, constraints)
+      const guiState = await bridgeOpenFileEngine(path);
+      engineStore.initFromState(guiState);
+    } catch (err) {
+      const msg = errorMessage(err);
+      console.error('Open file failed:', msg);
+      showToast(`Open file failed: ${msg}`, 'error');
+    }
+  }
+
+  function handleReEvaluate() {
+    // Re-evaluate the active file
+    const activeFile = editorStore.state.activeFile;
+    if (activeFile) {
+      const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
+      if (file) {
+        bridgeUpdateSource(file.path, file.content).catch((err) =>
+          showToast(`Re-evaluation failed: ${errorMessage(err)}`, 'error'),
+        );
+      }
+    }
+  }
+
   // Keyboard shortcuts
   useKeyboardShortcuts({
-    onOpen: async () => {
-      try {
-        const path = await pickOpenPath();
-        if (!path) return;
-        const fileData = await bridgeOpenFile(path);
-        editorStore.openFile(fileData);
-        // Load into engine for evaluation (meshes, values, constraints)
-        const guiState = await bridgeOpenFileEngine(path);
-        engineStore.initFromState(guiState);
-      } catch (err) {
-        const msg = errorMessage(err);
-        console.error('Open file failed:', msg);
-        showToast(`Open file failed: ${msg}`, 'error');
-      }
-    },
+    onOpen: handleOpen,
     onSave: handleSave,
-    onReEvaluate: () => {
-      // Re-evaluate the active file
-      const activeFile = editorStore.state.activeFile;
-      if (activeFile) {
-        const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
-        if (file) {
-          bridgeUpdateSource(file.path, file.content).catch((err) =>
-            showToast(`Re-evaluation failed: ${errorMessage(err)}`, 'error'),
-          );
-        }
-      }
-    },
+    onReEvaluate: handleReEvaluate,
     onExportDialog: () => {
       setShowExportDialog((v) => !v);
     },
     onHelp: () => {
       setShowHelp((v) => !v);
     },
+    onToggleChatPanel: handleToggleChat,
     onReloadShortcut: () => {
       if (changedFiles().size > 0) {
         handleReload();
@@ -537,31 +542,10 @@ const App: Component = () => {
       <Show when={initPhase() === 'ready'}>
         <div data-testid="app-layout" class={styles.layout}>
           <MenuBar
-            onOpen={async () => {
-              try {
-                const path = await pickOpenPath();
-                if (!path) return;
-                const fileData = await bridgeOpenFile(path);
-                editorStore.openFile(fileData);
-                const guiState = await bridgeOpenFileEngine(path);
-                engineStore.initFromState(guiState);
-              } catch (err) {
-                showToast(`Open file failed: ${errorMessage(err)}`, 'error');
-              }
-            }}
+            onOpen={handleOpen}
             onSave={handleSave}
             onExport={handleExport}
-            onReEvaluate={() => {
-              const activeFile = editorStore.state.activeFile;
-              if (activeFile) {
-                const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
-                if (file) {
-                  bridgeUpdateSource(file.path, file.content).catch((err) =>
-                    showToast(`Re-evaluation failed: ${errorMessage(err)}`, 'error'),
-                  );
-                }
-              }
-            }}
+            onReEvaluate={handleReEvaluate}
             onFitToView={handleFitToView}
             onToggleChat={handleToggleChat}
             onHelp={() => setShowHelp((v) => !v)}

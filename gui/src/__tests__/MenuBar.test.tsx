@@ -191,6 +191,16 @@ describe('MenuBar — callbacks', () => {
     fireEvent.click(openItem);
     expect(screen.queryByRole('menu')).toBeNull();
   });
+
+  it('clicking Toggle Chat in View menu calls onToggleChat callback', () => {
+    const onToggleChat = vi.fn();
+    render(() => <MenuBar onToggleChat={onToggleChat} />);
+    fireEvent.click(screen.getByText('View'));
+    const items = screen.getAllByRole('menuitem');
+    const item = items.find((el) => el.textContent?.includes('Toggle Chat'))!;
+    fireEvent.click(item);
+    expect(onToggleChat).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('MenuBar — interaction behaviors', () => {

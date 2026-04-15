@@ -18,6 +18,8 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'open', key: 'Ctrl+O', description: 'Open file' },
   { id: 'save', key: 'Ctrl+S', description: 'Save file' },
   { id: 'export', key: 'Ctrl+E', description: 'Export' },
+  { id: 'undo', key: 'Ctrl+Z', description: 'Undo' },
+  { id: 'redo', key: 'Ctrl+Shift+Z', description: 'Redo' },
   { id: 'reEvaluate', key: 'F5', description: 'Re-evaluate' },
   { id: 'fitToView', key: '', description: 'Fit to view' },
   { id: 'toggleChat', key: 'Ctrl+J', description: 'Toggle chat panel' },

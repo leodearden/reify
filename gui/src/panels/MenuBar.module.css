@@ -70,3 +70,13 @@
   margin-left: auto;
   white-space: nowrap;
 }
+
+/* Disabled menu item (e.g. Undo/Redo not yet wired to app-level state) */
+.itemDisabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.itemDisabled:hover {
+  background: transparent;
+}

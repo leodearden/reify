@@ -122,13 +122,13 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
         </button>
         <Show when={openMenu() === 'edit'}>
           <div class={styles.dropdown} role="menu">
-            <button class={styles.item} role="menuitem">
+            <button class={`${styles.item} ${styles.itemDisabled}`} role="menuitem" disabled>
               <span>Undo</span>
-              <span class={styles.shortcut}>Ctrl+Z</span>
+              <span class={styles.shortcut}>{shortcutKey('undo')}</span>
             </button>
-            <button class={styles.item} role="menuitem">
+            <button class={`${styles.item} ${styles.itemDisabled}`} role="menuitem" disabled>
               <span>Redo</span>
-              <span class={styles.shortcut}>Ctrl+Shift+Z</span>
+              <span class={styles.shortcut}>{shortcutKey('redo')}</span>
             </button>
           </div>
         </Show>
