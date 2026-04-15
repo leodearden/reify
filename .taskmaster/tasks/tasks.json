@@ -37587,10 +37587,11 @@
         "description": "The SHORTCUTS array in shortcuts.ts is the single source of truth for display keys, but the actual shortcut matching logic remains hardcoded in useKeyboardShortcuts.ts (e.g., `e.ctrlKey && e.key === 's'`). If someone updates a key in the registry, the handler won't change — this is partial centralization.\n\nAdd a `matcher` function or structured key definition (modifiers + key) to each ShortcutDef so the registry can drive both display and handler matching. This would make the registry the true single source of truth.\n\nmemory_hints: search \"ShortcutDef matcher useKeyboardShortcuts centralize\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T16:52:50.464Z"
       },
       {
         "id": "1796",
@@ -37607,7 +37608,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T16:52:49.433Z",
+      "lastModified": "2026-04-15T16:52:50.464Z",
       "taskCount": 1791,
       "completedCount": 1528,
       "tags": [
