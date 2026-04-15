@@ -35721,7 +35721,7 @@
         "description": "The field analysis pipeline (tensor Field → von_mises/principal_stresses/max_shear/safety_factor → derived Field → sample) is wired in code (reify-expr/src/lib.rs lines 206-246, FieldSourceKind dispatch) but has no eval-level integration test.\n\nUnit tests exist in reify-expr/tests/field_analysis_tests.rs for the wrapping mechanics, and m8_4_stdlib_integration.rs exercises the builtins on tensor VALUES via fields_analysis.ri. However, no test exercises the full path: .ri source → Field creation with tensor codomain → analysis method call (von_mises etc.) → FieldSourceKind dispatch → sample derived field.\n\nAdd a test in reify-eval/tests/ (or extend field_eval_tests.rs) that:\n1. Declares a tensor field (3x3) in .ri source\n2. Calls von_mises() on that field to get a derived scalar field\n3. Samples the derived field at a point\n4. Asserts the sampled value matches the expected von Mises stress\n\nThis covers the integration seam between reify-expr's FieldSourceKind dispatch and reify-stdlib's analysis builtins when invoked through the field evaluation path (not direct builtin call).\n\nmemory_hints: search \"field analysis pipeline\", search \"FieldSourceKind dispatch\", get_entity \"von_mises\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -35732,7 +35732,8 @@
           "modules": [
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T05:38:57.146Z"
       },
       {
         "id": "1711",
@@ -35759,7 +35760,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T05:38:56.793Z",
+      "lastModified": "2026-04-15T05:38:57.146Z",
       "taskCount": 1708,
       "completedCount": 1471,
       "tags": [
