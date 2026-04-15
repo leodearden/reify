@@ -38244,15 +38244,16 @@
         "description": "The chamfer_e2e.rs and fillet_e2e.rs modify pipeline tests (both the original full-pipeline tests and the new minimal-args contract tests from task 1819) are structurally identical — ~60 lines of boilerplate each (Box primitive setup, template/module building, engine creation, ops extraction). The only differences are ModifyKind (Chamfer vs Fillet), the parameter arg name ('distance' vs 'radius'), and the GeometryOp variant matched.\n\nConsider extracting a shared helper, e.g.:\n```rust\nfn run_modify_pipeline(kind: ModifyKind, args: Vec<(String, CompiledExpr)>) -> Vec<GeometryOpRecord>\n```\ninto a test utility module. The match/assertion at the end can remain test-specific since the GeometryOp variants differ.\n\nNote: This is distinct from task 1802 which covers compiler-side deduplication of `compile_modify_2arg` in geometry.rs. This task covers test-side deduplication.\n\n## memory_hints\n- search: \"test helper extraction patterns reify-eval\"\n- get_entity: \"chamfer_e2e.rs\"\n- get_entity: \"fillet_e2e.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:39:45.581Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:39:45.197Z",
+      "lastModified": "2026-04-15T21:39:45.581Z",
       "taskCount": 1826,
       "completedCount": 1554,
       "tags": [
