@@ -591,3 +591,143 @@ structure S {
         default.kind
     );
 }
+
+// ---------------------------------------------------------------------------
+// task 1098 amendment: nested guarded param (suggestion 3)
+// ---------------------------------------------------------------------------
+
+/// Nested guarded param with Option<Length> annotation and none default should
+/// produce a ValueCellDecl in the inner guarded group with cell_type ==
+/// Option<Length> and default_expr OptionNone with result_type == Option<Length>.
+///
+/// This exercises the recursive `register_guarded_names` and
+/// `compile_guarded_members` paths that were updated to thread
+/// `type_param_names` / `alias_registry`.
+#[test]
+fn nested_guarded_param_none_with_typed_annotation_gets_correct_type() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    where active {
+        param inner_flag : Bool = true
+        where inner_flag {
+            param x : Option<Length> = none
+        }
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    // The inner guarded group contains 'x'; find it by searching all groups.
+    let group = template
+        .guarded_groups
+        .iter()
+        .find(|g| g.members.iter().any(|m| m.id.member == "x"))
+        .expect("should have a guarded group with member 'x'");
+
+    let member = group
+        .members
+        .iter()
+        .find(|m| m.id.member == "x")
+        .expect("should have nested guarded member 'x'");
+
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "nested guarded param cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("nested guarded member 'x' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "nested guarded param default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone for nested guarded param, got {:?}",
+        default.kind
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task 1098 amendment: type alias inside guarded block (suggestion 4)
+// ---------------------------------------------------------------------------
+
+/// Guarded param using a type alias `Option<MyLen> = none` should resolve the
+/// alias and produce cell_type == Option<Length> with OptionNone result_type ==
+/// Option<Length>.
+///
+/// This verifies that the upgrade from `resolve_type_name` to
+/// `resolve_type_expr_with_aliases` in `register_guarded_names` correctly
+/// handles type aliases, not just built-in type names.
+#[test]
+fn guarded_param_option_type_alias_none_gets_correct_type() {
+    let source = r#"
+type MyLen = Length
+
+structure S {
+    param active : Bool = true
+    where active {
+        param x : Option<MyLen> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(
+        template.guarded_groups.len(),
+        1,
+        "expected 1 guarded group"
+    );
+    let group: &CompiledGuardedGroup = &template.guarded_groups[0];
+
+    let member = group
+        .members
+        .iter()
+        .find(|m| m.id.member == "x")
+        .expect("should have guarded member 'x'");
+
+    // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "guarded param (alias) cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("guarded member 'x' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "guarded param (alias) default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone for guarded param with type alias, got {:?}",
+        default.kind
+    );
+}

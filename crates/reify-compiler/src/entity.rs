@@ -559,13 +559,7 @@ pub(crate) fn compile_entity(
                     let default_expr = param.default.as_ref().map(|expr| {
                         let mut compiled =
                             compile_expr(expr, &scope, enum_defs, functions, diagnostics);
-                        // If the default is OptionNone and the param type is Option<T>,
-                        // override the OptionNone's result_type to match the declared type.
-                        if matches!(&compiled.kind, CompiledExprKind::OptionNone)
-                            && matches!(&cell_type, Type::Option(_))
-                        {
-                            compiled = CompiledExpr::option_none(cell_type.clone());
-                        }
+                        fixup_option_none_for_param(&mut compiled, &cell_type);
                         compiled
                     });
 
@@ -605,22 +599,13 @@ pub(crate) fn compile_entity(
 
                 let mut compiled_expr =
                     compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
-                // If the value is `none` and the let has a typed annotation like
-                // `Option<Length>`, override the OptionNone's result_type to match
-                // the declared type — mirroring the param-default fixup at lines
-                // 5179-5185.
-                if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
-                    && let Some(type_expr) = &let_decl.type_expr
-                    && let Some(resolved) = resolve_type_expr_with_aliases(
-                        type_expr,
-                        &type_param_names,
-                        alias_registry,
-                        diagnostics,
-                    )
-                    && matches!(&resolved, Type::Option(_))
-                {
-                    compiled_expr = CompiledExpr::option_none(resolved);
-                }
+                fixup_option_none_for_let(
+                    &mut compiled_expr,
+                    let_decl.type_expr.as_ref(),
+                    &type_param_names,
+                    alias_registry,
+                    diagnostics,
+                );
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -909,13 +894,7 @@ pub(crate) fn compile_entity(
                                 let default_expr = param.default.as_ref().map(|expr| {
                                     let mut compiled =
                                         compile_expr(expr, &scope, enum_defs, functions, diagnostics);
-                                    // If the default is OptionNone and the param type is Option<T>,
-                                    // override the result_type to match the declared type.
-                                    if matches!(&compiled.kind, CompiledExprKind::OptionNone)
-                                        && matches!(&cell_type, Type::Option(_))
-                                    {
-                                        compiled = CompiledExpr::option_none(cell_type.clone());
-                                    }
+                                    fixup_option_none_for_param(&mut compiled, &cell_type);
                                     compiled
                                 });
 
@@ -940,21 +919,13 @@ pub(crate) fn compile_entity(
                                 functions,
                                 diagnostics,
                             );
-                            // If the value is `none` and the let has a typed annotation like
-                            // `Option<Length>`, override the OptionNone's result_type to match
-                            // the declared type — mirroring the top-level entity let fixup.
-                            if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
-                                && let Some(type_expr) = &let_decl.type_expr
-                                && let Some(resolved) = resolve_type_expr_with_aliases(
-                                    type_expr,
-                                    &type_param_names,
-                                    alias_registry,
-                                    diagnostics,
-                                )
-                                && matches!(&resolved, Type::Option(_))
-                            {
-                                compiled_expr = CompiledExpr::option_none(resolved);
-                            }
+                            fixup_option_none_for_let(
+                                &mut compiled_expr,
+                                let_decl.type_expr.as_ref(),
+                                &type_param_names,
+                                alias_registry,
+                                diagnostics,
+                            );
                             let cell_type = compiled_expr.result_type.clone();
                             let id = ValueCellId::new(entity_name, &composite_name);
 
@@ -1731,5 +1702,51 @@ pub(crate) fn trait_satisfies(
         }
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// OptionNone fixup helpers (shared with guards.rs via `pub(crate) use entity::*`)
+// ---------------------------------------------------------------------------
+
+/// Fix up a compiled default expression for a param member.
+///
+/// When the expression is `none` and the declared param type is `Option<T>`,
+/// the parser produces a fallback `Option<Real>` type. This helper overrides
+/// that type with the correct `Option<T>` declared by the annotation.
+///
+/// Used in three places: top-level entity params (entity.rs), port member
+/// params (entity.rs), and guarded member params (guards.rs).
+pub(crate) fn fixup_option_none_for_param(compiled: &mut CompiledExpr, cell_type: &Type) {
+    if matches!(&compiled.kind, CompiledExprKind::OptionNone)
+        && matches!(cell_type, Type::Option(_))
+    {
+        *compiled = CompiledExpr::option_none(cell_type.clone());
+    }
+}
+
+/// Fix up a compiled value expression for a let member.
+///
+/// When the expression is `none` and the let has a typed annotation like
+/// `Option<T>`, the parser produces a fallback `Option<Real>` type. This
+/// helper resolves the annotation and overrides the type with the correct
+/// `Option<T>`.
+///
+/// Used in three places: top-level entity lets (entity.rs), port member
+/// lets (entity.rs), and guarded member lets (guards.rs).
+pub(crate) fn fixup_option_none_for_let(
+    compiled_expr: &mut CompiledExpr,
+    type_expr: Option<&reify_syntax::TypeExpr>,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
+        && let Some(te) = type_expr
+        && let Some(resolved) =
+            resolve_type_expr_with_aliases(te, type_param_names, alias_registry, diagnostics)
+        && matches!(&resolved, Type::Option(_))
+    {
+        *compiled_expr = CompiledExpr::option_none(resolved);
+    }
 }
 
