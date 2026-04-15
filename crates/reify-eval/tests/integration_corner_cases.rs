@@ -89,12 +89,24 @@ fn eval_ri_file() -> reify_eval::EvalResult {
 
 /// Evaluate the cached compiled module and run constraint checking.
 /// Returns the CheckResult for satisfaction assertions.
+/// Engine::check() calls eval() internally; its CheckResult.diagnostics already
+/// contains all eval diagnostics, so no separate eval() call is needed.
 fn eval_and_check_ri() -> reify_eval::CheckResult {
     let compiled = compiled();
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let _ = engine.eval(&compiled);
-    engine.check(&compiled)
+    let result = engine.check(&compiled);
+    let check_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        check_errors.is_empty(),
+        "eval/check errors in integration_corner_cases.ri: {:?}",
+        check_errors
+    );
+    result
 }
 
 // ── step-1: smoke test ────────────────────────────────────────────────────────
