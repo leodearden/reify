@@ -36671,7 +36671,17 @@
               "Dual viewport depends on Viewport-view decoupling",
               "Engine entity tree+def preview depends on Dual viewport"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "gui/src-tauri/src/main.rs",
+            "gui/src/bridge.ts"
+          ],
+          "modules": [
+            "crates/reify-eval/src",
+            "gui/src-tauri/src",
+            "gui/src"
+          ]
         }
       },
       {
