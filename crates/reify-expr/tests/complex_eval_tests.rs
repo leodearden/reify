@@ -425,6 +425,105 @@ fn method_conjugate() {
     assert_eq!(result, complex_val(3.0, -4.0, DimensionVector::LENGTH));
 }
 
+/// .conjugate() with NaN real part returns Undef (non-finite sanitization).
+#[test]
+fn conjugate_nan_re_undef() {
+    let result = eval_method(
+        complex_val(f64::NAN, 1.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "conjugate",
+        Type::complex(Type::Real),
+    );
+    assert!(result.is_undef());
+}
+
+/// .conjugate() with NaN imaginary part returns Undef (non-finite sanitization).
+#[test]
+fn conjugate_nan_im_undef() {
+    let result = eval_method(
+        complex_val(1.0, f64::NAN, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "conjugate",
+        Type::complex(Type::Real),
+    );
+    assert!(result.is_undef());
+}
+
+/// .conjugate() with +Inf real part returns Undef (non-finite sanitization).
+#[test]
+fn conjugate_inf_re_undef() {
+    let result = eval_method(
+        complex_val(f64::INFINITY, 1.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "conjugate",
+        Type::complex(Type::Real),
+    );
+    assert!(result.is_undef());
+}
+
+/// .conjugate() with -Inf real part returns Undef (non-finite sanitization).
+#[test]
+fn conjugate_neg_inf_re_undef() {
+    let result = eval_method(
+        complex_val(f64::NEG_INFINITY, 1.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "conjugate",
+        Type::complex(Type::Real),
+    );
+    assert!(result.is_undef());
+}
+
+/// .conjugate() with -Inf imaginary part returns Undef (non-finite sanitization).
+#[test]
+fn conjugate_neg_inf_im_undef() {
+    let result = eval_method(
+        complex_val(1.0, f64::NEG_INFINITY, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "conjugate",
+        Type::complex(Type::Real),
+    );
+    assert!(result.is_undef());
+}
+
+/// .conjugate() with +Inf imaginary part returns Undef (non-finite sanitization).
+#[test]
+fn conjugate_pos_inf_im_undef() {
+    let result = eval_method(
+        complex_val(1.0, f64::INFINITY, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "conjugate",
+        Type::complex(Type::Real),
+    );
+    assert!(result.is_undef());
+}
+
+/// .conjugate() on pure-imaginary input: (0+5i).conjugate == (0-5i).
+/// Guards against the non-finite pre-guard accidentally rejecting finite values.
+/// Uses DIMENSIONLESS (orthogonal to method_conjugate which uses LENGTH).
+#[test]
+fn conjugate_pure_imaginary() {
+    let result = eval_method(
+        complex_val(0.0, 5.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "conjugate",
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(0.0, -5.0, DimensionVector::DIMENSIONLESS));
+}
+
+/// .conjugate() with negative imaginary part flips it to positive: (2-3i).conjugate == (2+3i).
+/// Verifies that negating a negative imaginary part correctly produces a positive result.
+#[test]
+fn conjugate_negative_im() {
+    let result = eval_method(
+        complex_val(2.0, -3.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "conjugate",
+        Type::complex(Type::Real),
+    );
+    assert_eq!(result, complex_val(2.0, 3.0, DimensionVector::DIMENSIONLESS));
+}
+
 // ─── step-21: Edge-case tests ───────────────────────────────────────────────
 
 /// Complex + Int returns Undef (not supported).
