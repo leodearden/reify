@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn chamfer_returns_operation_failed_through_channel() {
+    fn chamfer_all_edges_through_channel() {
         let handle = super::OcctKernelHandle::spawn();
         let box_op = GeometryOp::Box {
             width: Value::Real(10.0),
@@ -606,16 +606,13 @@ mod tests {
             distance: Value::Real(1.0),
         };
         let result = handle.execute(&chamfer_op);
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            reify_types::GeometryError::OperationFailed(msg) => {
-                assert!(
-                    msg.contains("Chamfer not yet implemented"),
-                    "unexpected message: {msg}"
-                );
-            }
-            other => panic!("expected OperationFailed, got {:?}", other),
-        }
+        assert!(result.is_ok(), "chamfer should succeed, got: {:?}", result.unwrap_err());
+        let chamfered = result.unwrap();
+        assert!(
+            chamfered.id.0 > 0,
+            "chamfered shape should have a valid handle id, got {:?}",
+            chamfered.id
+        );
     }
 
     #[test]
