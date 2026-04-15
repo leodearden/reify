@@ -1,7 +1,8 @@
 //! Tests for let-binding scope resolution, especially geometry lets.
 
-use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, RealizationDecl,
-                     TopologyTemplate};
+use reify_compiler::{BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind,
+                     PrimitiveKind, RealizationDecl, SweepKind, TopologyTemplate,
+                     TransformKind};
 use reify_types::Severity;
 
 // ─── Source-string constants (shared between existing and op-level tests) ─────
@@ -77,6 +78,11 @@ enum ExpectedOp {
     BoolDiff(usize, usize),
     BoolUnion(usize, usize),
     BoolIntersect(usize, usize),
+    Transform(TransformKind, usize),
+    Pattern(PatternKind, usize),
+    Sweep(SweepKind, Vec<usize>),
+    Modify(ModifyKind, usize),
+    Curve(CurveKind),
 }
 
 fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
@@ -108,6 +114,32 @@ fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
             },
             ExpectedOp::BoolIntersect(el, er),
         ) => l == el && r == er,
+        (
+            CompiledGeometryOp::Transform { kind, target: GeomRef::Step(t), .. },
+            ExpectedOp::Transform(ek, es),
+        ) => kind == ek && t == es,
+        (
+            CompiledGeometryOp::Pattern { kind, target: GeomRef::Step(t), .. },
+            ExpectedOp::Pattern(ek, es),
+        ) => kind == ek && t == es,
+        (
+            CompiledGeometryOp::Sweep { kind, profiles, .. },
+            ExpectedOp::Sweep(ek, ep),
+        ) => {
+            kind == ek
+                && profiles.len() == ep.len()
+                && profiles.iter().zip(ep.iter()).all(|(p, &es)| {
+                    matches!(p, GeomRef::Step(s) if *s == es)
+                })
+        }
+        (
+            CompiledGeometryOp::Modify { kind, target: GeomRef::Step(t), .. },
+            ExpectedOp::Modify(ek, es),
+        ) => kind == ek && t == es,
+        (
+            CompiledGeometryOp::Curve { kind, .. },
+            ExpectedOp::Curve(ek),
+        ) => kind == ek,
         _ => false,
     }
 }
@@ -653,6 +685,439 @@ fn multiple_geometry_lets_all_produce_realizations() {
         3,
         "expected 3 realizations, got {}",
         template.realizations.len()
+    );
+}
+
+// ─── task-1715 pre-1 + step-1: translate with let-bound target emits sub-op ───
+
+#[test]
+fn translate_let_bound_target_ops() {
+    // translate(hole, 1, 0, 0) where hole is a let-bound cylinder.
+    // Expected: cylinder sub-op at step 0, translate op referencing step 0.
+    // Currently FAILS: translate compiles hole as scalar, no sub-op emitted.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let hole = cylinder(r, h)
+    let result = translate(hole, 1, 0, 0)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["hole", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::Translate, 0),
+        ],
+    );
+}
+
+// ─── task-1715 step-3: validation tests for remaining transforms ───
+
+#[test]
+fn rotate_let_bound_target_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let hole = cylinder(r, h)
+    let result = rotate(hole, 0, 0, 1, 90)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["hole", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::Rotate, 0),
+        ],
+    );
+}
+
+#[test]
+fn scale_let_bound_target_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let hole = cylinder(r, h)
+    let result = scale(hole, 2)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["hole", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::Scale, 0),
+        ],
+    );
+}
+
+#[test]
+fn rotate_around_let_bound_target_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let hole = cylinder(r, h)
+    let result = rotate_around(hole, 0, 0, 0, 0, 0, 1, 90)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["hole", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::RotateAround, 0),
+        ],
+    );
+}
+
+// ─── task-1715 step-4: validation tests for patterns ───
+
+#[test]
+fn circular_pattern_let_bound_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let hole = cylinder(r, h)
+    let result = circular_pattern(hole, 0, 0, 0, 0, 0, 1, 6, 360)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["hole", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Pattern(PatternKind::Circular, 0),
+        ],
+    );
+}
+
+#[test]
+fn linear_pattern_let_bound_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let hole = cylinder(r, h)
+    let result = linear_pattern(hole, 1, 0, 0, 3, 10)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["hole", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Pattern(PatternKind::Linear, 0),
+        ],
+    );
+}
+
+#[test]
+fn mirror_let_bound_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let hole = cylinder(r, h)
+    let result = mirror(hole, 0, 0, 0, 0, 1, 0)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["hole", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Pattern(PatternKind::Mirror, 0),
+        ],
+    );
+}
+
+// ─── task-1715 step-5: validation tests for single-profile sweeps ───
+
+#[test]
+fn extrude_let_bound_profile_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let profile = cylinder(r, h)
+    let result = extrude(profile, 10)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["profile", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sweep(SweepKind::Extrude, vec![0]),
+        ],
+    );
+}
+
+#[test]
+fn revolve_let_bound_profile_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let profile = cylinder(r, h)
+    let result = revolve(profile, 0, 0, 0, 0, 0, 1, 90)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["profile", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sweep(SweepKind::Revolve, vec![0]),
+        ],
+    );
+}
+
+#[test]
+fn revolve_full_let_bound_profile_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let profile = cylinder(r, h)
+    let result = revolve_full(profile, 0, 0, 0, 0, 0, 1)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["profile", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sweep(SweepKind::Revolve, vec![0]),
+        ],
+    );
+}
+
+// ─── task-1715 step-6: validation tests for modifiers ───
+
+#[test]
+fn shell_let_bound_target_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = shell(body, 1)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Modify(ModifyKind::Shell, 0),
+        ],
+    );
+}
+
+#[test]
+fn thicken_let_bound_target_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = thicken(body, 1)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Modify(ModifyKind::Thicken, 0),
+        ],
+    );
+}
+
+#[test]
+fn draft_let_bound_target_ops() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = draft(body, 5, 0)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Modify(ModifyKind::Draft, 0),
+        ],
+    );
+}
+
+// ─── task-1715 step-7 + step-9: sweep two geometry args; loft all-geometry profiles ───
+
+#[test]
+fn sweep_two_let_bound_geometry_args() {
+    // sweep(profile, path): both args are geometry refs.
+    // Expected: [Cylinder(profile), Helix(path), Sweep(Sweep, [0, 1])]
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    param pitch: Scalar = 2mm
+    let profile = cylinder(r, h)
+    let path = helix(r, pitch, h)
+    let result = sweep(profile, path)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["profile", "path", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Curve(CurveKind::Helix),
+            ExpectedOp::Sweep(SweepKind::Sweep, vec![0, 1]),
+        ],
+    );
+}
+
+#[test]
+fn loft_let_bound_profiles_ops() {
+    // loft(p1, p2): both profiles are let-bound geometry refs.
+    // Expected: [Cylinder(p1), Cylinder(p2), Sweep(Loft, [0, 1])]
+    let source = r#"structure S {
+    param r1: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let p1 = cylinder(r1, h)
+    let p2 = cylinder(r2, h)
+    let result = loft(p1, p2)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["p1", "p2", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sweep(SweepKind::Loft, vec![0, 1]),
+        ],
+    );
+}
+
+// ─── task-1715 step-11: cross-category composition ───
+
+#[test]
+fn cross_category_composition_ops() {
+    // difference(body, translate(hole, 1, 0, 0)):
+    // body and hole are let-bound cylinders; translate is inline inside boolean op.
+    // Expected: [Cylinder(body), Cylinder(hole), Transform(Translate,1), BoolDiff(0,2)]
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let hole = cylinder(r2, h)
+    let result = difference(body, translate(hole, 1, 0, 0))
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "hole", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::Translate, 1),
+            ExpectedOp::BoolDiff(0, 2),
+        ],
+    );
+}
+
+// ─── task-1715 step-12: cyclic refs through transforms ───
+
+#[test]
+fn cyclic_refs_through_transforms_error() {
+    // Mutually-recursive geometry lets through non-boolean ops should produce a cycle error.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let a = translate(b, 1, 0, 0)
+    let b = rotate(a, 0, 0, 1, 90)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected error diagnostics for cyclic geometry lets through transforms"
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("cyclic")),
+        "expected cyclic reference error, got: {:?}",
+        errors
+    );
+}
+
+// ─── amend: inline (non-let-bound) geometry arg resolution ───
+
+#[test]
+fn translate_inline_geometry_arg_ops() {
+    // translate(cylinder(r, h), 1, 0, 0): the geometry arg is inline, not let-bound.
+    // The generic resolution block should still compile it as a sub-op.
+    // Expected: [Cylinder, Transform(Translate, 0)]
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let result = translate(cylinder(r, h), 1, 0, 0)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::Translate, 0),
+        ],
+    );
+}
+
+// ─── amend: chained non-boolean transforms with let bindings ───
+
+#[test]
+fn chained_transforms_step_indices() {
+    // let a = cylinder(r, h); let b = translate(a, 1, 0, 0); let c = rotate(b, 0, 0, 1, 90)
+    // c inlines: [Cylinder(a), Translate(0), Rotate(1)]
+    // Validates that step_offset propagation works across chained non-boolean transforms.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let a = cylinder(r, h)
+    let b = translate(a, 1, 0, 0)
+    let c = rotate(b, 0, 0, 1, 90)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["a", "b", "c"], "c");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::Translate, 0),
+            ExpectedOp::Transform(TransformKind::Rotate, 1),
+        ],
     );
 }
 

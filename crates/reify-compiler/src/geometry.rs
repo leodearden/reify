@@ -8,6 +8,24 @@ pub(crate) fn is_geometry_let(expr: &reify_syntax::Expr, functions: &[CompiledFu
     )
 }
 
+/// Returns the arg indices that are geometry refs for each non-boolean geometry function.
+/// Empty slice means no geometry args (primitives, curves).
+/// Boolean ops are excluded — they handle geometry args with their own recursive block.
+fn geometry_arg_indices(name: &str) -> &'static [usize] {
+    match name {
+        "translate" | "rotate" | "scale" | "rotate_around"
+        | "circular_pattern" | "linear_pattern" | "mirror"
+        | "extrude" | "revolve" | "revolve_full"
+        | "shell" | "thicken" | "draft" => &[0],
+        "sweep" => &[0, 1],
+        // NOTE: `loft` is handled specially (variadic geometry args) in the resolution block.
+        // IMPORTANT: New geometry functions that take geometry args MUST be registered here
+        // (or handled like loft for variadic cases). Missing entries are silently treated as
+        // having no geometry args, breaking let-bound geometry references for those functions.
+        _ => &[],
+    }
+}
+
 /// Compile a geometry function call expression into CompiledGeometryOps.
 ///
 /// Maps positional arguments to the named parameters expected by each primitive:
@@ -235,10 +253,56 @@ pub(crate) fn compile_geometry_call(
         _ => {}
     }
 
+    // Generic geometry-arg resolution: for each arg index that is a geometry ref,
+    // recursively compile the geometry expression, collect sub-ops, and record the
+    // result step in geom_refs. Boolean ops are handled above and excluded here.
+    // Short-circuit for primitives and curves (no geometry args) to avoid
+    // unnecessary allocations on the hot path for the majority of calls.
+    let static_indices = geometry_arg_indices(name);
+    let needs_geom_resolution = name == "loft" || !static_indices.is_empty();
+
+    let mut sub_ops: Vec<CompiledGeometryOp> = Vec::new();
+    let mut geom_refs: HashMap<usize, GeomRef> = HashMap::new();
+    let mut current_offset = step_offset;
+
+    if needs_geom_resolution {
+        let effective_indices: Vec<usize> = if name == "loft" {
+            (0..args.len()).collect()
+        } else {
+            static_indices.to_vec()
+        };
+        for idx in &effective_indices {
+            if *idx < args.len()
+                && let Some(ops) = compile_geometry_call(
+                    &args[*idx],
+                    scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    current_offset,
+                    geometry_lets,
+                    visiting,
+                )
+            {
+                let result_step = current_offset + ops.len() - 1;
+                current_offset += ops.len();
+                geom_refs.insert(*idx, GeomRef::Step(result_step));
+                sub_ops.extend(ops);
+            }
+        }
+    }
+
     let compiled_args: Vec<CompiledExpr> = args
         .iter()
         .map(|arg| compile_expr(arg, scope, enum_defs, functions, diagnostics))
         .collect();
+
+    // Helper: look up resolved geometry ref or fall back to step_offset.
+    // Used by single-geometry-arg functions (translate, rotate, etc.).
+    // For loft and sweep the fallback is handled with explicit diagnostics below.
+    let geom_ref = |idx: usize| -> GeomRef {
+        geom_refs.get(&idx).cloned().unwrap_or(GeomRef::Step(step_offset))
+    };
 
     match name {
         // --- Primitives ---
@@ -304,9 +368,10 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Pattern {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Pattern {
                 kind: PatternKind::Linear,
-                target: GeomRef::Step(0), // target is first arg (evaluated at runtime)
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("dx".to_string(), it.next().unwrap()),
@@ -315,7 +380,9 @@ pub(crate) fn compile_geometry_call(
                     ("count".to_string(), it.next().unwrap()),
                     ("spacing".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)
         "circular_pattern" => {
@@ -327,9 +394,10 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Pattern {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Pattern {
                 kind: PatternKind::Circular,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("ox".to_string(), it.next().unwrap()),
@@ -341,7 +409,9 @@ pub(crate) fn compile_geometry_call(
                     ("count".to_string(), it.next().unwrap()),
                     ("angle".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // mirror(target, ox, oy, oz, nx, ny, nz)
         "mirror" => {
@@ -353,9 +423,10 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Pattern {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Pattern {
                 kind: PatternKind::Mirror,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("ox".to_string(), it.next().unwrap()),
@@ -365,7 +436,9 @@ pub(crate) fn compile_geometry_call(
                     ("ny".to_string(), it.next().unwrap()),
                     ("nz".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // --- Sweeps ---
         // loft(profile1, profile2, ...)
@@ -377,17 +450,31 @@ pub(crate) fn compile_geometry_call(
                 )));
                 return None;
             }
-            let profiles: Vec<GeomRef> = (0..compiled_args.len()).map(GeomRef::Step).collect();
-            let args: Vec<(String, CompiledExpr)> = compiled_args
+            let mut profiles = Vec::with_capacity(args.len());
+            for i in 0..args.len() {
+                let r = if let Some(r) = geom_refs.get(&i).cloned() {
+                    r
+                } else {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "loft() argument {} must be a geometry expression",
+                        i + 1
+                    )));
+                    GeomRef::Step(0)
+                };
+                profiles.push(r);
+            }
+            let loft_args: Vec<(String, CompiledExpr)> = compiled_args
                 .into_iter()
                 .enumerate()
                 .map(|(i, expr)| (format!("profile_{}", i), expr))
                 .collect();
-            Some(vec![CompiledGeometryOp::Sweep {
+            let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Loft,
                 profiles,
-                args,
-            }])
+                args: loft_args,
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // extrude(profile, distance)
         "extrude" => {
@@ -401,14 +488,17 @@ pub(crate) fn compile_geometry_call(
             let mut it = compiled_args.into_iter();
             let profile_expr = it.next().unwrap();
             let distance_expr = it.next().unwrap();
-            Some(vec![CompiledGeometryOp::Sweep {
+            let profile = geom_ref(0);
+            let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Extrude,
-                profiles: vec![GeomRef::Step(0)],
+                profiles: vec![profile],
                 args: vec![
                     ("profile".to_string(), profile_expr),
                     ("distance".to_string(), distance_expr),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // revolve(profile, ox, oy, oz, ax, ay, az, angle)
         "revolve" => {
@@ -428,9 +518,10 @@ pub(crate) fn compile_geometry_call(
             let ay = it.next().unwrap();
             let az = it.next().unwrap();
             let angle = it.next().unwrap();
-            Some(vec![CompiledGeometryOp::Sweep {
+            let profile = geom_ref(0);
+            let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
-                profiles: vec![GeomRef::Step(0)],
+                profiles: vec![profile],
                 args: vec![
                     ("profile".to_string(), profile_expr),
                     ("ox".to_string(), ox),
@@ -441,7 +532,9 @@ pub(crate) fn compile_geometry_call(
                     ("az".to_string(), az),
                     ("angle".to_string(), angle),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // revolve_full(profile, ox, oy, oz, ax, ay, az) — injects 2π for angle
         "revolve_full" => {
@@ -465,9 +558,10 @@ pub(crate) fn compile_geometry_call(
                 Value::Real(std::f64::consts::TAU),
                 reify_types::Type::Real,
             );
-            Some(vec![CompiledGeometryOp::Sweep {
+            let profile = geom_ref(0);
+            let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
-                profiles: vec![GeomRef::Step(0)],
+                profiles: vec![profile],
                 args: vec![
                     ("profile".to_string(), profile_expr),
                     ("ox".to_string(), ox),
@@ -478,7 +572,9 @@ pub(crate) fn compile_geometry_call(
                     ("az".to_string(), az),
                     ("angle".to_string(), tau_expr),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // sweep(profile, path)
         "sweep" => {
@@ -492,17 +588,34 @@ pub(crate) fn compile_geometry_call(
                 );
                 return None;
             }
-            let profiles: Vec<GeomRef> = vec![GeomRef::Step(0), GeomRef::Step(1)];
+            let profile = if let Some(r) = geom_refs.get(&0).cloned() {
+                r
+            } else {
+                diagnostics.push(Diagnostic::error(
+                    "sweep() profile (argument 1) must be a geometry expression".to_string(),
+                ));
+                GeomRef::Step(0)
+            };
+            let path = if let Some(r) = geom_refs.get(&1).cloned() {
+                r
+            } else {
+                diagnostics.push(Diagnostic::error(
+                    "sweep() path (argument 2) must be a geometry expression".to_string(),
+                ));
+                GeomRef::Step(step_offset + 1)
+            };
             let mut it = compiled_args.into_iter();
-            let args: Vec<(String, CompiledExpr)> = vec![
+            let sweep_args: Vec<(String, CompiledExpr)> = vec![
                 ("profile".to_string(), it.next().unwrap()),
                 ("path".to_string(), it.next().unwrap()),
             ];
-            Some(vec![CompiledGeometryOp::Sweep {
+            let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Sweep,
-                profiles,
-                args,
-            }])
+                profiles: vec![profile, path],
+                args: sweep_args,
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // --- Transforms ---
         // translate(target, dx, dy, dz)
@@ -515,16 +628,19 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Transform {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Transform {
                 kind: TransformKind::Translate,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("dx".to_string(), it.next().unwrap()),
                     ("dy".to_string(), it.next().unwrap()),
                     ("dz".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // rotate(target, ax, ay, az, angle)
         "rotate" => {
@@ -536,9 +652,10 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Transform {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Transform {
                 kind: TransformKind::Rotate,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("ax".to_string(), it.next().unwrap()),
@@ -546,7 +663,9 @@ pub(crate) fn compile_geometry_call(
                     ("az".to_string(), it.next().unwrap()),
                     ("angle".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // scale(target, factor)
         "scale" => {
@@ -558,14 +677,17 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Transform {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Transform {
                 kind: TransformKind::Scale,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("factor".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // rotate_around(target, px, py, pz, ax, ay, az, angle)
         "rotate_around" => {
@@ -577,9 +699,10 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Transform {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Transform {
                 kind: TransformKind::RotateAround,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("px".to_string(), it.next().unwrap()),
@@ -590,7 +713,9 @@ pub(crate) fn compile_geometry_call(
                     ("az".to_string(), it.next().unwrap()),
                     ("angle".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // --- Modify extensions ---
         // shell(target, thickness, ...)
@@ -606,19 +731,22 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            let mut args = vec![
+            let mut shell_args = vec![
                 ("target".to_string(), it.next().unwrap()),
                 ("thickness".to_string(), it.next().unwrap()),
             ];
             // Remaining args are face indices to remove
             for (i, expr) in it.enumerate() {
-                args.push((format!("face_{}", i), expr));
+                shell_args.push((format!("face_{}", i), expr));
             }
-            Some(vec![CompiledGeometryOp::Modify {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Modify {
                 kind: ModifyKind::Shell,
-                target: GeomRef::Step(0),
-                args,
-            }])
+                target,
+                args: shell_args,
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // thicken(target, offset)
         "thicken" => {
@@ -633,14 +761,17 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Modify {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Modify {
                 kind: ModifyKind::Thicken,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("offset".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // draft(target, angle, plane)
         "draft" => {
@@ -655,15 +786,18 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Modify {
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Modify {
                 kind: ModifyKind::Draft,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("angle".to_string(), it.next().unwrap()),
                     ("plane".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // --- Curve constructors ---
         // line_segment(x1, y1, z1, x2, y2, z2)
