@@ -37130,7 +37130,15 @@
           "modules": [
             "crates/reify-compiler/src/expr.rs",
             "crates/reify-compiler/tests/self_keyword_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolve_collection_sub_to_list fallback path expr.rs",
+              "collection sub self keyword resolution task 1280",
+              "StructureRef sub_component_types fallback type correction"
+            ]
+          }
         }
       },
       {
