@@ -36444,6 +36444,17 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1750,
+        "title": "Engine: entity tree emission, def preview, and identity hints",
+        "description": "Backend work to support the Design Tree & View System. Three new Tauri commands: get_entity_tree (hierarchical entity tree from evaluation graph with kind/type/trait metadata), get_def_preview (prototype instance of a definition for the def preview viewport), and get_entity_identity_map (content hashes and structural fingerprints for fuzzy persistence matching).",
+        "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 3.3 (Backend Support), 12 (Engine Integration).\n\n### Implementation\n\n1. **`get_entity_tree` Tauri command** (`src-tauri/src/engine.rs` or new `tree.rs`)\n   - Walk the evaluation graph to produce a hierarchical tree\n   - Each node:\n     - `entity_path: String` — dot-separated (e.g., \"Assembly.housing.geometry\")\n     - `kind: String` — \"structure\", \"sub\", \"let\", \"param\", \"port\"\n     - `type_name: Option<String>` — e.g., \"Solid\", \"BoltFlange\", \"List<Vent>\"\n     - `has_mesh: bool` — whether this entity produced tessellated geometry\n     - `trait_geometry: bool` — true if this is the `geometry` param from Physical trait\n     - `children: Vec<EntityTreeNode>`\n   - The tree reflects the INSTANCE structure (elaborated graph), not the definition structure\n   - Emitted on every evaluation complete, alongside mesh/value/constraint updates\n   - Serialization: JSON via serde, sent as Tauri event or command response\n\n2. **Determining `trait_geometry` flag**\n   - During elaboration, when a structure implements `Physical` (or any refinement), the compiler knows which param is `geometry`\n   - Tag this in the evaluation graph so it's queryable at GUI time\n   - If the trait metadata isn't readily available at tessellation time, an alternative: check if the entity path ends in `.geometry` AND the parent structure's type implements Physical. This heuristic covers the common case.\n\n3. **`get_def_preview` Tauri command** (`src-tauri/src/engine.rs`)\n   - Input: definition name (e.g., \"BoltFlange\") or qualified path\n   - Process:\n     1. Look up the definition in the current compilation unit\n     2. Create a temporary Engine scope (or lightweight instance)\n     3. Instantiate the definition with all param defaults applied\n     4. Evaluate to produce geometry\n     5. Tessellate all Solid results\n     6. Build and return a GuiState (meshes + values + constraints)\n     7. Discard the temporary scope\n   - Caching: cache by (definition name, definition body content hash). Return cached result if definition body hasn't changed.\n   - Performance target: < 500ms for typical single-structure definitions\n   - Error handling: if definition has required params with no defaults (undef), return partial state with diagnostics\n\n4. **`get_entity_identity_map` Tauri command** (`src-tauri/src/engine.rs`)\n   - Returns a map: entity_path -> EntityIdentity\n   - `EntityIdentity`:\n     - `content_hash: String` — hash of the entity's definition body (stable across renames)\n     - `structural_fingerprint: String` — \"{type_name}:{parent_type}:{child_count}:{child_types_hash}\"\n     - `source_span: Option<SourceSpan>` — file + line range\n   - Used by frontend fuzzy persistence matching\n   - Can be computed lazily (only when persistence layer requests it)\n\n5. **`get_containing_definition` Tauri command**\n   - Input: file path, line number, column number\n   - Output: Option<DefInfo> where DefInfo = { name, kind, span }\n   - Implementation: walk the AST for the file, find the innermost `structure def` or `occurrence def` containing the position\n   - Can reuse existing LSP infrastructure (document symbols, or direct AST query)\n\n6. **New IPC types** (`src-tauri/src/types.rs`)\n   - `EntityTreeNode { entity_path, kind, type_name, has_mesh, trait_geometry, children }`\n   - `EntityIdentity { content_hash, structural_fingerprint, source_span }`\n   - `DefInfo { name, kind, span }`\n\n### Requirements covered\nSections 3.3, 12.1, 12.2, 12.4, plus backend support for T-6 (trait_geometry flag), VP-5 (def preview), P-5 (identity hints)\n\n### memory_hints\n- search: \"EngineSession build_gui_state tessellate\"\n- search: \"GuiState MeshData ValueData\"\n- search: \"entity_path evaluation graph\"\n- search: \"Physical trait geometry param\"\n- entity: \"reify-eval Engine\"\n- entity: \"reify-gui EngineSession\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36456,7 +36467,7 @@
       ],
       "created": "2026-04-15T09:54:32.566Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T10:00:07.464Z"
+      "updated": "2026-04-15T10:01:01.706Z"
     }
   }
 }
