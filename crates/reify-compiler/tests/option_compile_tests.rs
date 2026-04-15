@@ -4,7 +4,21 @@
 //! CompiledExprKind::OptionNone with correct types instead of falling through
 //! to generic function call resolution.
 
-use reify_types::{CompiledExprKind, Type};
+use reify_compiler::TopologyTemplate;
+use reify_types::{CompiledExprKind, DimensionVector, Severity, Type};
+
+/// Helper: compile source, return the first topology template and diagnostics.
+fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<reify_types::Diagnostic>) {
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+    let template = compiled
+        .templates
+        .into_iter()
+        .next()
+        .expect("expected at least 1 template");
+    (template, compiled.diagnostics)
+}
 
 /// Helper: compile source and extract the value cell named `cell_name`'s default_expr.
 /// Panics if there are errors or the cell is missing.
@@ -315,6 +329,69 @@ structure S {
         default.result_type,
         Type::Option(Box::new(Type::Real)),
         "none without context should default to Option<Real>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone, got {:?}",
+        default.kind
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task 1098: port param Option<Length> = none → typed OptionNone (step-1)
+// ---------------------------------------------------------------------------
+
+/// Port param with Option<Length> annotation and none default should produce
+/// a ValueCellDecl with cell_type == Option<Length> and default_expr that is
+/// OptionNone with result_type == Option<Length> (not the fallback Option<Real>).
+#[test]
+fn port_param_none_with_typed_annotation_gets_correct_type() {
+    let source = r#"
+trait MyPort {
+    param x : Length
+}
+
+structure def S {
+    port p : MyPort {
+        param x : Option<Length> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(template.ports.len(), 1, "expected 1 port");
+    let port = &template.ports[0];
+    assert_eq!(port.name, "p");
+
+    let member = port
+        .members
+        .iter()
+        .find(|m| m.id.member.contains("p.x"))
+        .expect("should have port member 'p.x'");
+
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "port member cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("port member 'p.x' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "default_expr.result_type should be Option<Length>, got {:?}",
         default.result_type
     );
     assert!(
