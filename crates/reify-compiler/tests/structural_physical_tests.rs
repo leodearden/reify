@@ -7,6 +7,8 @@
 use reify_compiler::*;
 use reify_types::*;
 
+mod common;
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 /// Return the `std/structural/physical` CompiledModule from the production
@@ -22,24 +24,9 @@ fn load_stdlib_module() -> &'static CompiledModule {
 /// Parse and compile `source` against the full stdlib prelude, asserting no
 /// parse or compile errors. Returns the `CompiledModule` for further inspection.
 fn compile_structure(source: &str) -> CompiledModule {
-    let prelude = stdlib_loader::load_stdlib();
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "compile errors: {:?}",
-        errors
-    );
+    let compiled = common::compile_with_stdlib_helper(source);
+    let errors = common::errors_only(&compiled);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
     compiled
 }
 
@@ -592,6 +579,11 @@ structure def PlasticBody : Plastic {
     // plastic_strain (should use Ge, RHS=0).
     let mut found_hm_gt = false;
     let mut found_ps_ge = false;
+    // Collect (member, op) pairs for diagnostic messages if assertions fail.
+    let mut found_pairs: Vec<(String, String)> = Vec::new();
+    // Collect any constraint shapes that are not BinOp; the test asserts this
+    // stays empty so IR changes produce an explicit failure rather than silence.
+    let mut unrecognised: Vec<String> = Vec::new();
 
     for cc in &template.constraints {
         match &cc.expr.kind {
@@ -600,6 +592,7 @@ structure def PlasticBody : Plastic {
                     CompiledExprKind::ValueRef(id) => id.member.as_str(),
                     _ => continue,
                 };
+                found_pairs.push((member.to_string(), format!("{:?}", op)));
                 let rhs_is_zero = match &right.kind {
                     CompiledExprKind::Literal(Value::Int(v)) => *v == 0,
                     CompiledExprKind::Literal(Value::Real(v)) => v.abs() < 1e-9,
@@ -611,27 +604,27 @@ structure def PlasticBody : Plastic {
                     _ => {}
                 }
             }
-            _ => {}
+            other => {
+                unrecognised.push(format!("{:?}", other));
+            }
         }
     }
 
     assert!(
+        unrecognised.is_empty(),
+        "expected all Plastic constraint expressions to be BinOp, \
+         got unrecognised shapes: {:?}",
+        unrecognised
+    );
+    assert!(
         found_hm_gt,
-        "expected BinOp(Gt, hardening_modulus, 0), constraints: {:?}",
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
+        "expected BinOp(Gt, hardening_modulus, 0), found_pairs: {:?}",
+        found_pairs
     );
     assert!(
         found_ps_ge,
-        "expected BinOp(Ge, plastic_strain, 0), constraints: {:?}",
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
+        "expected BinOp(Ge, plastic_strain, 0), found_pairs: {:?}",
+        found_pairs
     );
 }
 
@@ -669,6 +662,46 @@ structure def PlasticBody : Plastic {
     assert!(
         matches!(&cc.expr.kind, CompiledExprKind::BinOp { op: BinOp::Ge, .. }),
         "plastic_strain constraint must use BinOp::Ge (>=), not BinOp::Gt (>), got: {:?}",
+        cc.expr.kind
+    );
+}
+
+// ─── task-1688: hardening_modulus=0.0 boundary value compiles ────────────────
+
+/// Boundary-value test: compile a structure with hardening_modulus=0.0.
+/// Verifies two things:
+/// 1. The structure compiles without errors (zero hardening_modulus is accepted
+///    at compile time — the compiler injects but does not evaluate constraints).
+/// 2. The injected constraint for hardening_modulus uses `>` (Gt), not `>=` (Ge).
+///    This is the strictly-greater-than boundary, distinct from plastic_strain's
+///    `>=` boundary. Mirrors plastic_strain_zero_boundary_compiles for the other
+///    Plastic boundary dimension.
+#[test]
+fn hardening_modulus_zero_boundary_compiles() {
+    let compiled = compile_structure(
+        r#"
+structure def PlasticBody : Plastic {
+    param plastic_strain : Real = 0.05
+    param hardening_modulus : Real = 0.0
+}
+"#,
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    // Confirm the injected constraint for hardening_modulus uses Gt (>), not Ge (>=).
+    let hm_constraint = template.constraints.iter().find(|cc| {
+        matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
+            if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "hardening_modulus")
+        )
+    });
+    let cc = hm_constraint.expect("expected a constraint referencing hardening_modulus");
+    assert!(
+        matches!(&cc.expr.kind, CompiledExprKind::BinOp { op: BinOp::Gt, .. }),
+        "hardening_modulus constraint must use BinOp::Gt (>), not BinOp::Ge (>=), got: {:?}",
         cc.expr.kind
     );
 }
