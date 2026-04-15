@@ -18,6 +18,10 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         | "extrude" | "revolve" | "revolve_full"
         | "shell" | "thicken" | "draft" => &[0],
         "sweep" => &[0, 1],
+        // NOTE: `loft` is handled specially (variadic geometry args) in the resolution block.
+        // IMPORTANT: New geometry functions that take geometry args MUST be registered here
+        // (or handled like loft for variadic cases). Missing entries are silently treated as
+        // having no geometry args, breaking let-bound geometry references for those functions.
         _ => &[],
     }
 }
@@ -252,33 +256,39 @@ pub(crate) fn compile_geometry_call(
     // Generic geometry-arg resolution: for each arg index that is a geometry ref,
     // recursively compile the geometry expression, collect sub-ops, and record the
     // result step in geom_refs. Boolean ops are handled above and excluded here.
-    let effective_indices: Vec<usize> = if name == "loft" {
-        (0..args.len()).collect()
-    } else {
-        geometry_arg_indices(name).to_vec()
-    };
+    // Short-circuit for primitives and curves (no geometry args) to avoid
+    // unnecessary allocations on the hot path for the majority of calls.
+    let static_indices = geometry_arg_indices(name);
+    let needs_geom_resolution = name == "loft" || !static_indices.is_empty();
 
     let mut sub_ops: Vec<CompiledGeometryOp> = Vec::new();
     let mut geom_refs: HashMap<usize, GeomRef> = HashMap::new();
     let mut current_offset = step_offset;
 
-    for idx in &effective_indices {
-        if *idx < args.len()
-            && let Some(ops) = compile_geometry_call(
-                &args[*idx],
-                scope,
-                enum_defs,
-                functions,
-                diagnostics,
-                current_offset,
-                geometry_lets,
-                visiting,
-            )
-        {
-            let result_step = current_offset + ops.len() - 1;
-            current_offset += ops.len();
-            geom_refs.insert(*idx, GeomRef::Step(result_step));
-            sub_ops.extend(ops);
+    if needs_geom_resolution {
+        let effective_indices: Vec<usize> = if name == "loft" {
+            (0..args.len()).collect()
+        } else {
+            static_indices.to_vec()
+        };
+        for idx in &effective_indices {
+            if *idx < args.len()
+                && let Some(ops) = compile_geometry_call(
+                    &args[*idx],
+                    scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    current_offset,
+                    geometry_lets,
+                    visiting,
+                )
+            {
+                let result_step = current_offset + ops.len() - 1;
+                current_offset += ops.len();
+                geom_refs.insert(*idx, GeomRef::Step(result_step));
+                sub_ops.extend(ops);
+            }
         }
     }
 
@@ -286,6 +296,13 @@ pub(crate) fn compile_geometry_call(
         .iter()
         .map(|arg| compile_expr(arg, scope, enum_defs, functions, diagnostics))
         .collect();
+
+    // Helper: look up resolved geometry ref or fall back to step_offset.
+    // Used by single-geometry-arg functions (translate, rotate, etc.).
+    // For loft and sweep the fallback is handled with explicit diagnostics below.
+    let geom_ref = |idx: usize| -> GeomRef {
+        geom_refs.get(&idx).cloned().unwrap_or(GeomRef::Step(step_offset))
+    };
 
     match name {
         // --- Primitives ---
@@ -351,7 +368,7 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            let target = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let target = geom_ref(0);
             let op = CompiledGeometryOp::Pattern {
                 kind: PatternKind::Linear,
                 target,
@@ -377,7 +394,7 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            let target = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let target = geom_ref(0);
             let op = CompiledGeometryOp::Pattern {
                 kind: PatternKind::Circular,
                 target,
@@ -406,7 +423,7 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            let target = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let target = geom_ref(0);
             let op = CompiledGeometryOp::Pattern {
                 kind: PatternKind::Mirror,
                 target,
@@ -433,9 +450,19 @@ pub(crate) fn compile_geometry_call(
                 )));
                 return None;
             }
-            let profiles: Vec<GeomRef> = (0..args.len())
-                .map(|i| geom_refs.get(&i).cloned().unwrap_or(GeomRef::Step(step_offset + i)))
-                .collect();
+            let mut profiles = Vec::with_capacity(args.len());
+            for i in 0..args.len() {
+                let r = if let Some(r) = geom_refs.get(&i).cloned() {
+                    r
+                } else {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "loft() argument {} must be a geometry expression",
+                        i + 1
+                    )));
+                    GeomRef::Step(0)
+                };
+                profiles.push(r);
+            }
             let loft_args: Vec<(String, CompiledExpr)> = compiled_args
                 .into_iter()
                 .enumerate()
@@ -461,7 +488,7 @@ pub(crate) fn compile_geometry_call(
             let mut it = compiled_args.into_iter();
             let profile_expr = it.next().unwrap();
             let distance_expr = it.next().unwrap();
-            let profile = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Extrude,
                 profiles: vec![profile],
@@ -491,7 +518,7 @@ pub(crate) fn compile_geometry_call(
             let ay = it.next().unwrap();
             let az = it.next().unwrap();
             let angle = it.next().unwrap();
-            let profile = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
                 profiles: vec![profile],
@@ -531,7 +558,7 @@ pub(crate) fn compile_geometry_call(
                 Value::Real(std::f64::consts::TAU),
                 reify_types::Type::Real,
             );
-            let profile = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
                 profiles: vec![profile],
@@ -561,8 +588,22 @@ pub(crate) fn compile_geometry_call(
                 );
                 return None;
             }
-            let profile = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
-            let path = geom_refs.get(&1).cloned().unwrap_or(GeomRef::Step(step_offset + 1));
+            let profile = if let Some(r) = geom_refs.get(&0).cloned() {
+                r
+            } else {
+                diagnostics.push(Diagnostic::error(
+                    "sweep() profile (argument 1) must be a geometry expression".to_string(),
+                ));
+                GeomRef::Step(0)
+            };
+            let path = if let Some(r) = geom_refs.get(&1).cloned() {
+                r
+            } else {
+                diagnostics.push(Diagnostic::error(
+                    "sweep() path (argument 2) must be a geometry expression".to_string(),
+                ));
+                GeomRef::Step(0)
+            };
             let mut it = compiled_args.into_iter();
             let sweep_args: Vec<(String, CompiledExpr)> = vec![
                 ("profile".to_string(), it.next().unwrap()),
@@ -587,7 +628,7 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            let target = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let target = geom_ref(0);
             let op = CompiledGeometryOp::Transform {
                 kind: TransformKind::Translate,
                 target,
@@ -611,7 +652,7 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            let target = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let target = geom_ref(0);
             let op = CompiledGeometryOp::Transform {
                 kind: TransformKind::Rotate,
                 target,
@@ -636,7 +677,7 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            let target = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let target = geom_ref(0);
             let op = CompiledGeometryOp::Transform {
                 kind: TransformKind::Scale,
                 target,
@@ -658,7 +699,7 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            let target = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let target = geom_ref(0);
             let op = CompiledGeometryOp::Transform {
                 kind: TransformKind::RotateAround,
                 target,
@@ -698,7 +739,7 @@ pub(crate) fn compile_geometry_call(
             for (i, expr) in it.enumerate() {
                 shell_args.push((format!("face_{}", i), expr));
             }
-            let target = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let target = geom_ref(0);
             let op = CompiledGeometryOp::Modify {
                 kind: ModifyKind::Shell,
                 target,
@@ -720,7 +761,7 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            let target = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let target = geom_ref(0);
             let op = CompiledGeometryOp::Modify {
                 kind: ModifyKind::Thicken,
                 target,
@@ -745,7 +786,7 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            let target = geom_refs.get(&0).cloned().unwrap_or(GeomRef::Step(step_offset));
+            let target = geom_ref(0);
             let op = CompiledGeometryOp::Modify {
                 kind: ModifyKind::Draft,
                 target,

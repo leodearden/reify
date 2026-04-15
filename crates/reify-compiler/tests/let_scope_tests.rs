@@ -1003,6 +1003,57 @@ fn cyclic_refs_through_transforms_error() {
     );
 }
 
+// ─── amend: inline (non-let-bound) geometry arg resolution ───
+
+#[test]
+fn translate_inline_geometry_arg_ops() {
+    // translate(cylinder(r, h), 1, 0, 0): the geometry arg is inline, not let-bound.
+    // The generic resolution block should still compile it as a sub-op.
+    // Expected: [Cylinder, Transform(Translate, 0)]
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let result = translate(cylinder(r, h), 1, 0, 0)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::Translate, 0),
+        ],
+    );
+}
+
+// ─── amend: chained non-boolean transforms with let bindings ───
+
+#[test]
+fn chained_transforms_step_indices() {
+    // let a = cylinder(r, h); let b = translate(a, 1, 0, 0); let c = rotate(b, 0, 0, 1, 90)
+    // c inlines: [Cylinder(a), Translate(0), Rotate(1)]
+    // Validates that step_offset propagation works across chained non-boolean transforms.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let a = cylinder(r, h)
+    let b = translate(a, 1, 0, 0)
+    let c = rotate(b, 0, 0, 1, 90)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["a", "b", "c"], "c");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::Translate, 0),
+            ExpectedOp::Transform(TransformKind::Rotate, 1),
+        ],
+    );
+}
+
 // ─── step-7: geometry let does not produce a value cell ───
 
 #[test]
