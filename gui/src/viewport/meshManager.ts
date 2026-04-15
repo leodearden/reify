@@ -324,7 +324,11 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
   }
 
   function getGhostMeshes(): Map<string, Mesh> {
-    return ghostMeshMap;
+    // Return a shallow copy so callers cannot accidentally mutate internal state
+    // (e.g., by calling .delete() or .clear() on the returned map).
+    // getGhostMeshes is only called once per sync cycle (in adjustClipping), so
+    // a cache like sceneMeshCache would add complexity with no measurable benefit.
+    return new Map(ghostMeshMap);
   }
 
   return { sync, dispose, getSceneMeshes, setVisibility, getGhostMeshes };
