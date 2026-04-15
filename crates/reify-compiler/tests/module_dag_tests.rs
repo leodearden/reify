@@ -3,7 +3,6 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 
@@ -706,7 +705,8 @@ fn compile_module_multi_import_prelude() {
 /// `in_progress` is hash-order-dependent and may fail the sorted-order assertion.
 #[test]
 fn circular_import_error_message_deterministic() {
-    let dir = test_dir("circular_deterministic");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // cherry imports apple (DFS entry point)
     fs::write(
@@ -783,7 +783,6 @@ fn circular_import_error_message_deterministic() {
         msg1
     );
 
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── amendment (task-1392): compile_project multi-import prelude path ──────────
