@@ -37872,6 +37872,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 1812,
+        "title": "meshManager visibility: cross-reference docs + edge case tests",
+        "description": "Three small improvements to meshManager visibility handling from task 1760 review:\n\n1. Add cross-reference comments in meshManager.ts (near line 289) and Viewport.tsx (near line 110) documenting that orphan pruning and post-sync setVisibility re-application form a coupled invariant.\n2. Add test case in meshManager.test.ts for the hidden-state prune-and-re-arrive path (pre-set hidden → sync with entity → sync without → sync with entity again, verify arrives as 'show').\n3. Extend test (r) in meshManager.test.ts to also assert that .set() and .clear() on the returned getGhostMeshes map do not affect internal state.\n\nFiles: gui/src/viewport/meshManager.ts, gui/src/viewport/Viewport.tsx, gui/src/__tests__/viewport/meshManager.test.ts",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37884,7 +37895,7 @@
       ],
       "created": "2026-04-15T20:32:16.782Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T20:40:07.372Z"
+      "updated": "2026-04-15T20:44:58.608Z"
     }
   }
 }
