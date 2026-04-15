@@ -37953,10 +37953,11 @@
         "description": "Task 1794 review follow-up: derive ShortcutId type from SHORTCUTS array, replace toBeTruthy with toBeDefined in MenuBar tests. Files: gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx, gui/src/__tests__/MenuBar.test.tsx",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:08:50.320Z"
       },
       {
         "id": "1819",
@@ -37972,7 +37973,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:08:49.332Z",
+      "lastModified": "2026-04-15T21:08:50.320Z",
       "taskCount": 1814,
       "completedCount": 1547,
       "tags": [
