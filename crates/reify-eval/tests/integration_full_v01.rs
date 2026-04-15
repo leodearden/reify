@@ -13,7 +13,7 @@
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{ModulePath, Satisfaction, Value, ValueCellId};
+use reify_types::{Diagnostic, ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -66,6 +66,21 @@ fn check_source(src: &str) -> reify_eval::CheckResult {
     let compiled = parse_and_compile_with_stdlib(src);
     let mut engine = make_simple_engine();
     engine.check(&compiled)
+}
+
+/// Assert that a diagnostics slice contains no entries with [`Severity::Error`].
+/// Panics with the offending diagnostics and `context` label on failure.
+fn assert_no_errors(diagnostics: &[Diagnostic], context: &str) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "errors in {}: {:?}",
+        context,
+        errors
+    );
 }
 
 /// Assert that `$parsed` (a `ParsedModule`) has at least `$min` declarations
@@ -844,6 +859,93 @@ fn constraint_def_labels() {
     }
 }
 
+// ── Test 21: Option some/none values ─────────────────────────────────────────
+
+/// Assert `Assembly.maybe_load` evaluates to `Value::Option(Some(Value::Real(100.0)))`
+/// and `Assembly.no_load` evaluates to `Value::Option(None)`.
+/// The .ri file defines: `let maybe_load = some(100.0)` and `let no_load = none`.
+#[test]
+fn option_some_none_values() {
+    let result = eval_canonical();
+
+    // maybe_load = some(100.0) → Value::Option(Some(Value::Real(100.0)))
+    let maybe_id = ValueCellId::new("Assembly", "maybe_load");
+    let maybe_val = result
+        .values
+        .get(&maybe_id)
+        .unwrap_or_else(|| panic!("Assembly.maybe_load not found in eval result"));
+    assert!(
+        matches!(maybe_val, Value::Option(Some(_))),
+        "Assembly.maybe_load should be Value::Option(Some(_)), got {:?}",
+        maybe_val
+    );
+    // Verify the wrapped value is numerically 100 — Reify compiles whole-number
+    // literals (e.g. 100.0) as Int, so accept both Real(100.0) and Int(100).
+    if let Value::Option(Some(inner)) = maybe_val {
+        let ok = matches!(inner.as_ref(), Value::Real(v) if (*v - 100.0).abs() < 1e-12)
+            || matches!(inner.as_ref(), Value::Int(100));
+        assert!(
+            ok,
+            "Assembly.maybe_load inner should be Real(100.0) or Int(100), got {:?}",
+            inner
+        );
+    } else {
+        unreachable!("guarded by prior assert — maybe_val is Value::Option(Some(_))");
+    }
+
+    // no_load = none → Value::Option(None)
+    let no_id = ValueCellId::new("Assembly", "no_load");
+    let no_val = result
+        .values
+        .get(&no_id)
+        .unwrap_or_else(|| panic!("Assembly.no_load not found in eval result"));
+    assert!(
+        matches!(no_val, Value::Option(None)),
+        "Assembly.no_load should be Value::Option(None), got {:?}",
+        no_val
+    );
+}
+
+// ── Test 22: lambda binding evaluates ────────────────────────────────────────
+
+/// Assert `Assembly.double_fn` evaluates to `Value::Lambda { .. }` (not Undef).
+/// The .ri file defines: `let double_fn = |x| x * 2.0`.
+#[test]
+fn lambda_binding_evaluates() {
+    let result = eval_canonical();
+
+    let id = ValueCellId::new("Assembly", "double_fn");
+    let v = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("Assembly.double_fn not found in eval result"));
+    assert!(
+        matches!(v, Value::Lambda { .. }),
+        "Assembly.double_fn should be Value::Lambda {{ .. }}, got {:?}",
+        v
+    );
+}
+
+// ── Test 23: eval produces no error diagnostics ───────────────────────────────
+
+/// Assert `eval_canonical()` produces no error-severity diagnostics.
+/// Verifies the evaluation pipeline runs cleanly on the canonical source.
+#[test]
+fn eval_no_error_diagnostics() {
+    let result = eval_canonical();
+    assert_no_errors(&result.diagnostics, "integration_full_v01.ri eval");
+}
+
+// ── Test 24: check produces no error diagnostics ──────────────────────────────
+
+/// Assert `check_canonical()` produces no error-severity diagnostics.
+/// Verifies the check pipeline runs cleanly on the canonical source.
+#[test]
+fn check_no_error_diagnostics() {
+    let result = check_canonical();
+    assert_no_errors(&result.diagnostics, "integration_full_v01.ri check");
+}
+
 // ── Macro test: assert_min_count! catches unmet threshold ────────────────────
 
 /// Verify that `assert_min_count!` panics with an actionable message when the
@@ -869,7 +971,7 @@ fn assert_min_count_macro_passes_when_met() {
     assert_min_count!(parsed, Declaration::Trait(_), "Trait", 1);
 }
 
-// ── Test 20: violation regression guard ──────────────────────────────────────
+// ── Test 25: violation regression guard ──────────────────────────────────────
 
 /// Regression guard: deliberately make `height < 2000mm` into `height < 100mm`
 /// (height=300mm > 100mm → Violated). Verifies at least one Violated result
