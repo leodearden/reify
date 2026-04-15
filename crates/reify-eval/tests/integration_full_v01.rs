@@ -786,11 +786,9 @@ fn test_runner_all_pass() {
     );
 
     for name in &expected_tests {
-        assert!(
-            by_name.contains_key(*name),
-            "@test {name} not found in results"
-        );
-        let &status = by_name.get(*name).unwrap();
+        let &status = by_name
+            .get(*name)
+            .unwrap_or_else(|| panic!("@test {name} not found in results"));
         assert_eq!(
             status,
             reify_eval::TestStatus::Pass,
