@@ -35832,10 +35832,11 @@
         "description": "Task 1588 (70-module review) found doc comment inaccuracies in two compiler modules:\\n\\n1. **scope.rs** — doc comments describe behaviour or fields that have diverged from the actual implementation (exact locations in mem0 entry 00fb2c91).\\n2. **entity.rs** — similar stale/inaccurate doc comments.\\n\\nAlso flagged: module-level doc comment needs clarification for conditional branches/match arms (mem0 entry 00e618fc) — the description of control-flow behavior in the doc comment does not accurately describe all code paths.\\n\\nActions:\\n- Audit the flagged doc comments against current code\\n- Rewrite inaccurate descriptions to match actual behavior\\n- Add clarifying notes for any conditional/match arm paths that are non-obvious\\n\\n## memory_hints\\n- search: \\\"doc comment mismatch scope.rs entity.rs\\\"\\n- search: \\\"module doc conditional branches match arms clarification\\\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:13:10.201Z"
       },
       {
         "id": "1718",
@@ -35920,7 +35921,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:13:09.272Z",
+      "lastModified": "2026-04-15T06:13:10.201Z",
       "taskCount": 1721,
       "completedCount": 1475,
       "tags": [
