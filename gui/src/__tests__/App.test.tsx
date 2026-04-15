@@ -63,7 +63,9 @@ vi.mock('../bridge', () => ({
   pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
   pickOpenPath: vi.fn().mockResolvedValue(null),
   updateSource: vi.fn().mockResolvedValue(undefined),
+  saveFile: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
+  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
   onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -124,6 +126,11 @@ describe('App layout wiring', () => {
   it('renders app-layout container', async () => {
     await renderAndWaitForReady();
     expect(screen.getByTestId('app-layout')).toBeTruthy();
+  });
+
+  it('renders MenuBar above Toolbar', async () => {
+    await renderAndWaitForReady();
+    expect(screen.getByTestId('menu-bar')).toBeTruthy();
   });
 
   it('renders Toolbar at top', async () => {
@@ -2286,5 +2293,43 @@ describe('App serialization-error subscription', () => {
 
     // The alive guard (App.tsx:267-269) calls it once; onCleanup's serializationErrorUnsub?.() is a no-op.
     expect(unlistenSerialization).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('handleSave clears dirty indicator after successful save', () => {
+  it('clears dirty indicator after successful save via Ctrl+S', async () => {
+    const path = '/project/test.ri';
+    const content = 'module Test {}';
+
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+
+    render(() => <App />);
+
+    // Wait for App to be ready and capturedEditorStore to be set
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Open a file in the store, mark it dirty, and set as active
+    capturedEditorStore.openFile({ path, content });
+    capturedEditorStore.markDirty(path);
+    capturedEditorStore.setActiveFile(path);
+
+    // Confirm the file is dirty before save
+    expect(capturedEditorStore.state.dirtyFiles).toContain(path);
+
+    // Trigger handleSave via global Ctrl+S shortcut
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    // bridge.saveFile should be called with the correct path and content
+    await waitFor(() => {
+      expect(bridge.saveFile).toHaveBeenCalledWith(path, content);
+    });
+
+    // After a successful save the dirty indicator must be cleared
+    await waitFor(() => {
+      expect(capturedEditorStore.state.dirtyFiles).not.toContain(path);
+    });
   });
 });

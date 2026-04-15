@@ -403,14 +403,36 @@ impl Engine {
         values: &'a ValueMap,
         functions: &'a [CompiledFunction],
         determinacy: Option<&'a PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
-    ) -> Vec<ConstraintResult> {
+    ) -> (Vec<ConstraintResult>, Vec<Diagnostic>) {
         if entries.is_empty() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
+        }
+
+        // Fast path: when no optimized impls are registered every entry goes to
+        // the language-level fallback. Skip the BTreeMap/Option-Vec/unzip
+        // allocations and go directly to the checker — same code path as before
+        // Task 273 introduced the bucketing logic.
+        if self.optimization_registry.is_empty() {
+            let constraints = entries
+                .into_iter()
+                .map(|(id, expr, _target)| (id, expr))
+                .collect();
+            let input = ConstraintInput {
+                constraints,
+                values,
+                functions,
+                determinacy,
+            };
+            return (self.constraint_checker.check(&input), Vec::new());
         }
 
         // Results in input order. We fill slots as each path completes.
         let mut results: Vec<Option<ConstraintResult>> =
             (0..entries.len()).map(|_| None).collect();
+
+        // Diagnostics emitted by this function (contract violations only —
+        // per-constraint diagnostics remain inside ConstraintResult).
+        let mut dispatch_diagnostics: Vec<Diagnostic> = Vec::new();
 
         // Bucket entries by registered target. Keys borrow from the entry's
         // `Option<&'a str>` — no allocation. A `BTreeMap` gives deterministic
@@ -439,6 +461,11 @@ impl Engine {
         // contract is that the impl returns one `ConstraintResult` per input
         // constraint, in the same order. We weave results back into the
         // original result vector via each entry's recorded original index.
+        //
+        // On a count mismatch (third-party impl bug): emit a Diagnostic::error
+        // and fall back to the language-level ConstraintChecker for this batch.
+        // The entire batch is discarded — partial results cannot be reliably
+        // correlated when we don't know which constraints they correspond to.
         for (target, bucket) in optimized_groups {
             let imp = self
                 .optimization_registry
@@ -453,16 +480,39 @@ impl Engine {
                 determinacy,
             };
             let output = imp.check(&input);
-            assert_eq!(
-                output.results.len(),
-                indices.len(),
-                "OptimizedImpl for target {:?} returned {} results for {} constraints",
-                target,
-                output.results.len(),
-                indices.len(),
-            );
-            for (orig_idx, result) in indices.into_iter().zip(output.results) {
-                results[orig_idx] = Some(result);
+            if output.results.len() != indices.len() {
+                // Contract violation: the impl returned the wrong number of
+                // results. Emit an error diagnostic and fall back to the
+                // language-level checker for this entire batch.
+                dispatch_diagnostics.push(Diagnostic::error(format!(
+                    "OptimizedImpl for target {:?} returned {} results for {} constraints \
+                     — falling back to language-level checker for this batch",
+                    target,
+                    output.results.len(),
+                    indices.len(),
+                )));
+                let fallback_input = ConstraintInput {
+                    constraints: input.constraints,
+                    values,
+                    functions,
+                    determinacy,
+                };
+                let fallback_results = self.constraint_checker.check(&fallback_input);
+                assert_eq!(
+                    fallback_results.len(),
+                    indices.len(),
+                    "ConstraintChecker returned {} results for {} constraints during \
+                     OptimizedImpl fallback",
+                    fallback_results.len(),
+                    indices.len(),
+                );
+                for (orig_idx, result) in indices.into_iter().zip(fallback_results) {
+                    results[orig_idx] = Some(result);
+                }
+            } else {
+                for (orig_idx, result) in indices.into_iter().zip(output.results) {
+                    results[orig_idx] = Some(result);
+                }
             }
         }
 
@@ -490,10 +540,11 @@ impl Engine {
             }
         }
 
-        results
+        let constraint_results = results
             .into_iter()
             .map(|r| r.expect("dispatch_constraints: every slot must be filled"))
-            .collect()
+            .collect();
+        (constraint_results, dispatch_diagnostics)
     }
 
     /// Returns the compiled stdlib prelude modules stored by this engine.
@@ -2515,12 +2566,13 @@ impl Engine {
                 })
                 .collect();
 
-            let results = self.dispatch_constraints(
+            let (results, dispatch_diags) = self.dispatch_constraints(
                 entries,
                 values,
                 &self.functions,
                 Some(&state.snapshot.values),
             );
+            diagnostics.extend(dispatch_diags);
             for (result, cnode) in results.into_iter().zip(constraint_nodes.iter()) {
                 diagnostics.extend(Self::labeled_diagnostics(
                     result.diagnostics.messages,
@@ -2902,12 +2954,13 @@ impl Engine {
                 .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
                 .collect();
 
-            let results = self.dispatch_constraints(
+            let (results, dispatch_diags) = self.dispatch_constraints(
                 entries,
                 &values,
                 &module.functions,
                 Some(&state.snapshot.values),
             );
+            diagnostics.extend(dispatch_diags);
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                 diagnostics.extend(Self::labeled_diagnostics(
@@ -2996,12 +3049,13 @@ impl Engine {
 
             // After eval(), eval_state is always Some — unwrap is safe here.
             let det_values = &self.eval_state.as_ref().unwrap().snapshot.values;
-            let results = self.dispatch_constraints(
+            let (results, dispatch_diags) = self.dispatch_constraints(
                 entries,
                 &eval_result.values,
                 &module.functions,
                 Some(det_values),
             );
+            diagnostics.extend(dispatch_diags);
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                 diagnostics.extend(Self::labeled_diagnostics(
@@ -3058,12 +3112,13 @@ impl Engine {
                     .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
                     .collect();
 
-                let results = self.dispatch_constraints(
+                let (results, dispatch_diags) = self.dispatch_constraints(
                     entries,
                     &values,
                     &module.functions,
                     Some(&state.snapshot.values),
                 );
+                diagnostics.extend(dispatch_diags);
 
                 for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                     diagnostics.extend(Self::labeled_diagnostics(
@@ -3394,12 +3449,13 @@ impl Engine {
                     .map(|c| (c.id.clone(), &c.expr, c.optimized_target.as_deref()))
                     .collect();
 
-                let results = self.dispatch_constraints(
+                let (results, dispatch_diags) = self.dispatch_constraints(
                     entries,
                     &values,
                     &module.functions,
                     Some(&state.snapshot.values),
                 );
+                diagnostics.extend(dispatch_diags);
 
                 for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
                     diagnostics.extend(Self::labeled_diagnostics(
@@ -3787,6 +3843,9 @@ fn compile_geometry_op(
                         f64_arg("axis_y")?,
                         f64_arg("axis_z")?,
                     ],
+                    // NOTE: bare numeric angle is passed through as-is (radians).
+                    // circular_pattern converts bare numbers as degrees; aligning
+                    // rotate/rotate_around/revolve is tracked as a follow-up task.
                     angle_rad: f64_arg("angle")?,
                 }),
                 reify_compiler::TransformKind::Scale => {
@@ -3818,6 +3877,9 @@ fn compile_geometry_op(
                             f64_arg("axis_y")?,
                             f64_arg("axis_z")?,
                         ],
+                        // NOTE: bare numeric angle is passed through as-is (radians).
+                        // circular_pattern converts bare numbers as degrees; aligning
+                        // rotate/rotate_around/revolve is tracked as a follow-up task.
                         angle_rad: f64_arg("angle")?,
                     })
                 }
@@ -3851,7 +3913,25 @@ fn compile_geometry_op(
                     let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
                     let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
                     let count = f64_arg("count")? as usize;
-                    let angle = eval_named_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
+                    let raw_angle = eval_named_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
+                    // CAD convention: a bare numeric angle (no unit suffix) is
+                    // interpreted as degrees and converted to radians.  Values
+                    // that already carry an ANGLE dimension (from `deg`/`rad`
+                    // suffixes in source) pass through unchanged.
+                    let mut convert_bare_angle = |deg: f64| -> reify_types::Value {
+                        let rad = deg * std::f64::consts::PI / 180.0;
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
+                             use `{}deg` or `{:.6}rad` for explicit units",
+                            deg, deg, deg, rad
+                        )));
+                        reify_types::Value::angle(rad)
+                    };
+                    let angle = match raw_angle {
+                        reify_types::Value::Real(v) => convert_bare_angle(v),
+                        reify_types::Value::Int(i) => convert_bare_angle(i as f64),
+                        other => other,
+                    };
                     Some(reify_types::GeometryOp::CircularPattern {
                         target: target_id,
                         axis_origin,
@@ -3999,6 +4079,9 @@ fn compile_geometry_op(
                         )));
                         return None;
                     }
+                    // NOTE: bare numeric angle is passed through as-is (radians).
+                    // circular_pattern converts bare numbers as degrees; aligning
+                    // rotate/rotate_around/revolve is tracked as a follow-up task.
                     let angle_rad = f64_arg("angle")?;
                     // Reject sub-picoradian angles as degenerate: an angle at
                     // the f64 rounding floor cannot produce a meaningful
@@ -4735,6 +4818,17 @@ mod tests {
         )
     }
 
+    /// Helper: build a CompiledExpr literal from a Scalar with ANGLE dimension (radians).
+    fn literal_angle(radians: f64) -> reify_types::CompiledExpr {
+        reify_types::CompiledExpr::literal(
+            reify_types::Value::Scalar {
+                si_value: radians,
+                dimension: reify_types::DimensionVector::ANGLE,
+            },
+            reify_types::Type::angle(),
+        )
+    }
+
     #[test]
     fn compile_geometry_op_scale_produces_scale_variant() {
         let step_handles = vec![GeometryHandleId(42)];
@@ -5372,11 +5466,14 @@ mod tests {
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
                 ("count".into(), literal_f64(4.0)),
-                ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
+                // Use an explicitly-dimensioned angle literal to test the pass-through path.
+                // A bare f64 would now trigger the degrees→radians conversion path instead.
+                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         match result {
             Some(reify_types::GeometryOp::CircularPattern {
                 target,
@@ -5389,10 +5486,179 @@ mod tests {
                 assert_eq!(axis_origin, [0.0, 0.0, 0.0]);
                 assert_eq!(axis_dir, [0.0, 0.0, 1.0]);
                 assert_eq!(count, 4);
-                // angle should be a Real value, not Undef
+                // angle should be a Scalar value (with ANGLE dimension), not Undef
                 assert!(
                     !matches!(angle, reify_types::Value::Undef),
                     "angle should not be Undef when arg is present"
+                );
+                // The explicit-unit path must NOT emit a degree-conversion warning
+                let has_deg_warning = diagnostics.iter().any(|d| {
+                    d.severity == reify_types::Severity::Warning
+                        && (d.message.contains("deg") || d.message.contains("degree"))
+                });
+                assert!(
+                    !has_deg_warning,
+                    "explicit angle unit should not trigger a degree-conversion warning, got: {:?}",
+                    diagnostics
+                );
+            }
+            other => panic!("expected Some(CircularPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_bare_f64_converts_to_radians() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = reify_compiler::CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(6.0)),
+                // Bare f64 without unit — should be interpreted as degrees and
+                // converted to radians: 360° → 2π rad.
+                ("angle".into(), literal_f64(360.0)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        match result {
+            Some(reify_types::GeometryOp::CircularPattern { angle, .. }) => {
+                let angle_f64 = angle.as_f64().expect("angle should be numeric");
+                assert!(
+                    (angle_f64 - std::f64::consts::TAU).abs() < 1e-9,
+                    "360.0 (bare f64) should convert to 2π radians, got {}",
+                    angle_f64
+                );
+            }
+            other => panic!("expected Some(CircularPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_bare_int_converts_to_radians() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // Bare integer 360 — should be interpreted as 360° and converted to 2π rad.
+        let angle_int_expr = reify_types::CompiledExpr::literal(
+            reify_types::Value::Int(360),
+            reify_types::Type::Int,
+        );
+
+        let op = reify_compiler::CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(6.0)),
+                ("angle".into(), angle_int_expr),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        match result {
+            Some(reify_types::GeometryOp::CircularPattern { angle, .. }) => {
+                let angle_f64 = angle.as_f64().expect("angle should be numeric");
+                assert!(
+                    (angle_f64 - std::f64::consts::TAU).abs() < 1e-9,
+                    "Int(360) should convert to 2π radians, got {}",
+                    angle_f64
+                );
+            }
+            other => panic!("expected Some(CircularPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_bare_number_emits_deprecation_warning() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = reify_compiler::CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(6.0)),
+                ("angle".into(), literal_f64(360.0)),
+            ],
+        };
+
+        let _result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+
+        let has_degree_warning = diagnostics.iter().any(|d| {
+            d.severity == reify_types::Severity::Warning
+                && (d.message.contains("deg") || d.message.contains("degree"))
+        });
+        assert!(
+            has_degree_warning,
+            "expected a Warning diagnostic about implicit degree conversion, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_angle_scalar_passes_through() {
+        // An explicitly-dimensioned angle (Value::Scalar with ANGLE dimension) must
+        // pass through the CircularPattern arm unchanged — no double-conversion,
+        // no degree-conversion warning.
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = reify_compiler::CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(6.0)),
+                // Explicit angle unit: PI radians
+                ("angle".into(), literal_angle(std::f64::consts::PI)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        match result {
+            Some(reify_types::GeometryOp::CircularPattern { angle, .. }) => {
+                let angle_f64 = angle.as_f64().expect("angle should be numeric");
+                assert!(
+                    (angle_f64 - std::f64::consts::PI).abs() < 1e-12,
+                    "explicit PI rad angle should pass through as PI, got {}",
+                    angle_f64
+                );
+                // No degree-conversion warning should be emitted for explicit units
+                let has_deg_warning = diagnostics.iter().any(|d| {
+                    d.severity == reify_types::Severity::Warning
+                        && (d.message.contains("deg") || d.message.contains("degree"))
+                });
+                assert!(
+                    !has_deg_warning,
+                    "explicit angle unit should not trigger a degree-conversion warning, got: {:?}",
+                    diagnostics
                 );
             }
             other => panic!("expected Some(CircularPattern), got {:?}", other),

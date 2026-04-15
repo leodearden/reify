@@ -1,13 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { KeyboardHelp } from '../components/KeyboardHelp';
+import { SHORTCUTS } from '../shortcuts';
 
 describe('KeyboardHelp', () => {
   it('renders overlay with data-testid keyboard-help containing shortcut list', () => {
     render(() => <KeyboardHelp onClose={() => {}} />);
     const overlay = screen.getByTestId('keyboard-help');
     expect(overlay).toBeTruthy();
-    // Should contain all four shortcuts
+    // Should contain core shortcuts from shared SHORTCUTS registry
     expect(overlay.textContent).toContain('Ctrl+O');
     expect(overlay.textContent).toContain('F5');
     expect(overlay.textContent).toContain('Ctrl+E');
@@ -36,5 +37,26 @@ describe('KeyboardHelp', () => {
     expect(overlay.textContent).toContain('Re-evaluate');
     expect(overlay.textContent).toContain('Export');
     expect(overlay.textContent).toContain('Toggle this help');
+  });
+
+  it('renders all entries with keys from the shared SHORTCUTS registry', () => {
+    render(() => <KeyboardHelp onClose={() => {}} />);
+    const overlay = screen.getByTestId('keyboard-help');
+    for (const s of SHORTCUTS.filter((s) => s.key)) {
+      expect(overlay.textContent).toContain(s.key);
+      expect(overlay.textContent).toContain(s.description);
+    }
+  });
+
+  it('renders Ctrl+S (save shortcut) from shared registry', () => {
+    render(() => <KeyboardHelp onClose={() => {}} />);
+    const overlay = screen.getByTestId('keyboard-help');
+    expect(overlay.textContent).toContain('Ctrl+S');
+  });
+
+  it('renders Ctrl+J (toggle chat shortcut) from shared registry', () => {
+    render(() => <KeyboardHelp onClose={() => {}} />);
+    const overlay = screen.getByTestId('keyboard-help');
+    expect(overlay.textContent).toContain('Ctrl+J');
   });
 });

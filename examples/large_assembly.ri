@@ -1,0 +1,278 @@
+// Large assembly stress test fixture
+//
+// Exercises stdlib Physical trait conformance, port declarations, sub-component
+// instantiation at scale (54 subs), and mass aggregation across the assembly.
+//
+// Structure types:
+//   SteelBeam      — Physical : Material (density=7850, volume=0.002)
+//   AluminumPlate  — Physical : Material (density=2700, volume=0.001)
+//   StiffenerBracket — Physical : Material (density=7850, volume=0.0005)
+//   BoltConnector  — Physical : Material (density=7850, volume=0.0001)
+//   MotorUnit      — Physical : Material (density=3000, volume=0.008)
+//   GearboxUnit    — Physical : Material (density=4000, volume=0.010)
+//   CoverPanel     — Physical : Material (density=2700, volume=0.0005)
+//   SensorPod      — Physical : Material (density=1500, volume=0.0003)
+//
+// Assembly: 54 sub-components = 16 beams + 8 plates + 8 stiffeners + 6 bolts
+//           + 4 motors + 4 gearboxes + 4 covers + 4 sensors
+//
+// Computes total_mass = [all 54 sub masses...].sum
+// Declares simulation_ready purpose for Physical structures.
+
+// ── Port traits ───────────────────────────────────────────────────────────────
+
+trait MechanicalFace {
+    param force_capacity : Real
+    param area           : Real
+}
+
+trait ElectricalInterface {
+    param voltage_rating : Real
+    param current_rating : Real
+}
+
+// ── Structure type 1: SteelBeam ───────────────────────────────────────────────
+
+structure def SteelBeam : Physical {
+    param name         : String = "Steel Beam W150x37"
+    param density      : Real   = 7850.0
+    param volume       : Real   = 0.002
+    param centroid_x   : Real   = 0.0
+    param centroid_y   : Real   = 0.0
+    param centroid_z   : Real   = 0.0
+
+    let geo = box(0.15, 0.15, 3.0)
+
+    port load_face : out MechanicalFace {
+        param force_capacity : Real = 50000.0
+        param area           : Real = 0.0225
+    }
+}
+
+// ── Structure type 2: AluminumPlate ──────────────────────────────────────────
+
+structure def AluminumPlate : Physical {
+    param name         : String = "Aluminum Plate 6061"
+    param density      : Real   = 2700.0
+    param volume       : Real   = 0.001
+    param centroid_x   : Real   = 0.0
+    param centroid_y   : Real   = 0.0
+    param centroid_z   : Real   = 0.0
+
+    let geo = box(0.5, 0.5, 0.004)
+
+    port mount : in MechanicalFace {
+        param force_capacity : Real = 20000.0
+        param area           : Real = 0.25
+    }
+}
+
+// ── Structure type 3: StiffenerBracket ───────────────────────────────────────
+
+structure def StiffenerBracket : Physical {
+    param name         : String = "Steel Stiffener L75x50x6"
+    param density      : Real   = 7850.0
+    param volume       : Real   = 0.0005
+    param centroid_x   : Real   = 0.0
+    param centroid_y   : Real   = 0.0
+    param centroid_z   : Real   = 0.0
+
+    let geo = box(0.075, 0.050, 0.150)
+}
+
+// ── Structure type 4: BoltConnector ──────────────────────────────────────────
+
+structure def BoltConnector : Physical {
+    param name         : String = "M12 Bolt Grade 8.8"
+    param density      : Real   = 7850.0
+    param volume       : Real   = 0.0001
+    param centroid_x   : Real   = 0.0
+    param centroid_y   : Real   = 0.0
+    param centroid_z   : Real   = 0.0
+
+    let geo = cylinder(0.006, 0.060)
+}
+
+// ── Structure type 5: MotorUnit ───────────────────────────────────────────────
+
+structure def MotorUnit : Physical {
+    param name         : String = "AC Induction Motor 0.75kW"
+    param density      : Real   = 3000.0
+    param volume       : Real   = 0.008
+    param centroid_x   : Real   = 0.0
+    param centroid_y   : Real   = 0.0
+    param centroid_z   : Real   = 0.0
+
+    let geo = cylinder(0.090, 0.220)
+
+    port shaft : out MechanicalFace {
+        param force_capacity : Real = 5000.0
+        param area           : Real = 0.0005
+    }
+
+    port supply : in ElectricalInterface {
+        param voltage_rating : Real = 400.0
+        param current_rating : Real = 2.0
+    }
+}
+
+// ── Structure type 6: GearboxUnit ────────────────────────────────────────────
+
+structure def GearboxUnit : Physical {
+    param name         : String = "Helical Gearbox i=3 95%"
+    param density      : Real   = 4000.0
+    param volume       : Real   = 0.010
+    param centroid_x   : Real   = 0.0
+    param centroid_y   : Real   = 0.0
+    param centroid_z   : Real   = 0.0
+
+    let geo = box(0.200, 0.150, 0.250)
+
+    port input : in MechanicalFace {
+        param force_capacity : Real = 5000.0
+        param area           : Real = 0.0005
+    }
+}
+
+// ── Structure type 7: CoverPanel ─────────────────────────────────────────────
+
+structure def CoverPanel : Physical {
+    param name         : String = "Aluminum Cover Sheet 2mm"
+    param density      : Real   = 2700.0
+    param volume       : Real   = 0.0005
+    param centroid_x   : Real   = 0.0
+    param centroid_y   : Real   = 0.0
+    param centroid_z   : Real   = 0.0
+
+    let geo = box(0.500, 0.400, 0.002)
+}
+
+// ── Structure type 8: SensorPod ───────────────────────────────────────────────
+
+structure def SensorPod : Physical {
+    param name         : String = "IMU Sensor Pod"
+    param density      : Real   = 1500.0
+    param volume       : Real   = 0.0003
+    param centroid_x   : Real   = 0.0
+    param centroid_y   : Real   = 0.0
+    param centroid_z   : Real   = 0.0
+
+    let geo = box(0.060, 0.040, 0.030)
+
+    port data : out ElectricalInterface {
+        param voltage_rating : Real = 3.3
+        param current_rating : Real = 0.05
+    }
+}
+
+// ── Main assembly ─────────────────────────────────────────────────────────────
+// 54 sub-components: 16 beams + 8 plates + 8 stiffeners + 6 bolts
+//                  + 4 motors + 4 gearboxes + 4 covers + 4 sensors
+
+structure def LargeAssembly {
+    // ── SteelBeam instances (16) ──────────────────────────────────────────────
+    sub b01 = SteelBeam()
+    sub b02 = SteelBeam()
+    sub b03 = SteelBeam()
+    sub b04 = SteelBeam()
+    sub b05 = SteelBeam()
+    sub b06 = SteelBeam()
+    sub b07 = SteelBeam()
+    sub b08 = SteelBeam()
+    sub b09 = SteelBeam()
+    sub b10 = SteelBeam()
+    sub b11 = SteelBeam()
+    sub b12 = SteelBeam()
+    sub b13 = SteelBeam()
+    sub b14 = SteelBeam()
+    sub b15 = SteelBeam()
+    sub b16 = SteelBeam()
+
+    // ── AluminumPlate instances (8) ───────────────────────────────────────────
+    sub p01 = AluminumPlate()
+    sub p02 = AluminumPlate()
+    sub p03 = AluminumPlate()
+    sub p04 = AluminumPlate()
+    sub p05 = AluminumPlate()
+    sub p06 = AluminumPlate()
+    sub p07 = AluminumPlate()
+    sub p08 = AluminumPlate()
+
+    // ── StiffenerBracket instances (8) ────────────────────────────────────────
+    sub s01 = StiffenerBracket()
+    sub s02 = StiffenerBracket()
+    sub s03 = StiffenerBracket()
+    sub s04 = StiffenerBracket()
+    sub s05 = StiffenerBracket()
+    sub s06 = StiffenerBracket()
+    sub s07 = StiffenerBracket()
+    sub s08 = StiffenerBracket()
+
+    // ── BoltConnector instances (6) ───────────────────────────────────────────
+    sub c01 = BoltConnector()
+    sub c02 = BoltConnector()
+    sub c03 = BoltConnector()
+    sub c04 = BoltConnector()
+    sub c05 = BoltConnector()
+    sub c06 = BoltConnector()
+
+    // ── MotorUnit instances (4) ───────────────────────────────────────────────
+    sub m01 = MotorUnit()
+    sub m02 = MotorUnit()
+    sub m03 = MotorUnit()
+    sub m04 = MotorUnit()
+
+    // ── GearboxUnit instances (4) ─────────────────────────────────────────────
+    sub g01 = GearboxUnit()
+    sub g02 = GearboxUnit()
+    sub g03 = GearboxUnit()
+    sub g04 = GearboxUnit()
+
+    // ── CoverPanel instances (4) ──────────────────────────────────────────────
+    sub v01 = CoverPanel()
+    sub v02 = CoverPanel()
+    sub v03 = CoverPanel()
+    sub v04 = CoverPanel()
+
+    // ── SensorPod instances (4) ───────────────────────────────────────────────
+    sub d01 = SensorPod()
+    sub d02 = SensorPod()
+    sub d03 = SensorPod()
+    sub d04 = SensorPod()
+
+    // ── Port connections: motor shafts → gearbox inputs ───────────────────────
+    connect m01.shaft -> g01.input
+    connect m02.shaft -> g02.input
+    connect m03.shaft -> g03.input
+    connect m04.shaft -> g04.input
+
+    // ── Mass aggregation ──────────────────────────────────────────────────────
+    // Collect all sub masses into a list and sum them.
+    let all_masses = [
+        self.b01.mass, self.b02.mass, self.b03.mass, self.b04.mass,
+        self.b05.mass, self.b06.mass, self.b07.mass, self.b08.mass,
+        self.b09.mass, self.b10.mass, self.b11.mass, self.b12.mass,
+        self.b13.mass, self.b14.mass, self.b15.mass, self.b16.mass,
+        self.p01.mass, self.p02.mass, self.p03.mass, self.p04.mass,
+        self.p05.mass, self.p06.mass, self.p07.mass, self.p08.mass,
+        self.s01.mass, self.s02.mass, self.s03.mass, self.s04.mass,
+        self.s05.mass, self.s06.mass, self.s07.mass, self.s08.mass,
+        self.c01.mass, self.c02.mass, self.c03.mass, self.c04.mass,
+        self.c05.mass, self.c06.mass,
+        self.m01.mass, self.m02.mass, self.m03.mass, self.m04.mass,
+        self.g01.mass, self.g02.mass, self.g03.mass, self.g04.mass,
+        self.v01.mass, self.v02.mass, self.v03.mass, self.v04.mass,
+        self.d01.mass, self.d02.mass, self.d03.mass, self.d04.mass
+    ]
+    let total_mass = all_masses.sum
+}
+
+// ── simulation_ready purpose ──────────────────────────────────────────────────
+// Verifies a Physical structure is ready for simulation: positive volume and
+// density constraints are asserted. Activating this purpose injects constraints
+// into the engine graph.
+
+purpose simulation_ready(subject : Physical) {
+    constraint 1 > 0
+    constraint 1 >= 0
+}

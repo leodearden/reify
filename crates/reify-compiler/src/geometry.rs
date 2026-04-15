@@ -1,11 +1,21 @@
 use super::*;
 
-pub(crate) fn is_geometry_let(expr: &reify_syntax::Expr, functions: &[CompiledFunction]) -> bool {
-    matches!(
-        &expr.kind,
-        reify_syntax::ExprKind::FunctionCall { name, .. }
-            if is_geometry_function(name) && !functions.iter().any(|f| f.name == *name)
-    )
+pub(crate) fn is_geometry_let(
+    expr: &reify_syntax::Expr,
+    functions: &[CompiledFunction],
+    known_geometry_lets: &HashSet<&str>,
+) -> bool {
+    match &expr.kind {
+        reify_syntax::ExprKind::FunctionCall { name, .. } => {
+            is_geometry_function(name) && !functions.iter().any(|f| f.name == *name)
+        }
+        // No `!functions.iter().any(...)` guard needed: `known_geometry_lets` is
+        // populated only from let-binding names (never function names), and an Ident
+        // expression is syntactically distinct from FunctionCall, so a user-defined
+        // function cannot collide with a geometry let via this branch.
+        reify_syntax::ExprKind::Ident(name) => known_geometry_lets.contains(name.as_str()),
+        _ => false,
+    }
 }
 
 /// Returns the arg indices that are geometry refs for each non-boolean geometry function.
@@ -852,6 +862,50 @@ pub(crate) fn compile_geometry_call(
             };
             sub_ops.push(op);
             Some(sub_ops)
+        }
+        // chamfer(target, distance)
+        "chamfer" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "chamfer() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Chamfer,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("distance".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // fillet(target, radius)
+        "fillet" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "fillet() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Fillet,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("radius".to_string(), it.next().unwrap()),
+                ],
+            }])
         }
         // --- Curve constructors ---
         // line_segment(x1, y1, z1, x2, y2, z2)

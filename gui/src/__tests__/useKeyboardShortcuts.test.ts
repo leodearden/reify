@@ -223,4 +223,36 @@ describe('useKeyboardShortcuts', () => {
       document.body.removeChild(input);
     }
   });
+
+  it('dispatching Ctrl+S keydown on document calls onSave callback', () => {
+    const onSave = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSave });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }),
+    );
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+S is skipped when target is an input element', () => {
+    const onSave = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onSave });
+      return d;
+    });
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }),
+      );
+      expect(onSave).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
 });

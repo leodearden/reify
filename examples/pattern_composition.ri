@@ -1,0 +1,92 @@
+// Pattern composition stress test fixture
+//
+// Exercises linear_pattern_2d, arbitrary_pattern, and union_all at scale.
+// 7 structure definitions covering:
+//   - Basic geometry primitive (BaseElement)
+//   - 1D linear pattern row (PatternRow)
+//   - Degenerate count=0 pattern (PatternCountZero)
+//   - Single-instance count=1 pattern (PatternCountOne)
+//   - 10×10 large grid pattern (PatternGrid10x10)
+//   - Composed linear + arbitrary patterns (PatternComposed)
+//   - Boolean fold via union_all over multiple boxes (BooleanFold)
+
+// ── 1. BaseElement ────────────────────────────────────────────────────────────
+// Simple box geometry. Not used as a pattern target (geometry lets are not valid
+// pattern targets via the current compiler — see design decisions in plan.json).
+
+structure def BaseElement {
+    param element_size : Scalar = 10mm
+
+    constraint element_size > 0mm
+
+    let geo = box(element_size, element_size, element_size)
+}
+
+// ── 2. PatternRow ─────────────────────────────────────────────────────────────
+// 1D linear pattern: 5 instances along X, 1 instance along Y (degenerate row).
+// linear_pattern_2d(target, dx1,dy1,dz1, count1, spacing1, dx2,dy2,dz2, count2, spacing2)
+
+structure def PatternRow {
+    param w : Scalar = 10mm
+
+    let row = linear_pattern_2d(w, 1, 0, 0, 5, 20, 0, 1, 0, 1, 0)
+}
+
+// ── 3. PatternCountZero ───────────────────────────────────────────────────────
+// Degenerate pattern with count1=0 and count2=0. Verifies the compiler does not
+// crash or produce Error diagnostics for zero-instance patterns.
+
+structure def PatternCountZero {
+    param w : Scalar = 10mm
+
+    let empty_pattern = linear_pattern_2d(w, 1, 0, 0, 0, 20, 0, 1, 0, 0, 20)
+}
+
+// ── 4. PatternCountOne ────────────────────────────────────────────────────────
+// Single-instance pattern (count1=1, count2=1). Verifies minimal non-degenerate
+// case compiles and evaluates correctly.
+
+structure def PatternCountOne {
+    param w : Scalar = 10mm
+
+    let single_pattern = linear_pattern_2d(w, 1, 0, 0, 1, 20, 0, 1, 0, 1, 20)
+}
+
+// ── 5. PatternGrid10x10 ───────────────────────────────────────────────────────
+// 10×10 grid: 100 instances. Tests compiler and evaluator at scale.
+
+structure def PatternGrid10x10 {
+    param w : Scalar = 10mm
+
+    let grid = linear_pattern_2d(w, 1, 0, 0, 10, 20, 0, 1, 0, 10, 20)
+}
+
+// ── 6. PatternComposed ────────────────────────────────────────────────────────
+// Combines a linear_pattern_2d and an arbitrary_pattern in the same structure.
+// Each geometry let produces a separate realization (entity.rs compiles each
+// geometry-let independently). arbitrary_pattern takes target + N triples of
+// (dx, dy, dz) transforms; here 2 transforms = 7 total args.
+
+structure def PatternComposed {
+    param w : Scalar = 10mm
+
+    let linear  = linear_pattern_2d(w, 1, 0, 0, 3, 20, 0, 1, 0, 3, 20)
+    let shifted = arbitrary_pattern(w, 10, 0, 0, 0, 20, 0)
+}
+
+// ── 7. BooleanFold ────────────────────────────────────────────────────────────
+// union_all left-folds 4 box() primitives into a single boolean union tree.
+// Each arg to union_all must be a geometry expression (function call or
+// geometry-let ident). Produces 1 realization with 3 Union operations.
+
+structure def BooleanFold {
+    param a : Scalar = 10mm
+    param b : Scalar = 20mm
+
+    let folded = union_all(
+        box(a, a, a),
+        box(b, a, a),
+        box(a, b, a),
+        box(a, a, b)
+    )
+}

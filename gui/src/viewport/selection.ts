@@ -187,6 +187,11 @@ export function createSelection(options: SelectionOptions): SelectionContext {
   }
 
   function fitToView(): void {
+    // getMeshes() delegates to getSceneMeshes(), intentionally excluding ghost meshes.
+    // Ghost entities are secondary context (intermediate let-binding visualizations),
+    // not primary framing targets — fitting the camera to them would be distracting.
+    // Note: adjustClipping in Viewport.tsx *does* include ghosts via getGhostMeshes()
+    // because clipping planes must encompass all visible geometry.
     const meshes = getMeshes();
     if (meshes.size === 0) return;
 

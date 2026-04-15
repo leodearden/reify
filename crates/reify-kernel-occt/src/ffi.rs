@@ -52,6 +52,7 @@ pub mod ffi {
 
         // --- Modifications ---
         fn fillet_all_edges(shape: &OcctShape, radius: f64) -> Result<UniquePtr<OcctShape>>;
+        fn chamfer_all_edges(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Transforms ---
         fn translate_shape(
