@@ -220,72 +220,53 @@ structure S {
 
 // ─── task-1806 step-1: case-variant builtin names produce 'did you mean' hints
 
-#[test]
-fn pi_uppercase_suggests_pi() {
-    let compiled = compile_source("structure S { let x = Pi }");
+/// Assert that compiling `structure S { let x = <input> }` produces an
+/// "unresolved name" error that suggests `<expected_hint>` as the correct spelling.
+///
+/// Extracted from the four structurally-identical hint tests to eliminate
+/// boilerplate and make adding new case variants (e.g. "pI", "tAu") trivial.
+fn assert_suggests_hint(input: &str, expected_hint: &str) {
+    let src = format!("structure S {{ let x = {} }}", input);
+    let compiled = compile_source(&src);
     let errors = errors_only(&compiled);
-    assert!(!errors.is_empty(), "expected a compile error for 'Pi'");
+    assert!(
+        !errors.is_empty(),
+        "expected a compile error for '{}', got no diagnostics",
+        input
+    );
     assert!(
         errors.iter().any(|d| d.message.contains("unresolved name") && d.message.contains("did you mean")),
-        "expected 'unresolved name' with 'did you mean' hint, got: {:?}",
+        "expected 'unresolved name' with 'did you mean' hint for '{}', got: {:?}",
+        input,
         errors
     );
     assert!(
-        errors.iter().any(|d| d.message.contains("`pi`")),
-        "expected hint to suggest `pi`, got: {:?}",
+        errors.iter().any(|d| d.message.contains(&format!("`{}`", expected_hint))),
+        "expected hint to suggest `{}` for '{}', got: {:?}",
+        expected_hint,
+        input,
         errors
     );
+}
+
+#[test]
+fn pi_uppercase_suggests_pi() {
+    assert_suggests_hint("Pi", "pi");
 }
 
 #[test]
 fn pi_all_caps_suggests_pi() {
-    let compiled = compile_source("structure S { let x = PI }");
-    let errors = errors_only(&compiled);
-    assert!(!errors.is_empty(), "expected a compile error for 'PI'");
-    assert!(
-        errors.iter().any(|d| d.message.contains("unresolved name") && d.message.contains("did you mean")),
-        "expected 'unresolved name' with 'did you mean' hint, got: {:?}",
-        errors
-    );
-    assert!(
-        errors.iter().any(|d| d.message.contains("`pi`")),
-        "expected hint to suggest `pi`, got: {:?}",
-        errors
-    );
+    assert_suggests_hint("PI", "pi");
 }
 
 #[test]
 fn tau_titlecase_suggests_tau() {
-    let compiled = compile_source("structure S { let x = Tau }");
-    let errors = errors_only(&compiled);
-    assert!(!errors.is_empty(), "expected a compile error for 'Tau'");
-    assert!(
-        errors.iter().any(|d| d.message.contains("unresolved name") && d.message.contains("did you mean")),
-        "expected 'unresolved name' with 'did you mean' hint, got: {:?}",
-        errors
-    );
-    assert!(
-        errors.iter().any(|d| d.message.contains("`tau`")),
-        "expected hint to suggest `tau`, got: {:?}",
-        errors
-    );
+    assert_suggests_hint("Tau", "tau");
 }
 
 #[test]
 fn tau_all_caps_suggests_tau() {
-    let compiled = compile_source("structure S { let x = TAU }");
-    let errors = errors_only(&compiled);
-    assert!(!errors.is_empty(), "expected a compile error for 'TAU'");
-    assert!(
-        errors.iter().any(|d| d.message.contains("unresolved name") && d.message.contains("did you mean")),
-        "expected 'unresolved name' with 'did you mean' hint, got: {:?}",
-        errors
-    );
-    assert!(
-        errors.iter().any(|d| d.message.contains("`tau`")),
-        "expected hint to suggest `tau`, got: {:?}",
-        errors
-    );
+    assert_suggests_hint("TAU", "tau");
 }
 
 // ─── task-1806 step-4: unrelated names do NOT produce 'did you mean' hints ───
@@ -311,26 +292,20 @@ fn unrelated_name_no_did_you_mean_hint() {
 
 #[test]
 fn lowercase_pi_no_hint() {
+    // Verifies that the exact spelling resolves successfully — no hint emitted.
+    // (A non-empty errors Vec after this assert would be a false pass, so the
+    // redundant "did you mean" iteration guard has been removed.)
     let compiled = compile_source("structure S { let x = pi }");
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors for lowercase 'pi', got: {:?}", errors);
-    assert!(
-        !errors.iter().any(|d| d.message.contains("did you mean")),
-        "expected NO 'did you mean' hint for correct spelling 'pi', got: {:?}",
-        errors
-    );
 }
 
 #[test]
 fn lowercase_tau_no_hint() {
+    // Same as above for tau.
     let compiled = compile_source("structure S { let x = tau }");
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors for lowercase 'tau', got: {:?}", errors);
-    assert!(
-        !errors.iter().any(|d| d.message.contains("did you mean")),
-        "expected NO 'did you mean' hint for correct spelling 'tau', got: {:?}",
-        errors
-    );
 }
 
 // ─── task-1806 step-6: user-defined Pi in scope does NOT produce a hint ───────
