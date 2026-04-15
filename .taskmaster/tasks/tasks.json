@@ -9027,13 +9027,13 @@
         "description": "Consolidates unsafe raw UnitRegistry pointer replacement (safe ref threading in CompilationScope), DRY dimension mapping + entry API + struct duplication removal + content hash + diagnostic improvements, and test coverage gaps (missing units, dead assertions, edge cases, duplicate test).",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 417 plus 2 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 417: Replace unsafe raw UnitRegistry pointer with safe reference threading in CompilationScope\n\n\nCompilationScope stores UnitRegistry as *const UnitRegistry raw pointer (lib.rs:1099) to bypass lifetime constraints. All other registries are threaded as explicit parameters. Refactor to thread unit_registry as a &UnitRegistry parameter to compile_expr_guarded, and remove unit_registry_ptr, set_unit_registry, and lookup_unit_in_registry from CompilationScope.\n\nSource: review suggestions from esc-208-28 (task 208).\n\n\n\n<info added on 2026-04-10T07:13:22.488Z>\nTask 208 has been successfully merged into the main branch with commits 3682b2082 and 6a9cbd02d. The UnitRegistry code from task 208 is now available on the main branch, allowing this task to proceed. Replace the unsafe raw *const UnitRegistry pointer in CompilationScope with a safe &UnitRegistry reference threading.\n</info added on 2026-04-10T07:13:22.488Z>\n\n### Absorbed from task 418: Clean up UnitRegistry API: dimension mapping DRY, entry API, struct duplication, content hash, diagnostics\nSix code quality improvements in crates/reify-compiler/src/lib.rs:\n\n1. Extract shared dimension name->DimensionVector mapping used by both resolve_dimension_type and resolve_type_name.\n2. Use HashMap entry API in UnitRegistry::register() to avoid double lookup.\n3. Have register() return a reference to the inserted entry instead of requiring a separate lookup().\n4. Reduce field duplication between UnitEntry (7 fields) and CompiledUnit (6 of same fields).\n5. Include is_pub in unit content hash.\n6. Evaluate both sides of BinOp in evaluate_const_expr before returning, to collect all diagnostics.\n\nSource: review suggestions from esc-208-28 (task 208).\n\n### Absorbed from task 419: Fix unit_registry_tests coverage gaps (missing units, dead assertions, edge cases, duplicate test)\nSeven test issues in crates/reify-compiler/tests/unit_registry_tests.rs:\n\n1. Add missing 'in' (inch) and 's' (second) to regression_hardcoded_units_all_still_resolve.\n2. Assert all 3 params (mm, deg, kg) in hardcoded_units_still_work_without_declarations.\n3. Add test for Dimensionless dimension type.\n4. Add test for division-by-zero guard in evaluate_const_expr.\n5. Add test for non-constant expression rejection in unit conversion.\n6. Add test that user-declared unit overrides hardcoded unit.\n7. Remove duplicate test: evaluate_const_quantity_literal_cross_ref == unit_cross_ref_in_conversion_expr.\n\nSource: review suggestions from esc-208-28 (task 208).\n",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "208"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:44:49.000Z",
+        "updatedAt": "2026-04-15T17:27:30.291Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
@@ -37854,7 +37854,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:27:25.638Z",
+      "lastModified": "2026-04-15T17:27:30.295Z",
       "taskCount": 1804,
       "completedCount": 1540,
       "tags": [
