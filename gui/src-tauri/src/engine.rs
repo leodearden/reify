@@ -412,72 +412,10 @@ impl EngineSession {
             }
         };
 
-        // Build values
-        let mut values = Vec::new();
-        for template in &compiled.templates {
-            for cell in &template.value_cells {
-                let val = check.values.get_or_undef(&cell.id);
-                let (formatted_value, unit) = format_value(&val);
-
-                let determinacy = match &val {
-                    reify_types::Value::Undef => {
-                        if cell.kind.is_auto() {
-                            DeterminacyState::Auto
-                        } else {
-                            DeterminacyState::Undetermined
-                        }
-                    }
-                    _ => DeterminacyState::Determined,
-                };
-
-                let kind = match cell.kind {
-                    ValueCellKind::Param => "Param",
-                    ValueCellKind::Let => "Let",
-                    ValueCellKind::Auto { .. } => "Auto",
-                };
-
-                values.push(ValueData {
-                    cell_id: cell.id.to_string(),
-                    name: cell.id.member.clone(),
-                    value: formatted_value,
-                    unit,
-                    determinacy: format_determinacy(determinacy),
-                    entity_path: cell.id.entity.clone(),
-                    kind: kind.to_string(),
-                });
-            }
-        }
-
-        // Build constraints — cross-reference compiled constraints for expressions
-        let mut constraints = Vec::new();
-        for entry in &check.constraint_results {
-            let status = match entry.satisfaction {
-                Satisfaction::Satisfied => "Satisfied",
-                Satisfaction::Violated => "Violated",
-                Satisfaction::Indeterminate => "Indeterminate",
-            };
-
-            // Look up the compiled constraint for expression text and parameter refs
-            let (expression, parameter_ids) = compiled
-                .templates
-                .iter()
-                .find_map(|t| {
-                    t.constraints.iter().find(|c| c.id == entry.id).map(|c| {
-                        let expr_str = format_expr(&c.expr);
-                        let param_ids = collect_value_refs(&c.expr);
-                        (expr_str, param_ids)
-                    })
-                })
-                .unwrap_or_default();
-
-            constraints.push(ConstraintData {
-                node_id: entry.id.to_string(),
-                expression,
-                status: status.to_string(),
-                label: entry.label.clone(),
-                parameter_ids,
-            });
-        }
+        // Build values and constraints via shared helpers (also used by
+        // build_preview_gui_state) so both paths stay in sync.
+        let values = build_values(compiled, check);
+        let constraints = build_constraints(compiled, check);
 
         // Build meshes (from tessellation of realizations)
         let meshes = match self.engine.tessellate_snapshot(compiled) {
@@ -571,6 +509,8 @@ impl EngineSession {
             let sub_count = template.sub_components.len();
             let children_hash =
                 ContentHash::combine_all(template.sub_components.iter().map(|s| s.content_hash));
+            // The second field (parent) is intentionally empty for template roots:
+            // they have no containing definition.  Format: "{kind}:{parent}:{sub_count}:{hash}".
             let structural_fingerprint =
                 format!("{}:{}:{}:{}", entity_kind, "", sub_count, children_hash);
 
@@ -585,11 +525,7 @@ impl EngineSession {
 
             // Value-cell entries
             for cell in &template.value_cells {
-                let cell_kind = match cell.kind {
-                    ValueCellKind::Param => "param",
-                    ValueCellKind::Let => "let",
-                    ValueCellKind::Auto { .. } => "auto",
-                };
+                let cell_kind = cell_kind_tree_str(cell.kind);
                 let cell_path = format!("{}.{}", template.name, cell.id.member);
                 let cell_type_hash = ContentHash::of_str(&cell.cell_type.to_string());
                 let structural_fingerprint =
@@ -745,19 +681,53 @@ impl EngineSession {
     }
 }
 
-/// Build a `GuiState` from a preview evaluation result.
+// ---- GUI-state helpers -------------------------------------------------------
+
+/// Map `ValueCellKind` to its **capitalized** GUI-state string form.
 ///
-/// Used by `get_def_preview` to convert a `CheckResult` into the same
-/// `GuiState` format returned by `build_gui_state`, but with:
-/// - **No meshes** — geometry tessellation is skipped (no kernel available).
-/// - **No files** — file list is not meaningful for a single-def preview.
+/// Used in `build_values` (and therefore in both `build_gui_state` and
+/// `build_preview_gui_state`) for the `kind` field of `ValueData`.
 ///
-/// The values and constraints sections are built using the same logic as
-/// `build_gui_state`.
-fn build_preview_gui_state(
+/// # Capitalization convention
+/// The GUI-state API uses capitalized strings (`"Param"`, `"Let"`, `"Auto"`).
+/// The entity-tree and identity-map APIs use the lowercase form — see
+/// `cell_kind_tree_str`.  The difference is intentional: the two APIs are
+/// consumed by different frontend components with different display contracts.
+fn cell_kind_gui_str(kind: ValueCellKind) -> &'static str {
+    match kind {
+        ValueCellKind::Param => "Param",
+        ValueCellKind::Let => "Let",
+        ValueCellKind::Auto { .. } => "Auto",
+    }
+}
+
+/// Map `ValueCellKind` to its **lowercase** tree / identity-map string form.
+///
+/// Used in `build_template_node` and `get_entity_identity_map` for the `kind`
+/// field of `EntityTreeNode` and `structural_fingerprint`.
+///
+/// # Capitalization convention
+/// These APIs use lowercase strings (`"param"`, `"let"`, `"auto"`).  The
+/// GUI-state API uses the capitalized form — see `cell_kind_gui_str`.
+fn cell_kind_tree_str(kind: ValueCellKind) -> &'static str {
+    match kind {
+        ValueCellKind::Param => "param",
+        ValueCellKind::Let => "let",
+        ValueCellKind::Auto { .. } => "auto",
+    }
+}
+
+/// Build the `Vec<ValueData>` shared between `build_gui_state` and
+/// `build_preview_gui_state`.
+///
+/// Iterates every value cell in every template, formats its current value and
+/// determinacy state, and returns one `ValueData` per cell.  Extracting this
+/// logic ensures that changes to value formatting are applied consistently to
+/// both the live GUI state and the def-preview state.
+fn build_values(
     compiled: &reify_compiler::CompiledModule,
     check: &CheckResult,
-) -> GuiState {
+) -> Vec<ValueData> {
     let mut values = Vec::new();
     for template in &compiled.templates {
         for cell in &template.value_cells {
@@ -773,11 +743,6 @@ fn build_preview_gui_state(
                 }
                 _ => DeterminacyState::Determined,
             };
-            let kind = match cell.kind {
-                ValueCellKind::Param => "Param",
-                ValueCellKind::Let => "Let",
-                ValueCellKind::Auto { .. } => "Auto",
-            };
             values.push(ValueData {
                 cell_id: cell.id.to_string(),
                 name: cell.id.member.clone(),
@@ -785,11 +750,24 @@ fn build_preview_gui_state(
                 unit,
                 determinacy: format_determinacy(determinacy),
                 entity_path: cell.id.entity.clone(),
-                kind: kind.to_string(),
+                kind: cell_kind_gui_str(cell.kind).to_string(),
             });
         }
     }
+    values
+}
 
+/// Build the `Vec<ConstraintData>` shared between `build_gui_state` and
+/// `build_preview_gui_state`.
+///
+/// Iterates the check result's constraint entries, cross-references the compiled
+/// constraint for its expression text and value refs, and returns one
+/// `ConstraintData` per entry.  Extracting this logic ensures that changes to
+/// constraint formatting are applied consistently to both call sites.
+fn build_constraints(
+    compiled: &reify_compiler::CompiledModule,
+    check: &CheckResult,
+) -> Vec<ConstraintData> {
     let mut constraints = Vec::new();
     for entry in &check.constraint_results {
         let status = match entry.satisfaction {
@@ -815,11 +793,28 @@ fn build_preview_gui_state(
             parameter_ids,
         });
     }
+    constraints
+}
 
+// ---- build_preview_gui_state -------------------------------------------------
+
+/// Build a `GuiState` from a preview evaluation result.
+///
+/// Used by `get_def_preview` to convert a `CheckResult` into the same
+/// `GuiState` format returned by `build_gui_state`, but with:
+/// - **No meshes** — geometry tessellation is skipped (no kernel available).
+/// - **No files** — file list is not meaningful for a single-def preview.
+///
+/// Delegates to `build_values` and `build_constraints` — the same helpers used
+/// by `build_gui_state` — so both paths stay in sync automatically.
+fn build_preview_gui_state(
+    compiled: &reify_compiler::CompiledModule,
+    check: &CheckResult,
+) -> GuiState {
     GuiState {
         meshes: Vec::new(),
-        values,
-        constraints,
+        values: build_values(compiled, check),
+        constraints: build_constraints(compiled, check),
         files: Vec::new(),
     }
 }
@@ -847,11 +842,7 @@ pub(crate) fn build_template_node(
 
     // Value cells: param, let, auto
     for cell in &template.value_cells {
-        let cell_kind = match cell.kind {
-            ValueCellKind::Param => "param",
-            ValueCellKind::Let => "let",
-            ValueCellKind::Auto { .. } => "auto",
-        };
+        let cell_kind = cell_kind_tree_str(cell.kind);
         let member = &cell.id.member;
         let cell_path = format!("{}.{}", entity_path, member);
         let is_geometry_member = member == "geometry";
