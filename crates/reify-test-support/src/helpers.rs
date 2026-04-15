@@ -95,6 +95,33 @@ pub fn compile_template(source: &str, name: &str) -> (TopologyTemplate, Vec<Diag
     (template, diagnostics)
 }
 
+/// Filter a diagnostic slice to only `Severity::Error` entries.
+///
+/// This is the primitive; [`errors_only`] is the convenience wrapper
+/// that takes a `&CompiledModule`.
+pub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
+/// Return only the `Severity::Error` diagnostics from a compiled module.
+///
+/// Convenience wrapper around [`collect_errors`].
+pub fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    collect_errors(&module.diagnostics)
+}
+
+/// Return only the `Severity::Warning` diagnostics from a compiled module.
+pub fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect()
+}
+
 /// Parse `source`, assert no parse errors, compile, assert no compile errors.
 /// Returns the compiled module ready for eval.
 ///
