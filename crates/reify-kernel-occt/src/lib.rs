@@ -227,12 +227,15 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Chamfer { target, distance } => {
-                // Chamfer not yet implemented via OCCT wrapper
-                let _ = self.get_shape(*target)?;
-                let _ = extract_f64(distance)?;
-                return Err(GeometryError::OperationFailed(
-                    "Chamfer not yet implemented".into(),
-                ));
+                let shape = self.get_shape(*target)?;
+                let d = extract_f64(distance)?;
+                if !(d.is_finite() && d > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "chamfer distance must be a finite positive value".into(),
+                    ));
+                }
+                ffi::ffi::chamfer_all_edges(shape, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Translate { target, dx, dy, dz } => {
                 let shape = self.get_shape(*target)?;
