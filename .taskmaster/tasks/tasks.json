@@ -6790,7 +6790,7 @@
           "318",
           "320"
         ],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6802,10 +6802,16 @@
             "examples/advanced_geometry.ri",
             "examples/measurement_queries.ri",
             "crates/reify-eval/tests/m8_2_stdlib_integration.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib M8.2 integration: advanced_geometry.ri + measurement_queries.ri"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-15T05:09:40.428Z"
+        "updatedAt": "2026-04-15T05:11:07.537Z"
       },
       {
         "id": "326",
@@ -35636,9 +35642,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T05:09:40.428Z",
+      "lastModified": "2026-04-15T05:11:07.543Z",
       "taskCount": 1704,
-      "completedCount": 1465,
+      "completedCount": 1466,
       "tags": [
         "master"
       ]
