@@ -40,6 +40,25 @@ pub fn assert_no_eval_errors(result: &reify_eval::EvalResult) {
     assert!(errors.is_empty(), "eval errors: {:?}", errors);
 }
 
+/// Assert that an [`reify_eval::EvalResult`] contains no diagnostics of any severity.
+///
+/// This is stricter than [`assert_no_eval_errors`]: it also fails on Warning, Info,
+/// and any other severity. Use this when the expected outcome is completely clean — no
+/// errors, no warnings, no informational messages. This is appropriate for tests
+/// verifying simple, well-formed inputs where any diagnostic indicates a regression.
+///
+/// # Panics
+/// Panics if `result.diagnostics` is non-empty. The panic message lists all diagnostics.
+#[cfg(feature = "eval-helpers")]
+#[track_caller]
+pub fn assert_eval_clean(result: &reify_eval::EvalResult) {
+    assert!(
+        result.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        result.diagnostics
+    );
+}
+
 /// Parse `source`, assert no parse errors, compile, assert no compile errors.
 /// Returns the compiled module ready for eval.
 ///
@@ -173,6 +192,36 @@ mod tests {
         };
         // Should not panic — warnings are not errors
         super::assert_no_eval_errors(&result);
+    }
+
+    /// assert_eval_clean should not panic when the result has no diagnostics.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_assert_eval_clean_passes_on_empty_result() {
+        use reify_types::ValueMap;
+        use std::collections::HashMap;
+        let result = reify_eval::EvalResult {
+            values: ValueMap::new(),
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+        };
+        super::assert_eval_clean(&result);
+    }
+
+    /// assert_eval_clean should panic when the result has a Warning diagnostic —
+    /// it is stricter than assert_no_eval_errors.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    #[should_panic(expected = "expected no diagnostics")]
+    fn test_assert_eval_clean_panics_on_warning() {
+        use reify_types::{Diagnostic, ValueMap};
+        use std::collections::HashMap;
+        let result = reify_eval::EvalResult {
+            values: ValueMap::new(),
+            diagnostics: vec![Diagnostic::warning("just a warning")],
+            resolved_params: HashMap::new(),
+        };
+        super::assert_eval_clean(&result);
     }
 
     #[cfg(feature = "eval-helpers")]
