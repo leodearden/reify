@@ -329,6 +329,24 @@ fn refinement_chain_values() {
         ),
     }
 
+    // Check Component.half_size = size/2 = 200mm/2 = 100mm = 0.1 SI
+    // (inherited let binding from Measurable trait: half_size = size / 2)
+    let half_size_id = ValueCellId::new("Component", "half_size");
+    let half_size_val = result
+        .values
+        .get(&half_size_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found in result", half_size_id));
+    match half_size_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.1).abs() < 1e-12,
+                "expected 0.1 SI for Component.half_size (size/2 = 200mm/2), got {}",
+                si_value
+            );
+        }
+        other => panic!("expected Scalar for Component.half_size, got {:?}", other),
+    }
+
     // All constraints from the full chain should be satisfied
     let check_result = engine.check(&compiled);
     let comp_constraints: Vec<_> = check_result
