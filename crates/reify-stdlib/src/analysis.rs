@@ -61,6 +61,11 @@ fn von_mises(args: &[Value]) -> Value {
 ///
 /// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending.
 fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
+    debug_assert!(
+        d.len() >= 9,
+        "compute_eigenvalues_3x3 requires at least 9 elements, got {}",
+        d.len()
+    );
     // Row-major: d[0]=a00, d[1]=a01, d[2]=a02, d[4]=a11, d[5]=a12, d[8]=a22
     // This function assumes a symmetric matrix — only upper-triangle entries
     // (d[1], d[2], d[5]) are read. The lower-triangle (d[3], d[6], d[7]) is
@@ -114,7 +119,7 @@ fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
 
     // Two eigenvalues via trigonometry, third from trace constraint
     let eig1 = q + 2.0 * p * phi.cos();
-    let eig3 = q + 2.0 * p * (phi + 2.0 * std::f64::consts::FRAC_PI_3 * 2.0).cos();
+    let eig3 = q + 2.0 * p * (phi + 4.0 * std::f64::consts::FRAC_PI_3).cos();
     let eig2 = 3.0 * q - eig1 - eig3;
 
     let mut eigs = [eig1, eig2, eig3];

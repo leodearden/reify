@@ -685,7 +685,7 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 ///
 /// Mirrors the unpacking convention in the `sample` handler's `Value::Lambda`
 /// arm and `calculus.rs::detect_single_point_param`.
-pub fn apply_lambda_with_point_unpacking(
+pub(crate) fn apply_lambda_with_point_unpacking(
     lambda: &Value,
     point: &Value,
     ctx: &EvalContext,

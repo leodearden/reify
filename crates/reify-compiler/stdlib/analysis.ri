@@ -6,10 +6,11 @@
 // ── Analysis result trait ──────────────────────────────────────────────────
 
 // AnalysisResult describes the outputs of a stress analysis.
-// von_mises_stress: equivalent von Mises stress (Pa, using Real)
-// principal_stress_1/2/3: principal stresses sorted ascending (Pa, using Real)
-// max_shear_stress: maximum shear stress (Pa, using Real)
-// safety_factor_value: yield_strength / von_mises_stress (dimensionless)
+// All params use `Real` as a dimension-agnostic placeholder. The runtime
+// builtins produce correctly-dimensioned values (e.g. Scalar<PRESSURE> for
+// stresses, dimensionless Real for safety_factor_value). This trait is
+// intended as a structural contract — it does not participate in dimension
+// checking and will not reject dimensioned conforming values.
 trait AnalysisResult {
     param von_mises_stress : Real
     param principal_stress_1 : Real
