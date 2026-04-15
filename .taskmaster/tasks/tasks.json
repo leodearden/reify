@@ -35833,6 +35833,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1718,
+        "title": "Add kg() constructor to reify-test-support values",
+        "description": "Add `pub fn kg(v: f64) -> Value` to crates/reify-test-support/src/values.rs following the exact pattern of mm()/newton()/kelvin(). Then replace the local kg() in crates/reify-eval/tests/incremental_integration.rs (lines ~63-68) with an import from reify_test_support.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35845,7 +35856,7 @@
       ],
       "created": "2026-04-15T06:07:16.445Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T06:07:54.128Z"
+      "updated": "2026-04-15T06:08:17.355Z"
     }
   }
 }
