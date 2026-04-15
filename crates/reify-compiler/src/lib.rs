@@ -17,6 +17,10 @@ mod guards;
 mod conformance;
 mod functions;
 mod geometry;
+mod geometry_boolean;
+mod geometry_transform;
+mod geometry_modify;
+mod geometry_curve;
 mod constants;
 
 pub use types::*;
@@ -39,6 +43,10 @@ pub(crate) use guards::*;
 pub(crate) use conformance::*;
 pub(crate) use functions::*;
 pub(crate) use geometry::*;
+pub(crate) use geometry_boolean::*;
+pub(crate) use geometry_transform::*;
+pub(crate) use geometry_modify::*;
+pub(crate) use geometry_curve::*;
 
 use std::collections::{HashMap, HashSet};
 
