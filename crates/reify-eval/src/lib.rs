@@ -4032,6 +4032,9 @@ fn compile_geometry_op(
                         .collect();
                     let vals = vals?;
                     if vals.len() < 2 {
+                        diagnostics.push(Diagnostic::error(
+                            "nurbs() requires at least degree and n_points arguments".to_string(),
+                        ));
                         return None;
                     }
                     let degree = vals[0] as usize;
