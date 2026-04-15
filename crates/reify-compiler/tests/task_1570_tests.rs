@@ -288,7 +288,7 @@ fn qualified_access_ice_fallback_returns_undef_literal() {
     let info_diags: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Info && d.message.contains("PLACEHOLDER_WILL_NOT_MATCH"))
+        .filter(|d| d.severity == Severity::Info && d.message.contains("member not found in scope"))
         .collect();
     assert_eq!(
         info_diags.len(),
