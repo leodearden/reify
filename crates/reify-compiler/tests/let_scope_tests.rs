@@ -45,6 +45,27 @@ const SRC_UNION_ALL_LET_BOUND: &str = r#"structure S {
     let d_geom = union_all(a, b, c)
 }"#;
 
+const SRC_INTERSECTION_LET_BOUND: &str = r#"structure S {
+    param w: Scalar = 10mm
+    param h: Scalar = 10mm
+    param d: Scalar = 10mm
+    param r: Scalar = 7mm
+    let a = box(w, h, d)
+    let b = sphere(r)
+    let c = intersection(a, b)
+}"#;
+
+const SRC_INTERSECTION_ALL_LET_BOUND: &str = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    param w: Scalar = 8mm
+    param d: Scalar = 8mm
+    let a = cylinder(r, h)
+    let b = sphere(r)
+    let c = box(w, h, d)
+    let d_geom = intersection_all(a, b, c)
+}"#;
+
 // ─── Op-sequence assertion helpers ────────────────────────────────────────────
 
 /// Expected geometry op variant for `assert_op_sequence`.
@@ -230,16 +251,7 @@ fn union_with_let_bound_args() {
 
 #[test]
 fn intersection_with_let_bound_args() {
-    let source = r#"structure S {
-    param w: Scalar = 10mm
-    param h: Scalar = 10mm
-    param d: Scalar = 10mm
-    param r: Scalar = 7mm
-    let a = box(w, h, d)
-    let b = sphere(r)
-    let c = intersection(a, b)
-}"#;
-    let compiled = compile_no_errors(source);
+    let compiled = compile_no_errors(SRC_INTERSECTION_LET_BOUND);
     let template = &compiled.templates[0];
     assert_eq!(
         template.realizations.len(),
@@ -314,17 +326,7 @@ fn non_geometry_let_in_boolean_op_errors() {
 
 #[test]
 fn intersection_all_with_let_bound_args() {
-    let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
-    param w: Scalar = 8mm
-    param d: Scalar = 8mm
-    let a = cylinder(r, h)
-    let b = sphere(r)
-    let c = box(w, h, d)
-    let d_geom = intersection_all(a, b, c)
-}"#;
-    let compiled = compile_no_errors(source);
+    let compiled = compile_no_errors(SRC_INTERSECTION_ALL_LET_BOUND);
     let template = &compiled.templates[0];
     assert_eq!(
         template.realizations.len(),
