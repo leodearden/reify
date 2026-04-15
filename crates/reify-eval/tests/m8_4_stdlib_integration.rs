@@ -293,11 +293,10 @@ fn linalg_inverse_equals_transpose() {
         [-1.0,  0.0, 0.0],
         [ 0.0,  0.0, 1.0],
     ];
-    for row in 0..3usize {
-        for col in 0..3usize {
+    for (row, expected_row) in expected_rt.iter().enumerate() {
+        for (col, &exp) in expected_row.iter().enumerate() {
             let inv_elem   = tensor_elem(inv_val,   row, col);
             let trans_elem = tensor_elem(trans_val, row, col);
-            let exp        = expected_rt[row][col];
             assert!(
                 (inv_elem - trans_elem).abs() < 1e-9,
                 "inv_rot[{}][{}] ({}) != trans_rot[{}][{}] ({}): R^-1 should equal R^T",
@@ -589,6 +588,7 @@ fn io_export_surface_finish() {
 // ── Helper unit tests ────────────────────────────────────────────────────────
 
 #[test]
+#[allow(clippy::approx_constant)]
 fn expect_real_or_int_extracts_real() {
     let val = Value::Real(3.14);
     let result = expect_real_or_int(&val, "test_label");

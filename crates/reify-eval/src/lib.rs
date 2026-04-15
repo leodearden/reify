@@ -1924,6 +1924,7 @@ impl Engine {
                             reify_expr::eval_expr(
                                 expr,
                                 &reify_expr::EvalContext::new(&values, &functions)
+                                    .with_determinacy(&new_snapshot.values)
                                     .with_meta(&self.meta_map),
                             )
                         } else {
