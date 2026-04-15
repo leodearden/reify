@@ -1031,3 +1031,44 @@ fn no_tautological_self_equality_constraints() {
          replace it with a meaningful assertion such as `constraint determined(height_ok)`"
     );
 }
+
+// ── Test 22: height_ok determinacy constraint is satisfied ───────────────────
+
+/// Validates that the replacement constraint `determined(height_ok)` is
+/// semantically meaningful:
+/// 1. Assembly.height_ok evaluates to Bool(true) — not Undef.
+/// 2. The check_canonical result contains at least one constraint that is
+///    Satisfied and whose source involves `height_ok` (via the determined call).
+///
+/// This test passes immediately after the step-2 fix because height_ok is the
+/// conjunction `height > 100mm && height < 500mm` with height=300mm → Bool(true),
+/// and `determined(Bool(true))` is Satisfied.
+#[test]
+fn height_ok_determinacy_constraint_satisfied() {
+    // 1. height_ok evaluates to Bool(true) — not Undef
+    let result = eval_canonical();
+    let id = ValueCellId::new("Assembly", "height_ok");
+    let v = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("Assembly.height_ok not found in eval result"));
+    assert_eq!(
+        v,
+        &Value::Bool(true),
+        "Assembly.height_ok should be Bool(true) (height=300mm satisfies 100mm..500mm), got {:?}",
+        v
+    );
+
+    // 2. All constraints in check_canonical are Satisfied (includes determined(height_ok))
+    let check_result = check_canonical();
+    for entry in &check_result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {} should be Satisfied after replacing tautology with determined(height_ok), \
+             got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
+}
