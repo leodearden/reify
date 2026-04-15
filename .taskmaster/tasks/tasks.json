@@ -34733,7 +34733,7 @@
         "description": "Follow-up from esc-1642-57 S3+S4+S5 (reviewer_comprehensive). Three small hardening items in crates/reify-test-support: (a) S3: In tests/ignore_reason_hygiene.rs, after collecting test_files, add assert!(test_files.len() > 50, ...) or assert a sentinel path (crates/reify-expr/tests/field_calculus_tests.rs) is in the set — guards against silent walker breakage. (b) S4: In src/ignore_hygiene.rs walk_test_rs_files, either add node_modules and vendor to the skip list or document the conservative skip-only-build/VCS-noise policy. (c) S5: In src/ignore_hygiene.rs ~line 199 test fspp_multiline_reason, add assert!(violations[0].starts_with(\"line 1:\")) to lock in attribute-line (not needle-line) reporting semantics.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -34747,7 +34747,7 @@
             "crates/reify-test-support/tests"
           ]
         },
-        "updatedAt": "2026-04-14T21:01:03.464Z"
+        "updatedAt": "2026-04-15T00:20:47.035Z"
       },
       {
         "id": "1661",
@@ -35224,9 +35224,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:18:14.376Z",
+      "lastModified": "2026-04-15T00:20:47.036Z",
       "taskCount": 1688,
-      "completedCount": 1428,
+      "completedCount": 1429,
       "tags": [
         "master"
       ]
