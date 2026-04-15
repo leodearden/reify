@@ -1146,7 +1146,7 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug() {
 #[test]
 fn xyz_sum_field_helper_returns_expected_structure() {
     let domain_type = Type::point3(Type::Real);
-    let (field_val, field_type) = make_xyz_sum_field(domain_type.clone());
+    let (field_val, field_type) = make_xyz_sum_field(domain_type);
 
     // Check the Value side
     match &field_val {
@@ -1174,6 +1174,54 @@ fn xyz_sum_field_helper_returns_expected_structure() {
                 domain.as_ref(),
                 &Type::point3(Type::Real),
                 "field_type domain must be point3(Real)"
+            );
+            assert_eq!(
+                codomain.as_ref(),
+                &Type::Real,
+                "field_type codomain must be Real"
+            );
+        }
+        other => panic!("expected Type::Field, got {:?}", other),
+    }
+}
+
+/// Verifies that `make_xyz_sum_field` produces the correct structure when
+/// called with `Type::vec3(Type::Real)` as the domain type.
+///
+/// This guards against a regression where the helper might accidentally
+/// hardcode a domain type (e.g., always returning `point3`) regardless of
+/// the argument passed.
+#[test]
+fn xyz_sum_field_helper_with_vec3_domain() {
+    let domain_type = Type::vec3(Type::Real);
+    let (field_val, field_type) = make_xyz_sum_field(domain_type);
+
+    // Check the Value side
+    match &field_val {
+        Value::Field {
+            domain_type: d,
+            codomain_type: c,
+            source,
+            ..
+        } => {
+            assert_eq!(d, &Type::vec3(Type::Real), "domain_type must be vec3(Real)");
+            assert_eq!(c, &Type::Real, "codomain_type must be Real");
+            assert_eq!(
+                source,
+                &FieldSourceKind::Analytical,
+                "source must be Analytical"
+            );
+        }
+        other => panic!("expected Value::Field, got {:?}", other),
+    }
+
+    // Check the Type side
+    match &field_type {
+        Type::Field { domain, codomain } => {
+            assert_eq!(
+                domain.as_ref(),
+                &Type::vec3(Type::Real),
+                "field_type domain must be vec3(Real)"
             );
             assert_eq!(
                 codomain.as_ref(),
