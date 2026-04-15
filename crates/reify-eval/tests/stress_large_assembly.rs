@@ -92,6 +92,45 @@ fn eval_canonical_is_cached() {
     );
 }
 
+/// Assert that `entity.mass == entity.volume * entity.density` within 1e-9.
+fn assert_mass_equals_volume_times_density(result: &reify_eval::EvalResult, entity: &str) {
+    let mass_id = ValueCellId::new(entity, "mass");
+    let vol_id = ValueCellId::new(entity, "volume");
+    let den_id = ValueCellId::new(entity, "density");
+
+    let mass = result
+        .values
+        .get(&mass_id)
+        .unwrap_or_else(|| panic!("{}.mass not found in eval result", entity));
+    let volume = result
+        .values
+        .get(&vol_id)
+        .unwrap_or_else(|| panic!("{}.volume not found in eval result", entity));
+    let density = result
+        .values
+        .get(&den_id)
+        .unwrap_or_else(|| panic!("{}.density not found in eval result", entity));
+
+    let mass_val = mass
+        .as_f64()
+        .unwrap_or_else(|| panic!("{}.mass should be numeric, got {:?}", entity, mass));
+    let vol_val = volume
+        .as_f64()
+        .unwrap_or_else(|| panic!("{}.volume should be numeric, got {:?}", entity, volume));
+    let den_val = density
+        .as_f64()
+        .unwrap_or_else(|| panic!("{}.density should be numeric, got {:?}", entity, density));
+
+    let expected = vol_val * den_val;
+    assert!(
+        (mass_val - expected).abs() < 1e-9,
+        "{}.mass should be volume*density ≈ {}, got {}",
+        entity,
+        expected,
+        mass_val
+    );
+}
+
 // ── step-5: smoke test ────────────────────────────────────────────────────────
 
 /// Load large_assembly.ri with stdlib, compile, eval — no errors, non-empty values.
@@ -158,81 +197,13 @@ fn assembly_has_50_plus_subs() {
 /// SteelBeam.mass = volume * density (tolerance 1e-9).
 #[test]
 fn mass_propagation_steel_beam() {
-    let result = eval_canonical();
-    let mass_id = ValueCellId::new("SteelBeam", "mass");
-    let vol_id = ValueCellId::new("SteelBeam", "volume");
-    let den_id = ValueCellId::new("SteelBeam", "density");
-
-    let mass = result
-        .values
-        .get(&mass_id)
-        .unwrap_or_else(|| panic!("SteelBeam.mass not found in eval result"));
-    let volume = result
-        .values
-        .get(&vol_id)
-        .unwrap_or_else(|| panic!("SteelBeam.volume not found in eval result"));
-    let density = result
-        .values
-        .get(&den_id)
-        .unwrap_or_else(|| panic!("SteelBeam.density not found in eval result"));
-
-    let mass_val = mass
-        .as_f64()
-        .unwrap_or_else(|| panic!("SteelBeam.mass should be numeric, got {:?}", mass));
-    let vol_val = volume
-        .as_f64()
-        .unwrap_or_else(|| panic!("SteelBeam.volume should be numeric, got {:?}", volume));
-    let den_val = density
-        .as_f64()
-        .unwrap_or_else(|| panic!("SteelBeam.density should be numeric, got {:?}", density));
-
-    let expected = vol_val * den_val;
-    assert!(
-        (mass_val - expected).abs() < 1e-9,
-        "SteelBeam.mass should be volume*density ≈ {}, got {}",
-        expected,
-        mass_val
-    );
+    assert_mass_equals_volume_times_density(&eval_canonical(), "SteelBeam");
 }
 
 /// AluminumPlate.mass = volume * density (tolerance 1e-9).
 #[test]
 fn mass_propagation_aluminum_plate() {
-    let result = eval_canonical();
-    let mass_id = ValueCellId::new("AluminumPlate", "mass");
-    let vol_id = ValueCellId::new("AluminumPlate", "volume");
-    let den_id = ValueCellId::new("AluminumPlate", "density");
-
-    let mass = result
-        .values
-        .get(&mass_id)
-        .unwrap_or_else(|| panic!("AluminumPlate.mass not found in eval result"));
-    let volume = result
-        .values
-        .get(&vol_id)
-        .unwrap_or_else(|| panic!("AluminumPlate.volume not found in eval result"));
-    let density = result
-        .values
-        .get(&den_id)
-        .unwrap_or_else(|| panic!("AluminumPlate.density not found in eval result"));
-
-    let mass_val = mass
-        .as_f64()
-        .unwrap_or_else(|| panic!("AluminumPlate.mass should be numeric, got {:?}", mass));
-    let vol_val = volume
-        .as_f64()
-        .unwrap_or_else(|| panic!("AluminumPlate.volume should be numeric, got {:?}", volume));
-    let den_val = density
-        .as_f64()
-        .unwrap_or_else(|| panic!("AluminumPlate.density should be numeric, got {:?}", density));
-
-    let expected = vol_val * den_val;
-    assert!(
-        (mass_val - expected).abs() < 1e-9,
-        "AluminumPlate.mass should be volume*density ≈ {}, got {}",
-        expected,
-        mass_val
-    );
+    assert_mass_equals_volume_times_density(&eval_canonical(), "AluminumPlate");
 }
 
 /// LargeAssembly.total_mass exists and is > 0.
