@@ -24,11 +24,15 @@
 //! Follows the pattern established by `m9_combined.rs`, `m10_combined.rs`, and
 //! `m11_full_integration.rs`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use reify_compiler::CompiledModule;
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{ModulePath, Satisfaction, Value, ValueCellId};
+use reify_types::{
+    CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind, ModulePath,
+    Satisfaction, Type, Value, ValueCellId, ValueMap,
+};
 
 // ── Cross-milestone inline source ─────────────────────────────────────────────
 //
@@ -352,24 +356,292 @@ fn assert_all_value_variants_listed(v: &reify_types::Value) {
     };
 }
 
-/// Verify that `assert_all_type_variants_listed` covers the expected variant
-/// count and that all 27 variants are exercised at the call site (step-4).
+/// Verify that `assert_all_type_variants_listed` covers all 27 `Type` variants
+/// by constructing one instance of each and calling the guard.
 ///
-/// **Fails in step-3** because no Type instances are constructed yet; the
-/// `todo!()` will panic when run.
+/// If a new variant is ever added to `Type` without being listed in
+/// `assert_all_type_variants_listed`, this file will fail to compile.
 #[test]
 fn checkpoint_type_variant_coverage() {
-    todo!("step-4: construct all 27 Type variants and exercise the exhaustiveness guard")
+    // Build one instance of each of the 27 Type variants.
+    let all_types: Vec<Type> = vec![
+        // Primitive scalars (4)
+        Type::Bool,
+        Type::Int,
+        Type::Real,
+        Type::String,
+        // Dimensioned scalar (1)
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        // Named enum (1)
+        Type::Enum("Color".to_string()),
+        // Collection types (4)
+        Type::List(Box::new(Type::Int)),
+        Type::Set(Box::new(Type::Int)),
+        Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+        Type::Option(Box::new(Type::Int)),
+        // Callable / generic (3)
+        Type::Function {
+            params: vec![Type::Real],
+            return_type: Box::new(Type::Real),
+        },
+        Type::TypeParam("T".to_string()),
+        Type::StructureRef("Bolt".to_string()),
+        // Field mapping (1)
+        Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::Real),
+        },
+        // Geometry handle (1)
+        Type::Geometry,
+        // Geometric vector spaces (3)
+        Type::Point {
+            n: 3,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+        },
+        Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+        },
+        Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity: Box::new(Type::Real),
+        },
+        // Complex and range (2)
+        Type::Complex(Box::new(Type::Real)),
+        Type::Range(Box::new(Type::Int)),
+        // Rigid-body / orientation (3)
+        Type::Orientation(3),
+        Type::Frame(3),
+        Type::Transform(3),
+        // 3D geometric primitives (3)
+        Type::Plane,
+        Type::Axis,
+        Type::BoundingBox,
+        // Matrix (1)
+        Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(Type::Real),
+        },
+    ];
+
+    assert_eq!(
+        all_types.len(),
+        27,
+        "expected exactly 27 Type variants; update this test if the enum changes"
+    );
+
+    // Drive the exhaustiveness guard with each variant. Compile error here means
+    // assert_all_type_variants_listed is missing a pattern.
+    for t in &all_types {
+        assert_all_type_variants_listed(t);
+        // Verify Debug produces non-empty output for each variant.
+        assert!(
+            !format!("{t:?}").is_empty(),
+            "expected non-empty Debug output for {:?}",
+            t
+        );
+    }
 }
 
-/// Verify that all 25 `Value` variants can be constructed without panics in
-/// `Display`, `content_hash`, `try_infer_type`, and `format_hover`.
+/// Verify that all 25 `Value` variants can be constructed and that the four key
+/// trait implementations — `Display`, `content_hash`, `try_infer_type`,
+/// `format_hover` — do not panic for any variant.
 ///
-/// **Fails in step-3** because no Value instances are constructed yet; the
-/// `todo!()` will panic when run.
+/// This also serves as a compile-time exhaustiveness guard: if a new variant is
+/// added to `Value`, the `assert_all_value_variants_listed` match below must be
+/// updated, otherwise this file won't compile.
 #[test]
 fn checkpoint_value_variant_coverage() {
-    todo!("step-4: construct all 25 Value variants and call Display/content_hash/try_infer_type/format_hover")
+    // Shared lambda body used for Field and Lambda variants.
+    let lambda_body = CompiledExpr {
+        kind: CompiledExprKind::Literal(Value::Real(1.0)),
+        result_type: Type::Real,
+        content_hash: ContentHash(0),
+    };
+
+    // Helper to build a 3-component Length Point.
+    let make_point3 = || {
+        Value::Point(vec![
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            };
+            3
+        ])
+    };
+
+    // Helper to build a 3-component dimensionless unit Vector.
+    let make_unit_vec3 = || {
+        Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        ])
+    };
+
+    // Helper to build a Length translation Vector.
+    let make_len_vec3 = || {
+        Value::Vector(vec![
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            };
+            3
+        ])
+    };
+
+    // Identity orientation quaternion (w=1, x=y=z=0).
+    let identity_orient = Value::Orientation {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+
+    // Build one instance of each of the 25 Value variants.
+    let all_values: Vec<Value> = vec![
+        // Primitive scalars (4)
+        Value::Bool(true),
+        Value::Int(42),
+        Value::Real(2.718),
+        Value::String("hello".to_string()),
+        // Dimensioned scalar (1)
+        Value::Scalar {
+            si_value: 0.1,
+            dimension: DimensionVector::LENGTH,
+        },
+        // Named enum (1)
+        Value::Enum {
+            type_name: "Color".to_string(),
+            variant: "Red".to_string(),
+        },
+        // Collection types (4)
+        Value::List(vec![Value::Int(1), Value::Int(2)]),
+        Value::Set(BTreeSet::from([Value::Int(1), Value::Int(2)])),
+        Value::Map(BTreeMap::from([(
+            Value::String("k".to_string()),
+            Value::Int(1),
+        )])),
+        Value::Option(Some(Box::new(Value::Int(5)))),
+        // Field (lambda-backed analytical field) (1)
+        Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Lambda {
+                params: vec![],
+                body: Box::new(lambda_body.clone()),
+                captures: ValueMap::new(),
+            }),
+        },
+        // Lambda closure (1)
+        Value::Lambda {
+            params: vec![],
+            body: Box::new(lambda_body),
+            captures: ValueMap::new(),
+        },
+        // Numeric arrays (1)
+        Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
+        // Geometric vectors / points (2)
+        make_point3(),
+        make_len_vec3(),
+        // Complex number (1)
+        Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+        // Rigid-body / orientation (3)
+        identity_orient.clone(),
+        Value::Frame {
+            origin: Box::new(make_point3()),
+            basis: Box::new(identity_orient.clone()),
+        },
+        Value::Transform {
+            rotation: Box::new(identity_orient.clone()),
+            translation: Box::new(make_len_vec3()),
+        },
+        // 3D geometric primitives (3)
+        Value::Plane {
+            origin: Box::new(make_point3()),
+            normal: Box::new(make_unit_vec3()),
+        },
+        Value::Axis {
+            origin: Box::new(make_point3()),
+            direction: Box::new(make_unit_vec3()),
+        },
+        Value::BoundingBox {
+            min: Box::new(make_point3()),
+            max: Box::new(Value::Point(vec![
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::LENGTH,
+                };
+                3
+            ])),
+        },
+        // Range (1)
+        Value::Range {
+            lower: Some(Box::new(Value::Real(0.0))),
+            upper: Some(Box::new(Value::Real(10.0))),
+            lower_inclusive: true,
+            upper_inclusive: false,
+        },
+        // Matrix (1)
+        Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(1.0)],
+        ]),
+        // Undefined (1)
+        Value::Undef,
+    ];
+
+    assert_eq!(
+        all_values.len(),
+        25,
+        "expected exactly 25 Value variants; update this test if the enum changes"
+    );
+
+    // For each variant: drive the exhaustiveness guard and exercise the four
+    // key trait implementations. None should panic.
+    for v in &all_values {
+        // Drive exhaustiveness guard (compile error if any variant is missing).
+        assert_all_value_variants_listed(v);
+
+        // (a) Display produces non-empty output.
+        let display = format!("{v}");
+        assert!(
+            !display.is_empty(),
+            "Display produced empty string for {:?}",
+            v
+        );
+
+        // (b) content_hash does not panic.
+        let _ = v.content_hash();
+
+        // (c) try_infer_type does not panic.
+        let _ = v.try_infer_type();
+
+        // (d) format_hover does not panic.
+        let _ = v.format_hover();
+    }
 }
 
 // ── Test-count floor checkpoint (step-5 stub) ────────────────────────────────
