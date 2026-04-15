@@ -865,5 +865,34 @@ fn no_prelude_suppresses_import_prelude() {
         errors
     );
 
+    // Positive control: WITHOUT #no_prelude the same import/unit resolves fine.
+    let dir2 = test_dir("no_prelude_suppresses_import_prelude_pos");
+    fs::write(
+        dir2.join("dep.ri"),
+        "pub unit myunit : Length = 0.001\npub structure Part {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+    fs::write(
+        dir2.join("consumer.ri"),
+        "import dep\nstructure S {\n    param y: Length = 5myunit\n}",
+    )
+    .unwrap();
+    let resolver2 = ModuleResolver::new(&dir2, dir2.join("stdlib"));
+    let result2 =
+        reify_compiler::module_dag::compile_project(&dir2.join("consumer.ri"), &resolver2);
+    let modules2 = result2.expect("positive-control compile_project should not Err");
+    let entry2 = modules2.last().expect("no modules returned (positive control)");
+    let errors2: Vec<_> = entry2
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(
+        errors2.is_empty(),
+        "positive control (no #no_prelude): expected zero errors but got: {:#?}",
+        errors2
+    );
+
     let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&dir2);
 }
