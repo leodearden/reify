@@ -36743,6 +36743,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-15T11:53:18.799Z"
+      },
+      {
+        "id": 1760,
+        "title": "meshManager robustness: orphan visibility cleanup, defensive getGhostMeshes, disposal ordering comment",
+        "description": "Address three robustness issues in gui/src/viewport/meshManager.ts from task 1742 review:\n\n1. **Orphan visibilityMap entries (S1)**: setVisibility unconditionally writes to visibilityMap even for unknown entities. Add a cleanup sweep in sync() that prunes visibilityMap keys absent from both meshMap and the incoming meshes record, or guard the write when entity is unknown and not yet in meshMap.\n\n2. **getGhostMeshes returns mutable internal Map (S2)**: Unlike getSceneMeshes() which returns a cached copy, getGhostMeshes() returns ghostMeshMap directly. Return a frozen or copied Map, or follow the same cache pattern as getSceneMeshes().\n\n3. **Geometry disposal ordering comment (S7)**: In removeMesh(), removeGhostClone MUST precede geometry disposal. Add a comment documenting this invariant at line ~202.\n\n4. **fitToView ghost exclusion comment (S4 — add-on)**: fitToView in selection.ts uses getMeshes() (getSceneMeshes) so it excludes ghosts, while adjustClipping in Viewport.tsx includes them. Add a comment in fitToView explaining this is intentional (ghost = secondary context, not primary framing target).\n\n### memory_hints\n- search: \"meshManager ghost visibility viewport\"\n- search: \"getGhostMeshes getSceneMeshes encapsulation\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36754,7 +36765,8 @@
         "master"
       ],
       "created": "2026-04-15T11:55:22.719Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-15T11:56:10.473Z"
     }
   }
 }
