@@ -20789,11 +20789,11 @@
         "description": "Move 7 conjugate NaN/Inf tests from crates/reify-expr/src/lib.rs to crates/reify-expr/tests/complex_eval_tests.rs using existing complex_val() and eval_method() helpers. Add missing +Inf im test case and negative-im regression test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T00:25:52.357Z",
+        "updatedAt": "2026-04-15T00:49:58.684Z",
         "metadata": {
           "modules": [
             ".task/plan.json",
@@ -35347,9 +35347,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:48:15.188Z",
+      "lastModified": "2026-04-15T00:49:58.684Z",
       "taskCount": 1693,
-      "completedCount": 1437,
+      "completedCount": 1438,
       "tags": [
         "master"
       ]
