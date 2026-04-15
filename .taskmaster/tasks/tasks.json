@@ -37248,7 +37248,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/editor/editorTheme.ts",
+            "gui/src/__tests__/editorTheme.test.ts"
+          ],
+          "modules": [
+            "gui/src/editor",
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 1780,
