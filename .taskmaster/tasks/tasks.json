@@ -35844,6 +35844,19 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1719,
+        "title": "Generic geometry-arg resolution in compile_geometry_call (fixes 14 broken functions)",
+        "description": "All non-boolean geometry functions (translate, rotate, scale, rotate_around, circular_pattern, linear_pattern, mirror, extrude, revolve, revolve_full, sweep, loft, shell, thicken, draft) hardcode GeomRef::Step(0) and compile geometry target args as scalars. Fix: metadata table mapping function→geometry arg indices, single generic resolution path replacing all 14 broken + 5 boolean blocks. See geometry.rs line 238+. Depends on task 1609 pattern.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1609
+        ],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35856,7 +35869,7 @@
       ],
       "created": "2026-04-15T06:07:16.445Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T06:08:17.355Z"
+      "updated": "2026-04-15T06:09:24.576Z"
     }
   }
 }
