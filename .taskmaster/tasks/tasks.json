@@ -6790,7 +6790,7 @@
           "318",
           "320"
         ],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6811,7 +6811,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-15T05:16:50.349Z"
+        "updatedAt": "2026-04-15T05:22:44.765Z"
       },
       {
         "id": "326",
@@ -35642,9 +35642,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T05:21:48.144Z",
+      "lastModified": "2026-04-15T05:22:44.766Z",
       "taskCount": 1704,
-      "completedCount": 1467,
+      "completedCount": 1468,
       "tags": [
         "master"
       ]
