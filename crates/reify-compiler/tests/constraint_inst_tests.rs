@@ -478,3 +478,67 @@ structure S {
         ),
     }
 }
+
+// ── Step 4 (task-1717): substitute_expr handles Match arms (no shadowing) ────
+
+/// substitute_expr must substitute param references in both the match
+/// discriminant and each arm body.  Match arm patterns are structural
+/// (enum variants) — they do NOT introduce binders, so no shadowing
+/// suppression applies.  This test verifies that behaviour.
+#[test]
+fn constraint_inst_match_substitution() {
+    let source = r#"
+enum Quality { Standard, Premium }
+
+constraint def QualityBound {
+    param grade: Quality
+    param x: Length
+    match grade { Standard => x < 100mm, Premium => x < 10mm }
+}
+structure S {
+    param quality: Quality
+    param size: Length
+    constraint QualityBound(grade: quality, x: size)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(tmpl.constraints.len(), 1, "expected exactly 1 constraint");
+
+    let cc = &tmpl.constraints[0];
+    // The compiled constraint should be a Match expression.
+    match &cc.expr.kind {
+        CompiledExprKind::Match { discriminant, arms } => {
+            // Discriminant: grade → ValueRef(S.quality)
+            assert!(
+                matches!(&discriminant.kind, CompiledExprKind::ValueRef(id) if id.member == "quality"),
+                "discriminant should be ValueRef(S.quality), got {:?}",
+                discriminant.kind
+            );
+            // Two arms: Standard and Premium
+            assert_eq!(arms.len(), 2, "expected 2 match arms");
+            // Each arm body should have x substituted with ValueRef(S.size)
+            for arm in arms {
+                match &arm.body.kind {
+                    CompiledExprKind::BinOp { op, left, .. } => {
+                        assert_eq!(*op, BinOp::Lt, "arm body op should be Lt");
+                        assert!(
+                            matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "size"),
+                            "arm body left should be ValueRef(S.size) for arm {:?}, got {:?}",
+                            arm.patterns,
+                            left.kind
+                        );
+                    }
+                    other => panic!(
+                        "expected BinOp in arm {:?} body, got {:?}",
+                        arm.patterns, other
+                    ),
+                }
+            }
+        }
+        other => panic!("expected Match constraint expr, got {:?}", other),
+    }
+}
