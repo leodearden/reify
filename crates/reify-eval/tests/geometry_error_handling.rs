@@ -8,7 +8,7 @@ use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_test_support::*;
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Type, Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -18,8 +18,6 @@ use reify_types::{
 /// Creates a compiled module with a single structure containing one box
 /// primitive realization, so there is exactly one geometry operation to process.
 fn module_with_box_realization() -> reify_compiler::CompiledModule {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -323,8 +321,6 @@ fn loft_through_full_eval_pipeline() {
 /// The realization is still rolled back because had_failure=true.
 #[test]
 fn cascading_compile_failures_aborted_after_first() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -393,8 +389,6 @@ fn cascading_compile_failures_aborted_after_first() {
 /// abort after the first Err from kernel.execute, preventing cascading errors.
 #[test]
 fn cascading_kernel_failures_aborted_after_first() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -463,8 +457,6 @@ fn cascading_kernel_failures_aborted_after_first() {
 /// exactly 1 compile-failure diagnostic and realization 2 succeeds normally.
 #[test]
 fn realization_abort_is_per_realization() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -548,8 +540,6 @@ fn realization_abort_is_per_realization() {
 /// realization because it is rolled back.
 #[test]
 fn tessellate_aborts_cascading_compile_failures() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -620,8 +610,6 @@ fn tessellate_aborts_cascading_compile_failures() {
 #[test]
 fn mixed_failure_then_dependent_ops_aborted() {
     use reify_compiler::ModifyKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -722,8 +710,6 @@ fn mixed_failure_then_dependent_ops_aborted() {
 /// tessellated and added to meshes — callers receive an incorrect partial mesh.
 #[test]
 fn partial_failure_tessellate_produces_no_mesh() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -803,8 +789,6 @@ fn partial_failure_tessellate_produces_no_mesh() {
 /// (c) exactly 1 compile-failure diagnostic from op 1.
 #[test]
 fn tessellate_sentinel_placeholder_continues_independent_ops() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -898,8 +882,6 @@ fn tessellate_sentinel_placeholder_continues_independent_ops() {
 /// handle so the partially-complete geometry gets exported.
 #[test]
 fn partial_failure_build_produces_no_geometry() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -974,8 +956,6 @@ fn partial_failure_build_produces_no_geometry() {
 /// output is isolated and correct.
 #[test]
 fn partial_failure_does_not_contaminate_subsequent_realization() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1093,8 +1073,6 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
 /// primitive predicate, indicating zero preceding kernel calls are expected.
 #[test]
 fn build_primitive_missing_arg_no_kernel_error() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1163,8 +1141,6 @@ fn build_primitive_missing_arg_no_kernel_error() {
 #[test]
 fn build_modify_missing_arg_no_kernel_error() {
     use reify_compiler::ModifyKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1346,8 +1322,6 @@ fn assert_rejected_at_compile(
 #[test]
 fn build_scale_negative_factor_emits_diagnostic() {
     use reify_compiler::TransformKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
@@ -1417,8 +1391,6 @@ fn build_scale_negative_factor_emits_diagnostic() {
 #[test]
 fn build_extrude_nonfinite_distance_emits_diagnostic() {
     use reify_compiler::SweepKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1486,8 +1458,6 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
 #[test]
 fn build_revolve_degenerate_axis_emits_diagnostic() {
     use reify_compiler::SweepKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
@@ -1562,8 +1532,6 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
 #[test]
 fn build_revolve_zero_angle_emits_diagnostic() {
     use reify_compiler::SweepKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
@@ -1629,8 +1597,6 @@ fn build_revolve_zero_angle_emits_diagnostic() {
 /// The realization is rolled back because had_failure=true.
 #[test]
 fn sentinel_placeholder_continues_independent_ops() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1710,8 +1676,6 @@ fn sentinel_placeholder_continues_independent_ops() {
 /// a compile-failure diagnostic is emitted for op1.
 #[test]
 fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1796,8 +1760,6 @@ fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
 #[test]
 fn draft_plane_invalid_sentinel_causes_compile_failure() {
     use reify_compiler::ModifyKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
@@ -1911,8 +1873,6 @@ fn draft_plane_invalid_sentinel_causes_compile_failure() {
 /// (c) exactly 1 compile-failure diagnostic from op 1.
 #[test]
 fn build_snapshot_sentinel_placeholder_continues_independent_ops() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1951,8 +1911,18 @@ fn build_snapshot_sentinel_placeholder_continues_independent_ops() {
     let ops_ref = kernel.operations_ref();
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
 
-    // Populate the snapshot first so build_snapshot returns Some(...)
-    engine.eval(&module);
+    // Populate the snapshot first so build_snapshot returns Some(...).
+    // Eval runs constraint solving only, not geometry compilation, so the bad
+    // GeomRef indices in op 1 do not produce diagnostics here.
+    let eval_result = engine.eval(&module);
+    assert!(
+        eval_result.diagnostics.is_empty(),
+        "eval() produced unexpected diagnostics: {:?}",
+        eval_result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    // Isolate kernel ops for the build_snapshot call: clear any ops that might
+    // have been accumulated during eval() so the count assertion below is exact.
+    ops_ref.lock().unwrap().clear();
 
     let result = engine
         .build_snapshot(&module, ExportFormat::Step)
