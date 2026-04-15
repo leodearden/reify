@@ -35643,7 +35643,17 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/m8_4_stdlib_integration.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "m8_4_stdlib_integration"
+            ],
+            "queries": [
+              "m8_4_stdlib_integration eval_ri_file pattern",
+              "m8_4 test file NaN-safe sort eigenvalue"
+            ]
+          },
+          "_causation_id": "dc802ff2-ae92-42fe-979d-29937db06c0c"
         }
       },
       {
