@@ -7213,7 +7213,15 @@
             "crates/reify-eval/src/lib.rs",
             "crates/reify-stdlib/src/lib.rs",
             "crates/reify-compiler/src/stdlib_loader.rs"
-          ]
+          ],
+          "memory_hints": {
+            "searches": [
+              "Analysis AnalysisResult traits stdlib reify .ri definition",
+              "von_mises principal_stresses safety_factor max_shear builtin Field Tensor"
+            ],
+            "entities": []
+          },
+          "_causation_id": "8a9210de-78df-4834-a133-09f74785f437"
         },
         "subtasks": [],
         "updatedAt": "2026-04-14T20:16:11.210Z"
