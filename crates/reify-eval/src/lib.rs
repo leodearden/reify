@@ -4043,6 +4043,10 @@ fn compile_geometry_op(
                     let n_points = vals[1] as usize;
                     let expected_min = 2 + n_points * 3 + n_points; // degree + n + poles + weights
                     if vals.len() < expected_min {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "nurbs() got fewer arguments than expected for {} control points",
+                            n_points,
+                        )));
                         return None;
                     }
                     let pole_start = 2;
