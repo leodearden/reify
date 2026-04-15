@@ -863,6 +863,28 @@ pub(crate) fn compile_geometry_call(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // chamfer(target, distance)
+        "chamfer" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "chamfer() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Chamfer,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("distance".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
         // --- Curve constructors ---
         // line_segment(x1, y1, z1, x2, y2, z2)
         "line_segment" => {
