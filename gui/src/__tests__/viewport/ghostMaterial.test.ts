@@ -38,10 +38,9 @@ describe('createGhostMaterial', () => {
     expect((mat as any).transparent).toBe(true);
   });
 
-  it('sets opacity in the range [0.12, 0.18]', () => {
+  it('sets opacity to 0.15', () => {
     const mat = createGhostMaterial();
-    expect((mat as any).opacity).toBeGreaterThanOrEqual(0.12);
-    expect((mat as any).opacity).toBeLessThanOrEqual(0.18);
+    expect((mat as any).opacity).toBe(0.15);
   });
 
   it('sets depthWrite: false', () => {
