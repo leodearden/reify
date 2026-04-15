@@ -788,7 +788,8 @@ fn compile_project_multi_import_prelude() {
 /// full `compile_project` pipeline.
 #[test]
 fn no_prelude_suppresses_import_prelude() {
-    let dir = test_dir("no_prelude_suppresses_import_prelude");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // dep.ri: exports pub unit myunit
     fs::write(
@@ -815,7 +816,8 @@ fn no_prelude_suppresses_import_prelude() {
     );
 
     // Positive control: WITHOUT #no_prelude the same import/unit resolves fine.
-    let dir2 = test_dir("no_prelude_suppresses_import_prelude_pos");
+    let _tmp2 = tempfile::tempdir().unwrap();
+    let dir2 = _tmp2.path().to_path_buf();
     fs::write(
         dir2.join("dep.ri"),
         "pub unit myunit : Length = 0.001\npub structure Part {\n    param x: Scalar = 1mm\n}",
@@ -832,9 +834,6 @@ fn no_prelude_suppresses_import_prelude() {
         "positive control (no #no_prelude): expected zero errors but got: {:#?}",
         errors2
     );
-
-    let _ = fs::remove_dir_all(&dir);
-    let _ = fs::remove_dir_all(&dir2);
 }
 
 // ── step-3 (task-1759): private units not exported through reference-based prelude ──
@@ -849,7 +848,8 @@ fn no_prelude_suppresses_import_prelude() {
 /// seeded, and the consumer module must carry an "unknown unit" diagnostic.
 #[test]
 fn private_unit_not_exported_through_import_prelude() {
-    let dir = test_dir("private_unit_not_exported_through_import_prelude");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // dep.ri: private unit (no pub) and a pub structure to make import valid
     fs::write(
@@ -876,7 +876,8 @@ fn private_unit_not_exported_through_import_prelude() {
     );
 
     // Positive control: with `pub unit secret` the unit resolves and there are no errors.
-    let dir2 = test_dir("private_unit_not_exported_through_import_prelude_pos");
+    let _tmp2 = tempfile::tempdir().unwrap();
+    let dir2 = _tmp2.path().to_path_buf();
     fs::write(
         dir2.join("dep.ri"),
         "pub unit secret : Length = 0.005\npub structure Widget {\n    param w: Scalar = 1mm\n}",
@@ -893,7 +894,4 @@ fn private_unit_not_exported_through_import_prelude() {
         "positive control (pub unit): expected zero errors but got: {:#?}",
         errors2
     );
-
-    let _ = fs::remove_dir_all(&dir);
-    let _ = fs::remove_dir_all(&dir2);
 }
