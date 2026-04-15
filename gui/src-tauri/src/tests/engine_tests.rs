@@ -2836,7 +2836,7 @@ fn get_def_preview_cache_invalidated_on_reload() {
     let kernel2 = MockGeometryKernel::new();
     let mut session2 = EngineSession::new(Box::new(checker2), Some(Box::new(kernel2)));
     session2
-        .load_from_source(bracket_source_with_width("120mm"), "bracket")
+        .load_from_source(&bracket_source_with_width("120mm"), "bracket")
         .expect("reload with different width");
     let after = session2
         .get_def_preview("Bracket")
@@ -2857,5 +2857,101 @@ fn get_def_preview_cache_invalidated_on_reload() {
     assert_ne!(
         width_before, width_after,
         "preview width should differ after reload with different default"
+    );
+}
+
+// ---- Step 13: Integration tests — entity_path consistency across commands ----
+
+/// get_entity_tree and get_entity_identity_map return consistent entity_path keys.
+///
+/// For every node in the entity tree (root and all children), the entity_path
+/// must appear as a key in the identity map.  This pins the contract: both
+/// commands derive their entity_path values from the same CompiledModule,
+/// so they must agree.
+#[test]
+fn entity_tree_and_identity_map_entity_paths_are_consistent() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    let tree = session.get_entity_tree();
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+
+    // Collect all entity_path values from the tree (breadth-first traversal).
+    let mut tree_paths: Vec<String> = Vec::new();
+    let mut queue: std::collections::VecDeque<&crate::types::EntityTreeNode> =
+        tree.iter().collect();
+    while let Some(node) = queue.pop_front() {
+        tree_paths.push(node.entity_path.clone());
+        for child in &node.children {
+            queue.push_back(child);
+        }
+    }
+
+    // Every path from the tree must be a key in the identity map.
+    for path in &tree_paths {
+        assert!(
+            map.contains_key(path.as_str()),
+            "entity_path '{}' is in the tree but missing from the identity map; \
+             identity map keys: {:?}",
+            path,
+            map.keys().collect::<Vec<_>>()
+        );
+    }
+
+    // Both agree on the "Bracket" root.
+    assert!(
+        tree_paths.contains(&"Bracket".to_string()),
+        "tree should contain 'Bracket' root"
+    );
+    assert!(
+        map.contains_key("Bracket"),
+        "identity map should contain 'Bracket' root"
+    );
+}
+
+/// After loading bracket, all four new EngineSession methods return without panicking.
+///
+/// This is a basic smoke test: verifies that each command is callable and
+/// returns a sensible result type for the bracket fixture.
+#[test]
+fn all_new_commands_callable_on_bracket_fixture() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    // get_entity_tree
+    let tree = session.get_entity_tree();
+    assert!(!tree.is_empty(), "get_entity_tree should return non-empty tree");
+
+    // get_entity_identity_map
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+    assert!(!map.is_empty(), "get_entity_identity_map should return non-empty map");
+
+    // get_containing_definition — position at (1,1) is inside the Bracket def.
+    let def = session.get_containing_definition(1, 1);
+    assert!(
+        def.is_some(),
+        "get_containing_definition(1,1) should return Some for bracket source"
+    );
+
+    // get_def_preview
+    let preview = session.get_def_preview("Bracket");
+    assert!(
+        preview.is_ok(),
+        "get_def_preview('Bracket') should return Ok: {:?}",
+        preview
     );
 }
