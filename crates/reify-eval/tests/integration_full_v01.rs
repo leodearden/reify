@@ -106,10 +106,10 @@ fn integration_full_v01_ri_parses() {
     assert_min_count!(parsed, Declaration::Trait(_), "Trait", 2);
     assert_min_count!(parsed, Declaration::Structure(_), "Structure", 2);
     assert_min_count!(parsed, Declaration::Purpose(_), "Purpose", 1);
-    assert_min_count!(parsed, Declaration::Constraint(_), "ConstraintDef", 2);
+    assert_min_count!(parsed, Declaration::Constraint(_), "Constraint", 2);
     assert_min_count!(parsed, Declaration::Enum(_), "Enum", 1);
     assert_min_count!(parsed, Declaration::Function(_), "Function", 2);
-    assert_min_count!(parsed, Declaration::Field(_), "FieldDef", 1);
+    assert_min_count!(parsed, Declaration::Field(_), "Field", 1);
     assert_min_count!(parsed, Declaration::Unit(_), "Unit", 1);
     assert_min_count!(parsed, Declaration::TypeAlias(_), "TypeAlias", 1);
 }
@@ -833,6 +833,18 @@ fn constraint_def_labels() {
 fn assert_min_count_macro_catches_unmet_threshold() {
     use reify_syntax::Declaration;
     let parsed = reify_syntax::parse("", ModulePath::single("empty"));
+    assert_min_count!(parsed, Declaration::Trait(_), "Trait", 1);
+}
+
+/// Verify that `assert_min_count!` does NOT panic when the threshold IS met.
+/// Parses a source with one trait declaration and asserts >=1 Trait — the macro
+/// must succeed silently.  This is the symmetric success-path counterpart to
+/// `assert_min_count_macro_catches_unmet_threshold`.
+#[test]
+fn assert_min_count_macro_passes_when_met() {
+    use reify_syntax::Declaration;
+    let src = "trait Foo {}";
+    let parsed = reify_syntax::parse(src, ModulePath::single("one_trait"));
     assert_min_count!(parsed, Declaration::Trait(_), "Trait", 1);
 }
 
