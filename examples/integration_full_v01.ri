@@ -333,8 +333,9 @@ structure def Assembly : Physical + Locatable {
 // ── Purposes ─────────────────────────────────────────────────────────────────
 
 /// Manufacturing readiness: all geometric params of the subject structure must be determined.
-/// Uses literal constraints following the m10_combined convention; reflective
-/// `subject.params` access is tracked as a follow-up task.
+/// Uses literal placeholder constraints so the activation/deactivation machinery is exercised.
+/// Follow-up: replace with `constraint determined(subject.mass)` etc. once reflective
+/// `subject.param` access in purpose bodies is implemented (tracked as a follow-up task).
 purpose mfg_ready(subject : Structure) {
     constraint 1mm > 0mm
     constraint 2mm > 1mm

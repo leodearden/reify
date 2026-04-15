@@ -12,8 +12,7 @@
 
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_eval::Engine;
-use reify_test_support::parse_and_compile_with_stdlib;
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_types::{ModulePath, Satisfaction, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -25,38 +24,143 @@ const EXAMPLE_PATH: &str = concat!(
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Read integration_full_v01.ri, caching the result in a `OnceLock`.
-fn source() -> String {
+/// Returns a `&'static str` reference — no allocation on each call.
+fn source() -> &'static str {
     static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     S.get_or_init(|| {
         std::fs::read_to_string(EXAMPLE_PATH)
             .expect("examples/integration_full_v01.ri should exist")
     })
-    .clone()
+    .as_str()
 }
 
 /// Parse and compile (with stdlib) the canonical source, caching the result.
-fn compiled() -> CompiledModule {
+/// Returns a `&'static CompiledModule` — no clone on each call.
+fn compiled() -> &'static CompiledModule {
     static C: std::sync::OnceLock<CompiledModule> = std::sync::OnceLock::new();
-    C.get_or_init(|| parse_and_compile_with_stdlib(&source())).clone()
+    C.get_or_init(|| parse_and_compile_with_stdlib(source()))
 }
 
 /// Eval the canonical source with SimpleConstraintChecker.
 fn eval_canonical() -> reify_eval::EvalResult {
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
-    engine.eval(&compiled())
+    let mut engine = make_simple_engine();
+    engine.eval(compiled())
 }
 
 /// Check the canonical source with SimpleConstraintChecker.
 fn check_canonical() -> reify_eval::CheckResult {
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
-    engine.check(&compiled())
+    let mut engine = make_simple_engine();
+    engine.check(compiled())
 }
 
 /// Parse, compile (with stdlib), check a mutated source string.
 fn check_source(src: &str) -> reify_eval::CheckResult {
     let compiled = parse_and_compile_with_stdlib(src);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     engine.check(&compiled)
+}
+
+// ── Test 1: file parses without errors ───────────────────────────────────────
+
+/// Read integration_full_v01.ri, verify it parses without errors, and assert
+/// minimum top-level declaration counts: >=2 traits, >=2 structures, >=1
+/// purpose, >=2 constraint defs, >=1 enum, >=2 functions (overloads), >=1
+/// field def, >=1 unit decl, >=1 type alias. These counts guard against silent
+/// declaration drops more precisely than a pure parse check.
+#[test]
+fn integration_full_v01_ri_parses() {
+    let src = source();
+    let parsed = reify_syntax::parse(src, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    use reify_syntax::Declaration;
+
+    let trait_count = parsed
+        .declarations
+        .iter()
+        .filter(|d| matches!(d, Declaration::Trait(_)))
+        .count();
+    let structure_count = parsed
+        .declarations
+        .iter()
+        .filter(|d| matches!(d, Declaration::Structure(_)))
+        .count();
+    let purpose_count = parsed
+        .declarations
+        .iter()
+        .filter(|d| matches!(d, Declaration::Purpose(_)))
+        .count();
+    let constraint_def_count = parsed
+        .declarations
+        .iter()
+        .filter(|d| matches!(d, Declaration::Constraint(_)))
+        .count();
+    let enum_count = parsed
+        .declarations
+        .iter()
+        .filter(|d| matches!(d, Declaration::Enum(_)))
+        .count();
+    let function_count = parsed
+        .declarations
+        .iter()
+        .filter(|d| matches!(d, Declaration::Function(_)))
+        .count();
+    let field_def_count = parsed
+        .declarations
+        .iter()
+        .filter(|d| matches!(d, Declaration::Field(_)))
+        .count();
+    let unit_count = parsed
+        .declarations
+        .iter()
+        .filter(|d| matches!(d, Declaration::Unit(_)))
+        .count();
+    let type_alias_count = parsed
+        .declarations
+        .iter()
+        .filter(|d| matches!(d, Declaration::TypeAlias(_)))
+        .count();
+
+    assert!(
+        trait_count >= 2,
+        "expected >=2 Trait declarations, got {trait_count}"
+    );
+    assert!(
+        structure_count >= 2,
+        "expected >=2 Structure declarations, got {structure_count}"
+    );
+    assert!(
+        purpose_count >= 1,
+        "expected >=1 Purpose declaration, got {purpose_count}"
+    );
+    assert!(
+        constraint_def_count >= 2,
+        "expected >=2 ConstraintDef declarations, got {constraint_def_count}"
+    );
+    assert!(
+        enum_count >= 1,
+        "expected >=1 Enum declaration, got {enum_count}"
+    );
+    assert!(
+        function_count >= 2,
+        "expected >=2 Function declarations (safety_factor overloads), got {function_count}"
+    );
+    assert!(
+        field_def_count >= 1,
+        "expected >=1 FieldDef declaration, got {field_def_count}"
+    );
+    assert!(
+        unit_count >= 1,
+        "expected >=1 Unit declaration, got {unit_count}"
+    );
+    assert!(
+        type_alias_count >= 1,
+        "expected >=1 TypeAlias declaration, got {type_alias_count}"
+    );
 }
 
 // ── Test 2: file compiles with expected templates ─────────────────────────────
@@ -324,109 +428,6 @@ fn collection_operations() {
     );
 }
 
-// ── Test 1: file parses without errors ───────────────────────────────────────
-
-/// Read integration_full_v01.ri, verify it parses without errors, and assert
-/// minimum top-level declaration counts: >=2 traits, >=2 structures, >=1
-/// purpose, >=2 constraint defs, >=1 enum, >=2 functions (overloads), >=1
-/// field def, >=1 unit decl, >=1 type alias. These counts guard against silent
-/// declaration drops more precisely than a pure parse check.
-#[test]
-fn integration_full_v01_ri_parses() {
-    let src = source();
-    let parsed = reify_syntax::parse(&src, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    use reify_syntax::Declaration;
-
-    let trait_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Trait(_)))
-        .count();
-    let structure_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Structure(_)))
-        .count();
-    let purpose_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Purpose(_)))
-        .count();
-    let constraint_def_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Constraint(_)))
-        .count();
-    let enum_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Enum(_)))
-        .count();
-    let function_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Function(_)))
-        .count();
-    let field_def_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Field(_)))
-        .count();
-    let unit_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Unit(_)))
-        .count();
-    let type_alias_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::TypeAlias(_)))
-        .count();
-
-    assert!(
-        trait_count >= 2,
-        "expected >=2 Trait declarations, got {trait_count}"
-    );
-    assert!(
-        structure_count >= 2,
-        "expected >=2 Structure declarations, got {structure_count}"
-    );
-    assert!(
-        purpose_count >= 1,
-        "expected >=1 Purpose declaration, got {purpose_count}"
-    );
-    assert!(
-        constraint_def_count >= 2,
-        "expected >=2 ConstraintDef declarations, got {constraint_def_count}"
-    );
-    assert!(
-        enum_count >= 1,
-        "expected >=1 Enum declaration, got {enum_count}"
-    );
-    assert!(
-        function_count >= 2,
-        "expected >=2 Function declarations (safety_factor overloads), got {function_count}"
-    );
-    assert!(
-        field_def_count >= 1,
-        "expected >=1 FieldDef declaration, got {field_def_count}"
-    );
-    assert!(
-        unit_count >= 1,
-        "expected >=1 Unit declaration, got {unit_count}"
-    );
-    assert!(
-        type_alias_count >= 1,
-        "expected >=1 TypeAlias declaration, got {type_alias_count}"
-    );
-}
-
 // ── Test 12: field sample and gradient ───────────────────────────────────────
 
 /// temp_at_3 = sample(temperature_profile, 3.0) → 3²+10 = 19.0.
@@ -628,7 +629,7 @@ fn connect_has_connector_and_mapping() {
 // ── Test 16: purpose compiled and activatable ──────────────────────────────────
 
 /// mfg_ready purpose: exists in compiled_purposes with entity_kind='Structure',
-/// activates against Assembly (adding 3 constraints), deactivates cleanly.
+/// activates against Assembly (adding constraints), deactivates cleanly.
 fn constraint_count_from_engine(engine: &reify_eval::Engine) -> usize {
     engine
         .snapshot()
@@ -663,8 +664,8 @@ fn purpose_compiled_and_activatable() {
     );
 
     // Activate against Assembly
-    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
-    engine.eval(&compiled);
+    let mut engine = make_simple_engine();
+    engine.eval(compiled);
     let before = constraint_count_from_engine(&engine);
 
     engine.activate_purpose("mfg_ready", "Assembly");
@@ -673,12 +674,17 @@ fn purpose_compiled_and_activatable() {
         "mfg_ready should be active after activate_purpose"
     );
 
-    // Constraint count grows by exactly 3 (three literal constraints in purpose body)
+    // Constraint count grows by the number of constraints in the compiled purpose body.
+    // Deriving from mfg_ready.constraints.len() guards against silent drifts if the
+    // purpose body is updated — both the test and the .ri source stay in sync automatically.
+    // (See examples/integration_full_v01.ri: mfg_ready uses literal placeholder constraints;
+    // adding subject-referencing constraints is tracked as a follow-up task.)
+    let expected_extra = mfg_ready.constraints.len();
     assert_eq!(
         constraint_count_from_engine(&engine),
-        before + 3,
-        "mfg_ready has 3 literal constraints: count should grow by exactly 3 (got {} before, {} after)",
-        before,
+        before + expected_extra,
+        "mfg_ready should add {expected_extra} constraints (mfg_ready.constraints.len()), \
+         got {before} before, {} after",
         constraint_count_from_engine(&engine)
     );
 
@@ -753,7 +759,7 @@ fn where_block_constraints_satisfied() {
 #[test]
 fn test_runner_all_pass() {
     let compiled = compiled();
-    let results = reify_eval::run_tests(&compiled, || Box::new(SimpleConstraintChecker));
+    let results = reify_eval::run_tests(compiled, || Box::new(SimpleConstraintChecker));
 
     // Must have at least 5 test results (6 @test structures added in step-22)
     assert!(
@@ -773,6 +779,11 @@ fn test_runner_all_pass() {
     ];
     let by_name: std::collections::HashMap<&str, reify_eval::TestStatus> =
         results.iter().map(|r| (r.name.as_str(), r.status)).collect();
+    assert_eq!(
+        by_name.len(),
+        results.len(),
+        "duplicate @test names detected"
+    );
 
     for name in &expected_tests {
         if let Some(&status) = by_name.get(*name) {
