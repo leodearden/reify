@@ -7388,7 +7388,7 @@
           "330",
           "343"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
@@ -7404,7 +7404,7 @@
         },
         "subtasks": [],
         "details": "Two tests: (1) patterns — pattern of patterns, count=0/1, 10×10 grid, pattern+union_all; (2) large_assembly — 50+ structures with geometry+material+ports, computed mass propagation, simulation_ready purpose. Target: <5s eval.",
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-15T12:16:29.518Z"
       },
       {
         "id": "348",
@@ -36970,7 +36970,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T12:16:29.313Z",
+      "lastModified": "2026-04-15T12:16:29.518Z",
       "taskCount": 1765,
       "completedCount": 1511,
       "tags": [
