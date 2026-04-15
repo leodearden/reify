@@ -23,3 +23,61 @@ pub enum AnnotationArg {
     Bool(bool),
     Ident(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_annotation(name: &str) -> Annotation {
+        Annotation {
+            name: name.to_string(),
+            args: vec![],
+            span: SourceSpan::default(),
+        }
+    }
+
+    #[test]
+    fn test_annotation_constant_is_lowercase_test() {
+        assert_eq!(TEST_ANNOTATION, "test");
+    }
+
+    #[test]
+    fn has_test_annotation_returns_true_when_test_present() {
+        let anns = vec![make_annotation("test")];
+        assert!(has_test_annotation(&anns));
+    }
+
+    #[test]
+    fn has_test_annotation_returns_false_on_empty_slice() {
+        let anns: Vec<Annotation> = vec![];
+        assert!(!has_test_annotation(&anns));
+    }
+
+    #[test]
+    fn has_test_annotation_returns_false_when_other_annotations_present() {
+        let anns = vec![make_annotation("deprecated"), make_annotation("inline")];
+        assert!(!has_test_annotation(&anns));
+    }
+
+    #[test]
+    fn has_test_annotation_returns_true_when_test_among_multiple() {
+        let anns = vec![
+            make_annotation("deprecated"),
+            make_annotation("test"),
+            make_annotation("inline"),
+        ];
+        assert!(has_test_annotation(&anns));
+    }
+
+    #[test]
+    fn annotation_is_test_method_returns_true_for_test() {
+        let ann = make_annotation("test");
+        assert!(ann.is_test());
+    }
+
+    #[test]
+    fn annotation_is_test_method_returns_false_for_other() {
+        let ann = make_annotation("deprecated");
+        assert!(!ann.is_test());
+    }
+}
