@@ -337,6 +337,9 @@ impl Value {
     /// and every element is itself a `Tensor`.  Returns `None` otherwise.
     pub fn try_into_matrix(self) -> Option<Self> {
         match self {
+            // NB: Only Value::Tensor elements qualify as matrix rows. Point and Vector
+            // are geometrically-typed Vec<Value> wrappers and are intentionally excluded —
+            // a Tensor-of-Points is a point collection, not a matrix.
             Value::Tensor(rows)
                 if !rows.is_empty() && rows.iter().all(|r| matches!(r, Value::Tensor(_))) =>
             {
