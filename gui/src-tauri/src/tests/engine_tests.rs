@@ -2600,3 +2600,101 @@ fn get_entity_identity_map_root_template_has_no_source_span() {
         "root template entry should have no source_span"
     );
 }
+
+// ---- Step 9: DefInfo and get_containing_definition() tests ----
+
+/// DefInfo serializes and deserializes without loss.
+#[test]
+fn def_info_serialization_roundtrip() {
+    use crate::types::{DefInfo, SourceSpanInfo};
+    let def_info = DefInfo {
+        name: "Bracket".to_string(),
+        kind: "structure".to_string(),
+        span: SourceSpanInfo { start: 0, end: 100 },
+    };
+    let json = serde_json::to_string(&def_info).expect("serialize should succeed");
+    let back: DefInfo = serde_json::from_str(&json).expect("deserialize should succeed");
+    assert_eq!(def_info, back);
+}
+
+/// No module loaded → get_containing_definition returns None.
+#[test]
+fn get_containing_definition_no_module_returns_none() {
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+    let result = session.get_containing_definition(1, 1);
+    assert!(result.is_none(), "no module loaded → None");
+}
+
+/// Position at (1,1) inside a single-line structure def returns correct name and kind.
+#[test]
+fn get_containing_definition_inside_structure_returns_some() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    let source = "structure Foo { param x: Scalar = 1 }";
+    session
+        .load_from_source(source, "test")
+        .expect("load should succeed");
+    // Line 1, col 1 → byte 0, first char of "structure Foo", inside the Foo def.
+    let result = session.get_containing_definition(1, 1);
+    let def = result.expect("position at (1,1) should be inside Foo → Some(DefInfo)");
+    assert_eq!(def.name, "Foo");
+    assert_eq!(def.kind, "structure");
+}
+
+/// Position in a comment on line 2 (after a single-line def on line 1) returns None.
+#[test]
+fn get_containing_definition_outside_def_returns_none() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    // The structure def lives entirely on line 1; line 2 is a comment.
+    let source = "structure Foo { param x: Scalar = 1 }\n// outside any def";
+    session
+        .load_from_source(source, "test")
+        .expect("load should succeed");
+    // Line 2, col 5 is in the comment text, outside the Foo def span.
+    let result = session.get_containing_definition(2, 5);
+    assert!(
+        result.is_none(),
+        "position in comment on line 2 should be outside any def → None, got: {:?}",
+        result
+    );
+}
+
+/// Position inside an occurrence def returns kind = "occurrence".
+#[test]
+fn get_containing_definition_occurrence_returns_occurrence_kind() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    // Foo is on line 1; Bar (occurrence) is on line 2.
+    let source = "structure Foo {}\noccurrence Bar {}";
+    session
+        .load_from_source(source, "test")
+        .expect("load should succeed");
+    // Line 2, col 1 is inside the occurrence Bar definition.
+    let result = session.get_containing_definition(2, 1);
+    let def = result.expect("position at (2,1) should be inside Bar → Some(DefInfo)");
+    assert_eq!(def.name, "Bar");
+    assert_eq!(def.kind, "occurrence");
+}
+
+/// DefInfo.span start is ≤ span end, and start == 0 for a def that begins at byte 0.
+#[test]
+fn get_containing_definition_span_valid_and_starts_at_zero() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    let source = "structure Foo { param x: Scalar = 1 }";
+    session
+        .load_from_source(source, "test")
+        .expect("load should succeed");
+    let result = session.get_containing_definition(1, 1);
+    let def = result.expect("position inside Foo → Some(DefInfo)");
+    assert!(
+        def.span.start <= def.span.end,
+        "span start ({}) must be <= end ({})",
+        def.span.start,
+        def.span.end
+    );
+    // The source starts with "structure Foo {…}", so the def begins at byte 0.
+    assert_eq!(def.span.start, 0, "Foo def starts at byte 0");
+}
