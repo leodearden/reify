@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use reify_compiler::CompiledModule;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
+use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 
 /// Absolute path to the fixture file.
 const FIXTURE_PATH: &str = concat!(
@@ -36,7 +36,7 @@ fn source() -> String {
     .clone()
 }
 
-/// Parse, compile with stdlib, and cache the result. Asserts no compile errors.
+/// Parse, compile with stdlib, and cache the result.
 fn compiled() -> CompiledModule {
     static C: OnceLock<CompiledModule> = OnceLock::new();
     C.get_or_init(|| {
