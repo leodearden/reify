@@ -321,7 +321,7 @@ pub(crate) fn compile_guarded_members(
                 } else {
                     let default_expr = param.default.as_ref().map(|expr| {
                         let mut lc = 0u32;
-                        compile_expr_guarded(
+                        let mut compiled = compile_expr_guarded(
                             expr,
                             scope,
                             enum_defs,
@@ -329,7 +329,15 @@ pub(crate) fn compile_guarded_members(
                             diagnostics,
                             guard_ctx,
                             &mut lc,
-                        )
+                        );
+                        // If the default is OptionNone and the param type is Option<T>,
+                        // override the result_type to match the declared type.
+                        if matches!(&compiled.kind, CompiledExprKind::OptionNone)
+                            && matches!(&cell_type, Type::Option(_))
+                        {
+                            compiled = CompiledExpr::option_none(cell_type.clone());
+                        }
+                        compiled
                     });
                     ValueCellDecl {
                         id,
