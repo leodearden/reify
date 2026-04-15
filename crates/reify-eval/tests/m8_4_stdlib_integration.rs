@@ -15,7 +15,7 @@
 //!                        subs, and geometry (box) for export-ready parts
 
 use reify_test_support::make_simple_engine;
-use reify_types::{Severity, Value, ValueCellId};
+use reify_types::{DimensionVector, Severity, Value, ValueCellId};
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
 
@@ -321,8 +321,6 @@ fn linalg_complex_magnitude() {
 /// z = complex(3.0, 4.0) → conjugate flips the sign of the imaginary part.
 #[test]
 fn linalg_complex_conjugate() {
-    use reify_types::DimensionVector;
-
     let result = eval_ri_file(PATH_LINALG, "linalg");
 
     let id = ValueCellId::new("LinalgDemo", "z_conj");
@@ -362,8 +360,6 @@ fn linalg_complex_conjugate() {
 /// z = complex(3.0, 4.0) → phase = atan2(im, re) = atan2(4, 3).
 #[test]
 fn linalg_complex_phase() {
-    use reify_types::DimensionVector;
-
     let result = eval_ri_file(PATH_LINALG, "linalg");
 
     let id = ValueCellId::new("LinalgDemo", "z_phase");
@@ -572,8 +568,6 @@ fn io_export_mass_computed() {
 /// upper_limit = nominal + upper_deviation = 0.100 + 0.00005 = 0.10005m.
 #[test]
 fn io_export_tolerance_upper_limit() {
-    use reify_types::DimensionVector;
-
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
 
     let ul_id = ValueCellId::new("ExportPart.tol", "upper_limit");
@@ -609,8 +603,6 @@ fn io_export_tolerance_upper_limit() {
 /// tolerance_band = upper_deviation - lower_deviation = 0.05mm - (-0.05mm) = 0.1mm.
 #[test]
 fn io_export_tolerance_band() {
-    use reify_types::DimensionVector;
-
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
 
     let tb_id = ValueCellId::new("ExportPart.tol", "tolerance_band");
@@ -628,7 +620,7 @@ fn io_export_tolerance_band() {
             );
             assert_eq!(
                 *dimension,
-                reify_types::DimensionVector::LENGTH,
+                DimensionVector::LENGTH,
                 "ExportPart.tol.tolerance_band should have LENGTH dimension"
             );
         }
@@ -645,8 +637,6 @@ fn io_export_tolerance_band() {
 /// Flatness sub: tolerance_value: 0.02mm → 2e-5 m.
 #[test]
 fn io_export_flatness_tolerance() {
-    use reify_types::DimensionVector;
-
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
 
     let id = ValueCellId::new("ExportPart.flat", "tolerance_value");
@@ -681,8 +671,6 @@ fn io_export_flatness_tolerance() {
 /// SurfaceFinish sub: value: 0.8um → 0.8e-6 m = 8e-7 m.
 #[test]
 fn io_export_surface_finish() {
-    use reify_types::DimensionVector;
-
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
 
     let id = ValueCellId::new("ExportPart.finish", "value");
