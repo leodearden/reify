@@ -38104,15 +38104,43 @@
         "subtasks": []
       },
       {
-        "id": 1826,
+        "id": "1826",
         "title": "Fix misleading test comment and add defensive waitFor in editor tests",
-        "description": "From task 1798 review: (1) Editor.test.tsx:163 comment wrong about safety mechanism. (2) App.test.tsx:1340 missing waitFor pattern.",
-        "details": "",
-        "testStrategy": "",
+        "description": "Two test accuracy/consistency fixes from task 1798 review: (1) Fix misleading comment in Editor.test.tsx:163. (2) Add defensive waitFor in App.test.tsx:~1340.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "details": "1. Update the comment in Editor.test.tsx:163 to correctly describe the mechanism preventing updateSource from firing. Change to: \"// When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call.\" 2. Add await waitFor(() => expect(capturedEditorStore).toBeTruthy()) in App.test.tsx:~1340 after the waitFor for app-layout and before accessing capturedEditorStore!.updateFileContent(...).",
+        "testStrategy": "1. Verify that the updated comment in Editor.test.tsx:163 accurately describes the behavior by reviewing the code logic. 2. Ensure the waitFor pattern in App.test.tsx:~1340 is correctly implemented by running the test and confirming it passes consistently.",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Update misleading comment in Editor.test.tsx",
+            "description": "Change the comment at Editor.test.tsx:163 to correctly describe the debounce timer mechanism.",
+            "dependencies": [],
+            "details": "Change comment to: \"// When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call.\"",
+            "status": "pending",
+            "testStrategy": "Review the comment change and verify it matches the code logic."
+          },
+          {
+            "id": 2,
+            "title": "Add defensive waitFor in App.test.tsx",
+            "description": "Add await waitFor(() => expect(capturedEditorStore).toBeTruthy()) in App.test.tsx:~1340.",
+            "dependencies": [],
+            "details": "Insert the waitFor pattern after the waitFor for app-layout and before accessing capturedEditorStore!.updateFileContent(...).",
+            "status": "pending",
+            "testStrategy": "Run the test to ensure it passes consistently with the new waitFor pattern."
+          }
+        ],
+        "metadata": {
+          "source": "steward-triage",
+          "spawn_context": "steward-triage",
+          "spawned_from": "1798",
+          "modules": [
+            "gui/src/__tests__/Editor.test.tsx",
+            "gui/src/__tests__/App.test.tsx"
+          ]
+        }
       }
     ],
     "metadata": {
