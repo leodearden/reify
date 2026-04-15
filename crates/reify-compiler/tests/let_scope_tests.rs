@@ -213,6 +213,81 @@ fn non_geometry_let_in_boolean_op_errors() {
     );
 }
 
+// ─── amend: intersection_all with let-bound args ───
+
+#[test]
+fn intersection_all_with_let_bound_args() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    param w: Scalar = 8mm
+    param d: Scalar = 8mm
+    let a = cylinder(r, h)
+    let b = sphere(r)
+    let c = box(w, h, d)
+    let d_geom = intersection_all(a, b, c)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        4,
+        "expected 4 realizations (a, b, c, d_geom), got {}",
+        template.realizations.len()
+    );
+}
+
+// ─── amend: mixed let-bound and inline args in boolean op ───
+
+#[test]
+fn mixed_let_and_inline_in_boolean_op() {
+    // One arg is a let-bound Ident, the other is an inline geometry call.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = difference(body, cylinder(r2, h))
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    // body, result → 2 realizations
+    assert_eq!(
+        template.realizations.len(),
+        2,
+        "expected 2 realizations (body, result), got {}",
+        template.realizations.len()
+    );
+}
+
+// ─── amend: cyclic geometry let references should error ───
+
+#[test]
+fn cyclic_geometry_let_references_error() {
+    // Mutually-recursive geometry lets should produce a cycle error, not stack overflow.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let a = difference(b, cylinder(r, h))
+    let b = difference(a, cylinder(r, h))
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected error diagnostics for cyclic geometry lets"
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("cyclic")),
+        "expected cyclic reference error, got: {:?}",
+        errors
+    );
+}
+
 // ─── step-4: geometry let still produces realization ───
 
 #[test]

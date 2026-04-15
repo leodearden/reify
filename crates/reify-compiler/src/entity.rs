@@ -1201,6 +1201,7 @@ pub(crate) fn compile_entity(
                 diagnostics,
                 0,
                 &geometry_lets,
+                &mut HashSet::new(),
             )
         {
             realizations.push(RealizationDecl {

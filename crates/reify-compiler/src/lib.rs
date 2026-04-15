@@ -1542,6 +1542,7 @@ mod tests {
             &mut diagnostics,
             0,
             &geometry_lets,
+            &mut HashSet::new(),
         );
 
         assert!(

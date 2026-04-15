@@ -27,12 +27,22 @@ pub(crate) fn compile_geometry_call(
     diagnostics: &mut Vec<Diagnostic>,
     step_offset: usize,
     geometry_lets: &HashMap<&str, &reify_syntax::Expr>,
+    visiting: &mut HashSet<String>,
 ) -> Option<Vec<CompiledGeometryOp>> {
     // Resolve let-bound geometry variable references: when the expression is an
     // Ident that names a geometry let, recursively compile the initializer.
+    // Guard against cycles (e.g. `let a = difference(b, x); let b = difference(a, y);`)
+    // by tracking which names are currently being resolved.
     if let reify_syntax::ExprKind::Ident(name) = &expr.kind {
         if let Some(init_expr) = geometry_lets.get(name.as_str()) {
-            return compile_geometry_call(
+            if !visiting.insert(name.clone()) {
+                diagnostics.push(Diagnostic::error(format!(
+                    "cyclic geometry let reference: '{}' references itself (directly or indirectly)",
+                    name
+                )));
+                return None;
+            }
+            let result = compile_geometry_call(
                 init_expr,
                 scope,
                 enum_defs,
@@ -40,7 +50,10 @@ pub(crate) fn compile_geometry_call(
                 diagnostics,
                 step_offset,
                 geometry_lets,
+                visiting,
             );
+            visiting.remove(name.as_str());
+            return result;
         }
         return None;
     }
@@ -77,12 +90,15 @@ pub(crate) fn compile_geometry_call(
                 diagnostics,
                 step_offset,
                 geometry_lets,
+                visiting,
             ) {
                 Some(ops) => ops,
                 None => {
-                    // Only emit extra diagnostic if no FunctionCall or geometry-let Ident was detected
-                    // (i.e., arg is a literal or non-geometry ident — not a geometry expression).
-                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                    // Only emit extra diagnostic if the arg is not a geometry expression
+                    // (neither a FunctionCall nor a geometry-let Ident).
+                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. })
+                        && !matches!(&args[0].kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
+                    {
                         diagnostics.push(Diagnostic::error(format!(
                             "{}() argument 1 must be a geometry expression",
                             name
@@ -102,10 +118,13 @@ pub(crate) fn compile_geometry_call(
                 diagnostics,
                 right_offset,
                 geometry_lets,
+                visiting,
             ) {
                 Some(ops) => ops,
                 None => {
-                    if !matches!(args[1].kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                    if !matches!(args[1].kind, reify_syntax::ExprKind::FunctionCall { .. })
+                        && !matches!(&args[1].kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
+                    {
                         diagnostics.push(Diagnostic::error(format!(
                             "{}() argument 2 must be a geometry expression",
                             name
@@ -153,10 +172,13 @@ pub(crate) fn compile_geometry_call(
                 diagnostics,
                 current_offset,
                 geometry_lets,
+                visiting,
             ) {
                 Some(ops) => ops,
                 None => {
-                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. })
+                        && !matches!(&args[0].kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
+                    {
                         diagnostics.push(Diagnostic::error(format!(
                             "{}() argument 1 must be a geometry expression",
                             name
@@ -179,10 +201,13 @@ pub(crate) fn compile_geometry_call(
                     diagnostics,
                     current_offset,
                     geometry_lets,
+                    visiting,
                 ) {
                     Some(ops) => ops,
                     None => {
-                        if !matches!(arg.kind, reify_syntax::ExprKind::FunctionCall { .. }) {
+                        if !matches!(arg.kind, reify_syntax::ExprKind::FunctionCall { .. })
+                            && !matches!(&arg.kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
+                        {
                             diagnostics.push(Diagnostic::error(format!(
                                 "{}() argument {} must be a geometry expression",
                                 name,
