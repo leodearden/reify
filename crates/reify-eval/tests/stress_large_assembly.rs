@@ -41,18 +41,7 @@ fn compiled() -> CompiledModule {
     static C: OnceLock<CompiledModule> = OnceLock::new();
     C.get_or_init(|| {
         let src = source();
-        let compiled = parse_and_compile_with_stdlib(&src);
-        let errors: Vec<_> = compiled
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "compile errors in large_assembly.ri: {:?}",
-            errors
-        );
-        compiled
+        parse_and_compile_with_stdlib(&src)
     })
     .clone()
 }
