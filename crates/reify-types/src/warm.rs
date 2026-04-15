@@ -11,19 +11,6 @@ pub struct OpaqueState {
     estimated_size: usize,
 }
 
-impl Clone for OpaqueState {
-    fn clone(&self) -> Self {
-        // Deep clone: the inner value must be Clone for this to work.
-        // For non-Clone values, use clone_from or a different pattern.
-        // Since we don't require T: Clone, we can't implement Clone generically.
-        // However, for testing purposes, we'll add Clone support.
-        // The actual OpaqueState cannot implement Clone without T: Clone,
-        // but for testing with MockWarmStartable we need this.
-        // We'll use unsafe to clone the Box contents via Any.
-        // Actually, simpler: don't make the mock use Clone; use RefCell or similar.
-        unimplemented!("OpaqueState cannot be cloned without T: Clone");
-    }
-}
 
 impl fmt::Debug for OpaqueState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
