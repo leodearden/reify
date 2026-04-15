@@ -527,6 +527,25 @@ fn shared_let_operand_step_indices_correct() {
     );
 }
 
+// ─── task-1713 step-1: intersection op-level assertions ───
+
+#[test]
+fn intersection_ops_verify_boolean_variant_and_step_refs() {
+    // Verifies the operations Vec of the `c` realization.
+    // Source shared with intersection_with_let_bound_args.
+    let compiled = compile_no_errors(SRC_INTERSECTION_LET_BOUND);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["a", "b", "c"], "c");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Box_,
+            ExpectedOp::Sphere,
+            ExpectedOp::BoolIntersect(0, 1),
+        ],
+    );
+}
+
 // ─── task-1713 step-3: intersection_all left-fold structure assertions ───
 
 #[test]
@@ -545,25 +564,6 @@ fn intersection_all_ops_verify_left_fold_structure() {
             ExpectedOp::BoolIntersect(0, 1),
             ExpectedOp::Box_,
             ExpectedOp::BoolIntersect(2, 3),
-        ],
-    );
-}
-
-// ─── task-1713 step-1: intersection op-level assertions ───
-
-#[test]
-fn intersection_ops_verify_boolean_variant_and_step_refs() {
-    // Verifies the operations Vec of the `c` realization.
-    // Source shared with intersection_with_let_bound_args.
-    let compiled = compile_no_errors(SRC_INTERSECTION_LET_BOUND);
-    let template = &compiled.templates[0];
-    let realization = realization_named(template, &["a", "b", "c"], "c");
-    assert_op_sequence(
-        &realization.operations,
-        &[
-            ExpectedOp::Box_,
-            ExpectedOp::Sphere,
-            ExpectedOp::BoolIntersect(0, 1),
         ],
     );
 }
