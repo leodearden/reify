@@ -37881,11 +37881,11 @@
         "description": "Break up the ~1000-line compile_geometry_call() match statement in crates/reify-compiler/src/geometry.rs into per-group helper functions to reduce orchestrator lock contention. This file is a top-5 concurrency bottleneck — 7 tasks contend on it with max_per_module=1.\n\nmemory_hints:\n- search: \"reify-compiler geometry.rs extraction\" \"compile_geometry_call\"\n- entity: reify-compiler, compile_geometry_call",
         "details": "## Background\n\n`compile_geometry_call()` (line 51, ~1000 lines) is a single massive match over 25+ geometry operation names. Each match arm is self-contained — arms don't share mutable state beyond the function's parameters. The 7 tasks touching this file each work on different operator classes, but all lock the same file.\n\n## Extraction plan\n\nExtract four helper functions, each called from the corresponding match arms in `compile_geometry_call`. The match arms become one-line dispatches.\n\n### 1. Boolean ops (~170 lines, lines 97–264)\nExtract `compile_boolean_op()` covering: union, intersection, difference, union_all, intersection_all.\nSelf-contained recursive logic with nested call handling.\n\n### 2. Transforms (~100 lines, lines 684–783)\nExtract `compile_transform_op()` covering: translate, rotate, scale, rotate_around.\nFormulaic pattern — each arm extracts named args and builds a GeometryOp variant.\n\n### 3. Modifies (~125 lines, lines 784–909)\nExtract `compile_modify_op()` covering: shell, thicken, draft, chamfer, fillet.\nTask 1802 is already partially doing this (compile_modify_fixed helper). Align with that work.\n\n### 4. Curves (~130 lines, lines 910–1040)\nExtract `compile_curve_op()` covering: line_segment, arc, helix, interp, bezier, nurbs.\nIsolated constructors that build GeometryOp::Curve variants.\n\n### What stays in compile_geometry_call\n- Pattern ops (linear_pattern, circular_pattern, etc.) — shared step_offset logic\n- Sweep/loft — complex multi-profile handling\n- Primitives (sphere, cylinder, etc.)\n- The match dispatch skeleton\n\n## Expected concurrency impact\n\n7 tasks currently contend on geometry.rs. After extraction:\n- Tasks working on boolean ops lock a different file than tasks working on transforms\n- Estimated ~70% contention reduction (most tasks cluster by operator class)\n- With max_per_module=1, enables 2-3 concurrent tasks where today only 1 can run\n\n## Constraints\n\n- All extractions are pure refactors — no behavioral changes\n- New helper functions should be pub(crate) in separate files (e.g., geometry_boolean.rs, geometry_transform.rs, geometry_modify.rs, geometry_curve.rs)\n- Re-export or call from geometry.rs so compile_geometry_call's public signature is unchanged\n- Tests must pass: `cargo test --workspace`\n- `cargo clippy --workspace -- -D warnings` must pass\n- Coordinate with task 1802 which is already extracting compile_modify_fixed",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T21:19:00.087Z",
+        "updatedAt": "2026-04-15T21:32:57.619Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
@@ -38170,7 +38170,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:32:57.379Z",
+      "lastModified": "2026-04-15T21:32:57.619Z",
       "taskCount": 1823,
       "completedCount": 1552,
       "tags": [
