@@ -36420,7 +36420,16 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T10:29:35.356Z"
+        "updatedAt": "2026-04-15T10:29:35.356Z",
+        "metadata": {
+          "memory_hints": {
+            "searches": [
+              "ghost visibility state Three.js raycasting transparent non-selectable",
+              "view state model cascading ghost rendering viewport"
+            ],
+            "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
+          }
+        }
       },
       {
         "id": 1743,
