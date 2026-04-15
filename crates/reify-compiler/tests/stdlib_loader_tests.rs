@@ -284,3 +284,24 @@ fn compile_without_prelude_errors_for_elastic() {
          but no errors were produced"
     );
 }
+
+/// Compiling Steel:Strong source WITHOUT the prelude should produce ≥1
+/// error diagnostic, proving the prelude is required for trait resolution.
+#[test]
+fn compile_without_prelude_errors_for_strong() {
+    let source = steel_strong_source();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        !errors.is_empty(),
+        "expected at least one compile error when compiling Steel:Strong without prelude, \
+         but no errors were produced"
+    );
+}
