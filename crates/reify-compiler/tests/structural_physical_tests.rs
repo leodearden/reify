@@ -7,6 +7,8 @@
 use reify_compiler::*;
 use reify_types::*;
 
+mod common;
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 /// Return the `std/structural/physical` CompiledModule from the production
@@ -22,24 +24,9 @@ fn load_stdlib_module() -> &'static CompiledModule {
 /// Parse and compile `source` against the full stdlib prelude, asserting no
 /// parse or compile errors. Returns the `CompiledModule` for further inspection.
 fn compile_structure(source: &str) -> CompiledModule {
-    let prelude = stdlib_loader::load_stdlib();
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "compile errors: {:?}",
-        errors
-    );
+    let compiled = common::compile_with_stdlib_helper(source);
+    let errors = common::errors_only(&compiled);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
     compiled
 }
 
