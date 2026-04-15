@@ -947,5 +947,34 @@ fn private_unit_not_exported_through_import_prelude() {
         errors
     );
 
+    // Positive control: with `pub unit secret` the unit resolves and there are no errors.
+    let dir2 = test_dir("private_unit_not_exported_through_import_prelude_pos");
+    fs::write(
+        dir2.join("dep.ri"),
+        "pub unit secret : Length = 0.005\npub structure Widget {\n    param w: Scalar = 1mm\n}",
+    )
+    .unwrap();
+    fs::write(
+        dir2.join("consumer.ri"),
+        "import dep\nstructure S {\n    param z: Length = 3secret\n}",
+    )
+    .unwrap();
+    let resolver2 = ModuleResolver::new(&dir2, dir2.join("stdlib"));
+    let result2 =
+        reify_compiler::module_dag::compile_project(&dir2.join("consumer.ri"), &resolver2);
+    let modules2 = result2.expect("positive-control compile_project should not Err");
+    let entry2 = modules2.last().expect("no modules returned (positive control)");
+    let errors2: Vec<_> = entry2
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(
+        errors2.is_empty(),
+        "positive control (pub unit): expected zero errors but got: {:#?}",
+        errors2
+    );
+
     let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&dir2);
 }
