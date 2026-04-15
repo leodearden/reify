@@ -35616,7 +35616,7 @@
         "description": "Task 1674 review: extract shared 3-param lambda field helper in field_eval_tests.rs; fix doc comment at line 506 (Point -> Point or Vector).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -35627,12 +35627,13 @@
           "modules": [
             "crates/reify-expr/tests/field_eval_tests.rs"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T01:57:53.138Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:57:52.161Z",
+      "lastModified": "2026-04-15T01:57:53.138Z",
       "taskCount": 1705,
       "completedCount": 1455,
       "tags": [
