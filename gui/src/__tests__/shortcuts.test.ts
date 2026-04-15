@@ -93,8 +93,8 @@ describe('shortcuts', () => {
     expect(entry?.disabled).toBe(true);
   });
 
-  it('active shortcuts (open, save, export, reEvaluate, toggleChat, help) do NOT have disabled set to true', () => {
-    const activeIds = ['open', 'save', 'export', 'reEvaluate', 'toggleChat', 'help'];
+  it('all non-disabled shortcuts with keys do NOT have disabled set to true', () => {
+    const activeIds = SHORTCUTS.filter((s) => !s.disabled && s.key).map((s) => s.id);
     for (const id of activeIds) {
       const entry = getShortcut(id);
       expect(entry).toBeDefined();

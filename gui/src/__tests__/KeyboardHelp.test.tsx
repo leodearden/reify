@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { KeyboardHelp } from '../components/KeyboardHelp';
-import { SHORTCUTS } from '../shortcuts';
+import { SHORTCUTS, getShortcut } from '../shortcuts';
 
 describe('KeyboardHelp', () => {
   it('renders overlay with data-testid keyboard-help containing shortcut list', () => {
@@ -48,18 +48,20 @@ describe('KeyboardHelp', () => {
     }
   });
 
-  it('does NOT render Ctrl+Z (undo) in the overlay', () => {
+  it('does NOT render undo shortcut in the overlay', () => {
     render(() => <KeyboardHelp onClose={() => {}} />);
     const overlay = screen.getByTestId('keyboard-help');
-    expect(overlay.textContent).not.toContain('Ctrl+Z');
-    expect(overlay.textContent).not.toContain('Undo');
+    const undo = getShortcut('undo')!;
+    expect(overlay.textContent).not.toContain(undo.key);
+    expect(overlay.textContent).not.toContain(undo.description);
   });
 
-  it('does NOT render Ctrl+Shift+Z (redo) in the overlay', () => {
+  it('does NOT render redo shortcut in the overlay', () => {
     render(() => <KeyboardHelp onClose={() => {}} />);
     const overlay = screen.getByTestId('keyboard-help');
-    expect(overlay.textContent).not.toContain('Ctrl+Shift+Z');
-    expect(overlay.textContent).not.toContain('Redo');
+    const redo = getShortcut('redo')!;
+    expect(overlay.textContent).not.toContain(redo.key);
+    expect(overlay.textContent).not.toContain(redo.description);
   });
 
   it('renders Ctrl+S (save shortcut) from shared registry', () => {
