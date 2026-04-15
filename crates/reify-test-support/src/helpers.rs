@@ -200,6 +200,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_compile_first_template() {
+        let (template, diagnostics) = super::compile_first_template(bracket_source());
+        assert_eq!(template.name, "Bracket", "first template should be Bracket");
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn test_compile_template_by_name() {
+        let source = r#"
+            structure Alpha { param x: Scalar = 1 }
+            structure Beta { param y: Scalar = 2 }
+        "#;
+        let (template, _diags) = super::compile_template(source, "Beta");
+        assert_eq!(template.name, "Beta", "should extract template named Beta");
+    }
+
+    #[test]
+    #[should_panic(expected = "not found")]
+    fn test_compile_template_panics_on_missing_name() {
+        super::compile_template(bracket_source(), "NonExistent");
+    }
+
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_make_engine() {
