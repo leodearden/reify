@@ -38104,10 +38104,11 @@
         "description": "Two test fixes from task 1798 review: (1) Editor.test.tsx:163 comment misattributes safety to if(path) guard instead of createEffect clearing debounce timer. (2) App.test.tsx:~1340 missing defensive waitFor for capturedEditorStore before access.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:33:13.721Z"
       },
       {
         "id": "1826",
@@ -38175,7 +38176,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:33:11.416Z",
+      "lastModified": "2026-04-15T21:33:13.721Z",
       "taskCount": 1823,
       "completedCount": 1552,
       "tags": [
