@@ -35782,11 +35782,11 @@
         "description": "In `crates/reify-compiler/tests/let_scope_tests.rs`, the `ExpectedOp` enum (lines 52-58) covers `BoolDiff` and `BoolUnion` but omits `BoolIntersect`. The existing `intersection_with_let_bound_args` and `intersection_all_with_let_bound_args` tests only check realization count, not the op sequence. Add a `BoolIntersect(usize, usize)` variant to `ExpectedOp`, a corresponding arm in `op_matches`, and new op-level tests for `intersection` and `intersection_all` analogous to the difference/union/union_all op-level tests.\n\n## memory_hints\n- search: \"ExpectedOp BoolDiff BoolUnion op_matches\"\n- search: \"intersection_with_let_bound_args let_scope_tests\"\n- search: \"task 1709 op-level assertions\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T05:59:01.410Z"
+        "updatedAt": "2026-04-15T06:13:23.939Z"
       },
       {
         "id": "1714",
@@ -35927,9 +35927,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:13:13.851Z",
+      "lastModified": "2026-04-15T06:13:23.940Z",
       "taskCount": 1721,
-      "completedCount": 1475,
+      "completedCount": 1476,
       "tags": [
         "master"
       ]
