@@ -3,7 +3,7 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 
@@ -16,6 +16,21 @@ fn test_dir(name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// Compile the named entry file within `dir` and return the Error-severity
+/// diagnostics from the last (entry) module in the output.
+///
+/// Panics if `compile_project` returns `Err` or yields no modules.
+fn compile_errors(dir: &Path, entry: &str) -> Vec<reify_types::Diagnostic> {
+    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(&dir.join(entry), &resolver);
+    let modules = result.expect("compile_project should return Ok even with diagnostics");
+    let last = modules.into_iter().last().expect("no modules returned");
+    last.diagnostics
+        .into_iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect()
 }
 
 // ── Step 19: Circular import detection ────────────────────────────
@@ -843,19 +858,7 @@ fn no_prelude_suppresses_import_prelude() {
     )
     .unwrap();
 
-    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let result =
-        reify_compiler::module_dag::compile_project(&dir.join("consumer.ri"), &resolver);
-
-    let modules = result.expect("compile_project should return Ok even with diagnostics");
-    let entry = modules.last().expect("no modules returned");
-
-    let errors: Vec<_> = entry
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
-
+    let errors = compile_errors(&dir, "consumer.ri");
     let unknown_unit_diag = errors
         .iter()
         .find(|d| d.message.contains("unknown unit") && d.message.contains("myunit"));
@@ -877,16 +880,7 @@ fn no_prelude_suppresses_import_prelude() {
         "import dep\nstructure S {\n    param y: Length = 5myunit\n}",
     )
     .unwrap();
-    let resolver2 = ModuleResolver::new(&dir2, dir2.join("stdlib"));
-    let result2 =
-        reify_compiler::module_dag::compile_project(&dir2.join("consumer.ri"), &resolver2);
-    let modules2 = result2.expect("positive-control compile_project should not Err");
-    let entry2 = modules2.last().expect("no modules returned (positive control)");
-    let errors2: Vec<_> = entry2
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
+    let errors2 = compile_errors(&dir2, "consumer.ri");
     assert!(
         errors2.is_empty(),
         "positive control (no #no_prelude): expected zero errors but got: {:#?}",
@@ -925,19 +919,7 @@ fn private_unit_not_exported_through_import_prelude() {
     )
     .unwrap();
 
-    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let result =
-        reify_compiler::module_dag::compile_project(&dir.join("consumer.ri"), &resolver);
-
-    let modules = result.expect("compile_project should return Ok even with diagnostics");
-    let entry = modules.last().expect("no modules returned");
-
-    let errors: Vec<_> = entry
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
-
+    let errors = compile_errors(&dir, "consumer.ri");
     let unknown_unit_diag = errors
         .iter()
         .find(|d| d.message.contains("unknown unit") && d.message.contains("secret"));
@@ -959,16 +941,7 @@ fn private_unit_not_exported_through_import_prelude() {
         "import dep\nstructure S {\n    param z: Length = 3secret\n}",
     )
     .unwrap();
-    let resolver2 = ModuleResolver::new(&dir2, dir2.join("stdlib"));
-    let result2 =
-        reify_compiler::module_dag::compile_project(&dir2.join("consumer.ri"), &resolver2);
-    let modules2 = result2.expect("positive-control compile_project should not Err");
-    let entry2 = modules2.last().expect("no modules returned (positive control)");
-    let errors2: Vec<_> = entry2
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
+    let errors2 = compile_errors(&dir2, "consumer.ri");
     assert!(
         errors2.is_empty(),
         "positive control (pub unit): expected zero errors but got: {:#?}",
