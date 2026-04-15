@@ -35769,6 +35769,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1713,
+        "title": "Add BoolIntersect variant and intersection op-level tests",
+        "description": "In `crates/reify-compiler/tests/let_scope_tests.rs`, the `ExpectedOp` enum (lines 52-58) covers `BoolDiff` and `BoolUnion` but omits `BoolIntersect`. The existing `intersection_with_let_bound_args` and `intersection_all_with_let_bound_args` tests only check realization count, not the op sequence. Add a `BoolIntersect(usize, usize)` variant to `ExpectedOp`, a corresponding arm in `op_matches`, and new op-level tests for `intersection` and `intersection_all` analogous to the difference/union/union_all op-level tests.\n\n## memory_hints\n- search: \"ExpectedOp BoolDiff BoolUnion op_matches\"\n- search: \"intersection_with_let_bound_args let_scope_tests\"\n- search: \"task 1709 op-level assertions\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35781,7 +35792,7 @@
       ],
       "created": "2026-04-15T05:58:21.449Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T05:58:21.471Z"
+      "updated": "2026-04-15T05:58:50.661Z"
     }
   }
 }
