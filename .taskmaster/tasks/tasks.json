@@ -37965,15 +37965,16 @@
         "description": "In fillet_e2e.rs:156-160, the comment claims the \"target\" arg slot is \"structurally required by the IR format\", but this is inaccurate. The eval layer (lib.rs:3731-3733) only extracts \"radius\" by name for Fillet — it never looks up \"target\" from args. The internal unit test at lib.rs:5946-5949 constructs a Fillet with only (\"radius\", ...) in args and works fine.\n\nEither remove the dummy (\"target\".into(), mm_literal(0.0)) entry entirely (matching the internal unit test pattern), or correct the comment to match chamfer_e2e.rs line 153 which already says: \"target\" arg is not evaluated; actual handle resolved from GeomRef::Step(0).\n\nWhichever approach is chosen, align both fillet_e2e.rs and chamfer_e2e.rs so the test patterns stay consistent.\n\n## memory_hints\n- search: \"fillet eval args target\"\n- search: \"chamfer_e2e.rs test structure\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:08:50.963Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:08:50.320Z",
+      "lastModified": "2026-04-15T21:08:50.963Z",
       "taskCount": 1814,
       "completedCount": 1547,
       "tags": [
