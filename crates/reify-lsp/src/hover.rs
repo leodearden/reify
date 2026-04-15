@@ -163,6 +163,16 @@ fn keyword_description(word: &str) -> Option<&'static str> {
         "true" => Some("Boolean literal true."),
         "false" => Some("Boolean literal false."),
         "auto" => Some("Marks a parameter for automatic resolution by the constraint solver."),
+        "occurrence" => Some("Declares a concrete occurrence of a structure."),
+        "fn" => Some("Declares a function."),
+        "trait" => Some("Declares a trait."),
+        "enum" => Some("Declares an enumeration type."),
+        "purpose" => Some("Declares the optimization objective of the structure."),
+        "minimize" => Some("Declares a quantity to minimize."),
+        "maximize" => Some("Declares a quantity to maximize."),
+        "port" => Some("Declares an interface port for connections."),
+        "connect" => Some("Declares a connection between ports."),
+        "where" => Some("Introduces additional type or value constraints."),
         _ => None,
     }
 }
