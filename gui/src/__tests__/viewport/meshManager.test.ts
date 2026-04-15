@@ -880,5 +880,45 @@ describe('meshManager', () => {
       // Mesh re-added to scene
       expect(mockSceneAdd).toHaveBeenCalledTimes(1);
     });
+
+    it('(l) ghost→ghost idempotency: second setVisibility ghost is a no-op', () => {
+      const { manager } = setupWithMesh();
+
+      // First ghost transition: removes mesh from scene, adds ghost clone
+      (manager as any).setVisibility('A', 'ghost');
+      vi.clearAllMocks();
+
+      // Second ghost call: prevState === state, so early-return at meshManager.ts:230
+      (manager as any).setVisibility('A', 'ghost');
+
+      // No scene or group operations should have occurred
+      expect(mockSceneRemove).not.toHaveBeenCalled();
+      expect(mockGroupAdd).not.toHaveBeenCalled();
+      // Ghost map still has exactly one entry
+      expect((manager as any).getGhostMeshes().size).toBe(1);
+      // Mesh is not in scene
+      expect(manager.getSceneMeshes().has('A')).toBe(false);
+    });
+
+    it('(m) orphan visibility: setVisibility on never-synced entity stores state without error', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Set visibility on an entity that has never been synced
+      expect(() => (manager as any).setVisibility('Z', 'ghost')).not.toThrow();
+
+      // No mesh exists, so no scene or group operations occur
+      expect(mockSceneRemove).not.toHaveBeenCalled();
+      expect(mockGroupAdd).not.toHaveBeenCalled();
+      // Entity is not in ghost or scene map (no mesh was created)
+      expect((manager as any).getGhostMeshes().has('Z')).toBe(false);
+      expect(manager.getSceneMeshes().has('Z')).toBe(false);
+
+      // Sync with empty record: orphan visibility state should not leak or cause errors
+      expect(() => manager.sync({})).not.toThrow();
+      expect((manager as any).getGhostMeshes().has('Z')).toBe(false);
+      expect(manager.getSceneMeshes().has('Z')).toBe(false);
+    });
   });
 });
