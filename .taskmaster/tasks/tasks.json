@@ -37577,6 +37577,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1795,
+        "title": "Centralize shortcut matching logic in shortcut registry",
+        "description": "The SHORTCUTS array in shortcuts.ts is the single source of truth for display keys, but the actual shortcut matching logic remains hardcoded in useKeyboardShortcuts.ts (e.g., `e.ctrlKey && e.key === 's'`). If someone updates a key in the registry, the handler won't change — this is partial centralization.\n\nAdd a `matcher` function or structured key definition (modifiers + key) to each ShortcutDef so the registry can drive both display and handler matching. This would make the registry the true single source of truth.\n\nmemory_hints: search \"ShortcutDef matcher useKeyboardShortcuts centralize\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37589,7 +37600,7 @@
       ],
       "created": "2026-04-15T16:48:28.159Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T16:51:49.657Z"
+      "updated": "2026-04-15T16:52:25.395Z"
     }
   }
 }
