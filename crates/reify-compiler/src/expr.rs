@@ -738,7 +738,7 @@ pub(crate) fn compile_expr_guarded(
                         } else if scope
                             .sub_member_types
                             .get(sub_name.as_str())
-                            .map_or(false, |m| m.contains_key(member.as_str()))
+                            .is_some_and(|m| m.contains_key(member.as_str()))
                         {
                             // Known struct member — recommend indexed access.
                             diagnostics.push(
