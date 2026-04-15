@@ -736,4 +736,33 @@ structure B {
             "should contain 'auto(free) x:', got: {md}"
         );
     }
+
+    // --- keyword completeness coverage ---
+
+    /// Verify that every keyword exposed by the completion engine also has a hover
+    /// description. This test imports the three completion keyword lists directly so
+    /// that adding a keyword to completion.rs will automatically cause this test to
+    /// fail if a hover description is not also added.
+    #[test]
+    fn all_completion_keywords_have_hover_descriptions() {
+        use crate::completion::{BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS};
+
+        let all_keywords = TOP_LEVEL_KEYWORDS
+            .iter()
+            .chain(BODY_KEYWORDS.iter())
+            .chain(EXPR_KEYWORDS.iter());
+
+        let mut missing = Vec::new();
+        for kw in all_keywords {
+            if keyword_description(kw).is_none() {
+                missing.push(*kw);
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "the following keywords are recognized by completion but have no hover description: {:?}",
+            missing
+        );
+    }
 }
