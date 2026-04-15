@@ -36534,7 +36534,16 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T10:29:35.140Z"
+        "updatedAt": "2026-04-15T10:29:35.140Z",
+        "metadata": {
+          "memory_hints": {
+            "searches": [
+              "get_entity_tree design tree instance structure elaborated evaluation graph",
+              "engine entity tree def preview Tauri commands dual viewport"
+            ],
+            "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
+          }
+        }
       },
       {
         "id": 1751,
