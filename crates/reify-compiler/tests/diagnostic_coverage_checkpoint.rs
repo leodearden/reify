@@ -21,7 +21,7 @@
 //!
 //! Pattern (mirrors m9_error_cases.rs verbatim):
 //!   1. Build a small Reify source string with the error-producing construct.
-//!   2. Call `compile_module(source)` (or `compile_module_with_stdlib` when needed).
+//!   2. Call `compile_source(source)` (or `compile_module_with_stdlib` when needed).
 //!   3. Filter diagnostics via `errors_only` or `warnings_only`.
 //!   4. Assert the filtered list is non-empty (with `{:?}` dump on failure).
 //!   5. Assert a specific substring is present in at least one matching diagnostic.
@@ -38,48 +38,8 @@
 //!   lib.rs              — duplicate entity/unit/type-alias declarations
 
 use reify_compiler::*;
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
 use reify_types::*;
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Parse and compile a source string. Panics if there are parse errors.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Parse and compile with the full stdlib prelude loaded.
-fn compile_module_with_stdlib(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile_with_stdlib(&parsed)
-}
-
-/// Collect only error-severity diagnostics.
-fn errors_only(module: &CompiledModule) -> Vec<&Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
-}
-
-/// Collect only warning-severity diagnostics.
-fn warnings_only(module: &CompiledModule) -> Vec<&Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning)
-        .collect()
 }
 
 // ── Smoke test ────────────────────────────────────────────────────────────────
@@ -93,7 +53,7 @@ structure def S {
     param x : Real = 1.0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "expected no errors for trivially valid structure, got: {:?}",
@@ -112,7 +72,7 @@ fn circular_type_alias_a_b_a() {
 type A = B
 type B = A
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -143,7 +103,7 @@ fn self_referential_type_alias() {
     let source = r#"
 type X = X
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -175,7 +135,7 @@ fn type_alias_with_unknown_dimension_component() {
     let source = r#"
 type Velocity = NotARealDim / Time
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -209,7 +169,7 @@ structure def S {
     param p : Length = 1mm + 1kg
 }
 "#;
-    let module = compile_module_with_stdlib(source);
+    let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -243,7 +203,7 @@ structure def S {
     let r = 1mm..1kg
 }
 "#;
-    let module = compile_module_with_stdlib(source);
+    let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -283,7 +243,7 @@ structure def S : Shaped {
     param height : Length = 5mm
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -324,7 +284,7 @@ structure def S : Countable {
     param count : Length = 5mm
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -360,7 +320,7 @@ structure def S : NonExistentTrait {
     param x : Length = 1mm
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -405,7 +365,7 @@ structure def S : HasX + HasXInt {
     param x : Length = 1mm
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -450,7 +410,7 @@ structure def S : TraitAlpha + TraitBeta {
     param width : Real = 5.0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -494,7 +454,7 @@ trait ProvidesMass {
 structure def S : ProvidesLength + ProvidesMass {
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -534,7 +494,7 @@ structure def S {
     constraint NoSuchConstraint(x: x)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -578,7 +538,7 @@ structure def S {
     constraint MinWall(wall: t, bogus: t)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -622,7 +582,7 @@ structure def S {
     constraint TwoParams(a: x)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -660,7 +620,7 @@ structure S {
     sub child = S(n: n - 1)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -698,7 +658,7 @@ structure S {
     sub child = S(n: n) where n > 0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -736,7 +696,7 @@ structure S {
     sub child = S(n: undef) where n > 0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -776,7 +736,7 @@ structure def S {
     let label : String = meta.description
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -817,7 +777,7 @@ structure def S {
     let label : String = meta.part_number
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -858,7 +818,7 @@ structure def Widget {
     param y : Length = 2mm
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -894,7 +854,7 @@ fn duplicate_unit_declaration_local() {
 unit myunit : Length
 unit myunit : Length
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -929,7 +889,7 @@ fn duplicate_unit_shadows_stdlib() {
     let source = r#"
 unit mm : Length = 0.001
 "#;
-    let module = compile_module_with_stdlib(source);
+    let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -965,7 +925,7 @@ fn duplicate_type_alias_name() {
 type Foo = Int
 type Foo = Real
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -1011,7 +971,7 @@ structure def S {
     }
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -1052,7 +1012,7 @@ structure S {
     let y = x
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let warnings = warnings_only(&module);
 
     assert!(
@@ -1097,7 +1057,7 @@ structure S {
     }
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let warnings = warnings_only(&module);
 
     assert!(
@@ -1137,7 +1097,7 @@ structure S {
     }
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     let has_msg = errors.iter().any(|d| {
@@ -1172,7 +1132,7 @@ structure S {
     }
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     let has_msg = errors.iter().any(|d| {
@@ -1203,7 +1163,7 @@ fn annotation_test_on_field_is_invalid_context() {
     let source = r#"
 @test field def f : Point3 -> Real { source = analytical { |p| 0.0 } }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     // No compile errors expected — only a warning
     let warnings = warnings_only(&module);
 
@@ -1241,7 +1201,7 @@ fn unknown_annotation_foobar_warning() {
     param x : Real = 1.0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let warnings = warnings_only(&module);
 
     assert!(
@@ -1277,7 +1237,7 @@ fn optimized_on_function_warns() {
     let source = r#"
 @optimized fn f(x: Real) -> Real { x }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let warnings = warnings_only(&module);
 
     assert!(
@@ -1320,7 +1280,7 @@ fn multiple_optimized_annotations_warning() {
     x > 0mm
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let warnings = warnings_only(&module);
 
     assert!(
@@ -1353,7 +1313,7 @@ fn multiple_optimized_annotations_warning() {
 /// Exercises annotations.rs line 163 (validate_pragmas) and lib.rs module pragma pass.
 #[test]
 fn unknown_module_pragma_warning() {
-    let module = compile_module("#optimize\nstructure S { param x : Real }");
+    let module = compile_source("#optimize\nstructure S { param x : Real }");
     let warnings = warnings_only(&module);
 
     assert!(
@@ -1384,7 +1344,7 @@ fn unknown_module_pragma_warning() {
 /// Exercises annotations.rs line 163.
 #[test]
 fn unknown_structure_pragma_warning() {
-    let module = compile_module(r#"structure S { #turbo param x : Real }"#);
+    let module = compile_source(r#"structure S { #turbo param x : Real }"#);
     let warnings = warnings_only(&module);
 
     assert!(
@@ -1415,7 +1375,7 @@ fn unknown_structure_pragma_warning() {
 /// Exercises annotations.rs line 163.
 #[test]
 fn unknown_trait_pragma_warning() {
-    let module = compile_module(r#"trait T { #fast param x : Real }"#);
+    let module = compile_source(r#"trait T { #fast param x : Real }"#);
     let warnings = warnings_only(&module);
 
     assert!(
@@ -1453,7 +1413,7 @@ purpose p(s : Structure) {
     constraint 1 > 0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let warnings = warnings_only(&module);
 
     assert!(
@@ -1493,7 +1453,7 @@ structure def Bolt : Rigid { param mass : Mass = 1kg }
 structure def Box<T: Rigid> { param width : Length = 10mm }
 structure def Assembly { sub part = Box<Bolt, Bolt>() }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -1530,7 +1490,7 @@ trait Rigid { param mass : Mass }
 structure def Box<T: Rigid> { param width : Length = 10mm }
 structure def Assembly { sub part = Box() }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -1568,7 +1528,7 @@ structure def Widget { param x : Length = 5mm }
 structure def Box<T: Rigid> { param width : Length = 10mm }
 structure def Assembly { sub part = Box<Widget>() }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -1609,7 +1569,7 @@ structure S {
     sub child = S(n: n - 1) where 1 > 0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -1654,7 +1614,7 @@ structure def Vehicle : HasEngine {
     param speed : Int = 60
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -1696,7 +1656,7 @@ occurrence def Gadget {
     param x : Length = 2mm
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -1748,7 +1708,7 @@ structure def S : A {
 "#;
     // Must not panic — the visited-set prevents infinite recursion.
     // Whether errors are emitted is implementation-defined (no assertion on count).
-    let module = compile_module(source);
+    let module = compile_source(source);
     // Document: compilation completes without panic.
     let _ = errors_only(&module);
 }

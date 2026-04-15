@@ -1,19 +1,8 @@
 //! Compiler behavior for ad-hoc selector (@) expressions.
 
 use reify_compiler::*;
+use reify_test_support::compile_source;
 use reify_types::*;
-
-/// Helper: parse source and compile, returning the CompiledModule without
-/// asserting on compile errors. Used to inspect diagnostics directly.
-fn compile_module_with_diagnostics(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
 
 #[test]
 fn compile_ad_hoc_selector_on_undefined_name_emits_error() {
@@ -24,7 +13,7 @@ structure S {
     let x = port @ face("top")
 }
 "#;
-    let module = compile_module_with_diagnostics(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -58,7 +47,7 @@ structure S {
     let resolved = p @ face("top")
 }
 "#;
-    let module = compile_module_with_diagnostics(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -83,7 +72,7 @@ structure S {
     let resolved = p @ point(10mm, 20mm, 0mm)
 }
 "#;
-    let module = compile_module_with_diagnostics(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -108,7 +97,7 @@ structure S {
     let e = p @ edge("left")
 }
 "#;
-    let module = compile_module_with_diagnostics(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -132,7 +121,7 @@ structure S {
     let r = p @ bogus("arg")
 }
 "#;
-    let module = compile_module_with_diagnostics(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -173,7 +162,7 @@ structure def S {
     connect a @ face("top") -> b @ face("bottom")
 }
 "#;
-    let module = compile_module_with_diagnostics(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -210,7 +199,7 @@ structure S {
     let r = p @ face("top")
 }
 "#;
-    let module = compile_module_with_diagnostics(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -246,7 +235,7 @@ structure def S {
     constraint forall p in parts: p.p @ face("mount") != p.p @ face("side")
 }
 "#;
-    let module = compile_module_with_diagnostics(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -270,7 +259,7 @@ structure S {
     let r = p @ face(42)
 }
 "#;
-    let module = compile_module_with_diagnostics(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -304,7 +293,7 @@ structure S {
     let e = p @ edge(width * 2)
 }
 "#;
-    let module = compile_module_with_diagnostics(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()

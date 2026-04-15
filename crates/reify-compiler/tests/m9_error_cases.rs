@@ -15,40 +15,8 @@
 //!   - lib.rs          — duplicate entity definitions, duplicate unit declarations
 
 use reify_compiler::*;
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 use reify_types::*;
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Parse and compile a source string. Panics if there are parse errors.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Parse and compile with the full stdlib prelude loaded.
-fn compile_module_with_stdlib(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile_with_stdlib(&parsed)
-}
-
-/// Collect only error-severity diagnostics.
-fn errors_only(module: &CompiledModule) -> Vec<&Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
-}
 
 // ── Step 1: Trait conformance error tests ─────────────────────────────────────
 
@@ -68,7 +36,7 @@ structure def S : Shaped {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -113,7 +81,7 @@ structure def S : Shaped {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -156,7 +124,7 @@ structure def Vehicle : HasEngine {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -193,7 +161,7 @@ structure def S : NonExistentTrait {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -238,7 +206,7 @@ structure def S : HasX + HasXInt {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -282,7 +250,7 @@ structure def S : TraitAlpha + TraitBeta {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -324,7 +292,7 @@ structure def S : ProvidesLength + ProvidesMass {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -362,7 +330,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -403,7 +371,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -445,7 +413,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -483,7 +451,7 @@ structure def Box<T: Rigid> { param width : Length = 10mm }
 structure def Assembly { sub part = Box<Bolt, Bolt>() }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -518,7 +486,7 @@ structure def Box<T: Rigid> { param width : Length = 10mm }
 structure def Assembly { sub part = Box() }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -554,7 +522,7 @@ structure def Box<T: Rigid> { param width : Length = 10mm }
 structure def Assembly { sub part = Box<Widget>() }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -592,7 +560,7 @@ structure S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -628,7 +596,7 @@ structure S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -664,7 +632,7 @@ structure S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -700,7 +668,7 @@ structure S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -752,7 +720,7 @@ structure def S : A {
 
     // Should not panic — the visited-set in collect_all_requirements prevents
     // infinite recursion. Behavior (errors or not) is implementation-defined.
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Document: compilation completes without panic. Errors may or may not appear.
     // If no explicit cycle diagnostic is emitted, that's acceptable behavior.
@@ -779,7 +747,7 @@ structure def Widget {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -815,7 +783,7 @@ unit myunit : Length
 unit myunit : Length
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -849,7 +817,7 @@ fn duplicate_unit_declaration_shadows_stdlib() {
 unit mm : Length = 0.001
 "#;
 
-    let module = compile_module_with_stdlib(source);
+    let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -887,7 +855,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -926,7 +894,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -968,7 +936,7 @@ structure def Widget {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
@@ -1012,7 +980,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert!(
