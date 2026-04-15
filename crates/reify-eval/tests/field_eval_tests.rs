@@ -642,15 +642,30 @@ fn eval_sample_principal_stresses_hydrostatic_dispatch() {
         );
     };
     assert_eq!(items.len(), 3, "should have 3 principal stresses");
+
+    // Extract eigenvalues
+    let mut eigenvalues = [0.0_f64; 3];
     for (i, item) in items.iter().enumerate() {
         match item {
-            Value::Real(v) => assert!(
-                (v - p).abs() < 1e-10,
-                "principal stress[{i}]: expected {p}, got {v}"
-            ),
+            Value::Real(v) => eigenvalues[i] = *v,
             _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
         }
     }
+
+    // Each eigenvalue should equal p
+    for (i, &v) in eigenvalues.iter().enumerate() {
+        assert!(
+            (v - p).abs() < 1e-10,
+            "principal stress[{i}]: expected {p}, got {v}"
+        );
+    }
+
+    // Eigenvalues should be sorted ascending
+    assert!(
+        eigenvalues[0] <= eigenvalues[1] && eigenvalues[1] <= eigenvalues[2],
+        "eigenvalues should be sorted ascending, got {:?}",
+        eigenvalues
+    );
 }
 
 // ── Edge case: max_shear of hydrostatic tensor ────────────────────────────────
@@ -705,7 +720,7 @@ fn eval_sample_safety_factor_hydrostatic_dispatch() {
 //
 // Uses [[2,1,1],[1,3,1],[1,1,4]], which exercises the trigonometric eigenvalue
 // branch in compute_eigenvalues_3x3 (non-zero off-diagonals). Trace=9 acts as
-// a checksum; expected eigenvalues ≈ [1.3256, 2.4601, 5.2143].
+// a checksum; expected eigenvalues ≈ [1.3249, 2.4608, 5.2143].
 
 #[test]
 fn eval_sample_principal_stresses_full_symmetric_dispatch() {
@@ -754,12 +769,12 @@ fn eval_sample_principal_stresses_full_symmetric_dispatch() {
 
     // Known eigenvalues (trigonometric closed-form result): characteristic polynomial
     // λ³ - 9λ² + 23λ - 17 = 0, depressed form t³ - 4t - 2 = 0 (t = λ - 3).
-    // The closed-form trig computation is accurate to ~1e-12; tolerance 1e-3 gives
-    // comfortable margin for the 4-decimal expected values below.
-    let expected = [1.3256_f64, 2.4601, 5.2143];
+    // The closed-form trig computation is accurate to ~1e-12; tolerance 1e-8 gives
+    // comfortable margin while catching regressions much earlier than 1e-3.
+    let expected = [1.3248691294_f64, 2.4608111272, 5.2143197434];
     for (i, (&got, &exp)) in eigenvalues.iter().zip(expected.iter()).enumerate() {
         assert!(
-            (got - exp).abs() < 1e-3,
+            (got - exp).abs() < 1e-8,
             "eigenvalue[{i}]: expected ≈ {exp}, got {got}"
         );
     }
