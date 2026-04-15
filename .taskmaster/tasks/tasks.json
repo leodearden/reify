@@ -35947,18 +35947,18 @@
         "description": "The field analysis dispatch tests in crates/reify-eval/tests/field_eval_tests.rs all use the same uniaxial/pure-shear stress patterns. Add edge-case tests through the eval dispatch path:\n\n1. **Zero tensor**: von_mises=0, safety_factor=yield/0 → infinity or error. Verifies divide-by-zero handling in the safety_factor dispatch path.\n2. **Hydrostatic stress** (σI): von_mises=0, a known special case. The sister file (field_analysis_tests.rs) covers hydrostatic for von_mises but not at the eval dispatch level.\n3. Optionally: a fully populated symmetric tensor with off-diagonal entries for principal_stresses, to exercise eigenvalue computation on a non-trivial input.\n\nThese strengthen confidence in dispatch correctness beyond the happy-path tensors.\n\nmemory_hints: search \"field analysis dispatch tests\", search \"hydrostatic stress test\", get_entity \"FieldSourceKind\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:13:13.851Z"
+        "updatedAt": "2026-04-15T06:23:47.699Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:23:35.010Z",
+      "lastModified": "2026-04-15T06:23:47.699Z",
       "taskCount": 1721,
-      "completedCount": 1478,
+      "completedCount": 1479,
       "tags": [
         "master"
       ]
