@@ -1178,10 +1178,10 @@ pub(crate) fn compile_entity(
         .members
         .iter()
         .filter_map(|m| {
-            if let reify_syntax::MemberDecl::Let(let_decl) = m {
-                if is_geometry_let(&let_decl.value, functions) {
-                    return Some((let_decl.name.as_str(), &let_decl.value));
-                }
+            if let reify_syntax::MemberDecl::Let(let_decl) = m
+                && is_geometry_let(&let_decl.value, functions)
+            {
+                return Some((let_decl.name.as_str(), &let_decl.value));
             }
             None
         })
