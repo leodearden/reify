@@ -37017,6 +37017,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1773,
+        "title": "Migrate existing compile_project tests to use compile_errors helper and move helper to common module",
+        "description": "The `compile_errors` helper introduced in task 1759 (module_dag_tests.rs lines 23-33) extracts the pattern already duplicated inline in existing tests (e.g., lines 474-486 and 552-565). Those existing call sites still use the verbose inline version.\n\n1. Move `compile_errors` into `tests/common/mod.rs` so it can be reused by other test files.\n2. Migrate existing `compile_project`-based tests that only inspect error-severity diagnostics from the entry module to use the helper (e.g., `compile_project_detects_duplicate_unit_from_import`, `compile_project_stdlib_unit_collision`).\n3. Tests that also check labels or non-error diagnostics may need a variant that returns full diagnostics — consider adding one if needed.\n\nmemory_hints: search \"compile_errors helper\" and \"module_dag_tests\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37029,7 +37040,7 @@
       ],
       "created": "2026-04-15T12:22:59.970Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T12:23:00.060Z"
+      "updated": "2026-04-15T12:23:06.386Z"
     }
   }
 }
