@@ -14,7 +14,10 @@ pub mod ty;
 pub mod value;
 pub mod warm;
 
-pub use annotation::{Annotation, AnnotationArg, TEST_ANNOTATION, has_test_annotation};
+pub use annotation::{
+    Annotation, AnnotationArg, DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION,
+    SOLVER_HINT_ANNOTATION, TEST_ANNOTATION, has_test_annotation,
+};
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
     ConstraintResult, ConstraintSolver, OptimizationObjective, OptimizedImpl, OptimizedImplInput,

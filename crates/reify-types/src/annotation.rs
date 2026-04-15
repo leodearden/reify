@@ -6,6 +6,24 @@ use crate::diagnostics::SourceSpan;
 /// name as a single source of truth across crates.
 pub const TEST_ANNOTATION: &str = "test";
 
+/// Canonical lowercase spelling of the `@deprecated` annotation name.
+///
+/// Use this constant instead of hard-coding `"deprecated"` to keep the
+/// annotation name as a single source of truth across crates.
+pub const DEPRECATED_ANNOTATION: &str = "deprecated";
+
+/// Canonical lowercase spelling of the `@optimized` annotation name.
+///
+/// Use this constant instead of hard-coding `"optimized"` to keep the
+/// annotation name as a single source of truth across crates.
+pub const OPTIMIZED_ANNOTATION: &str = "optimized";
+
+/// Canonical lowercase spelling of the `@solver_hint` annotation name.
+///
+/// Use this constant instead of hard-coding `"solver_hint"` to keep the
+/// annotation name as a single source of truth across crates.
+pub const SOLVER_HINT_ANNOTATION: &str = "solver_hint";
+
 /// A compiled annotation — resolved from a parsed `@name(args...)` syntax annotation.
 ///
 /// Annotations carry compile-time metadata through to downstream consumers
