@@ -152,6 +152,13 @@ pub(crate) fn register_guarded_names<'a>(
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
+                // `known_geometry_lets` is intentionally shared across both branches,
+                // consistent with how `scope` is shared: names registered in the
+                // if-branch are visible when processing the else-branch. As a result,
+                // an Ident alias in the else-branch may be classified as a geometry let
+                // if the aliased name appeared in the if-branch. Fixing this would
+                // require snapshotting both `scope` and `known_geometry_lets` atomically
+                // for each branch — a larger change that is deferred until needed.
                 register_guarded_names(&g.members, scope, functions, diagnostics, type_param_names, alias_registry, known_geometry_lets);
                 register_guarded_names(&g.else_members, scope, functions, diagnostics, type_param_names, alias_registry, known_geometry_lets);
             }

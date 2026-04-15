@@ -1339,3 +1339,106 @@ fn ident_alias_scope_type_is_geometry() {
         "expected value cell 'x' for let x = alias + 1"
     );
 }
+
+// ─── task-1708 amendment: guarded-group and negative-case tests ──────────────
+
+#[test]
+fn ident_alias_in_guarded_group_documents_current_behavior() {
+    // Documents pre-existing limitation: geometry lets (including ident aliases)
+    // inside `where {}` blocks are recognized in pass 1 (Type::Geometry, added to
+    // known_geometry_lets) and skipped in pass 2 (not a value cell), but pass 3
+    // only iterates top-level `structure.members` — so they are NOT compiled into
+    // realizations. The alias therefore silently disappears from the output.
+    //
+    // This test pins the current behavior so that future changes to guarded-group
+    // realization compilation have a regression signal.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    param active: Bool = true
+    let body = cylinder(r, h)
+    where active {
+        let alias = body
+    }
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    // Only the top-level `body` produces a realization; `alias` inside the
+    // guarded block does not (known limitation — pass 3 skips guarded members).
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected 1 realization (body only — alias inside guarded block is not compiled), got {}",
+        template.realizations.len()
+    );
+    // `alias` must NOT appear as a value cell (the pass-2 geometry-let skip applies).
+    assert!(
+        !template.value_cells.iter().any(|vc| vc.id.member == "alias"),
+        "alias inside guarded block should NOT be a value cell"
+    );
+}
+
+#[test]
+fn non_geometry_ident_alias_is_a_value_cell() {
+    // `let x = 5; let y = x` — `x` is not a geometry let, so `y` must NOT be
+    // recognised as a geometry ident alias. Both should appear as value cells.
+    let source = r#"structure S {
+    let x = 5
+    let y = x
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        0,
+        "expected 0 realizations — neither x nor y is a geometry let"
+    );
+    assert!(
+        template.value_cells.iter().any(|vc| vc.id.member == "x"),
+        "expected value cell 'x'"
+    );
+    assert!(
+        template.value_cells.iter().any(|vc| vc.id.member == "y"),
+        "expected value cell 'y' — non-geometry ident alias must stay a value cell"
+    );
+}
+
+#[test]
+fn undefined_ident_alias_produces_error() {
+    // `let alias = nonexistent` — `nonexistent` is not defined anywhere. The
+    // compiler should emit at least one error diagnostic (name not found).
+    let source = r#"structure S {
+    let alias = nonexistent
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for undefined name 'nonexistent', got none"
+    );
+}
+
+#[test]
+fn cyclic_ident_alias_does_not_crash() {
+    // `let a = b; let b = a` — neither name is declared before the other, so
+    // the forward-pass incremental set never adds either to known_geometry_lets.
+    // Both are treated as value cells referencing each other (a solver cycle).
+    // The compiler must not panic or ICE; it may or may not emit an error.
+    let source = r#"structure S {
+    let a = b
+    let b = a
+}"#;
+    // Must not panic.
+    let compiled = compile_with_diagnostics(source);
+    let template = &compiled.templates[0];
+    // Neither is a geometry let — no realizations expected.
+    assert_eq!(
+        template.realizations.len(),
+        0,
+        "cyclic ident aliases must not produce realizations"
+    );
+}

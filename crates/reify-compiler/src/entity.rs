@@ -346,6 +346,8 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
+                // `known_geometry_lets` is intentionally shared across both branches
+                // (consistent with the same pattern in register_guarded_names/guards.rs).
                 register_guarded_names(&g.members, &mut scope, functions, diagnostics, &type_param_names, alias_registry, &mut known_geometry_lets);
                 register_guarded_names(&g.else_members, &mut scope, functions, diagnostics, &type_param_names, alias_registry, &mut known_geometry_lets);
             }

@@ -9,6 +9,10 @@ pub(crate) fn is_geometry_let(
         reify_syntax::ExprKind::FunctionCall { name, .. } => {
             is_geometry_function(name) && !functions.iter().any(|f| f.name == *name)
         }
+        // No `!functions.iter().any(...)` guard needed: `known_geometry_lets` is
+        // populated only from let-binding names (never function names), and an Ident
+        // expression is syntactically distinct from FunctionCall, so a user-defined
+        // function cannot collide with a geometry let via this branch.
         reify_syntax::ExprKind::Ident(name) => known_geometry_lets.contains(name.as_str()),
         _ => false,
     }
