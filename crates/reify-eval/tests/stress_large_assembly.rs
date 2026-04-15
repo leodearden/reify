@@ -92,6 +92,18 @@ fn eval_canonical_is_cached() {
     );
 }
 
+/// check_canonical() must return the same static reference on every call.
+/// This verifies the OnceLock caching is in place: two calls produce pointer-equal results.
+#[test]
+fn check_canonical_is_cached() {
+    let a: &'static reify_eval::CheckResult = check_canonical();
+    let b: &'static reify_eval::CheckResult = check_canonical();
+    assert!(
+        std::ptr::eq(a, b),
+        "check_canonical() must return the same static reference on every call"
+    );
+}
+
 /// Assert that `entity.mass == entity.volume * entity.density` within 1e-9.
 fn assert_mass_equals_volume_times_density(result: &reify_eval::EvalResult, entity: &str) {
     let mass_id = ValueCellId::new(entity, "mass");
