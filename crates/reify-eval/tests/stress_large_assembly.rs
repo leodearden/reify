@@ -281,7 +281,7 @@ fn purpose_activation_simulation_ready() {
 // Performance benchmark — run explicitly with `cargo test -- --ignored`.
 #[ignore]
 #[test]
-fn eval_under_5_seconds() {
+fn eval_full_pipeline_benchmark() {
     let start = Instant::now();
 
     // Intentionally NOT using the cached source()/compiled() helpers here.

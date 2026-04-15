@@ -2,7 +2,7 @@
 //!
 //! Covers:
 //!   - smoke test: fixture parses, compiles, evaluates without errors (non-empty values)
-//!   - expected templates: 7 structures all present in compiled output
+//!   - expected templates: at least 7 structures all present in compiled output
 //!   - count_zero: degenerate linear_pattern_2d with count=0 compiles without ICE
 //!   - count_one: single-instance pattern compiles and evals
 //!   - 10x10 grid: large pattern compiles with Pattern2D kind realization
@@ -59,7 +59,7 @@ fn smoke_compiles_and_evals() {
 
 // ── step-3: structural assertions ─────────────────────────────────────────────
 
-/// All 7 expected structures present in compiled templates.
+/// At least 7 expected structures present in compiled templates.
 #[test]
 fn has_expected_templates() {
     let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
@@ -124,6 +124,10 @@ fn count_one_single_instance() {
         1,
         "PatternCountOne should have 1 realization (the linear_pattern_2d call), got {}",
         template.realizations.len()
+    );
+    assert!(
+        !template.realizations[0].operations.is_empty(),
+        "PatternCountOne realization should have at least one operation"
     );
     let op = &template.realizations[0].operations[0];
     assert!(
