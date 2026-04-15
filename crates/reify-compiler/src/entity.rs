@@ -1545,7 +1545,7 @@ pub(crate) fn compile_entity(
         guarded_groups,
         structure_controlling,
         objective,
-        meta: scope.meta_entries.clone(),
+        meta: std::mem::take(&mut scope.meta_entries),
         content_hash,
         is_recursive: false,
         annotations,
