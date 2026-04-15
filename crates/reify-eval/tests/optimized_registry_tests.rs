@@ -264,6 +264,45 @@ structure def S {
     );
 }
 
+// ── Test 4b: empty registry fast path — single Violated constraint ─────────
+
+#[test]
+fn empty_registry_fast_path_single_violated() {
+    // Counterpart to Test 4: a single @optimized constraint that evaluates to
+    // Violated (a != b where a=1.0, b=2.0). Confirms the fast path correctly
+    // propagates a Violated result for a single entry.
+    let source = r#"
+@optimized("geo::coincident")
+constraint def Coincident {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def S {
+    param x: Real = 1.0
+    param y: Real = 2.0
+    constraint Coincident(a: x, b: y)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+
+    let check_result = engine.check(&compiled);
+
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "expected exactly one constraint result, got {:?}",
+        check_result.constraint_results
+    );
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Violated,
+        "with empty registry the language-level checker must handle the constraint \
+         (x == y where x=1.0, y=2.0 is Violated)"
+    );
+}
+
 // ── Test 5: empty registry — multiple mixed constraints preserve order ────────
 
 #[test]
