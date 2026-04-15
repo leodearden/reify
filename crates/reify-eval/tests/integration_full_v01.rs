@@ -927,6 +927,26 @@ fn option_some_none_values() {
     );
 }
 
+// ── Test 22: lambda binding evaluates ────────────────────────────────────────
+
+/// Assert `Assembly.double_fn` evaluates to `Value::Lambda { .. }` (not Undef).
+/// The .ri file defines: `let double_fn = |x| x * 2.0`.
+#[test]
+fn lambda_binding_evaluates() {
+    let result = eval_canonical();
+
+    let id = ValueCellId::new("Assembly", "double_fn");
+    let v = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("Assembly.double_fn not found in eval result"));
+    assert!(
+        matches!(v, Value::Lambda { .. }),
+        "Assembly.double_fn should be Value::Lambda {{ .. }}, got {:?}",
+        v
+    );
+}
+
 // ── Test 20: violation regression guard ──────────────────────────────────────
 
 /// Regression guard: deliberately make `height < 2000mm` into `height < 100mm`
