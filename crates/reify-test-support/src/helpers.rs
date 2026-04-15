@@ -302,6 +302,31 @@ pub fn assert_has_diagnostic(diagnostics: &[Diagnostic], severity: Severity, con
     );
 }
 
+/// Assert that `diagnostics` contains no entry whose severity equals `severity`
+/// and whose message contains `contains`.
+///
+/// Use this as a negative assertion — for example, to confirm that a specific
+/// warning was suppressed, or that a particular error was not emitted.
+///
+/// # Panics
+/// Panics if any diagnostic matches both `severity` and `contains`. The panic
+/// message includes the matching diagnostics so it's clear which ones violated
+/// the assertion.
+#[track_caller]
+pub fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
+    let matched: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == severity && d.message.contains(contains))
+        .collect();
+    assert!(
+        matched.is_empty(),
+        "expected no diagnostic with severity={:?} containing {:?}, got: {:?}",
+        severity,
+        contains,
+        matched
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
@@ -710,5 +735,36 @@ mod tests {
         let diags = vec![Diagnostic::warning("unused port x")];
         // Should panic — no Error-severity diagnostic exists.
         super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    // ── assert_no_diagnostic ──────────────────────────────────────────────
+
+    /// assert_no_diagnostic should not panic when the slice is empty.
+    #[test]
+    fn test_assert_no_diagnostic_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_diagnostic(&diags, Severity::Error, "anything");
+    }
+
+    /// assert_no_diagnostic should not panic when diagnostics exist but none match
+    /// the requested severity + message substring.
+    #[test]
+    fn test_assert_no_diagnostic_passes_when_wrong_severity_or_message() {
+        let diags = vec![
+            Diagnostic::warning("type mismatch for x"),
+            Diagnostic::error("unrelated error"),
+        ];
+        // Warning has the phrase but is wrong severity; Error has wrong message — no match.
+        super::assert_no_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    /// assert_no_diagnostic should panic when a diagnostic matches both severity
+    /// and message substring.
+    #[test]
+    #[should_panic(expected = "expected no diagnostic")]
+    fn test_assert_no_diagnostic_panics_on_match() {
+        let diags = vec![Diagnostic::error("type mismatch for x")];
+        // Should panic — an Error-severity diagnostic containing "type mismatch" exists.
+        super::assert_no_diagnostic(&diags, Severity::Error, "type mismatch");
     }
 }
