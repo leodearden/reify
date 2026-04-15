@@ -670,6 +670,155 @@ fn sample_multi_param_lambda_with_vector_input() {
     );
 }
 
+/// Sampling a **1-param** lambda field with a `Value::Vector` input binds the
+/// *entire* Vector as the single argument — no unpacking occurs.
+///
+/// # Contract pinned
+///
+/// The `params.len() > 1` guard in `sample()` is FALSE for a 1-param lambda, so
+/// the Vector is forwarded to `apply_lambda` unchanged (as a single argument).
+/// This mirrors `sample_one_param_lambda_binds_entire_point_as_single_value` and
+/// guards against a future regression where someone inadvertently unpacks Vectors
+/// but not Points (or vice-versa) in the 1-param path.
+///
+/// # Test specifics
+///
+/// - Field lambda: 1-param identity `|x| → x`
+/// - Domain type: `Type::vec3(Type::Real)`
+/// - Input: `Value::Vector([Real(1.0), Real(2.0), Real(3.0)])`
+/// - Expected: `Value::Vector([Real(1.0), Real(2.0), Real(3.0)])` — the whole
+///   Vector returned unchanged
+#[test]
+fn sample_one_param_lambda_binds_entire_vector_as_single_value() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    let domain_type = Type::vec3(Type::Real);
+
+    // Lambda: |x| -> x  (identity body — returns whatever x is bound to)
+    let body = CompiledExpr::value_ref(x_id.clone(), domain_type.clone());
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let codomain_type = domain_type.clone();
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // sample(field, Vector([1.0, 2.0, 3.0])) -> Vector([1.0, 2.0, 3.0])
+    // params.len() == 1, so the guard `params.len() > 1` is FALSE.
+    // apply_lambda sees 1 arg (the whole Vector) vs 1 param -> arity passes.
+    // Identity body returns x = the whole Vector directly.
+    let vector_val = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(vector_val.clone(), domain_type),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        vector_val,
+        "sample() of a 1-param field with a Vector must bind the entire Vector to x \
+         and return it unchanged (no unpacking); Undef would indicate incorrect decomposition"
+    );
+}
+
+/// Sampling a multi-param lambda field with a **mismatched-length** `Value::Vector`
+/// input returns `Value::Undef` — the guard condition rejects it.
+///
+/// # Contract pinned
+///
+/// The guard in `sample()` fires when `params.len() != items.len()`. With a
+/// 3-param lambda and a 2-element Vector the counts differ, so `sample()` falls
+/// through to the single-arg path. `apply_lambda` then sees 1 arg (the whole
+/// Vector) vs 3 params and returns `Value::Undef`. This mirrors
+/// `sample_multi_param_lambda_with_mismatched_point_returns_undef` and pins that
+/// the guard works symmetrically for Vector inputs.
+///
+/// # Test specifics
+///
+/// - Field lambda: 3-param `|x, y, z| → (x + y) + z`
+/// - Domain type: `Type::vec3(Type::Real)` (3-element Vector)
+/// - Input: `Value::Vector([Real(1.0), Real(2.0)])` — only 2 elements
+/// - Expected: `Value::Undef` — length mismatch causes fallback to 1-arg path,
+///   which then fails the arity check in `apply_lambda`
+#[test]
+fn sample_multi_param_lambda_with_mismatched_vector_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda body: (x + y) + z — same body as sample_multi_param_lambda_with_vector_input.
+    let xy = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        xy,
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+
+    // 3-param lambda — params.len() == 3
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::vec3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // Vector has 2 elements but lambda expects 3 params → guard condition (3) fails.
+    // Fallback: apply_lambda sees 1 forwarded arg (the whole Vector) vs 3 params → Undef.
+    let mismatched_vector = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(mismatched_vector, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "sample() with 3-param lambda and a mismatched-length Vector(2) must not unpack \
+         (params.len() != items.len()); the arity check in apply_lambda must return Undef"
+    );
+}
+
 // ── Transient: gradient stub tests (MUST be updated when gradient is implemented) ──
 
 /// Gradient of a constant field should yield near-zero components.
