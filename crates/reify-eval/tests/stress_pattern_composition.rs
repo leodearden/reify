@@ -13,7 +13,6 @@ use std::fs;
 
 use reify_compiler::PatternKind;
 use reify_test_support::{assert_no_eval_errors, compile_source_named, errors_only, make_engine};
-use reify_types::Severity;
 
 /// Absolute path to the fixture file.
 const FIXTURE_PATH: &str = concat!(
@@ -62,11 +61,7 @@ fn smoke_compiles_and_evals() {
 #[test]
 fn has_expected_templates() {
     let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     assert_eq!(
@@ -102,11 +97,7 @@ fn has_expected_templates() {
 #[test]
 fn count_zero_compiles() {
     let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = errors_only(&compiled);
     assert!(
         errors.is_empty(),
         "PatternCountZero should compile without errors, but got: {:?}",
