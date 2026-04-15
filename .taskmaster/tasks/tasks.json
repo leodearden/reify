@@ -36990,15 +36990,16 @@
         "description": "Two related issues in the fallback path of `resolve_collection_sub_to_list` (crates/reify-compiler/src/expr.rs:63-69):\n\n1. **Missing test coverage**: No test covers the fallback path when `sub_member_types` has no entry for the sub (e.g., ad-hoc structures, forward references, or empty params). This path produces a different `ValueCellId` (`__list_{sub}` vs `__list_{sub}__{member}`) and a different type (`StructureRef(field_name)` vs the real member type). Add a test with a collection sub whose structure template is not yet compiled or has no params, verifying the fallback cell ID and coarse type.\n\n2. **Inaccurate StructureRef in fallback**: The fallback constructs `Type::StructureRef(sub_name.to_owned())` using the *field name* (e.g., `\"bolts\"`) rather than the structure *type name* (e.g., `\"Bolt\"`). Any downstream consumer that tries to look up a structure by this name will fail. Now that `self.sub` resolves through this function (task 1280), this path may be reached more often. Consider looking up the structure type name from `scope.sub_component_types` in the fallback:\n```rust\nlet type_name = scope.sub_component_types.get(sub_name)\n    .cloned()\n    .unwrap_or_else(|| sub_name.to_owned());\nlet list_type = Type::List(Box::new(Type::StructureRef(type_name)));\n```\n\nRelated: Task 1281 addresses error-recovery fallback types in lib.rs but does not touch the `resolve_collection_sub_to_list` helper in expr.rs.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project; inspect expr.rs resolve_collection_sub_to_list function near line 51.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:21:45.146Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T12:21:43.332Z",
+      "lastModified": "2026-04-15T12:21:45.146Z",
       "taskCount": 1767,
       "completedCount": 1512,
       "tags": [
