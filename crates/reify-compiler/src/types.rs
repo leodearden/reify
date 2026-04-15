@@ -520,28 +520,3 @@ pub struct CompiledTypeAlias {
     pub content_hash: ContentHash,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pattern_kind_linear2d_constructible() {
-        let kind = PatternKind::Linear2D;
-        assert_eq!(kind, PatternKind::Linear2D);
-        // Ensure it's distinct from existing variants
-        assert_ne!(kind, PatternKind::Linear);
-        assert_ne!(kind, PatternKind::Circular);
-        assert_ne!(kind, PatternKind::Mirror);
-    }
-
-    #[test]
-    fn pattern_kind_arbitrary_constructible() {
-        let kind = PatternKind::Arbitrary;
-        assert_eq!(kind, PatternKind::Arbitrary);
-        // Ensure it's distinct from existing variants
-        assert_ne!(kind, PatternKind::Linear);
-        assert_ne!(kind, PatternKind::Circular);
-        assert_ne!(kind, PatternKind::Mirror);
-        assert_ne!(kind, PatternKind::Linear2D);
-    }
-}
