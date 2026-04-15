@@ -37288,10 +37288,11 @@
         "description": "In gui/src-tauri/src/commands.rs, fix get_entity_tree_impl (line 106-111) and get_containing_definition_impl (lines 140-149) to propagate mutex poisoning consistently with get_def_preview_impl. Option A: change both to return Result<T, String> with an Err on lock failure. Option B (minimal): add log::warn! on poison before returning the default. Also update get_entity_identity_map_impl (lines 116-123) which has the same silent-swallow pattern.\n\n### memory_hints\n- search: \"mutex poison get_def_preview_impl commands.rs\"\n- search: \"get_entity_tree_impl get_containing_definition_impl\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:43:03.424Z"
       },
       {
         "id": "1782",
@@ -37329,7 +37330,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T12:42:49.885Z",
+      "lastModified": "2026-04-15T12:43:03.424Z",
       "taskCount": 1779,
       "completedCount": 1513,
       "tags": [
