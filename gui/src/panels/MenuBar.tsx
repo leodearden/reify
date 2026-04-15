@@ -2,7 +2,7 @@
  * MenuBar — top-level application menu bar with dropdown menus and
  * keyboard shortcut annotations.
  */
-import { createSignal, onMount, onCleanup, Show } from 'solid-js';
+import { createSignal, onMount, onCleanup, Show, For } from 'solid-js';
 import type { Component } from 'solid-js';
 import { shortcutKey } from '../shortcuts';
 import styles from './MenuBar.module.css';
@@ -19,9 +19,58 @@ export interface MenuBarProps {
 
 type MenuId = 'file' | 'edit' | 'view' | 'help';
 
+type MenuItemDef = {
+  label: string;
+  shortcutId: string;
+  action?: keyof MenuBarProps;
+  disabled?: boolean;
+};
+
+type MenuDef = {
+  id: MenuId;
+  label: string;
+  items: MenuItemDef[];
+};
+
 export const MenuBar: Component<MenuBarProps> = (props) => {
   const [openMenu, setOpenMenu] = createSignal<MenuId | null>(null);
   let containerRef: HTMLDivElement | undefined;
+
+  const MENU_DEFS: MenuDef[] = [
+    {
+      id: 'file',
+      label: 'File',
+      items: [
+        { label: 'Open', shortcutId: 'open', action: 'onOpen' },
+        { label: 'Save', shortcutId: 'save', action: 'onSave' },
+        { label: 'Export', shortcutId: 'export', action: 'onExport' },
+      ],
+    },
+    {
+      id: 'edit',
+      label: 'Edit',
+      items: [
+        { label: 'Undo', shortcutId: 'undo', disabled: true },
+        { label: 'Redo', shortcutId: 'redo', disabled: true },
+      ],
+    },
+    {
+      id: 'view',
+      label: 'View',
+      items: [
+        { label: 'Re-evaluate', shortcutId: 'reEvaluate', action: 'onReEvaluate' },
+        { label: 'Fit to View', shortcutId: 'fitToView', action: 'onFitToView' },
+        { label: 'Toggle Chat', shortcutId: 'toggleChat', action: 'onToggleChat' },
+      ],
+    },
+    {
+      id: 'help',
+      label: 'Help',
+      items: [
+        { label: 'Keyboard Shortcuts', shortcutId: 'help', action: 'onHelp' },
+      ],
+    },
+  ];
 
   function toggleMenu(id: MenuId) {
     setOpenMenu((prev) => (prev === id ? null : id));
@@ -45,7 +94,7 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
 
   onMount(() => {
     function handleMouseDown(e: MouseEvent) {
-      if (containerRef && !containerRef.contains(e.target as Node)) {
+      if (containerRef && e.target instanceof Node && !containerRef.contains(e.target)) {
         closeMenu();
       }
     }
@@ -72,129 +121,36 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
       data-testid="menu-bar"
       role="menubar"
     >
-      {/* File menu */}
-      <div style={{ position: 'relative' }}>
-        <button
-          class={openMenu() === 'file' ? `${styles.trigger} ${styles.triggerOpen}` : styles.trigger}
-          onClick={() => toggleMenu('file')}
-          onMouseEnter={() => switchMenu('file')}
-        >
-          File
-        </button>
-        <Show when={openMenu() === 'file'}>
-          <div class={styles.dropdown} role="menu">
+      <For each={MENU_DEFS}>
+        {(menu) => (
+          <div style={{ position: 'relative' }}>
             <button
-              class={styles.item}
-              role="menuitem"
-              onClick={() => handleItemClick(props.onOpen)}
+              class={openMenu() === menu.id ? `${styles.trigger} ${styles.triggerOpen}` : styles.trigger}
+              onClick={() => toggleMenu(menu.id)}
+              onMouseEnter={() => switchMenu(menu.id)}
             >
-              <span>Open</span>
-              <span class={styles.shortcut}>{shortcutKey('open')}</span>
+              {menu.label}
             </button>
-            <button
-              class={styles.item}
-              role="menuitem"
-              onClick={() => handleItemClick(props.onSave)}
-            >
-              <span>Save</span>
-              <span class={styles.shortcut}>{shortcutKey('save')}</span>
-            </button>
-            <button
-              class={styles.item}
-              role="menuitem"
-              onClick={() => handleItemClick(props.onExport)}
-            >
-              <span>Export</span>
-              <span class={styles.shortcut}>{shortcutKey('export')}</span>
-            </button>
+            <Show when={openMenu() === menu.id}>
+              <div class={styles.dropdown} role="menu">
+                <For each={menu.items}>
+                  {(item) => (
+                    <button
+                      class={item.disabled ? `${styles.item} ${styles.itemDisabled}` : styles.item}
+                      role="menuitem"
+                      disabled={item.disabled}
+                      onClick={() => handleItemClick(item.action ? props[item.action] : undefined)}
+                    >
+                      <span>{item.label}</span>
+                      <span class={styles.shortcut}>{shortcutKey(item.shortcutId)}</span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
           </div>
-        </Show>
-      </div>
-
-      {/* Edit menu */}
-      <div style={{ position: 'relative' }}>
-        <button
-          class={openMenu() === 'edit' ? `${styles.trigger} ${styles.triggerOpen}` : styles.trigger}
-          onClick={() => toggleMenu('edit')}
-          onMouseEnter={() => switchMenu('edit')}
-        >
-          Edit
-        </button>
-        <Show when={openMenu() === 'edit'}>
-          <div class={styles.dropdown} role="menu">
-            <button class={`${styles.item} ${styles.itemDisabled}`} role="menuitem" disabled>
-              <span>Undo</span>
-              <span class={styles.shortcut}>{shortcutKey('undo')}</span>
-            </button>
-            <button class={`${styles.item} ${styles.itemDisabled}`} role="menuitem" disabled>
-              <span>Redo</span>
-              <span class={styles.shortcut}>{shortcutKey('redo')}</span>
-            </button>
-          </div>
-        </Show>
-      </div>
-
-      {/* View menu */}
-      <div style={{ position: 'relative' }}>
-        <button
-          class={openMenu() === 'view' ? `${styles.trigger} ${styles.triggerOpen}` : styles.trigger}
-          onClick={() => toggleMenu('view')}
-          onMouseEnter={() => switchMenu('view')}
-        >
-          View
-        </button>
-        <Show when={openMenu() === 'view'}>
-          <div class={styles.dropdown} role="menu">
-            <button
-              class={styles.item}
-              role="menuitem"
-              onClick={() => handleItemClick(props.onReEvaluate)}
-            >
-              <span>Re-evaluate</span>
-              <span class={styles.shortcut}>{shortcutKey('reEvaluate')}</span>
-            </button>
-            <button
-              class={styles.item}
-              role="menuitem"
-              onClick={() => handleItemClick(props.onFitToView)}
-            >
-              <span>Fit to View</span>
-              <span class={styles.shortcut}>{shortcutKey('fitToView')}</span>
-            </button>
-            <button
-              class={styles.item}
-              role="menuitem"
-              onClick={() => handleItemClick(props.onToggleChat)}
-            >
-              <span>Toggle Chat</span>
-              <span class={styles.shortcut}>{shortcutKey('toggleChat')}</span>
-            </button>
-          </div>
-        </Show>
-      </div>
-
-      {/* Help menu */}
-      <div style={{ position: 'relative' }}>
-        <button
-          class={openMenu() === 'help' ? `${styles.trigger} ${styles.triggerOpen}` : styles.trigger}
-          onClick={() => toggleMenu('help')}
-          onMouseEnter={() => switchMenu('help')}
-        >
-          Help
-        </button>
-        <Show when={openMenu() === 'help'}>
-          <div class={styles.dropdown} role="menu">
-            <button
-              class={styles.item}
-              role="menuitem"
-              onClick={() => handleItemClick(props.onHelp)}
-            >
-              <span>Keyboard Shortcuts</span>
-              <span class={styles.shortcut}>{shortcutKey('help')}</span>
-            </button>
-          </div>
-        </Show>
-      </div>
+        )}
+      </For>
     </div>
   );
 };

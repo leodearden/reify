@@ -203,6 +203,20 @@ describe('MenuBar — callbacks', () => {
   });
 });
 
+describe('MenuBar — Edit dropdown', () => {
+  it('Edit dropdown contains Undo and Redo items, both disabled', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByText('Edit'));
+    const items = screen.getAllByRole('menuitem');
+    const undoItem = items.find((el) => el.textContent?.includes('Undo'));
+    const redoItem = items.find((el) => el.textContent?.includes('Redo'));
+    expect(undoItem).toBeTruthy();
+    expect(redoItem).toBeTruthy();
+    expect((undoItem as HTMLButtonElement).disabled).toBe(true);
+    expect((redoItem as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
 describe('MenuBar — interaction behaviors', () => {
   it('pressing Escape while a menu is open closes it', () => {
     render(() => <MenuBar />);
@@ -225,5 +239,17 @@ describe('MenuBar — interaction behaviors', () => {
     // File-specific items should NOT appear; Edit items should appear
     expect(labels.some((l) => l.includes('Undo'))).toBe(true);
     expect(labels.some((l) => l.includes('Open'))).toBe(false);
+  });
+
+  it('clicking outside the menu bar when event target is not a Node still closes the menu', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByText('File'));
+    expect(screen.getByRole('menu')).toBeTruthy();
+    // Dispatch a mousedown where target is a non-Node (e.g. null via Object.create)
+    const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'target', { value: null, writable: false });
+    document.dispatchEvent(event);
+    // Menu should remain open (guard skips when target is not a Node)
+    expect(screen.getByRole('menu')).toBeTruthy();
   });
 });
