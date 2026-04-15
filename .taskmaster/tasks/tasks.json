@@ -37820,11 +37820,17 @@
         "description": "Two improvements to the duplicate-meta-key detection added in task 390:\n\n1. **Diagnostic label precision** (entity.rs ~line 455-460): The duplicate meta key diagnostic labels the entire `meta.span` with \"in this meta block\". Improve by including the key name in the label text (e.g., \"duplicate key 'a' in this meta block\") for better IDE hover UX. If entry-level spans become available in the syntax model (e.g., `Vec<(Spanned<String>, String)>`), use the entry-level span instead.\n\n2. **Test assertion precision** (meta_compile_tests.rs `duplicate_meta_key_multiple_duplicates`): The test checks that all errors contain \"duplicate meta key\" but doesn't verify that specific keys 'x' and 'y' are named. Add:\n```rust\nassert!(errors.iter().any(|d| d.message.contains(\"'x'\")));\nassert!(errors.iter().any(|d| d.message.contains(\"'y'\")));\n```\n\nmemory_hints: search \"duplicate meta key diagnostic\" and \"meta block span\"; get_entity \"MetaBlock\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T17:21:49.370Z"
+        "updatedAt": "2026-04-15T17:24:56.366Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs"
+          ]
+        }
       },
       {
         "id": "1809",
@@ -37841,7 +37847,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:22:52.989Z",
+      "lastModified": "2026-04-15T17:24:56.366Z",
       "taskCount": 1804,
       "completedCount": 1540,
       "tags": [
