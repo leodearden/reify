@@ -555,26 +555,45 @@ fn edit_param_non_int_old_count_emits_warning() {
 
     // Edit n to Real(2.0) — sets snapshot count_cell = Real(2.0)
     // old_count_val = Int(4) → Int arm (no warning from old_count)
-    // new_count_val = Real(2.0) → _ => 0 (removes 4 instances, creates 0)
-    let _r1 = engine
+    // new_count_val = Real(2.0) → other arm (warning with "new value")
+    let r1 = engine
         .edit_param(n_id.clone(), Value::Real(2.0))
         .expect("edit to Real should succeed");
 
+    // r1 must have exactly one warning (from the new_count path only, not old_count)
+    let r1_warnings: Vec<_> = r1
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert_eq!(
+        r1_warnings.len(),
+        1,
+        "expected exactly 1 warning in r1 (new_count path), got: {:?}",
+        r1_warnings
+    );
+    assert!(
+        r1_warnings[0].message.contains("new value"),
+        "r1 warning should mention 'new value', got: {:?}",
+        r1_warnings[0].message
+    );
+
     // Edit n to Int(3) — old_count_val = Real(2.0), new_count_val = Int(3)
-    // old_count_val = Real(2.0) should emit a Warning diagnostic
+    // old_count_val = Real(2.0) should emit a Warning diagnostic about "old value"
     let r2 = engine
         .edit_param(n_id, Value::Int(3))
         .expect("edit to Int(3) should succeed");
 
-    // (a) diagnostics must contain a Warning about non-integer old count
+    // (a) diagnostics must contain a Warning about non-integer old count, specifically "old value"
     let has_warning = r2.diagnostics.iter().any(|d| {
         d.severity == Severity::Warning
             && d.message.contains("non-integer")
             && d.message.contains("Parent.__count_bolts")
+            && d.message.contains("old value")
     });
     assert!(
         has_warning,
-        "expected a Warning diagnostic about non-integer old count cell, got: {:?}",
+        "expected a Warning diagnostic about non-integer old count cell with 'old value', got: {:?}",
         r2.diagnostics
     );
 
@@ -613,15 +632,16 @@ fn edit_param_non_int_new_count_emits_warning() {
         .edit_param(n_id, Value::Real(2.0))
         .expect("edit to Real should succeed");
 
-    // (a) diagnostics must contain a Warning about non-integer new count
+    // (a) diagnostics must contain a Warning about non-integer new count, specifically "new value"
     let has_warning = r1.diagnostics.iter().any(|d| {
         d.severity == Severity::Warning
             && d.message.contains("non-integer")
             && d.message.contains("Parent.__count_bolts")
+            && d.message.contains("new value")
     });
     assert!(
         has_warning,
-        "expected a Warning diagnostic about non-integer new count cell, got: {:?}",
+        "expected a Warning diagnostic about non-integer new count cell with 'new value', got: {:?}",
         r1.diagnostics
     );
 
@@ -670,6 +690,12 @@ fn edit_param_undef_count_transition_no_spurious_warning() {
         "expected no Warning diagnostics for Int→Undef count transition, got: {:?}",
         warnings
     );
+    // After Int→Undef: all instances must be removed (0 instances)
+    assert_eq!(
+        count_bolt_diameter_instances(&r1.values),
+        0,
+        "expected 0 bolt instances after Int→Undef count transition"
+    );
 
     // Edit n to Int(2) — old_count_val=Undef (Undef arm), new_count_val=Int(2) (Int arm)
     // Neither arm should emit a warning.
@@ -686,6 +712,12 @@ fn edit_param_undef_count_transition_no_spurious_warning() {
         warnings.is_empty(),
         "expected no Warning diagnostics for Undef→Int count transition, got: {:?}",
         warnings
+    );
+    // After Undef→Int(2): exactly 2 instances must exist
+    assert_eq!(
+        count_bolt_diameter_instances(&r2.values),
+        2,
+        "expected 2 bolt instances after Undef→Int(2) count transition"
     );
 }
 
