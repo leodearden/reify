@@ -38318,15 +38318,16 @@
         "description": "The `assert_list_of_struct_ref` helper in `self_keyword_tests.rs` accepts a `label` parameter that prefixes panic messages, but none of the 3 existing tests (lines 106-127) pass a non-empty label. Add a fourth test that passes a non-empty label and asserts the panic message contains it:\n\n```rust\n#[test]\n#[should_panic(expected = \"ctx:\")]\nfn test_assert_list_of_struct_ref_label_in_panic() {\n    let ty = reify_types::Type::Bool;\n    assert_list_of_struct_ref(&ty, \"Foo\", \"ctx:\");\n}\n```\n\nThis verifies the label actually appears in the panic message, which is the whole reason the parameter exists.\n\nmemory_hints: search \"assert_list_of_struct_ref\" in reify project.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:54:57.670Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:54:55.913Z",
+      "lastModified": "2026-04-15T21:54:57.670Z",
       "taskCount": 1831,
       "completedCount": 1560,
       "tags": [
