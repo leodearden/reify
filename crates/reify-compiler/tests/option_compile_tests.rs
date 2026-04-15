@@ -5,7 +5,7 @@
 //! to generic function call resolution.
 
 use reify_compiler::{CompiledGuardedGroup, TopologyTemplate};
-use reify_types::{CompiledExprKind, Diagnostic, DimensionVector, Severity, Type};
+use reify_types::{CompiledExprKind, DimensionVector, Severity, Type};
 
 /// Helper: compile source, return the first topology template and diagnostics.
 fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<reify_types::Diagnostic>) {
@@ -31,7 +31,12 @@ fn compile_and_get_expr(
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_no_errors(&compiled.diagnostics);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
 
     let template = &compiled.templates[0];
     let cell = template
@@ -51,15 +56,6 @@ fn compile_expecting_errors(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
     reify_compiler::compile(&parsed)
-}
-
-/// Helper: assert that none of the diagnostics have error severity.
-fn assert_no_errors(diagnostics: &[Diagnostic]) {
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +140,12 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_no_errors(&compiled.diagnostics);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
 
     let template = &compiled.templates[0];
     let cell = template
@@ -309,7 +310,12 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    assert_no_errors(&compiled.diagnostics);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors for `let x = none`, got: {:?}", errors);
 
     let template = &compiled.templates[0];
     let cell = template
@@ -354,7 +360,11 @@ structure def S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    assert_no_errors(&diagnostics);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
     assert_eq!(template.ports.len(), 1, "expected 1 port");
     let port = &template.ports[0];
@@ -414,7 +424,11 @@ structure def S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    assert_no_errors(&diagnostics);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
     assert_eq!(template.ports.len(), 1, "expected 1 port");
     let port = &template.ports[0];
@@ -470,7 +484,11 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    assert_no_errors(&diagnostics);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
     assert_eq!(
         template.guarded_groups.len(),
@@ -530,7 +548,11 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    assert_no_errors(&diagnostics);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
     assert_eq!(
         template.guarded_groups.len(),
@@ -596,7 +618,11 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    assert_no_errors(&diagnostics);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
     // The inner guarded group contains 'x'; find it by searching all groups.
     let group = template
@@ -661,7 +687,11 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    assert_no_errors(&diagnostics);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
     assert_eq!(
         template.guarded_groups.len(),
@@ -703,6 +733,223 @@ structure S {
 }
 
 // ---------------------------------------------------------------------------
+// task 1726: port param Option<MyLen> = none with type alias → typed OptionNone
+// (analogous to guarded_param_option_type_alias_none_gets_correct_type)
+// ---------------------------------------------------------------------------
+
+/// Port param using a type alias `Option<MyLen> = none` should resolve the alias
+/// and produce cell_type == Option<Length> with OptionNone result_type ==
+/// Option<Length>.
+///
+/// This exercises the resolve_type_expr_with_aliases call at entity.rs:368 (pass-1
+/// registration) and fixup_option_none_for_param (pass-2) for port params with a
+/// type alias.  The existing port test uses Option<Length> directly; this test
+/// specifically exercises the alias-resolution code path.
+#[test]
+fn port_param_option_type_alias_none_gets_correct_type() {
+    let source = r#"
+type MyLen = Length
+
+trait MyPort {
+    param x : Length
+}
+
+structure def S {
+    port p : MyPort {
+        param x : Option<MyLen> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(template.ports.len(), 1, "expected 1 port");
+    let port = &template.ports[0];
+    assert_eq!(port.name, "p");
+
+    let member = port
+        .members
+        .iter()
+        .find(|m| m.id.member.contains("p.x"))
+        .expect("should have port member 'p.x'");
+
+    // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "port param (alias) cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("port member 'p.x' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "port param (alias) default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone for port param with type alias, got {:?}",
+        default.kind
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task 1726: port let Option<MyLen> = none with type alias → typed OptionNone
+// (analogous to guarded_param_option_type_alias_none_gets_correct_type)
+// ---------------------------------------------------------------------------
+
+/// Port let using a type alias `Option<MyLen> = none` should resolve the alias
+/// and produce cell_type == Option<Length> with OptionNone result_type ==
+/// Option<Length>.
+///
+/// This exercises the fixup_option_none_for_let path, which independently calls
+/// resolve_type_expr_with_aliases for port let members.  The existing port let
+/// test uses Option<Length> directly; this test specifically exercises the
+/// alias-resolution code path.
+#[test]
+fn port_let_option_type_alias_none_gets_correct_type() {
+    let source = r#"
+type MyLen = Length
+
+trait MyPort {
+    param x : Length
+}
+
+structure def S {
+    port p : MyPort {
+        param x : Length = 5mm
+        let y : Option<MyLen> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(template.ports.len(), 1, "expected 1 port");
+    let port = &template.ports[0];
+
+    let member = port
+        .members
+        .iter()
+        .find(|m| m.id.member.contains("p.y"))
+        .expect("should have port member 'p.y'");
+
+    // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "port let (alias) cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("port member 'p.y' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "port let (alias) default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone for port let with type alias, got {:?}",
+        default.kind
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task 1726 amend: guarded let Option<MyLen> = none with type alias → typed OptionNone
+// (the missing counterpart to guarded_param_option_type_alias_none_gets_correct_type)
+// ---------------------------------------------------------------------------
+
+/// Guarded let using a type alias `Option<MyLen> = none` should resolve the
+/// alias and produce cell_type == Option<Length> with OptionNone result_type ==
+/// Option<Length>.
+///
+/// This exercises the `fixup_option_none_for_let` path inside guarded blocks
+/// when the annotation references a user-defined type alias rather than a
+/// built-in type name directly.  The non-alias variant is covered by
+/// `guarded_let_none_with_typed_annotation_gets_correct_type`; this test
+/// specifically exercises the alias-resolution code path.
+#[test]
+fn guarded_let_option_type_alias_none_gets_correct_type() {
+    let source = r#"
+type MyLen = Length
+
+structure S {
+    param active : Bool = true
+    where active {
+        let y : Option<MyLen> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(
+        template.guarded_groups.len(),
+        1,
+        "expected 1 guarded group"
+    );
+    let group: &CompiledGuardedGroup = &template.guarded_groups[0];
+
+    let member = group
+        .members
+        .iter()
+        .find(|m| m.id.member == "y")
+        .expect("should have guarded member 'y'");
+
+    // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "guarded let (alias) cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("guarded member 'y' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "guarded let (alias) default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone for guarded let with type alias, got {:?}",
+        default.kind
+    );
+}
+
+// ---------------------------------------------------------------------------
 // task 1725: guarded else-branch param Option<Length> = none → typed OptionNone
 // ---------------------------------------------------------------------------
 
@@ -723,7 +970,11 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    assert_no_errors(&diagnostics);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
     assert_eq!(
         template.guarded_groups.len(),
