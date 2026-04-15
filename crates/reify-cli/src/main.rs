@@ -312,13 +312,13 @@ fn cmd_gui(args: &[String]) -> ExitCode {
 }
 
 fn cmd_lsp() -> ExitCode {
-    // Use a current-thread runtime: the LSP server handles one stdio connection
-    // and needs no parallelism.  A multi-threaded runtime spawns N worker
-    // threads (N = num_cpus) which takes longer to initialise, especially when
-    // the system is already under CPU load from concurrent test processes.
-    // A current-thread runtime runs everything on the calling OS thread and
-    // starts in microseconds, making the binary more responsive under load.
-    match tokio::runtime::Builder::new_current_thread()
+    // Use a multi-thread runtime with a small worker pool for CI reliability:
+    // under heavy parallel test load a current-thread runtime can be starved
+    // of CPU time, causing lsp_initialize_returns_capabilities to time out.
+    // Two worker threads provide the multi-thread scheduler's preemption
+    // benefits without spawning num_cpus threads for a single-connection server.
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
     {
