@@ -1362,3 +1362,144 @@ structure def S {
         "expected explicit port mapping d->d"
     );
 }
+
+// ── task-370/step-1: asymmetric_located_port_emits_warning ───────────
+
+#[test]
+fn asymmetric_located_port_emits_warning() {
+    // MechPort : LocatedPort (satisfies LocatedPort transitively via refinement)
+    // DataPort does NOT satisfy LocatedPort.
+    // Connecting a MechPort to a DataPort is asymmetric — one side has a spatial
+    // frame, the other does not. The compiler must emit a warning.
+    let source = r#"
+trait LocatedPort { param frame : Real }
+trait MechPort : LocatedPort { param shaft_dia : Length }
+trait DataPort { param rate : Real }
+structure def S {
+    port mech : out MechPort { param shaft_dia : Length = 10mm }
+    port data : in DataPort { param rate : Real = 100.0 }
+    connect mech -> data
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+    let located_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("LocatedPort")
+                && d.message.contains("asymmetric")
+        })
+        .collect();
+    assert!(
+        !located_warnings.is_empty(),
+        "expected a warning about asymmetric LocatedPort connection, got diagnostics: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        located_warnings.len(),
+        1,
+        "expected exactly one LocatedPort warning, got: {:?}",
+        located_warnings
+    );
+}
+
+// ── task-370/step-2: symmetric_located_port_no_warning ───────────────
+
+#[test]
+fn symmetric_located_port_no_warning() {
+    // Both ports are MechPort (which satisfies LocatedPort).
+    // A symmetric connection — no asymmetric LocatedPort warning should be emitted.
+    let source = r#"
+trait LocatedPort { param frame : Real }
+trait MechPort : LocatedPort { param shaft_dia : Length }
+structure def S {
+    port a : out MechPort { param shaft_dia : Length = 10mm }
+    port b : in MechPort { param shaft_dia : Length = 10mm }
+    connect a -> b
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+    let located_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("LocatedPort"))
+        .collect();
+    assert!(
+        located_warnings.is_empty(),
+        "expected no LocatedPort warnings for symmetric connection, got: {:?}",
+        located_warnings
+    );
+}
+
+// ── task-370/step-3: neither_located_port_no_warning ─────────────────
+
+#[test]
+fn neither_located_port_no_warning() {
+    // Both ports are DataPort — neither satisfies LocatedPort.
+    // No asymmetric LocatedPort warning should be emitted.
+    let source = r#"
+trait LocatedPort { param frame : Real }
+trait DataPort { param rate : Real }
+structure def S {
+    port a : out DataPort { param rate : Real = 1.0 }
+    port b : in DataPort { param rate : Real = 1.0 }
+    connect a -> b
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+    let located_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("LocatedPort"))
+        .collect();
+    assert!(
+        located_warnings.is_empty(),
+        "expected no LocatedPort warnings when neither port satisfies LocatedPort, got: {:?}",
+        located_warnings
+    );
+}
+
+// ── task-370/step-4: dotted_port_no_false_located_port_warning ───────
+
+#[test]
+fn dotted_port_no_false_located_port_warning() {
+    // Sub-component ports connected via dotted syntax (motor.shaft -> recv.input).
+    // These are dotted references that cannot be resolved to Assembly's port list.
+    // The LocatedPort check must gracefully skip — no false warning should be emitted.
+    let source = r#"
+trait LocatedPort { param frame : Real }
+trait MechPort : LocatedPort { param shaft_dia : Length }
+trait DataPort { param rate : Real }
+structure def Motor {
+    port shaft : out MechPort { param shaft_dia : Length = 10mm }
+}
+structure def Receiver {
+    port input : in DataPort { param rate : Real = 100.0 }
+}
+structure def Assembly {
+    sub motor = Motor()
+    sub recv = Receiver()
+    connect motor.shaft -> recv.input
+}
+"#;
+
+    let module = compile_source(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let located_warnings: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("LocatedPort"))
+        .collect();
+    assert!(
+        located_warnings.is_empty(),
+        "expected no LocatedPort warning for dotted-port connections, got: {:?}",
+        located_warnings
+    );
+}
