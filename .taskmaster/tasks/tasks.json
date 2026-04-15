@@ -35548,8 +35548,8 @@
       {
         "id": 1701,
         "title": "Tighten stdlib test assertions: pin expected function-call variant + use slice type for trait constant",
-        "description": "Two small stdlib test quality improvements from task #514 review:\n\n1. **Pin expected variant in prelude_function_merging_path** (stdlib_loader_tests.rs:435-508): The test matches both `UserFunctionCall` and `FunctionCall` as valid outcomes. Since the compiler is expected to resolve prelude functions (producing `FunctionCall`), the test should match only `FunctionCall` and fail if it produces `UserFunctionCall`. Currently a regression from resolved→unresolved calls goes undetected.\n\n2. **Use `&[&str]` slice for EXPECTED_MATERIAL_TRAITS** (fixtures.rs:906): The constant is typed `&[&str; 9]` — adding a new trait requires updating both the array contents AND the size literal. Change to `&[&str]` to remove the redundant size annotation.\n\nmemory_hints: search \"prelude function merging compile_with_prelude\" for context on expected resolution behavior",
-        "details": "",
+        "description": "Two small stdlib test quality improvements from task #514 review:\n\n1. **Pin expected variant in prelude_function_merging_path** (stdlib_loader_tests.rs:435-508): The test matches both `UserFunctionCall` and `FunctionCall` as valid outcomes. Since the compiler is expected to resolve prelude functions (producing `FunctionCall`), the test should match only `FunctionCall` and fail if it produces `UserFunctionCall`. Currently a regression from resolved→unresolved calls goes undetected.\n\n2. **Use `&[&str]` slice for EXPECTED_MATERIAL_TRAITS** (fixtures.rs:906): The constant is typed `&[&str; 9]` — adding a new trait requires updating both the array contents AND the size literal. Change to `&[&str]` to remove the redundant size annotation.\n\nmemory_hints: search \"prelude function merging compile_with_prelude\" for context on expected resolution behavior [Updated: 4/15/2026]",
+        "details": "<info added on 2026-04-15T01:50:48.521Z>\nReconciliation watch metadata added: This task is now being monitored for any changes or updates to ensure alignment with project goals and standards.\n</info added on 2026-04-15T01:50:48.521Z>",
         "testStrategy": "",
         "status": "in-progress",
         "dependencies": [],
@@ -35560,7 +35560,18 @@
           "modules": [
             "crates/reify-compiler/tests/stdlib_loader_tests.rs",
             "crates/reify-test-support/src/fixtures.rs"
-          ]
+          ],
+          "stash_fail_watch_cycle": 1,
+          "stash_fail_first_seen_run": "ed46c158",
+          "escalate_on_next_revert": false,
+          "_causation_id": "5f459407-9bbe-476d-84e0-2f8cf4993864",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "prelude function merging compile_with_prelude",
+              "stash fail revert watch task 1701 stdlib_loader_tests"
+            ]
+          }
         }
       }
     ],
