@@ -628,43 +628,58 @@ impl EngineSession {
     /// - No module is currently loaded.
     /// - `def_name` does not match any template in the loaded module.
     pub fn get_def_preview(&mut self, def_name: &str) -> Result<GuiState, String> {
-        // Phase 1: borrow compiled to extract the template and build the preview module.
-        let (content_hash, preview_module) = {
+        // Phase 1: extract content_hash from a shared borrow.  HashMap::get only
+        // needs &self, so NLL allows simultaneous immutable borrows of disjoint
+        // struct fields — no expensive clone is wasted on a cache hit.
+        let content_hash = {
             let compiled = self
                 .compiled
                 .as_ref()
                 .ok_or_else(|| "No module loaded".to_string())?;
-            let template = compiled
+            compiled
                 .templates
                 .iter()
                 .find(|t| t.name == def_name)
-                .ok_or_else(|| format!("No definition named '{}' in loaded module", def_name))?;
-            let hash = template.content_hash;
-            // Clone the full module so that shared context (enums, functions, traits,
-            // stdlib units, etc.) is available during evaluation, but replace the
-            // templates list with only the one we want to preview.
-            let mut preview = compiled.clone();
-            preview.templates = vec![template.clone()];
-            (hash, preview)
+                .ok_or_else(|| format!("No definition named '{}' in loaded module", def_name))?
+                .content_hash
         };
 
-        // Phase 2: check cache (requires mutable self, so Phase 1 borrow must be released).
+        // Phase 2: check cache before any cloning.
         let cache_key = (def_name.to_string(), content_hash);
         if let Some(cached) = self.def_preview_cache.get(&cache_key) {
             return Ok(cached.clone());
         }
 
-        // Phase 3: evaluate with a lightweight preview engine (SimpleConstraintChecker, no kernel).
+        // Phase 3: cache miss — clone the module now and build the preview.
+        // Clone the full module so that shared context (enums, functions, traits,
+        // stdlib units, etc.) is available during evaluation, then replace the
+        // templates list with only the one definition we want to preview.
+        let preview_module = {
+            let compiled = self
+                .compiled
+                .as_ref()
+                .expect("compiled was Some in Phase 1");
+            let template = compiled
+                .templates
+                .iter()
+                .find(|t| t.name == def_name)
+                .expect("template was found in Phase 1");
+            let mut preview = compiled.clone();
+            preview.templates = vec![template.clone()];
+            preview
+        };
+
+        // Phase 4: evaluate with a lightweight preview engine (SimpleConstraintChecker, no kernel).
         let mut preview_engine = Engine::new(
             Box::new(reify_constraints::SimpleConstraintChecker),
             None, // no geometry kernel — preview is values + constraints only
         );
         let check_result = preview_engine.check(&preview_module);
 
-        // Phase 4: build GuiState from the check result.
+        // Phase 5: build GuiState from the check result.
         let gui_state = build_preview_gui_state(&preview_module, &check_result);
 
-        // Phase 5: cache and return.
+        // Phase 6: cache and return.
         self.def_preview_cache
             .insert(cache_key, gui_state.clone());
         Ok(gui_state)
@@ -684,6 +699,12 @@ impl EngineSession {
     /// the result — declarations are matched on `SourceSpan` from the *syntax*
     /// tree, not the compiled IR.
     pub fn get_containing_definition(&self, line: u32, col: u32) -> Option<DefInfo> {
+        // Documented contract: zero line or column is out-of-range → None.
+        // Without this guard, line_col_to_byte_offset returns 0 for zero inputs,
+        // which would incorrectly match any definition starting at byte 0.
+        if line == 0 || col == 0 {
+            return None;
+        }
         let (key, source) = self.resolve_source()?;
         let module_name = key.trim_end_matches(".ri");
         let parsed =
@@ -1319,8 +1340,14 @@ pub(crate) fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> usiz
         }
     };
 
-    // Count (col - 1) Unicode codepoints from line_start.
-    let line_text = &source[line_start..];
+    // Slice to the end of the target line (not end of source) so that an
+    // out-of-bounds col clamps to the line boundary rather than counting
+    // codepoints past the '\n' into subsequent lines.
+    let line_end = source[line_start..]
+        .find('\n')
+        .map(|i| line_start + i)
+        .unwrap_or(source.len());
+    let line_text = &source[line_start..line_end];
     line_start
         + line_text
             .char_indices()
