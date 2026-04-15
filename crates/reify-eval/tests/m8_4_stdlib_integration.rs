@@ -4,8 +4,8 @@
 //! through the full parse → compile_with_stdlib → eval pipeline using
 //! .ri fixture files in examples/.
 //!
-//! Follows the same pattern as m8_3_stdlib_integration.rs:
-//! `parse_and_compile_with_stdlib` + `SimpleConstraintChecker`.
+//! Follows the same `eval_ri_file` pattern as m8_3_stdlib_integration.rs:
+//! parse → compile_with_stdlib → eval with `SimpleConstraintChecker`.
 //! The three fixtures exercise:
 //!   linalg.ri         — advanced matrix ops (outer, determinant, inverse, transpose,
 //!                        eigenvalues) + complex number builtins
