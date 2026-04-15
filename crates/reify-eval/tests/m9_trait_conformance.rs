@@ -401,7 +401,10 @@ fn diamond_merging_values() {
         other => panic!("expected Scalar for Merged.x, got {:?}", other),
     }
 
-    // Constraint from Base (x > 0mm) should be satisfied
+    // Constraint deduplication: Left and Right both refine Base, so the `x > 0mm`
+    // constraint from Base appears exactly once (diamond merging deduplicates it).
+    // The second constraint is `x < 500mm` declared on the Merged structure itself.
+    // Expected 2 constraints total: (1) x > 0mm from Base (deduplicated), (2) x < 500mm from Merged.
     let check_result = engine.check(&compiled);
     let merged_constraints: Vec<_> = check_result
         .constraint_results
