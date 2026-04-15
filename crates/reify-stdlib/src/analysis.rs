@@ -164,7 +164,7 @@ fn safety_factor(args: &[Value]) -> Value {
         };
 
         // Compute von Mises of the tensor via the same logic as the von_mises builtin
-        let vm = von_mises(&[tensor.clone()]);
+        let vm = von_mises(std::slice::from_ref(tensor));
         let vm_f64 = match vm.as_f64() {
             Some(v) => v,
             None => return Value::Undef,
