@@ -400,3 +400,66 @@ structure def S {
         default.kind
     );
 }
+
+// ---------------------------------------------------------------------------
+// task 1098: port let Option<Length> = none → typed OptionNone (step-3)
+// ---------------------------------------------------------------------------
+
+/// Port let with Option<Length> annotation and none value should produce
+/// a ValueCellDecl with cell_type == Option<Length> and default_expr that is
+/// OptionNone with result_type == Option<Length> (not the fallback Option<Real>).
+#[test]
+fn port_let_none_with_typed_annotation_gets_correct_type() {
+    let source = r#"
+trait MyPort {
+    param x : Length
+}
+
+structure def S {
+    port p : MyPort {
+        param x : Length = 5mm
+        let y : Option<Length> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(template.ports.len(), 1, "expected 1 port");
+    let port = &template.ports[0];
+
+    let member = port
+        .members
+        .iter()
+        .find(|m| m.id.member.contains("p.y"))
+        .expect("should have port member 'p.y'");
+
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "port let member cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("port member 'p.y' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "port let default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone, got {:?}",
+        default.kind
+    );
+}
