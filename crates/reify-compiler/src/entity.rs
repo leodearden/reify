@@ -398,6 +398,8 @@ pub(crate) fn compile_entity(
                 scope
                     .sub_component_types
                     .insert(sub.name.clone(), sub.structure_name.clone());
+                // Single lookup: handle deprecation, sub_structure_traits, and
+                // sub_member_types in one pass over compiled_templates.
                 if let Some(child_tmpl) = compiled_templates
                     .iter()
                     .find(|t| t.name == sub.structure_name)
@@ -415,12 +417,7 @@ pub(crate) fn compile_entity(
                     scope
                         .sub_structure_traits
                         .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
-                }
-                // Populate sub_member_types for ALL subs (for self.sub.member resolution).
-                if let Some(child_tmpl) = compiled_templates
-                    .iter()
-                    .find(|t| t.name == sub.structure_name)
-                {
+                    // Populate sub_member_types for self.sub.member resolution.
                     let member_types: BTreeMap<String, Type> = child_tmpl
                         .value_cells
                         .iter()

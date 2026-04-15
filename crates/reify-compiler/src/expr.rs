@@ -1550,10 +1550,22 @@ pub(crate) fn compile_expr_guarded(
             match scope.resolve(member) {
                 Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
                 None => {
-                    // Fallback: create a ValueCellId directly (trait conformance will catch
-                    // missing members separately).
-                    let id = ValueCellId::new(&scope.entity_name, member);
-                    CompiledExpr::value_ref(id, Type::Real)
+                    // Member not found in scope.  Conformance checking will report the
+                    // missing member as a separate error.  Emit an info diagnostic here
+                    // so this path is visible if conformance checking is ever bypassed
+                    // or reordered in the future.
+                    diagnostics.push(
+                        Diagnostic::info(format!(
+                            "qualified access '{}::{}': member not found in scope; \
+                             conformance checking should report the missing member separately",
+                            trait_name, member,
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "member not found in scope",
+                        )),
+                    );
+                    CompiledExpr::literal(Value::Undef, Type::Real)
                 }
             }
         }
