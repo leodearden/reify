@@ -612,6 +612,11 @@ impl OcctKernel {
                         "nurbs_curve degree must be >= 1".into(),
                     ));
                 }
+                if weights.len() != control_points.len() {
+                    return Err(GeometryError::OperationFailed(
+                        "nurbs_curve: weights count must equal control points count".into(),
+                    ));
+                }
                 let coords: Vec<f64> = control_points.iter().flat_map(|p| p.iter().copied()).collect();
                 let shape = ffi::ffi::make_nurbs_curve(
                     &coords, control_points.len(),
