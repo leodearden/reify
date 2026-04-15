@@ -37263,7 +37263,7 @@
         "description": "From task-1287 review. (1) conformance.rs:269-280: scope.register(name,ty) overwrites when cross-kind defaults coexist. Guard with contains_key or entry API. (2) trait_merge_tests.rs: add test for Constraint+Param coexistence on same member name.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -37276,7 +37276,8 @@
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T16:33:05.587Z"
       },
       {
         "id": "1777",
@@ -37479,7 +37480,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T16:32:58.023Z",
+      "lastModified": "2026-04-15T16:33:05.588Z",
       "taskCount": 1782,
       "completedCount": 1523,
       "tags": [
