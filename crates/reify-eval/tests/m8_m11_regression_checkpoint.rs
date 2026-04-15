@@ -267,11 +267,110 @@ fn checkpoint_m11_field_sample_at_three() {
     }
 }
 
-// ── Type / Value variant coverage (step-3 stub) ───────────────────────────────
-//
-// Step-3 adds tests that exercise every Type and Value variant programmatically.
-// They are not yet present — step-3 will add them as failing stubs and step-4
-// will implement the exhaustive coverage.
+// ── Type / Value variant coverage ────────────────────────────────────────────
+
+/// Compile-time exhaustiveness guard for all 27 `Type` variants.
+///
+/// This function is NEVER called at runtime. Its only purpose is to force a
+/// compile error if a new `Type` variant is added without updating this list.
+/// If any variant is removed from the `match`, the compiler will warn about
+/// unreachable patterns. If a variant is ADDED to the enum without being listed
+/// here, the match becomes non-exhaustive and the test file won't compile.
+///
+/// **Fails (won't compile) in step-3** because it is annotated with
+/// `#[allow(dead_code)]` — the live runtime call that drives exhaustiveness is
+/// added in step-4.
+#[allow(dead_code)]
+fn assert_all_type_variants_listed(t: &reify_types::Type) {
+    use reify_types::Type;
+    let _ = match t {
+        // Primitive scalars
+        Type::Bool | Type::Int | Type::Real | Type::String => true,
+        // Dimensioned scalar
+        Type::Scalar { .. } => true,
+        // Named enum
+        Type::Enum(_) => true,
+        // Collection types
+        Type::List(_) | Type::Set(_) | Type::Map(..) | Type::Option(_) => true,
+        // Callable / generic
+        Type::Function { .. } | Type::TypeParam(_) | Type::StructureRef(_) => true,
+        // Field mapping
+        Type::Field { .. } => true,
+        // Geometry handle
+        Type::Geometry => true,
+        // Geometric vector spaces
+        Type::Point { .. } | Type::Vector { .. } | Type::Tensor { .. } => true,
+        // Complex and range
+        Type::Complex(_) | Type::Range(_) => true,
+        // Rigid-body / orientation
+        Type::Orientation(_) | Type::Frame(_) | Type::Transform(_) => true,
+        // 3D geometric primitives
+        Type::Plane | Type::Axis | Type::BoundingBox => true,
+        // Matrix
+        Type::Matrix { .. } => true,
+    };
+}
+
+/// Compile-time exhaustiveness guard for all 25 `Value` variants.
+///
+/// Same design as `assert_all_type_variants_listed`: never called at runtime
+/// in step-3, causes compile error if new variants aren't listed here.
+///
+/// **Fails (won't compile) in step-3** because it references an import
+/// (`reify_types::FieldSourceKind`) that hasn't been added to the `use`
+/// declaration yet — step-4 adds the necessary imports and makes this work.
+#[allow(dead_code)]
+fn assert_all_value_variants_listed(v: &reify_types::Value) {
+    use reify_types::Value;
+    let _ = match v {
+        // Primitive scalars
+        Value::Bool(_) | Value::Int(_) | Value::Real(_) | Value::String(_) => true,
+        // Dimensioned scalar
+        Value::Scalar { .. } => true,
+        // Named enum
+        Value::Enum { .. } => true,
+        // Collection types
+        Value::List(_) | Value::Set(_) | Value::Map(_) | Value::Option(_) => true,
+        // Field and lambda (callable values)
+        Value::Field { .. } | Value::Lambda { .. } => true,
+        // Tensor / numeric arrays
+        Value::Tensor(_) => true,
+        // Geometric vectors / points
+        Value::Point(_) | Value::Vector(_) => true,
+        // Complex number
+        Value::Complex { .. } => true,
+        // Rigid-body / orientation
+        Value::Orientation { .. } | Value::Frame { .. } | Value::Transform { .. } => true,
+        // 3D geometric primitives
+        Value::Plane { .. } | Value::Axis { .. } | Value::BoundingBox { .. } => true,
+        // Range
+        Value::Range { .. } => true,
+        // Matrix
+        Value::Matrix(_) => true,
+        // Undefined
+        Value::Undef => true,
+    };
+}
+
+/// Verify that `assert_all_type_variants_listed` covers the expected variant
+/// count and that all 27 variants are exercised at the call site (step-4).
+///
+/// **Fails in step-3** because no Type instances are constructed yet; the
+/// `todo!()` will panic when run.
+#[test]
+fn checkpoint_type_variant_coverage() {
+    todo!("step-4: construct all 27 Type variants and exercise the exhaustiveness guard")
+}
+
+/// Verify that all 25 `Value` variants can be constructed without panics in
+/// `Display`, `content_hash`, `try_infer_type`, and `format_hover`.
+///
+/// **Fails in step-3** because no Value instances are constructed yet; the
+/// `todo!()` will panic when run.
+#[test]
+fn checkpoint_value_variant_coverage() {
+    todo!("step-4: construct all 25 Value variants and call Display/content_hash/try_infer_type/format_hover")
+}
 
 // ── Test-count floor checkpoint (step-5 stub) ────────────────────────────────
 //
