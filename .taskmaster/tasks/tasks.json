@@ -36096,11 +36096,11 @@
         "description": "Extract a shared helper function in option_compile_tests.rs to reduce boilerplate across the OptionNone assertion tests. Currently ~6 tests repeat the same three-assertion pattern: cell_type == Option<Length>, default_expr.result_type == Option<Length>, kind == OptionNone. A helper like `fn assert_option_none_length(member: &ValueCellDecl, label: &str)` would deduplicate this.\n\nAdditionally, tighten the member lookup from `m.id.member.contains(\"p.x\")` to `m.id.member == \"p.x\"` (exact match) to prevent false matches. This applies to both the type-alias tests added by task 1726 and the original tests (lines ~376, ~439, ~780).\n\n## Memory hints\n- Search: \"option_compile_tests OptionNone assertion pattern\"\n- Related tasks: 1726 (added the type-alias tests with the duplicated pattern), 1098 (parent implementation)\n- Related files: crates/reify-compiler/tests/option_compile_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T07:02:47.836Z",
+        "updatedAt": "2026-04-15T07:22:25.683Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -36184,9 +36184,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T07:22:08.760Z",
+      "lastModified": "2026-04-15T07:22:25.683Z",
       "taskCount": 1731,
-      "completedCount": 1491,
+      "completedCount": 1492,
       "tags": [
         "master"
       ]
