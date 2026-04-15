@@ -735,6 +735,98 @@ fn compile_module_multi_import_prelude() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+// ── task-370/step-9: circular_import_error_message_deterministic ──────────────
+
+/// Validate that circular-import error messages are deterministic.
+///
+/// Creates a three-module cycle: alpha -> beta -> gamma -> alpha.
+/// Compiles twice (with independent `ModuleDag` instances) and asserts:
+/// (a) both runs produce an error mentioning "circular" or "cycle",
+/// (b) the error messages are identical between runs, and
+/// (c) the module names appear in sorted alphabetical order within the message
+///     ("alpha" before "beta" before "gamma").
+///
+/// Without the HashSet-to-sorted-Vec fix (step-10), the iteration order of
+/// `in_progress` is hash-order-dependent and may fail the sorted-order assertion.
+#[test]
+fn circular_import_error_message_deterministic() {
+    let dir = test_dir("circular_deterministic");
+
+    // alpha imports beta
+    fs::write(
+        dir.join("alpha.ri"),
+        "import beta\nstructure Alpha { param x: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    // beta imports gamma
+    fs::write(
+        dir.join("beta.ri"),
+        "import gamma\nstructure Beta { param y: Scalar = 2mm }",
+    )
+    .unwrap();
+
+    // gamma imports alpha (closes the cycle: alpha -> beta -> gamma -> alpha)
+    fs::write(
+        dir.join("gamma.ri"),
+        "import alpha\nstructure Gamma { param z: Scalar = 3mm }",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+
+    // First compilation
+    let mut dag1 = ModuleDag::new();
+    let result1 = dag1.compile_module("alpha", &resolver);
+    assert!(result1.is_err(), "expected error for 3-cycle (first run)");
+    let msg1 = result1
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+    assert!(
+        msg1.contains("circular") || msg1.contains("cycle"),
+        "first run: error should mention circular dependency, got: {}",
+        msg1
+    );
+
+    // Second compilation (fresh dag)
+    let mut dag2 = ModuleDag::new();
+    let result2 = dag2.compile_module("alpha", &resolver);
+    assert!(result2.is_err(), "expected error for 3-cycle (second run)");
+    let msg2 = result2
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // (b) Messages must be identical between runs (determinism)
+    assert_eq!(
+        msg1, msg2,
+        "circular-import error messages must be identical across compilations"
+    );
+
+    // (c) Module names must appear in sorted alphabetical order within the message.
+    // With sorted output, alpha appears before beta which appears before gamma.
+    let alpha_pos = msg1.find("alpha").expect("'alpha' must appear in error");
+    let beta_pos = msg1.find("beta").expect("'beta' must appear in error");
+    let gamma_pos = msg1.find("gamma").expect("'gamma' must appear in error");
+    assert!(
+        alpha_pos < beta_pos,
+        "expected 'alpha' before 'beta' in sorted cycle, got: {}",
+        msg1
+    );
+    assert!(
+        beta_pos < gamma_pos,
+        "expected 'beta' before 'gamma' in sorted cycle, got: {}",
+        msg1
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 // ── amendment (task-1392): compile_project multi-import prelude path ──────────
 
 /// Covers the block-scoped prelude path in `compile_project` (lines 257-260 in
