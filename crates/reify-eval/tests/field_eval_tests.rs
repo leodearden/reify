@@ -265,6 +265,18 @@ fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) ->
     }
 }
 
+/// Build a `sample(field_expr, point)` CompiledExpr.
+///
+/// Delegates to `make_function_call("sample", ...)`, fixing the function name to
+/// `"sample"` and constructing the point literal from a bare `f64`.
+fn make_sample_at(field_expr: CompiledExpr, point: f64, result_type: Type) -> CompiledExpr {
+    make_function_call(
+        "sample",
+        vec![field_expr, CompiledExpr::literal(Value::Real(point), Type::Real)],
+        result_type,
+    )
+}
+
 // ── Helper test: make_sample_at shape ─────────────────────────────────────────
 
 #[test]
