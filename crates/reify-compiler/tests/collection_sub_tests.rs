@@ -796,10 +796,11 @@ fn mixed_sub_types_wrong_trait_diagnostic() {
         );
     }
 
-    // Non-collection sub: error mentions "part" and "UnrelatedTrait".
+    // Non-collection sub: error mentions "'part'" (quoted, to exclude the "parts" match)
+    // and "UnrelatedTrait". The diagnostic format is: sub-component 'part' (type ...).
     let part_err = errors
         .iter()
-        .find(|e| e.message.contains("part") && e.message.contains("UnrelatedTrait"));
+        .find(|e| e.message.contains("'part'") && e.message.contains("UnrelatedTrait"));
     assert!(
         part_err.is_some(),
         "expected an error mentioning 'part' and 'UnrelatedTrait', got: {:?}",
