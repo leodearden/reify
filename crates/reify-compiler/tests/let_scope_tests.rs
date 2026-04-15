@@ -112,6 +112,13 @@ fn realization_named<'a>(
     names: &[&str],
     target: &str,
 ) -> &'a RealizationDecl {
+    assert_eq!(
+        names.len(),
+        template.realizations.len(),
+        "names count ({}) does not match realizations count ({})",
+        names.len(),
+        template.realizations.len()
+    );
     let idx = names
         .iter()
         .position(|&n| n == target)
