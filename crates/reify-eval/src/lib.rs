@@ -1840,16 +1840,15 @@ impl Engine {
         // value through the eval graph.
         {
             let cell_node = state.snapshot.graph.value_cells.get(&cell).unwrap();
-            if let reify_types::Type::Scalar { dimension: expected } = cell_node.cell_type {
-                if let reify_types::Value::Scalar { dimension: got, .. } = &new_value {
-                    if *got != expected {
-                        return Err(EngineError::DimensionMismatch {
-                            cell,
-                            expected,
-                            got: *got,
-                        });
-                    }
-                }
+            if let reify_types::Type::Scalar { dimension: expected } = cell_node.cell_type
+                && let reify_types::Value::Scalar { dimension: got, .. } = &new_value
+                && *got != expected
+            {
+                return Err(EngineError::DimensionMismatch {
+                    cell,
+                    expected,
+                    got: *got,
+                });
             }
         }
 
