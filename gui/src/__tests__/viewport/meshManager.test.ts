@@ -6,11 +6,15 @@ import type { MeshData } from '../../types';
 const mockGeometries: any[] = [];
 const mockMaterials: any[] = [];
 const mockMeshes: any[] = [];
+const mockBasicMaterials: any[] = [];
+const mockGroups: any[] = [];
 
 const mockSceneAdd = vi.fn();
 const mockSceneRemove = vi.fn();
 const mockComputeBoundsTree = vi.fn();
 const mockDisposeBoundsTree = vi.fn();
+const mockGroupAdd = vi.fn();
+const mockGroupRemove = vi.fn();
 
 vi.mock('three', () => {
   class MockBufferGeometry {
@@ -67,6 +71,29 @@ vi.mock('three', () => {
     }
   }
 
+  class MockMeshBasicMaterial {
+    color: any;
+    transparent: boolean;
+    opacity: number;
+    depthWrite: boolean;
+    side: any;
+    polygonOffset: boolean;
+    polygonOffsetFactor: number;
+    polygonOffsetUnits: number;
+    dispose = vi.fn();
+    constructor(opts?: any) {
+      this.color = opts?.color;
+      this.transparent = opts?.transparent ?? false;
+      this.opacity = opts?.opacity ?? 1;
+      this.depthWrite = opts?.depthWrite ?? true;
+      this.side = opts?.side;
+      this.polygonOffset = opts?.polygonOffset ?? false;
+      this.polygonOffsetFactor = opts?.polygonOffsetFactor ?? 0;
+      this.polygonOffsetUnits = opts?.polygonOffsetUnits ?? 0;
+      mockBasicMaterials.push(this);
+    }
+  }
+
   class MockMesh {
     geometry: any;
     material: any;
@@ -75,6 +102,15 @@ vi.mock('three', () => {
       this.geometry = geometry;
       this.material = material;
       mockMeshes.push(this);
+    }
+  }
+
+  class MockGroup {
+    add = mockGroupAdd;
+    remove = mockGroupRemove;
+    name: string = '';
+    constructor() {
+      mockGroups.push(this);
     }
   }
 
@@ -94,7 +130,9 @@ vi.mock('three', () => {
     BufferGeometry: MockBufferGeometry,
     BufferAttribute: MockBufferAttribute,
     MeshStandardMaterial: MockMeshStandardMaterial,
+    MeshBasicMaterial: MockMeshBasicMaterial,
     Mesh: MockMesh,
+    Group: MockGroup,
     Scene: MockScene,
     Color: MockColor,
     DoubleSide: 2,
@@ -116,6 +154,8 @@ beforeEach(() => {
   mockGeometries.length = 0;
   mockMaterials.length = 0;
   mockMeshes.length = 0;
+  mockBasicMaterials.length = 0;
+  mockGroups.length = 0;
 });
 
 function makeMeshData(
@@ -136,6 +176,9 @@ describe('meshManager', () => {
   function setup() {
     const scene = new Scene();
     const manager = createMeshManager(scene);
+    // createMeshManager adds ghostGroup to scene — clear mock history so tests
+    // don't see that spurious scene.add call in their counts.
+    vi.clearAllMocks();
     return { scene, manager };
   }
 
@@ -654,5 +697,197 @@ describe('meshManager', () => {
 
     expect((mesh.geometry as any).disposeBoundsTree).toHaveBeenCalledTimes(1);
     expect((mesh.geometry as any).dispose).toHaveBeenCalledTimes(1);
+  });
+
+  describe('ghost visibility', () => {
+    // Helper: create manager, add one mesh, then reset mock call history.
+    // NOTE: does NOT clear mockBasicMaterials — ghost material created by
+    // createMeshManager stays in the array so test (c) can find it.
+    function setupWithMesh(entityPath = 'A') {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      // Manager creation adds ghostGroup to scene — clear call history.
+      vi.clearAllMocks();
+      manager.sync({ [entityPath]: makeMeshData(entityPath) });
+      // Clear again so tests start with zero recorded add/remove calls.
+      vi.clearAllMocks();
+      return { scene, manager };
+    }
+
+    it('setVisibility and getGhostMeshes methods exist on manager', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      expect(typeof (manager as any).setVisibility).toBe('function');
+      expect(typeof (manager as any).getGhostMeshes).toBe('function');
+    });
+
+    it('(a) setVisibility ghost removes mesh from scene and adds ghost clone to ghostGroup', () => {
+      const { manager } = setupWithMesh();
+      const mesh = manager.getSceneMeshes().get('A')!;
+
+      (manager as any).setVisibility('A', 'ghost');
+
+      expect(mockSceneRemove).toHaveBeenCalledWith(mesh);
+      expect(mockGroupAdd).toHaveBeenCalledTimes(1);
+    });
+
+    it('(b) ghost clone shares geometry reference with original mesh', () => {
+      const { manager } = setupWithMesh();
+      const originalMesh = manager.getSceneMeshes().get('A')!;
+      const originalGeometry = originalMesh.geometry;
+
+      (manager as any).setVisibility('A', 'ghost');
+
+      const ghostMap: Map<string, any> = (manager as any).getGhostMeshes();
+      const ghostMesh = ghostMap.get('A')!;
+      expect(ghostMesh).toBeDefined();
+      expect(ghostMesh.geometry).toBe(originalGeometry); // identity check
+    });
+
+    it('(c) ghost clone uses MeshBasicMaterial, not MeshStandardMaterial', () => {
+      const { manager } = setupWithMesh();
+      (manager as any).setVisibility('A', 'ghost');
+
+      const ghostMap: Map<string, any> = (manager as any).getGhostMeshes();
+      const ghostMesh = ghostMap.get('A')!;
+      // Ghost material should be in mockBasicMaterials (created by createGhostMaterial)
+      expect(mockBasicMaterials.some((m: any) => m === ghostMesh.material)).toBe(true);
+      // Should NOT be a standard material
+      expect(mockMaterials.some((m: any) => m === ghostMesh.material)).toBe(false);
+    });
+
+    it('(d) setVisibility show removes ghost clone from ghostGroup and re-adds mesh to scene', () => {
+      const { manager } = setupWithMesh();
+      (manager as any).setVisibility('A', 'ghost');
+      vi.clearAllMocks();
+
+      (manager as any).setVisibility('A', 'show');
+
+      const mesh = manager.getSceneMeshes().get('A')!;
+      expect(mockGroupRemove).toHaveBeenCalledTimes(1);
+      expect(mockSceneAdd).toHaveBeenCalledWith(mesh);
+    });
+
+    it('(e) setVisibility hidden removes mesh from scene and not added to ghostGroup', () => {
+      const { manager } = setupWithMesh();
+      const mesh = manager.getSceneMeshes().get('A')!;
+
+      (manager as any).setVisibility('A', 'hidden');
+
+      expect(mockSceneRemove).toHaveBeenCalledWith(mesh);
+      expect(mockGroupAdd).not.toHaveBeenCalled(); // hidden means not in ghostGroup
+    });
+
+    it('(e) setVisibility hidden from ghost state removes ghost clone from ghostGroup', () => {
+      const { manager } = setupWithMesh();
+      (manager as any).setVisibility('A', 'ghost');
+      vi.clearAllMocks();
+
+      (manager as any).setVisibility('A', 'hidden');
+
+      expect(mockGroupRemove).toHaveBeenCalledTimes(1);
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+    });
+
+    it('(f) getSceneMeshes only returns show meshes, not ghost or hidden', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      manager.sync({
+        A: makeMeshData('A'),
+        B: makeMeshData('B'),
+        C: makeMeshData('C'),
+      });
+
+      (manager as any).setVisibility('B', 'ghost');
+      (manager as any).setVisibility('C', 'hidden');
+
+      const sceneMeshes = manager.getSceneMeshes();
+      expect(sceneMeshes.has('A')).toBe(true);
+      expect(sceneMeshes.has('B')).toBe(false);
+      expect(sceneMeshes.has('C')).toBe(false);
+      expect(sceneMeshes.size).toBe(1);
+    });
+
+    it('(g) getGhostMeshes returns the ghost mesh map', () => {
+      const { manager } = setupWithMesh();
+      (manager as any).setVisibility('A', 'ghost');
+
+      const ghostMeshes: Map<string, any> = (manager as any).getGhostMeshes();
+      expect(ghostMeshes).toBeInstanceOf(Map);
+      expect(ghostMeshes.has('A')).toBe(true);
+      expect(ghostMeshes.size).toBe(1);
+    });
+
+    it('(g) getGhostMeshes is empty when no ghost entities', () => {
+      const { manager } = setupWithMesh();
+      const ghostMeshes: Map<string, any> = (manager as any).getGhostMeshes();
+      expect(ghostMeshes.size).toBe(0);
+    });
+
+    it('(h) sync respects pre-set ghost visibility for newly arriving mesh', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      // Pre-set visibility BEFORE mesh data arrives
+      (manager as any).setVisibility('A', 'ghost');
+
+      vi.clearAllMocks();
+      manager.sync({ A: makeMeshData('A') });
+
+      // Mesh should NOT be added to scene (it's ghost)
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+      // Ghost clone should be added to ghostGroup
+      expect(mockGroupAdd).toHaveBeenCalledTimes(1);
+      // getSceneMeshes should NOT include A
+      expect(manager.getSceneMeshes().has('A')).toBe(false);
+      // getGhostMeshes should include A
+      expect((manager as any).getGhostMeshes().has('A')).toBe(true);
+    });
+
+    it('(i) sync removal cleans up ghost meshes when entity removed while ghosted', () => {
+      const { manager } = setupWithMesh();
+      (manager as any).setVisibility('A', 'ghost');
+      vi.clearAllMocks();
+
+      // Remove A from sync
+      manager.sync({});
+
+      // Ghost clone should be removed from ghostGroup
+      expect(mockGroupRemove).toHaveBeenCalledTimes(1);
+      expect((manager as any).getGhostMeshes().has('A')).toBe(false);
+    });
+
+    it('(j) dispose cleans up ghost group, ghost meshes, and ghost material', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      manager.sync({ A: makeMeshData('A') });
+      (manager as any).setVisibility('A', 'ghost');
+      vi.clearAllMocks();
+
+      manager.dispose();
+
+      // Ghost material should be disposed
+      expect(mockBasicMaterials.some((m: any) => m.dispose.mock.calls.length > 0)).toBe(true);
+      // Ghost map should be empty
+      expect((manager as any).getGhostMeshes().size).toBe(0);
+    });
+
+    it('(k) ghost → hidden → show round-trip restores mesh to scene', () => {
+      const { manager } = setupWithMesh();
+
+      (manager as any).setVisibility('A', 'ghost');
+      expect(manager.getSceneMeshes().has('A')).toBe(false);
+      expect((manager as any).getGhostMeshes().has('A')).toBe(true);
+
+      (manager as any).setVisibility('A', 'hidden');
+      expect(manager.getSceneMeshes().has('A')).toBe(false);
+      expect((manager as any).getGhostMeshes().has('A')).toBe(false);
+
+      vi.clearAllMocks();
+      (manager as any).setVisibility('A', 'show');
+      expect(manager.getSceneMeshes().has('A')).toBe(true);
+      expect((manager as any).getGhostMeshes().has('A')).toBe(false);
+      // Mesh re-added to scene
+      expect(mockSceneAdd).toHaveBeenCalledTimes(1);
+    });
   });
 });

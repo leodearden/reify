@@ -3,12 +3,15 @@ import {
   BufferAttribute,
   Mesh,
   MeshStandardMaterial,
+  MeshBasicMaterial,
+  Group,
   DoubleSide,
   Color,
   type Scene,
 } from 'three';
 import { computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
-import type { MeshData } from '../types';
+import type { MeshData, VisibilityState } from '../types';
+import { createGhostMaterial } from './ghostMaterial';
 
 // Patch BufferGeometry prototype for BVH acceleration
 (BufferGeometry.prototype as any).computeBoundsTree = computeBoundsTree;
@@ -43,6 +46,8 @@ export interface MeshManagerContext {
   sync: (meshes: Record<string, MeshData>) => void;
   dispose: () => void;
   getSceneMeshes: () => Map<string, Mesh>;
+  setVisibility: (entityPath: string, state: VisibilityState) => void;
+  getGhostMeshes: () => Map<string, Mesh>;
 }
 
 /**
@@ -66,6 +71,16 @@ function validateMeshData(data: MeshData): boolean {
 
 export function createMeshManager(scene: Scene): MeshManagerContext {
   const meshMap = new Map<string, Mesh>();
+  const visibilityMap = new Map<string, VisibilityState>();
+  const ghostMeshMap = new Map<string, Mesh>();
+
+  // Single shared ghost material — one material instance per manager, not per ghost clone.
+  const ghostMaterial: MeshBasicMaterial = createGhostMaterial();
+
+  // Ghost Group: all ghost clones live here so they're separate from opaque meshes.
+  const ghostGroup = new Group();
+  ghostGroup.name = 'ghostGroup';
+  scene.add(ghostGroup);
 
   function createMeshFromData(entityPath: string, data: MeshData): Mesh | null {
     const geometry = new BufferGeometry();
@@ -150,14 +165,74 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     }
   }
 
+  function addGhostClone(entityPath: string, originalMesh: Mesh): void {
+    const ghostClone = new Mesh(originalMesh.geometry, ghostMaterial);
+    ghostClone.name = `ghost:${entityPath}`;
+    ghostMeshMap.set(entityPath, ghostClone);
+    ghostGroup.add(ghostClone);
+  }
+
+  function removeGhostClone(entityPath: string): void {
+    const ghostClone = ghostMeshMap.get(entityPath);
+    if (!ghostClone) return;
+    ghostGroup.remove(ghostClone);
+    ghostMeshMap.delete(entityPath);
+  }
+
   function removeMesh(entityPath: string): void {
     const mesh = meshMap.get(entityPath);
     if (!mesh) return;
+
+    const state = visibilityMap.get(entityPath) ?? 'show';
+
+    // Remove from scene only if mesh is currently shown there
+    if (state === 'show') {
+      scene.remove(mesh);
+    }
+
+    // Clean up any ghost clone for this entity
+    removeGhostClone(entityPath);
+
     (mesh.geometry as any).disposeBoundsTree();
     (mesh.geometry as BufferGeometry).dispose();
     (mesh.material as MeshStandardMaterial).dispose();
-    scene.remove(mesh);
     meshMap.delete(entityPath);
+    visibilityMap.delete(entityPath);
+  }
+
+  function setVisibility(entityPath: string, state: VisibilityState): void {
+    const prevState = visibilityMap.get(entityPath) ?? 'show';
+    visibilityMap.set(entityPath, state);
+
+    const mesh = meshMap.get(entityPath);
+    if (!mesh) {
+      // Mesh hasn't arrived yet; visibilityMap pre-set will be applied when sync() adds it.
+      return;
+    }
+
+    if (prevState === state) return; // no change
+
+    if (prevState === 'show') {
+      if (state === 'ghost') {
+        scene.remove(mesh);
+        addGhostClone(entityPath, mesh);
+      } else if (state === 'hidden') {
+        scene.remove(mesh);
+      }
+    } else if (prevState === 'ghost') {
+      if (state === 'show') {
+        removeGhostClone(entityPath);
+        scene.add(mesh);
+      } else if (state === 'hidden') {
+        removeGhostClone(entityPath);
+      }
+    } else if (prevState === 'hidden') {
+      if (state === 'show') {
+        scene.add(mesh);
+      } else if (state === 'ghost') {
+        addGhostClone(entityPath, mesh);
+      }
+    }
   }
 
   function sync(meshes: Record<string, MeshData>): void {
@@ -177,7 +252,13 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
         const mesh = createMeshFromData(entityPath, data);
         if (mesh) {
           meshMap.set(entityPath, mesh);
-          scene.add(mesh);
+          const state = visibilityMap.get(entityPath) ?? 'show';
+          if (state === 'show') {
+            scene.add(mesh);
+          } else if (state === 'ghost') {
+            addGhostClone(entityPath, mesh);
+          }
+          // 'hidden': don't add anywhere
         }
       }
     }
@@ -187,11 +268,23 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     for (const key of [...meshMap.keys()]) {
       removeMesh(key);
     }
+    ghostMaterial.dispose();
   }
 
   function getSceneMeshes(): Map<string, Mesh> {
-    return meshMap;
+    const result = new Map<string, Mesh>();
+    for (const [key, mesh] of meshMap) {
+      const state = visibilityMap.get(key) ?? 'show';
+      if (state === 'show') {
+        result.set(key, mesh);
+      }
+    }
+    return result;
   }
 
-  return { sync, dispose, getSceneMeshes };
+  function getGhostMeshes(): Map<string, Mesh> {
+    return ghostMeshMap;
+  }
+
+  return { sync, dispose, getSceneMeshes, setVisibility, getGhostMeshes };
 }
