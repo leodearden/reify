@@ -1,3 +1,4 @@
+mod analysis;
 mod calculus;
 mod complex;
 mod sanitize;
@@ -232,6 +233,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 "curl" if evaluated_args.len() == 1 => calculus::compute_curl(&evaluated_args[0]),
                 "laplacian" if evaluated_args.len() == 1 => {
                     calculus::compute_laplacian(&evaluated_args[0])
+                }
+                // Analysis field wrappers: intercept when arg is a Field,
+                // otherwise fall through to eval_builtin for concrete tensors.
+                "von_mises"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    analysis::compute_von_mises(&evaluated_args[0])
                 }
                 _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
             }
