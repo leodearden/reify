@@ -116,13 +116,10 @@ fn scalar_type_for_dim(dim: DimensionVector) -> Type {
 
 /// Validate a tensor field and wrap it with the given `FieldSourceKind`.
 ///
-/// Shared implementation for `compute_von_mises`, `compute_principal_stresses`,
-/// and `compute_max_shear`. Each differs only in the source kind variant.
+/// Shared implementation for `compute_von_mises` and `compute_max_shear`.
+/// Each differs only in the source kind variant.
 ///
-/// The resulting field has `codomain_type = Scalar<element_dim>`. For
-/// `PrincipalStresses` this is a known type-level lie — sampling actually
-/// returns a `Value::List` of 3 scalars. See the TODO on
-/// `compute_principal_stresses` for details.
+/// The resulting field has `codomain_type = Scalar<element_dim>`.
 fn wrap_tensor_field(field_val: &Value, op: &str, source_kind: FieldSourceKind) -> Value {
     let (domain_type, _codomain_type, elem_dim) =
         match validate_tensor_field(field_val, op) {
@@ -151,15 +148,26 @@ pub(crate) fn compute_von_mises(field_val: &Value) -> Value {
 
 /// Create a PrincipalStresses-wrapped field from a tensor field.
 ///
-/// Given a `Field<D, Matrix3x3<Q>>`, returns a `Field<D, Scalar<Q>>` with
-/// `source = FieldSourceKind::PrincipalStresses`.
-///
-/// TODO(type-coherence): The declared `codomain_type` is `Scalar<Q>`, but
-/// sampling actually returns a `Value::List` of 3 scalars. Code that inspects
-/// `Field.codomain_type` to interpret sampled values will get the wrong answer.
-/// Consider introducing `Type::List(Box<Type>)` to express this correctly.
+/// Given a `Field<D, Matrix3x3<Q>>`, returns a `Field<D, List<Scalar<Q>>>` with
+/// `source = FieldSourceKind::PrincipalStresses`. Sampling produces a
+/// `Value::List` of 3 scalars (the eigenvalues sorted descending), so the
+/// codomain is `Type::List(Box<scalar_type>)` rather than a bare scalar.
 pub(crate) fn compute_principal_stresses(field_val: &Value) -> Value {
-    wrap_tensor_field(field_val, "principal_stresses", FieldSourceKind::PrincipalStresses)
+    let (domain_type, _codomain_type, elem_dim) =
+        match validate_tensor_field(field_val, "principal_stresses") {
+            Some(triple) => triple,
+            None => return Value::Undef,
+        };
+
+    let scalar_ty = scalar_type_for_dim(elem_dim);
+    let result_codomain = Type::List(Box::new(scalar_ty));
+
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: result_codomain,
+        source: FieldSourceKind::PrincipalStresses,
+        lambda: Box::new(field_val.clone()),
+    }
 }
 
 /// Create a MaxShear-wrapped field from a tensor field.

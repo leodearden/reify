@@ -385,16 +385,12 @@ fn assert_analysis_wrapper(
 
 #[test]
 fn principal_stresses_field_returns_field_with_correct_source() {
-    // principal_stresses returns a List, so codomain is the list type.
-    // In practice, the codomain type for a list of 3 scalars is not directly
-    // representable as a simple Type. The wrapper should use a list-compatible type.
-    // For now, we test that it returns a Field with PrincipalStresses source.
+    // principal_stresses sampling returns a Value::List of 3 scalars, so
+    // the codomain type must be Type::List(Box<Scalar<Q>>).
     assert_analysis_wrapper(
         "principal_stresses",
         FieldSourceKind::PrincipalStresses,
-        // Codomain: List<Scalar[PRESSURE]> — represented as the scalar element type
-        // since List type isn't a simple Type variant. The implementation decides.
-        pressure_scalar_type(),
+        Type::List(Box::new(pressure_scalar_type())),
     );
 }
 
