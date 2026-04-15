@@ -47,6 +47,12 @@ fn extract_eigenvalues(items: &[Value]) -> [f64; 3] {
     eigenvalues
 }
 
+#[test]
+#[should_panic(expected = "expected 3 eigenvalues")]
+fn extract_eigenvalues_panics_on_too_few_items() {
+    extract_eigenvalues(&[Value::Real(1.0), Value::Real(2.0)]);
+}
+
 // ── Step 21: eval analytical field at point ────────────────────────────
 
 #[test]
