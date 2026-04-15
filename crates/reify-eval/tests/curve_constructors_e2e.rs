@@ -336,3 +336,53 @@ fn bezier_through_full_eval_pipeline() {
         other => panic!("expected GeometryOp::BezierCurve, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// NURBS error-diagnostics tests (review feedback)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nurbs_fewer_than_2_args_emits_diagnostic() {
+    let e = "TestNurbsTooFew";
+    let dim_literal = |v: f64| reify_types::CompiledExpr::literal(
+        reify_types::Value::Scalar {
+            si_value: v,
+            dimension: reify_types::DimensionVector::DIMENSIONLESS,
+        },
+        Type::dimensionless_scalar(),
+    );
+
+    // Only pass 1 arg (just degree=3) — needs at least degree + n_points
+    let curve_op = CompiledGeometryOp::Curve {
+        kind: CurveKind::NurbsCurve,
+        args: vec![
+            ("c0".into(), dim_literal(3.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![curve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_nurbs_too_few"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // Should produce NO geometry ops (NURBS eval returns None)
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(ops.len(), 0, "expected no geometry ops for invalid NURBS, got {}", ops.len());
+
+    // Should emit a diagnostic error
+    let diag_messages: Vec<String> = result.diagnostics.iter().map(|d| d.message.clone()).collect();
+    assert!(
+        diag_messages.iter().any(|m| m.contains("nurbs() requires at least degree and n_points arguments")),
+        "expected diagnostic about missing NURBS args, got: {:?}", diag_messages,
+    );
+}
