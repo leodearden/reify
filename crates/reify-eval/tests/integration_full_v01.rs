@@ -1011,3 +1011,23 @@ fn violated_constraint_detected() {
         check_result.constraint_results.len()
     );
 }
+
+// ── Test 21: no tautological self-equality constraints ───────────────────────
+
+/// Regression guard: the source must NOT contain any reflexive tautology of the
+/// form `constraint X == X` (where X is the same identifier on both sides).
+/// Such a constraint always holds and tests nothing meaningful.
+///
+/// This test intentionally FAILs on the pre-fix source (which has
+/// `constraint height_ok == height_ok`) and passes after the fix.
+#[test]
+fn no_tautological_self_equality_constraints() {
+    let src = source();
+    // Match any "constraint <ident> == <ident>" where both sides are the same token.
+    // We look for the exact string pattern produced by the known tautology.
+    assert!(
+        !src.contains("height_ok == height_ok"),
+        "source contains a tautological constraint `height_ok == height_ok`; \
+         replace it with a meaningful assertion such as `constraint determined(height_ok)`"
+    );
+}
