@@ -35062,10 +35062,13 @@
           "memory_hints": {
             "entities": [],
             "queries": [
-              "resolution for: si_units: disambiguate prefix_combos field semantics between SiPrefixBase and SiDerivedUnit"
+              "SiPrefixBase prefix_combos semantics",
+              "task 1675 stash fail recurring branch",
+              "task 1675 phantom done reconciliation reset",
+              "si_units disambiguate prefix_combos SiDerivedUnit"
             ]
           },
-          "_causation_id": "dc802ff2-ae92-42fe-979d-29937db06c0c",
+          "_causation_id": "f08db30b-65e0-4c3a-b67c-92bf80f570c7",
           "stash_fail_cycle_count": 5,
           "stash_fail_cycles": [
             "2e441149",
@@ -35075,7 +35078,10 @@
             "dc802ff2"
           ],
           "escalation_severity": "critical",
-          "requires_manual_intervention": true
+          "requires_manual_intervention": true,
+          "phantom_done_reset": true,
+          "phantom_done_run": "f08db30b",
+          "fresh_worktree_mandatory": true
         }
       },
       {
