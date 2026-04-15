@@ -401,32 +401,10 @@ structure def S {
     let member = port
         .members
         .iter()
-        .find(|m| m.id.member.contains("p.x"))
+        .find(|m| m.id.member == "p.x")
         .expect("should have port member 'p.x'");
 
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "port member cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("port member 'p.x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone port param, got {:?}",
-        default.kind
-    );
+    assert_option_none_length(member, "port param");
 }
 
 // ---------------------------------------------------------------------------
@@ -781,33 +759,11 @@ structure def S {
     let member = port
         .members
         .iter()
-        .find(|m| m.id.member.contains("p.x"))
+        .find(|m| m.id.member == "p.x")
         .expect("should have port member 'p.x'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "port param (alias) cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("port member 'p.x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "port param (alias) default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for port param with type alias, got {:?}",
-        default.kind
-    );
+    assert_option_none_length(member, "port param (alias)");
 }
 
 // ---------------------------------------------------------------------------
