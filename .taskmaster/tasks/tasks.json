@@ -37464,6 +37464,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1787,
+        "title": "Cache eval_canonical() result in stress_large_assembly.rs via OnceLock",
+        "description": "In crates/reify-eval/tests/stress_large_assembly.rs, wrap the EvalResult from eval_canonical() in a OnceLock (similar to compiled()) so that mass_propagation_steel_beam, mass_propagation_aluminum_plate, total_mass_computed, and smoke_compiles_and_evals share a single evaluation of the 54-component assembly instead of re-running it 4×. eval_canonical() creates a fresh engine each time so sharing the result is safe.\n\nmemory_hints: search \"OnceLock\" in test files for the existing pattern used by compiled().",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37476,7 +37487,7 @@
       ],
       "created": "2026-04-15T16:32:09.103Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T16:32:09.237Z"
+      "updated": "2026-04-15T16:32:39.985Z"
     }
   }
 }
