@@ -7195,7 +7195,7 @@
           "337",
           "326"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.4",
           "modules": [
@@ -7224,7 +7224,7 @@
           "_causation_id": "8a9210de-78df-4834-a133-09f74785f437"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:16:11.210Z"
+        "updatedAt": "2026-04-15T01:21:41.877Z"
       },
       {
         "id": "342",
@@ -35517,9 +35517,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:18:21.850Z",
+      "lastModified": "2026-04-15T01:21:41.878Z",
       "taskCount": 1699,
-      "completedCount": 1447,
+      "completedCount": 1448,
       "tags": [
         "master"
       ]
