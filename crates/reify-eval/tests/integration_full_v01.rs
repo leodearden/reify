@@ -482,7 +482,7 @@ fn field_sample_and_gradient() {
 fn function_overload_resolution() {
     let result = eval_canonical();
 
-    // safe_load_real: Real overload → 150.75
+    // safe_load_real: Real overload → 150.75 (100.5 * 1.5)
     let real_id = ValueCellId::new("Assembly", "safe_load_real");
     let real_val = result
         .values
