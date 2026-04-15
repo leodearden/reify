@@ -23,6 +23,23 @@ pub fn make_simple_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
 }
 
+/// Assert that an [`reify_eval::EvalResult`] contains no Error-severity
+/// diagnostics. Panics with diagnostic details if any errors are found.
+///
+/// # Panics
+/// Panics if `result.diagnostics` contains any [`reify_types::Severity::Error`]
+/// entry. The panic message lists all error diagnostics for easy debugging.
+#[cfg(feature = "eval-helpers")]
+#[track_caller]
+pub fn assert_no_eval_errors(result: &reify_eval::EvalResult) {
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "eval errors: {:?}", errors);
+}
+
 /// Parse `source`, assert no parse errors, compile, assert no compile errors.
 /// Returns the compiled module ready for eval.
 ///
