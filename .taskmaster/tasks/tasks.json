@@ -36989,7 +36989,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T12:21:43.332Z"
+        "updatedAt": "2026-04-15T12:21:43.332Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/self_keyword_tests.rs"
+          ]
+        }
       },
       {
         "id": 1770,
