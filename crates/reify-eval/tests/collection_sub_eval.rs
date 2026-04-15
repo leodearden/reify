@@ -535,6 +535,7 @@ fn edit_param_count_int_undef_undef_int_transition() {
             i
         );
     }
+
     assert_eq!(
         count_bolt_diameter_instances(&result.values),
         2,

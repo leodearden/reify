@@ -2202,3 +2202,68 @@ fn unfold_recursive_node_budget_exhaustion() {
          If present, budget accounting for sibling branches is broken."
     );
 }
+
+// ─── guard non-Bool type emits Error diagnostic ───────────────────────────────
+
+/// When a recursive sub's guard expression evaluates to a non-Bool value
+/// (e.g. Value::Int(1)), the evaluator must:
+///   (1) emit an Error-severity diagnostic containing "expected Bool", and
+///   (2) treat the result as termination (no child entity created).
+///
+/// This tests the `other =>` arm in `unfold_recursive_sub`'s guard-value match.
+#[test]
+fn unfold_recursive_guard_non_bool_type_emits_error() {
+    // Guard expression that evaluates to Int(1), NOT a Bool.
+    let guard = literal(Value::Int(1));
+    // arg: n = n - 1  (standard decrement, same as build_recursive_s)
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+        .build();
+
+    let result = eval_single_template(template);
+
+    // (1) No child entity should exist — guard type mismatch causes early termination.
+    assert!(
+        !result.values.contains(&ValueCellId::new("S.child", "n")),
+        "S.child.n should not exist when guard returns a non-Bool value, \
+         but got {:?}",
+        result.values.get(&ValueCellId::new("S.child", "n"))
+    );
+
+    // (2) Must have exactly one Error-severity diagnostic containing "expected Bool".
+    let has_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains("expected Bool"));
+    assert!(
+        has_error,
+        "Expected an Error-severity diagnostic containing 'expected Bool', \
+         got: {:?}",
+        result.diagnostics
+    );
+    let error_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    assert_eq!(
+        error_count,
+        1,
+        "Expected exactly one Error-severity diagnostic, but got {}: {:?}",
+        error_count,
+        result.diagnostics
+    );
+}

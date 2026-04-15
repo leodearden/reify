@@ -11,8 +11,7 @@
 //!   - Mixed batches (one optimized + one fallback) produce correct per-id
 //!     results in the order `active_constraint_ids` returns them.
 
-use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{MockOptimizedImpl, parse_and_compile};
+use reify_test_support::{MockOptimizedImpl, make_simple_engine, parse_and_compile};
 use reify_types::Satisfaction;
 
 // ── Test 1: register_optimized_impl stores & dispatches ─────────────────────
@@ -42,7 +41,7 @@ structure def S {
     // the test can directly assert dispatch rather than inferring it from
     // the returned Satisfaction.
     let calls = mock.calls_handle();
-    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     engine.register_optimized_impl("geo::coincident", Box::new(mock));
 
     // Sanity check: the target is now registered.
@@ -105,7 +104,7 @@ structure def S {
 
     let mock = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
     let calls = mock.calls_handle();
-    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     // Registered under an unrelated target — the @optimized("geo::coincident")
     // constraint should still fall through to the language-level checker.
     engine.register_optimized_impl("other::target", Box::new(mock));
@@ -162,7 +161,7 @@ structure def Mixed {
 
     let mock = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
     let calls = mock.calls_handle();
-    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     engine.register_optimized_impl("target_a", Box::new(mock));
 
     let check_result = engine.check(&compiled);

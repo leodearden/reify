@@ -7,9 +7,8 @@
 //! reference safety. Uses examples/m10_combined.ri as the source file.
 
 use reify_compiler::CompiledModule;
-use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
-use reify_test_support::parse_and_compile_with_stdlib;
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_types::{ModulePath, Satisfaction, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -43,14 +42,14 @@ fn compiled() -> CompiledModule {
 /// Eval the canonical source with SimpleConstraintChecker, return EvalResult.
 /// Uses the cached compiled module to avoid a redundant compile.
 fn eval_canonical() -> reify_eval::EvalResult {
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     engine.eval(&compiled())
 }
 
 /// Check the canonical source with SimpleConstraintChecker, return CheckResult.
 /// Uses the cached compiled module to avoid a redundant compile.
 fn check_canonical() -> reify_eval::CheckResult {
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     engine.check(&compiled())
 }
 
@@ -58,7 +57,7 @@ fn check_canonical() -> reify_eval::CheckResult {
 /// Use this only when the source string differs from the canonical source (e.g., violation tests).
 fn check_source(src: &str) -> reify_eval::CheckResult {
     let compiled = parse_and_compile_with_stdlib(src);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     engine.check(&compiled)
 }
 
@@ -245,7 +244,7 @@ fn frame_transform_lets_and_port_frames_present() {
     let compiled = compiled();
 
     // (a) Eval assertions: check each binding against its expected Value variant.
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
     let get_val = |name: &str| -> &Value {
@@ -403,7 +402,7 @@ fn geom_ready_purpose_compiled_and_activatable() {
     );
 
     // (c) activate against Assembly and assert is_purpose_active
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     engine.eval(&compiled);
     let before = constraint_count(&engine);
 
@@ -598,7 +597,7 @@ fn ad_hoc_port_selector_let_binding_present() {
     );
 
     // (b) Eval result contains the supply_point key (payload may be Undef — see note above)
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
     let supply_point_id = ValueCellId::new("Assembly", "supply_point");
     assert!(
@@ -626,7 +625,7 @@ fn ad_hoc_port_selector_let_binding_present() {
 #[test]
 #[ignore = "ad-hoc selector resolution not yet wired up; see reify-expr/src/lib.rs:511"]
 fn supply_point_resolves_to_concrete_value() {
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled());
     let supply_point_id = ValueCellId::new("Assembly", "supply_point");
     let v = result
