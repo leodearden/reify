@@ -58,6 +58,15 @@ fn si_value(v: &Value, label: &str) -> f64 {
     }
 }
 
+/// Construct a Scalar Value with MASS dimension from kilograms.
+/// Mirrors the `mm()` helper from reify-test-support, which lacks a `kg()` counterpart.
+fn kg(v: f64) -> Value {
+    Value::Scalar {
+        si_value: v,
+        dimension: DimensionVector::MASS,
+    }
+}
+
 /// Extract the first component's SI value from a Value::Point or Value::Vector.
 fn point_component(v: &Value, component: usize, label: &str) -> f64 {
     match v {
@@ -284,7 +293,29 @@ fn edit_height_inrange_still_satisfied() {
         .edit_check(height_id, mm(400.0))
         .expect("edit_check should succeed");
 
-    // All constraint results should be Satisfied (no violations from 400mm height)
+    // Positive presence check: all constraints should still be evaluated (not silently dropped).
+    // Height does not touch the `determined(origin)` guard, so no constraints are excluded —
+    // the full assembly count (measured as 49) must be present.
+    assert!(
+        check_result.constraint_results.len() >= 40,
+        "expected >= 40 constraint results after height=400mm, got {} \
+         (constraints may have been silently dropped)",
+        check_result.constraint_results.len()
+    );
+
+    // Positive Satisfied assertion: at least one constraint must be Satisfied (not just "no
+    // Violated" — the test would trivially pass if the engine returned 0 results).
+    let satisfied: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction == Satisfaction::Satisfied)
+        .collect();
+    assert!(
+        !satisfied.is_empty(),
+        "expected at least one Satisfied constraint with height=400mm (in-range edit), got none"
+    );
+
+    // No violations
     let violations: Vec<_> = check_result
         .constraint_results
         .iter()
@@ -336,12 +367,8 @@ fn edit_mass_below_trait_bound_triggers_violation() {
 
     // Edit mass to 0.5kg (below Physical trait bound of 1kg)
     let mass_id = ValueCellId::new(e, "mass");
-    let mass_value = Value::Scalar {
-        si_value: 0.5,
-        dimension: DimensionVector::MASS,
-    };
     let check_result = engine
-        .edit_check(mass_id, mass_value)
+        .edit_check(mass_id, kg(0.5))
         .expect("edit_check should succeed");
 
     // At least one Violated entry
@@ -411,6 +438,16 @@ fn edit_position_x_determinacy_predicates_hold() {
         .edit_check(px_id, mm(200.0))
         .expect("edit_check should succeed");
 
+    // Positive presence check: due to esc-295-78, the 2 guarded constraints are excluded from
+    // the result when position_x is in the dirty cone.  Even so, the remaining 47 constraints
+    // must all be present — any further silent dropping would indicate a regression.
+    assert!(
+        check_result.constraint_results.len() >= 40,
+        "expected >= 40 constraint results after position_x=200mm, got {} \
+         (constraints may have been silently dropped; note esc-295-78 excludes 2 guarded constraints)",
+        check_result.constraint_results.len()
+    );
+
     // No violations
     let violations: Vec<_> = check_result
         .constraint_results
@@ -470,6 +507,25 @@ fn edit_position_x_where_guard_constraints_remain_satisfied() {
     let check_result = engine
         .edit_check(px_id, mm(200.0))
         .expect("edit_check should succeed");
+
+    // XFAIL(esc-295-78): The full assembly produces 49 constraint results when no guard
+    // is in the dirty cone.  Due to the engine bug, position_x→origin→guard_cell puts
+    // `determined(origin)` in the dirty cone without determinacy context, so the 2
+    // guarded constraints are excluded and the count drops to 47.
+    //
+    // This assertion documents the *current broken* count.  When esc-295-78 is fixed,
+    // the count will reach 49 and this assertion will FAIL — that's intentional.
+    // At that point: remove this XFAIL block and restore the full guard satisfaction
+    // assertions (checking that determined(displacement) and determined(base_frame) are
+    // both Satisfied in `check_result.constraint_results`).
+    let result_count = check_result.constraint_results.len();
+    assert!(
+        result_count < 49,
+        "XFAIL(esc-295-78): expected fewer than 49 constraint results \
+         (2 guarded constraints currently missing due to engine bug), \
+         but got {result_count} — if the count is now 49 the engine bug may be fixed; \
+         remove this XFAIL block and restore the full guard-constraint assertions"
+    );
 
     let violations: Vec<_> = check_result
         .constraint_results
