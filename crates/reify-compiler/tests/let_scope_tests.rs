@@ -123,13 +123,6 @@ fn realization_named<'a>(
         .iter()
         .position(|&n| n == target)
         .unwrap_or_else(|| panic!("geometry let '{}' not found in names list {:?}", target, names));
-    assert!(
-        idx < template.realizations.len(),
-        "realization index {} for '{}' is out of bounds (len={})",
-        idx,
-        target,
-        template.realizations.len()
-    );
     &template.realizations[idx]
 }
 
