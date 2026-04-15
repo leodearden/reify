@@ -106,6 +106,11 @@ pub fn find_stale_plan_pointers_in_source(source: &str) -> Vec<String> {
 ///
 /// All scanner constants are assembled at runtime via `.concat()` so the
 /// source file does not contain the guarded sequences as adjacent characters.
+///
+/// **Rustfmt assumption:** the scanner recognises only the canonical
+/// `#[ignore = "..."]` form (space-equals-space-quote).  Non-canonical
+/// forms such as `#[ignore="..."]` are silently ignored; rustfmt
+/// enforces the canonical form in practice.
 pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
     // DO NOT inline — split at boundary ["#[", "ignore"] keeps the guarded
     // 8-char sequence from appearing adjacent in this source file; inlining
