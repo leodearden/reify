@@ -1338,17 +1338,22 @@ describe('App F5 re-evaluate multi-file', () => {
 
     // Modify the non-active file's content via the captured editor store
     capturedEditorStore!.updateFileContent('/project/bracket.ri', 'MODIFIED CONTENT');
+    // Also modify the active file's content — F5 should send this updated content, not a stale snapshot
+    capturedEditorStore!.updateFileContent('/project/mount.ri', 'structure Mount { updated: true }');
+
+    // Clear any prior updateSource calls (e.g. from initial file load) so the assertion is self-contained
+    vi.mocked(bridge.updateSource).mockClear();
 
     // Act: press F5 to trigger handleReEvaluate
     fireEvent.keyDown(document, { key: 'F5' });
 
-    // Assert: updateSource called exactly once with the ACTIVE file (mount.ri) and its original content
+    // Assert: updateSource called exactly once with the ACTIVE file (mount.ri) and its CURRENT content
     await waitFor(() => {
       expect(vi.mocked(bridge.updateSource)).toHaveBeenCalledTimes(1);
     });
     expect(vi.mocked(bridge.updateSource)).toHaveBeenCalledWith(
       '/project/mount.ri',
-      'structure Mount {}',
+      'structure Mount { updated: true }',
     );
     // The non-active file (bracket.ri) must not have been sent
     expect(vi.mocked(bridge.updateSource)).not.toHaveBeenCalledWith(

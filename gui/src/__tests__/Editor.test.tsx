@@ -145,6 +145,25 @@ describe('Editor doc change handling', () => {
     vi.advanceTimersByTime(300);
     expect(updateSpy).not.toHaveBeenCalled();
   });
+
+  it('doc change with activeFile transitioning to null before debounce fires does not call updateSource', () => {
+    // Start with one open file so activeFile is set
+    const store = setupStore([file1]);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Dispatch a doc change — starts the 300ms debounce timer
+    view.dispatch({ changes: { from: 0, insert: 'x' } });
+
+    // Mid-session: close the only file, setting activeFile back to null
+    store.closeFile(file1.path);
+
+    // When the debounce fires, the guard (if path) must prevent the call
+    vi.advanceTimersByTime(300);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('Editor save (Ctrl+S)', () => {
