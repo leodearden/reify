@@ -36602,7 +36602,21 @@
           "1750"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/App.tsx",
+            "gui/src/viewport/Viewport.tsx",
+            "gui/src/stores/viewportStore.ts",
+            "gui/src/viewport/DualViewport.tsx",
+            "gui/src/__tests__/viewport/DualViewport.test.tsx"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/viewport",
+            "gui/src/stores"
+          ]
+        }
       },
       {
         "id": 1749,
