@@ -36845,10 +36845,11 @@
         "description": "The CodeMirror editor has poor color contrast — syntax highlighting colors are too dim on the dark background, and the cursor is nearly invisible (1px wide black on dark grey). This makes the editor very hard to use.",
         "details": "memory_hints: search \"editor theme CodeMirror contrast cursor\"\n\nThe cursor needs to be either wider (2px) or a light color. Syntax highlighting needs higher contrast colors. Check if a CodeMirror dark theme is applied correctly, or if the theme CSS has been overridden/broken by recent changes.\n\nFiles: gui/src/editor/Editor.tsx (CodeMirror setup), gui/src/index.css or equivalent theme file",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:01:49.195Z"
       },
       {
         "id": "1768",
@@ -36864,7 +36865,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T12:01:48.592Z",
+      "lastModified": "2026-04-15T12:01:49.195Z",
       "taskCount": 1765,
       "completedCount": 1507,
       "tags": [
