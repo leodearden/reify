@@ -403,12 +403,9 @@ fn local_unit_duplicating_imported_pub_unit_produces_error() {
     let dup_diag = errors
         .iter()
         .find(|d| d.message.contains("duplicate") && d.message.contains("mil"));
-    assert!(
-        dup_diag.is_some(),
-        "error should mention 'duplicate' and 'mil'; got: {:?}",
-        errors
-    );
-    let dup_diag = dup_diag.unwrap();
+    let dup_diag = dup_diag.unwrap_or_else(|| {
+        panic!("error should mention 'duplicate' and 'mil'; got: {:?}", errors)
+    });
 
     // (a) The message must NOT say 'stdlib' — the source module is 'unit_test', not 'std/*'
     assert!(
