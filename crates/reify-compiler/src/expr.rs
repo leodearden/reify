@@ -43,11 +43,12 @@ pub(crate) fn compile_expr(
 /// 3. Return `ValueCellId(entity, "__list_{sub}__{first_member}")` with `Type::List(member_ty)`.
 ///
 /// Fallback (no entry or empty inner map): returns `__list_{sub}` with
-/// `List(StructureRef(sub_name))`.  Note that this uses the **sub field name**
-/// (e.g. `"bolts"`) not the structure type name (e.g. `"Bolt"`).  This path is
-/// legitimately reached when the sub's structure template has not yet been compiled
-/// (e.g. ad-hoc structures or forward references), so it must not panic.
-/// The caller receives a coarse `List(StructureRef(field_name))` type in that case.
+/// `List(StructureRef(type_name))`.  The structure type name (e.g. `"Bolt"`) is
+/// looked up from `scope.sub_component_types` (populated unconditionally for every
+/// sub declaration at entity.rs:399-400).  If absent (e.g. manually constructed
+/// scopes in unit tests), the field name is used as a safety fallback.
+/// This path is legitimately reached when the sub's structure template has not yet
+/// been compiled (e.g. ad-hoc structures or forward references), so it must not panic.
 fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> CompiledExpr {
     if let Some(members) = scope.sub_member_types.get(sub_name) {
         // sub_member_types inner map is BTreeMap — iteration order is lexicographic.
@@ -61,11 +62,17 @@ fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> C
         }
     }
     // Fallback: sub_member_types has no entry for this sub (structure not yet compiled,
-    // ad-hoc structure, or empty params).  Produce a coarse List(StructureRef(sub_name))
-    // using the field name — callers that need the precise member type must ensure the
-    // sub structure is compiled before resolving.
+    // ad-hoc structure, or empty params).  Use the structure type name from
+    // sub_component_types so the StructureRef carries the correct type name, not the
+    // field name.  Fall back to field name only if the map has no entry (safety net for
+    // manually-constructed CompilationScope in unit tests).
+    let type_name = scope
+        .sub_component_types
+        .get(sub_name)
+        .cloned()
+        .unwrap_or_else(|| sub_name.to_owned());
     let list_id = ValueCellId::new(&scope.entity_name, format!("__list_{}", sub_name));
-    let list_type = Type::List(Box::new(Type::StructureRef(sub_name.to_owned())));
+    let list_type = Type::List(Box::new(Type::StructureRef(type_name)));
     CompiledExpr::value_ref(list_id, list_type)
 }
 
