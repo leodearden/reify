@@ -23,9 +23,6 @@ std::unique_ptr<OcctShapeVec> new_shape_vec();
 /// Push a shape into the vector (mutable borrow via Pin).
 void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape);
 
-/// Return the number of shapes in the vector.
-size_t shape_vec_len(const OcctShapeVec& vec);
-
 // Shared types — defined by cxx bridge. Forward-declared here for function signatures.
 struct Point3;
 struct BBox;

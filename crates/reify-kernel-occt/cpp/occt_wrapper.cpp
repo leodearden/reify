@@ -668,10 +668,6 @@ void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape) {
     vec.shapes.push_back(shape.shape);
 }
 
-size_t shape_vec_len(const OcctShapeVec& vec) {
-    return vec.shapes.size();
-}
-
 // --- make_line_wire ---
 
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,

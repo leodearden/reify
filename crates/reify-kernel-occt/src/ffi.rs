@@ -39,7 +39,6 @@ pub mod ffi {
         // --- OcctShapeVec builder ---
         fn new_shape_vec() -> UniquePtr<OcctShapeVec>;
         fn shape_vec_push(vec: Pin<&mut OcctShapeVec>, shape: &OcctShape);
-        fn shape_vec_len(vec: &OcctShapeVec) -> usize;
 
         // --- Primitive construction ---
         fn make_box(width: f64, height: f64, depth: f64) -> Result<UniquePtr<OcctShape>>;
