@@ -263,8 +263,8 @@ pub(crate) fn compile_geometry_call(
     let mut current_offset = step_offset;
 
     for idx in &effective_indices {
-        if *idx < args.len() {
-            if let Some(ops) = compile_geometry_call(
+        if *idx < args.len()
+            && let Some(ops) = compile_geometry_call(
                 &args[*idx],
                 scope,
                 enum_defs,
@@ -273,12 +273,12 @@ pub(crate) fn compile_geometry_call(
                 current_offset,
                 geometry_lets,
                 visiting,
-            ) {
-                let result_step = current_offset + ops.len() - 1;
-                current_offset += ops.len();
-                geom_refs.insert(*idx, GeomRef::Step(result_step));
-                sub_ops.extend(ops);
-            }
+            )
+        {
+            let result_step = current_offset + ops.len() - 1;
+            current_offset += ops.len();
+            geom_refs.insert(*idx, GeomRef::Step(result_step));
+            sub_ops.extend(ops);
         }
     }
 
