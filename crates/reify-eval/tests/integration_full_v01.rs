@@ -476,13 +476,13 @@ fn field_sample_and_gradient() {
 
 // ── Test 13: function overload resolution ─────────────────────────────────────
 
-/// safe_load_real = safety_factor(100.0) → Real overload → 100.0 * 1.5 = 150.0.
+/// safe_load_real = safety_factor(100.5) → Real overload → 100.5 * 1.5 = 150.75.
 /// safe_load_int = safety_factor(100) → Int overload → 100 * 2 = 200.
 #[test]
 fn function_overload_resolution() {
     let result = eval_canonical();
 
-    // safe_load_real: Real overload → ~150.0 (or 150.75 if input is 100.5)
+    // safe_load_real: Real overload → 150.75
     let real_id = ValueCellId::new("Assembly", "safe_load_real");
     let real_val = result
         .values
@@ -491,8 +491,8 @@ fn function_overload_resolution() {
     match real_val {
         Value::Real(v) => {
             assert!(
-                (v - 150.0).abs() < 1.0,
-                "expected ~150.0 for Assembly.safe_load_real (safety_factor(real) * 1.5), got {v}"
+                (v - 150.75).abs() < 0.01,
+                "expected ~150.75 for Assembly.safe_load_real (safety_factor(real) * 1.5), got {v}"
             );
         }
         other => panic!("expected Real for Assembly.safe_load_real, got {:?}", other),
