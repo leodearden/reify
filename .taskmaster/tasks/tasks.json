@@ -35852,12 +35852,13 @@
         "description": "All non-boolean geometry functions (translate, rotate, scale, rotate_around, circular_pattern, linear_pattern, mirror, extrude, revolve, revolve_full, sweep, loft, shell, thicken, draft) hardcode GeomRef::Step(0) and compile geometry target args as scalars. Fix: metadata table mapping function→geometry arg indices, single generic resolution path replacing all 14 broken + 5 boolean blocks. See geometry.rs line 238+. Depends on task 1609 pattern.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1609"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:13:08.723Z"
       },
       {
         "id": "1720",
@@ -35917,7 +35918,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:13:08.365Z",
+      "lastModified": "2026-04-15T06:13:08.723Z",
       "taskCount": 1721,
       "completedCount": 1475,
       "tags": [
