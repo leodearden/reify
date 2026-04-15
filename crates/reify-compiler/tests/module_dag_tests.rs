@@ -896,3 +896,56 @@ fn no_prelude_suppresses_import_prelude() {
     let _ = fs::remove_dir_all(&dir);
     let _ = fs::remove_dir_all(&dir2);
 }
+
+// ── step-3 (task-1759): private units not exported through reference-based prelude ──
+
+/// Verifies that the `if cu.is_pub` filter (lib.rs:266) correctly blocks
+/// private units from being seeded into a consumer module's unit registry,
+/// even through the reference-based prelude indirection introduced in task 1392.
+///
+/// dep defines a private `unit secret : Length = 0.005` (no pub keyword).
+/// consumer imports dep and references `3secret` in a param.
+/// Because `secret` is not pub, the is_pub filter prevents it from being
+/// seeded, and the consumer module must carry an "unknown unit" diagnostic.
+#[test]
+fn private_unit_not_exported_through_import_prelude() {
+    let dir = test_dir("private_unit_not_exported_through_import_prelude");
+
+    // dep.ri: private unit (no pub) and a pub structure to make import valid
+    fs::write(
+        dir.join("dep.ri"),
+        "unit secret : Length = 0.005\npub structure Widget {\n    param w: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    // consumer.ri: imports dep and tries to use the private unit
+    fs::write(
+        dir.join("consumer.ri"),
+        "import dep\nstructure S {\n    param z: Length = 3secret\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result =
+        reify_compiler::module_dag::compile_project(&dir.join("consumer.ri"), &resolver);
+
+    let modules = result.expect("compile_project should return Ok even with diagnostics");
+    let entry = modules.last().expect("no modules returned");
+
+    let errors: Vec<_> = entry
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+
+    let unknown_unit_diag = errors
+        .iter()
+        .find(|d| d.message.contains("unknown unit") && d.message.contains("secret"));
+    assert!(
+        unknown_unit_diag.is_some(),
+        "expected 'unknown unit: secret' error (private unit not exported), got: {:#?}",
+        errors
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
