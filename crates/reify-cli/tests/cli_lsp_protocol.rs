@@ -240,8 +240,14 @@ fn acquire_lsp_test_lock_recovers_from_poisoned_mutex() {
 }
 
 /// Wait until we receive a response with the given id from the message stream.
+///
+/// Uses a 30-second timeout to accommodate CPU saturation when many test
+/// binaries run in parallel (e.g., during `cargo test --workspace`).  Under
+/// heavy load the spawned tokio runtime may not be scheduled for several
+/// seconds before it can process the `initialize` request; 30 s gives ample
+/// headroom without making genuinely failing tests unreasonably slow.
 fn wait_for_response(rx: &mpsc::Receiver<serde_json::Value>, id: u64) -> serde_json::Value {
-    let timeout = std::time::Duration::from_secs(10);
+    let timeout = std::time::Duration::from_secs(30);
     loop {
         match rx.recv_timeout(timeout) {
             Ok(msg) => {
@@ -250,7 +256,15 @@ fn wait_for_response(rx: &mpsc::Receiver<serde_json::Value>, id: u64) -> serde_j
                 }
                 // Otherwise it's a notification (e.g. publishDiagnostics), skip it
             }
-            Err(_) => panic!("timed out waiting for response with id={id}"),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("timed out after 30s waiting for response with id={id}")
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!(
+                    "reader thread disconnected (LSP process may have crashed) \
+                     while waiting for response with id={id}"
+                )
+            }
         }
     }
 }

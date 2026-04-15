@@ -290,6 +290,11 @@ pub(crate) fn compile_entity(
     // First pass: register all param and let names into the scope so they can
     // reference each other (forward references within the structure).
     // We need types for the scope, so we resolve types in this pass as well.
+    // `known_geometry_lets` tracks names that are geometry lets (either direct
+    // geometry function calls or ident aliases to other geometry lets). Built
+    // incrementally as we encounter each Let declaration so that ident aliases
+    // are recognised transitively (e.g. `let b = a` after `let a = cylinder(...)`)
+    let mut known_geometry_lets: HashSet<&str> = HashSet::new();
     for member in structure.members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
@@ -329,9 +334,10 @@ pub(crate) fn compile_entity(
                 // For lets, we need to infer the type from the expression.
                 // Geometry lets produce realizations (not value cells) but still
                 // need to be registered in scope so subsequent lets can reference them.
-                if is_geometry_let(&let_decl.value, functions) {
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
                     scope.has_geometry = true;
                     scope.register(&let_decl.name, Type::Geometry);
+                    known_geometry_lets.insert(let_decl.name.as_str());
                 } else {
                     // We'll register with a placeholder type; the actual type will
                     // be determined when we compile the expression. For now, use Real.
@@ -340,8 +346,10 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                register_guarded_names(&g.members, &mut scope, functions, diagnostics, &type_param_names, alias_registry);
-                register_guarded_names(&g.else_members, &mut scope, functions, diagnostics, &type_param_names, alias_registry);
+                // `known_geometry_lets` is intentionally shared across both branches
+                // (consistent with the same pattern in register_guarded_names/guards.rs).
+                register_guarded_names(&g.members, &mut scope, functions, diagnostics, &type_param_names, alias_registry, &mut known_geometry_lets);
+                register_guarded_names(&g.else_members, &mut scope, functions, diagnostics, &type_param_names, alias_registry, &mut known_geometry_lets);
             }
             reify_syntax::MemberDecl::Port(port_decl) => {
                 if let Some(first_span) = port_names.get(&port_decl.name) {
@@ -589,8 +597,8 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
-                // Skip geometry-producing function calls
-                if is_geometry_let(&let_decl.value, functions) {
+                // Skip geometry-producing function calls (and ident aliases to them)
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
                     continue;
                 }
 
@@ -817,6 +825,7 @@ pub(crate) fn compile_entity(
                     &mut constraint_index,
                     &type_param_names,
                     alias_registry,
+                    &known_geometry_lets,
                 );
             }
             reify_syntax::MemberDecl::AssociatedType(_) => {
@@ -1173,7 +1182,7 @@ pub(crate) fn compile_entity(
         .iter()
         .filter_map(|m| {
             if let reify_syntax::MemberDecl::Let(let_decl) = m
-                && is_geometry_let(&let_decl.value, functions)
+                && is_geometry_let(&let_decl.value, functions, &known_geometry_lets)
             {
                 return Some((let_decl.name.as_str(), &let_decl.value));
             }
@@ -1186,7 +1195,7 @@ pub(crate) fn compile_entity(
 
     for member in structure.members {
         if let reify_syntax::MemberDecl::Let(let_decl) = member
-            && is_geometry_let(&let_decl.value, functions)
+            && is_geometry_let(&let_decl.value, functions, &known_geometry_lets)
             && let Some(ops) = compile_geometry_call(
                 &let_decl.value,
                 &scope,
@@ -1285,13 +1294,30 @@ pub(crate) fn compile_entity(
                 ))
         });
 
+        // Meta entry hashes: sort by key for deterministic ordering (HashMap is unordered).
+        // Hash both key and value so that key renames and value changes are both detected.
+        let mut sorted_meta_keys: Vec<&str> =
+            scope.meta_entries.keys().map(String::as_str).collect();
+        sorted_meta_keys.sort_unstable();
+        let meta_hashes = sorted_meta_keys.into_iter().flat_map(|k| {
+            // `k` was collected from this map's keys() above and the map is not
+            // mutated between collection and lookup, so get() always succeeds.
+            let v = scope
+                .meta_entries
+                .get(k)
+                .expect("key collected from this map")
+                .as_str();
+            [ContentHash::of_str(k), ContentHash::of_str(v)]
+        });
+
         let all_hashes = std::iter::once(name_hash)
             .chain(vc_hashes)
             .chain(constraint_hashes)
             .chain(sub_hashes)
             .chain(guard_hashes)
             .chain(port_hashes)
-            .chain(connection_hashes);
+            .chain(connection_hashes)
+            .chain(meta_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
@@ -1525,7 +1551,7 @@ pub(crate) fn compile_entity(
         guarded_groups,
         structure_controlling,
         objective,
-        meta: scope.meta_entries.clone(),
+        meta: std::mem::take(&mut scope.meta_entries),
         content_hash,
         is_recursive: false,
         annotations,

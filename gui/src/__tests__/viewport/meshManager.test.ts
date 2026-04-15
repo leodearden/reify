@@ -898,5 +898,46 @@ describe('meshManager', () => {
       // Mesh re-added to scene
       expect(mockSceneAdd).toHaveBeenCalledTimes(1);
     });
+
+    it('(l) orphan visibilityMap pre-set is pruned by sync({}) before mesh arrives', () => {
+      // S1: if setVisibility is called before the mesh exists and the entity never
+      // arrives in a sync, the pre-set should be pruned when sync() is called with
+      // a set that does not include the entity.
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+
+      // Pre-set ghost for an entity that hasn't arrived yet
+      (manager as any).setVisibility('orphan', 'ghost');
+
+      // Sync with empty set — 'orphan' is absent, so the pre-set is now an orphan
+      manager.sync({});
+
+      vi.clearAllMocks();
+      // Now sync with the entity — because the pre-set was pruned, it should arrive as 'show'
+      manager.sync({ orphan: makeMeshData('orphan') });
+
+      // Mesh should be added to scene (show), not as a ghost clone
+      expect(mockSceneAdd).toHaveBeenCalledTimes(1);
+      expect(mockGroupAdd).not.toHaveBeenCalled();
+      expect(manager.getSceneMeshes().has('orphan')).toBe(true);
+      expect((manager as any).getGhostMeshes().has('orphan')).toBe(false);
+    });
+
+    it('(m) getGhostMeshes returns a copy — external mutation does not affect internal state', () => {
+      // S2: getGhostMeshes must return a defensive copy so callers cannot accidentally
+      // mutate the internal ghostMeshMap.
+      const { manager } = setupWithMesh();
+      (manager as any).setVisibility('A', 'ghost');
+
+      // Get the returned map and delete from it
+      const ghostMap1: Map<string, any> = (manager as any).getGhostMeshes();
+      expect(ghostMap1.has('A')).toBe(true);
+      ghostMap1.delete('A');
+
+      // Internal state must be unaffected — a second call still returns 'A'
+      const ghostMap2: Map<string, any> = (manager as any).getGhostMeshes();
+      expect(ghostMap2.has('A')).toBe(true);
+      expect(ghostMap2.size).toBe(1);
+    });
   });
 });

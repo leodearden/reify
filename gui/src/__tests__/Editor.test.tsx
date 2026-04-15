@@ -985,3 +985,19 @@ describe('Editor cleanup race condition (RC-05)', () => {
     expect(closeCalls[0]).toContain('bracket.ri');
   });
 });
+
+describe('Editor theme integration', () => {
+  it('mounts .cm-editor element successfully with reify theme', () => {
+    const store = setupStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    expect(container.querySelector('.cm-editor')).not.toBeNull();
+  });
+
+  it('Editor.tsx imports reifyEditorTheme and reifyHighlightStyle from editorTheme', async () => {
+    // Verify the module source uses editorTheme imports, not defaultHighlightStyle
+    const editorSrc = await import('../editor/Editor?raw');
+    expect(editorSrc.default).toContain('editorTheme');
+    expect(editorSrc.default).not.toContain('defaultHighlightStyle');
+  });
+});

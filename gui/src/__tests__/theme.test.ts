@@ -7,6 +7,7 @@ describe('THEME_TOKENS', () => {
       'background', 'surface', 'text', 'accent', 'border',
       'error', 'warning', 'success', 'textMuted', 'fontMono',
       'surface0', 'surface1', 'surface2', 'subtext', 'overlay0', 'green', 'red',
+      'mauve', 'yellow', 'sky', 'lavender', 'peach',
     ];
     for (const key of requiredKeys) {
       expect(THEME_TOKENS[key], `missing key: ${key}`).toBeTruthy();
@@ -29,6 +30,14 @@ describe('THEME_TOKENS', () => {
     expect(THEME_TOKENS.overlay0).toBe('#6c7086');
     expect(THEME_TOKENS.green).toBe('#a6e3a1');
     expect(THEME_TOKENS.red).toBe('#f38ba8');
+  });
+
+  it('has correct Catppuccin Mocha values for syntax palette tokens', () => {
+    expect(THEME_TOKENS.mauve).toBe('#cba6f7');
+    expect(THEME_TOKENS.yellow).toBe('#f9e2af');
+    expect(THEME_TOKENS.sky).toBe('#89dceb');
+    expect(THEME_TOKENS.lavender).toBe('#b4befe');
+    expect(THEME_TOKENS.peach).toBe('#fab387');
   });
 
   it('has correct spacing token values', () => {

@@ -3,6 +3,7 @@
 import type { Scene, PerspectiveCamera, WebGLRenderer } from 'three';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { EditorView } from '@codemirror/view';
+import type { FileData, GuiState } from '../types';
 
 /** Store references captured at App init time. */
 export interface DebugStores {
@@ -13,6 +14,7 @@ export interface DebugStores {
       constraints: Record<string, unknown>;
       evalStatus: { phase: string; progress?: number | null };
     };
+    initFromState: (guiState: GuiState) => void;
   };
   editor: {
     state: {
@@ -21,6 +23,7 @@ export interface DebugStores {
       dirtyFiles: string[];
       cursorPosition: { line: number; column: number } | null;
     };
+    openFile: (file: FileData) => void;
   };
   selection: {
     state: {

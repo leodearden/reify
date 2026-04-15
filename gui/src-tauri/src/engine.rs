@@ -3,17 +3,18 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use reify_compiler::{CompiledModule, ValueCellKind};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
-    ConstraintChecker, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel, ModulePath,
-    Satisfaction, Severity, Value, ValueCellId,
+    ConstraintChecker, ContentHash, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel,
+    ModulePath, Satisfaction, Severity, Value, ValueCellId,
 };
 
 use reify_types::{DiagnosticInfo, SourceLocationInfo};
 
 use crate::types::{
-    ConstraintData, FileData, GuiState, MeshData, ValueData, format_determinacy, format_value,
+    ConstraintData, DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MeshData,
+    SourceSpanInfo, ValueData, format_determinacy, format_value,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -44,6 +45,12 @@ pub struct EngineSession {
     file_path: Option<PathBuf>,
     last_check: Option<CheckResult>,
     module_name: Option<String>,
+    /// In-memory cache for `get_def_preview` results.
+    ///
+    /// Keyed by `(definition_name, template.content_hash)` — the cache is
+    /// automatically invalidated when a new module is loaded (via `commit_state`
+    /// which clears the map) or when the template's content hash changes.
+    def_preview_cache: HashMap<(String, ContentHash), GuiState>,
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -69,6 +76,7 @@ impl EngineSession {
             file_path: None,
             last_check: None,
             module_name: None,
+            def_preview_cache: HashMap::new(),
         }
     }
 
@@ -235,6 +243,8 @@ impl EngineSession {
         self.module_name = Some(module_name.to_string());
         self.compiled = Some(compiled);
         self.last_check = Some(check_result);
+        // Invalidate def preview cache — new module may have different content hashes.
+        self.def_preview_cache.clear();
     }
 
     /// Export geometry to a file.
@@ -402,72 +412,10 @@ impl EngineSession {
             }
         };
 
-        // Build values
-        let mut values = Vec::new();
-        for template in &compiled.templates {
-            for cell in &template.value_cells {
-                let val = check.values.get_or_undef(&cell.id);
-                let (formatted_value, unit) = format_value(&val);
-
-                let determinacy = match &val {
-                    reify_types::Value::Undef => {
-                        if cell.kind.is_auto() {
-                            DeterminacyState::Auto
-                        } else {
-                            DeterminacyState::Undetermined
-                        }
-                    }
-                    _ => DeterminacyState::Determined,
-                };
-
-                let kind = match cell.kind {
-                    ValueCellKind::Param => "Param",
-                    ValueCellKind::Let => "Let",
-                    ValueCellKind::Auto { .. } => "Auto",
-                };
-
-                values.push(ValueData {
-                    cell_id: cell.id.to_string(),
-                    name: cell.id.member.clone(),
-                    value: formatted_value,
-                    unit,
-                    determinacy: format_determinacy(determinacy),
-                    entity_path: cell.id.entity.clone(),
-                    kind: kind.to_string(),
-                });
-            }
-        }
-
-        // Build constraints — cross-reference compiled constraints for expressions
-        let mut constraints = Vec::new();
-        for entry in &check.constraint_results {
-            let status = match entry.satisfaction {
-                Satisfaction::Satisfied => "Satisfied",
-                Satisfaction::Violated => "Violated",
-                Satisfaction::Indeterminate => "Indeterminate",
-            };
-
-            // Look up the compiled constraint for expression text and parameter refs
-            let (expression, parameter_ids) = compiled
-                .templates
-                .iter()
-                .find_map(|t| {
-                    t.constraints.iter().find(|c| c.id == entry.id).map(|c| {
-                        let expr_str = format_expr(&c.expr);
-                        let param_ids = collect_value_refs(&c.expr);
-                        (expr_str, param_ids)
-                    })
-                })
-                .unwrap_or_default();
-
-            constraints.push(ConstraintData {
-                node_id: entry.id.to_string(),
-                expression,
-                status: status.to_string(),
-                label: entry.label.clone(),
-                parameter_ids,
-            });
-        }
+        // Build values and constraints via shared helpers (also used by
+        // build_preview_gui_state) so both paths stay in sync.
+        let values = build_values(compiled, check);
+        let constraints = build_constraints(compiled, check);
 
         // Build meshes (from tessellation of realizations)
         let meshes = match self.engine.tessellate_snapshot(compiled) {
@@ -505,6 +453,468 @@ impl EngineSession {
             constraints,
             files,
         })
+    }
+
+    /// Return the hierarchical entity tree for the currently loaded module.
+    ///
+    /// Each root node corresponds to a top-level topology template.  Children
+    /// are the template's value cells (params, lets, autos), sub-components,
+    /// and ports, in declaration order.
+    ///
+    /// Returns an empty vec when no module is loaded.
+    pub fn get_entity_tree(&self) -> Vec<EntityTreeNode> {
+        let compiled = match self.compiled.as_ref() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+
+        compiled
+            .templates
+            .iter()
+            .map(|t| build_template_node(t, &t.name, compiled))
+            .collect()
+    }
+
+    /// Return a map from `entity_path` to `EntityIdentity` for every entity
+    /// in the currently loaded module.
+    ///
+    /// The map contains two kinds of entries:
+    ///
+    /// - **Template roots** — keyed by `template.name` (e.g. `"Bracket"`).
+    ///   `content_hash` = `template.content_hash.to_string()` (32-char hex).
+    ///   `structural_fingerprint` = `"{entity_kind}::{sub_count}:{children_hash}"`.
+    ///   `source_span` = `None` (TopologyTemplate has no span in the compiled IR).
+    ///
+    /// - **Value cells** — keyed by `"{template.name}.{cell.id.member}"`.
+    ///   `content_hash` = hex of `ContentHash::of_str(cell_id_string)`.
+    ///   `structural_fingerprint` = `"{cell_kind}:{template.name}:0:{cell_type_hash}"`.
+    ///   `source_span` = `Some(SourceSpanInfo { start, end })` from `cell.span`.
+    ///
+    /// Returns an empty map when no module is loaded.
+    pub fn get_entity_identity_map(&self) -> HashMap<String, EntityIdentity> {
+        let compiled = match self.compiled.as_ref() {
+            Some(c) => c,
+            None => return HashMap::new(),
+        };
+
+        let mut map = HashMap::new();
+
+        for template in &compiled.templates {
+            let entity_kind = match template.entity_kind {
+                EntityKind::Structure => "structure",
+                EntityKind::Occurrence => "occurrence",
+            };
+
+            // Template-level entry
+            let sub_count = template.sub_components.len();
+            let children_hash =
+                ContentHash::combine_all(template.sub_components.iter().map(|s| s.content_hash));
+            // The second field (parent) is intentionally empty for template roots:
+            // they have no containing definition.  Format: "{kind}:{parent}:{sub_count}:{hash}".
+            let structural_fingerprint =
+                format!("{}:{}:{}:{}", entity_kind, "", sub_count, children_hash);
+
+            map.insert(
+                template.name.clone(),
+                EntityIdentity {
+                    content_hash: template.content_hash.to_string(),
+                    structural_fingerprint,
+                    source_span: None,
+                },
+            );
+
+            // Value-cell entries
+            for cell in &template.value_cells {
+                let cell_kind = cell_kind_tree_str(cell.kind);
+                let cell_path = format!("{}.{}", template.name, cell.id.member);
+                let cell_type_hash = ContentHash::of_str(&cell.cell_type.to_string());
+                let structural_fingerprint =
+                    format!("{}:{}:{}:{}", cell_kind, template.name, 0, cell_type_hash);
+
+                map.insert(
+                    cell_path,
+                    EntityIdentity {
+                        content_hash: ContentHash::of_str(&cell.id.to_string()).to_string(),
+                        structural_fingerprint,
+                        source_span: Some(SourceSpanInfo {
+                            start: cell.span.start,
+                            end: cell.span.end,
+                        }),
+                    },
+                );
+            }
+        }
+
+        map
+    }
+
+    /// Return a preview `GuiState` for a single named definition, evaluated in
+    /// isolation with its default parameter values.
+    ///
+    /// Looks up the named template in the currently loaded `CompiledModule`,
+    /// clones it into a single-template preview module (preserving shared context
+    /// such as enums and functions), and evaluates it with a fresh
+    /// `SimpleConstraintChecker` engine (no geometry kernel — meshes are omitted).
+    ///
+    /// Results are cached by `(def_name, template.content_hash)`; the cache is
+    /// cleared automatically on every `load_from_source` / `update_source` call.
+    ///
+    /// # Errors
+    /// Returns `Err` when:
+    /// - No module is currently loaded.
+    /// - `def_name` does not match any template in the loaded module.
+    pub fn get_def_preview(&mut self, def_name: &str) -> Result<GuiState, String> {
+        // Phase 1: extract content_hash from a shared borrow.  HashMap::get only
+        // needs &self, so NLL allows simultaneous immutable borrows of disjoint
+        // struct fields — no expensive clone is wasted on a cache hit.
+        let content_hash = {
+            let compiled = self
+                .compiled
+                .as_ref()
+                .ok_or_else(|| "No module loaded".to_string())?;
+            compiled
+                .templates
+                .iter()
+                .find(|t| t.name == def_name)
+                .ok_or_else(|| format!("No definition named '{}' in loaded module", def_name))?
+                .content_hash
+        };
+
+        // Phase 2: check cache before any cloning.
+        let cache_key = (def_name.to_string(), content_hash);
+        if let Some(cached) = self.def_preview_cache.get(&cache_key) {
+            return Ok(cached.clone());
+        }
+
+        // Phase 3: cache miss — clone the module now and build the preview.
+        // Clone the full module so that shared context (enums, functions, traits,
+        // stdlib units, etc.) is available during evaluation, then replace the
+        // templates list with only the one definition we want to preview.
+        let preview_module = {
+            let compiled = self
+                .compiled
+                .as_ref()
+                .expect("compiled was Some in Phase 1");
+            let template = compiled
+                .templates
+                .iter()
+                .find(|t| t.name == def_name)
+                .expect("template was found in Phase 1");
+            let mut preview = compiled.clone();
+            preview.templates = vec![template.clone()];
+            preview
+        };
+
+        // Phase 4: evaluate with a lightweight preview engine (SimpleConstraintChecker, no kernel).
+        let mut preview_engine = Engine::new(
+            Box::new(reify_constraints::SimpleConstraintChecker),
+            None, // no geometry kernel — preview is values + constraints only
+        );
+        let check_result = preview_engine.check(&preview_module);
+
+        // Phase 5: build GuiState from the check result.
+        let gui_state = build_preview_gui_state(&preview_module, &check_result);
+
+        // Phase 6: cache and return.
+        self.def_preview_cache
+            .insert(cache_key, gui_state.clone());
+        Ok(gui_state)
+    }
+
+    /// Find the innermost structure or occurrence definition whose span contains
+    /// the given 1-based `(line, col)` position.
+    ///
+    /// Returns `None` when:
+    /// - No module is loaded.
+    /// - The position falls outside every declaration's span.
+    /// - `line` or `col` are zero.
+    ///
+    /// # Parsing
+    /// The source text is re-parsed on every call (single-file, fast).  The
+    /// parse result is used only for span lookups; compile errors do not affect
+    /// the result — declarations are matched on `SourceSpan` from the *syntax*
+    /// tree, not the compiled IR.
+    pub fn get_containing_definition(&self, line: u32, col: u32) -> Option<DefInfo> {
+        // Documented contract: zero line or column is out-of-range → None.
+        // Without this guard, line_col_to_byte_offset returns 0 for zero inputs,
+        // which would incorrectly match any definition starting at byte 0.
+        if line == 0 || col == 0 {
+            return None;
+        }
+        let (key, source) = self.resolve_source()?;
+        let module_name = key.trim_end_matches(".ri");
+        let parsed =
+            reify_syntax::parse(source, ModulePath::single(module_name));
+
+        let offset = line_col_to_byte_offset(source, line, col) as u32;
+
+        // Walk top-level declarations and find the innermost (smallest span) that
+        // contains the given byte offset.
+        let mut best: Option<DefInfo> = None;
+        for decl in &parsed.declarations {
+            let (name, kind, span) = match decl {
+                reify_syntax::Declaration::Structure(s) => {
+                    (s.name.as_str(), "structure", s.span)
+                }
+                reify_syntax::Declaration::Occurrence(o) => {
+                    (o.name.as_str(), "occurrence", o.span)
+                }
+                _ => continue,
+            };
+            if offset >= span.start && offset < span.end {
+                let is_smaller = best.as_ref().is_none_or(|b| {
+                    (span.end - span.start) < (b.span.end - b.span.start)
+                });
+                if is_smaller {
+                    best = Some(DefInfo {
+                        name: name.to_string(),
+                        kind: kind.to_string(),
+                        span: SourceSpanInfo {
+                            start: span.start,
+                            end: span.end,
+                        },
+                    });
+                }
+            }
+        }
+        best
+    }
+}
+
+// ---- GUI-state helpers -------------------------------------------------------
+
+/// Map `ValueCellKind` to its **capitalized** GUI-state string form.
+///
+/// Used in `build_values` (and therefore in both `build_gui_state` and
+/// `build_preview_gui_state`) for the `kind` field of `ValueData`.
+///
+/// # Capitalization convention
+/// The GUI-state API uses capitalized strings (`"Param"`, `"Let"`, `"Auto"`).
+/// The entity-tree and identity-map APIs use the lowercase form — see
+/// `cell_kind_tree_str`.  The difference is intentional: the two APIs are
+/// consumed by different frontend components with different display contracts.
+fn cell_kind_gui_str(kind: ValueCellKind) -> &'static str {
+    match kind {
+        ValueCellKind::Param => "Param",
+        ValueCellKind::Let => "Let",
+        ValueCellKind::Auto { .. } => "Auto",
+    }
+}
+
+/// Map `ValueCellKind` to its **lowercase** tree / identity-map string form.
+///
+/// Used in `build_template_node` and `get_entity_identity_map` for the `kind`
+/// field of `EntityTreeNode` and `structural_fingerprint`.
+///
+/// # Capitalization convention
+/// These APIs use lowercase strings (`"param"`, `"let"`, `"auto"`).  The
+/// GUI-state API uses the capitalized form — see `cell_kind_gui_str`.
+fn cell_kind_tree_str(kind: ValueCellKind) -> &'static str {
+    match kind {
+        ValueCellKind::Param => "param",
+        ValueCellKind::Let => "let",
+        ValueCellKind::Auto { .. } => "auto",
+    }
+}
+
+/// Build the `Vec<ValueData>` shared between `build_gui_state` and
+/// `build_preview_gui_state`.
+///
+/// Iterates every value cell in every template, formats its current value and
+/// determinacy state, and returns one `ValueData` per cell.  Extracting this
+/// logic ensures that changes to value formatting are applied consistently to
+/// both the live GUI state and the def-preview state.
+fn build_values(
+    compiled: &reify_compiler::CompiledModule,
+    check: &CheckResult,
+) -> Vec<ValueData> {
+    let mut values = Vec::new();
+    for template in &compiled.templates {
+        for cell in &template.value_cells {
+            let val = check.values.get_or_undef(&cell.id);
+            let (formatted_value, unit) = format_value(&val);
+            let determinacy = match &val {
+                reify_types::Value::Undef => {
+                    if cell.kind.is_auto() {
+                        DeterminacyState::Auto
+                    } else {
+                        DeterminacyState::Undetermined
+                    }
+                }
+                _ => DeterminacyState::Determined,
+            };
+            values.push(ValueData {
+                cell_id: cell.id.to_string(),
+                name: cell.id.member.clone(),
+                value: formatted_value,
+                unit,
+                determinacy: format_determinacy(determinacy),
+                entity_path: cell.id.entity.clone(),
+                kind: cell_kind_gui_str(cell.kind).to_string(),
+            });
+        }
+    }
+    values
+}
+
+/// Build the `Vec<ConstraintData>` shared between `build_gui_state` and
+/// `build_preview_gui_state`.
+///
+/// Iterates the check result's constraint entries, cross-references the compiled
+/// constraint for its expression text and value refs, and returns one
+/// `ConstraintData` per entry.  Extracting this logic ensures that changes to
+/// constraint formatting are applied consistently to both call sites.
+fn build_constraints(
+    compiled: &reify_compiler::CompiledModule,
+    check: &CheckResult,
+) -> Vec<ConstraintData> {
+    let mut constraints = Vec::new();
+    for entry in &check.constraint_results {
+        let status = match entry.satisfaction {
+            Satisfaction::Satisfied => "Satisfied",
+            Satisfaction::Violated => "Violated",
+            Satisfaction::Indeterminate => "Indeterminate",
+        };
+        let (expression, parameter_ids) = compiled
+            .templates
+            .iter()
+            .find_map(|t| {
+                t.constraints
+                    .iter()
+                    .find(|c| c.id == entry.id)
+                    .map(|c| (format_expr(&c.expr), collect_value_refs(&c.expr)))
+            })
+            .unwrap_or_default();
+        constraints.push(ConstraintData {
+            node_id: entry.id.to_string(),
+            expression,
+            status: status.to_string(),
+            label: entry.label.clone(),
+            parameter_ids,
+        });
+    }
+    constraints
+}
+
+// ---- build_preview_gui_state -------------------------------------------------
+
+/// Build a `GuiState` from a preview evaluation result.
+///
+/// Used by `get_def_preview` to convert a `CheckResult` into the same
+/// `GuiState` format returned by `build_gui_state`, but with:
+/// - **No meshes** — geometry tessellation is skipped (no kernel available).
+/// - **No files** — file list is not meaningful for a single-def preview.
+///
+/// Delegates to `build_values` and `build_constraints` — the same helpers used
+/// by `build_gui_state` — so both paths stay in sync automatically.
+fn build_preview_gui_state(
+    compiled: &reify_compiler::CompiledModule,
+    check: &CheckResult,
+) -> GuiState {
+    GuiState {
+        meshes: Vec::new(),
+        values: build_values(compiled, check),
+        constraints: build_constraints(compiled, check),
+        files: Vec::new(),
+    }
+}
+
+/// Build an `EntityTreeNode` for a topology template.
+///
+/// `entity_path` is the dot-separated path used as the root of this node's
+/// children (e.g. `"Bracket"` → children are `"Bracket.width"`, etc.).
+///
+/// When a sub-component's child template has `is_recursive = true` (set by the
+/// compiler's Tarjan SCC pass), this function emits an empty `children` vec for
+/// that sub node rather than recursing — preventing infinite recursion for
+/// self-referential and mutually-recursive structure definitions.
+pub(crate) fn build_template_node(
+    template: &reify_compiler::TopologyTemplate,
+    entity_path: &str,
+    compiled: &reify_compiler::CompiledModule,
+) -> EntityTreeNode {
+    let kind = match template.entity_kind {
+        EntityKind::Structure => "structure",
+        EntityKind::Occurrence => "occurrence",
+    };
+
+    let mut children = Vec::new();
+
+    // Value cells: param, let, auto
+    for cell in &template.value_cells {
+        let cell_kind = cell_kind_tree_str(cell.kind);
+        let member = &cell.id.member;
+        let cell_path = format!("{}.{}", entity_path, member);
+        let is_geometry_member = member == "geometry";
+        let parent_has_physical = template.trait_bounds.iter().any(|b| b.contains("Physical"));
+        children.push(EntityTreeNode {
+            entity_path: cell_path,
+            kind: cell_kind.to_string(),
+            type_name: Some(cell.cell_type.to_string()),
+            has_mesh: false,
+            trait_geometry: is_geometry_member && parent_has_physical,
+            children: vec![],
+        });
+    }
+
+    // Sub-components
+    for sub in &template.sub_components {
+        let sub_path = format!("{}.{}", entity_path, sub.name);
+        let type_name = if sub.is_collection {
+            format!("List<{}>", sub.structure_name)
+        } else {
+            sub.structure_name.clone()
+        };
+        // Try to find the child template for recursive tree building
+        let sub_children = if let Some(child_template) = compiled
+            .templates
+            .iter()
+            .find(|t| t.name == sub.structure_name)
+        {
+            // Guard against infinite recursion: if the child template is part of
+            // a recursive cycle (detected by the compiler's Tarjan SCC pass and
+            // stored in `is_recursive`), emit an empty children vec instead of
+            // recursing.  This covers self-reference (A → A), mutual recursion
+            // (A → B → A), and longer cycles — all correctly tagged by the
+            // compiler.
+            if child_template.is_recursive {
+                vec![]
+            } else {
+                build_template_node(child_template, &sub_path, compiled).children
+            }
+        } else {
+            vec![]
+        };
+        children.push(EntityTreeNode {
+            entity_path: sub_path,
+            kind: "sub".to_string(),
+            type_name: Some(type_name),
+            has_mesh: false,
+            trait_geometry: false,
+            children: sub_children,
+        });
+    }
+
+    // Ports
+    for port in &template.ports {
+        let port_path = format!("{}.{}", entity_path, port.name);
+        children.push(EntityTreeNode {
+            entity_path: port_path,
+            kind: "port".to_string(),
+            type_name: Some(port.type_name.clone()),
+            has_mesh: false,
+            trait_geometry: false,
+            children: vec![],
+        });
+    }
+
+    EntityTreeNode {
+        entity_path: entity_path.to_string(),
+        kind: kind.to_string(),
+        type_name: None,
+        has_mesh: !template.realizations.is_empty(),
+        trait_geometry: false,
+        children,
     }
 }
 
@@ -893,5 +1303,47 @@ pub(crate) fn offset_to_line_col_fast(
     // Count codepoints from line_start to effective offset for 1-based column.
     let col = source[line_start..effective].chars().count() + 1;
     (line, col)
+}
+
+/// Convert a 1-based `(line, col)` pair to a byte offset into `source`.
+///
+/// Both `line` and `col` are 1-based and count **Unicode codepoints** (matching
+/// the semantics of [`offset_to_line_col_fast`], the inverse operation).
+///
+/// - If `line` or `col` is 0, returns 0 as a safe fallback.
+/// - If `line` exceeds the number of lines, returns `source.len()`.
+/// - If `col` exceeds the line length, clamps to the end of the line.
+pub(crate) fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> usize {
+    if line == 0 || col == 0 {
+        return 0;
+    }
+    let line = line as usize;
+    let col = col as usize;
+    let line_offsets = build_line_offsets(source);
+
+    // Byte index of the first character on the target line.
+    let line_start = if line <= 1 {
+        0
+    } else {
+        match line_offsets.get(line - 2) {
+            Some(&nl) => nl + 1, // byte after the preceding newline
+            None => return source.len(), // line is beyond end of source
+        }
+    };
+
+    // Slice to the end of the target line (not end of source) so that an
+    // out-of-bounds col clamps to the line boundary rather than counting
+    // codepoints past the '\n' into subsequent lines.
+    let line_end = source[line_start..]
+        .find('\n')
+        .map(|i| line_start + i)
+        .unwrap_or(source.len());
+    let line_text = &source[line_start..line_end];
+    line_start
+        + line_text
+            .char_indices()
+            .nth(col - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(line_text.len())
 }
 
