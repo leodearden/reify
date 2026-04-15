@@ -76,6 +76,7 @@ fn basic_trait_values() {
 
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
+    assert_no_eval_errors(&result);
 
     // Check Box.size = 50mm = 0.05 SI (metres)
     let size_id = ValueCellId::new("Box", "size");
@@ -125,6 +126,7 @@ fn default_injection_values() {
 
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
+    assert_no_eval_errors(&result);
 
     // Check Panel.thickness = 5mm = 0.005 SI (injected from trait default)
     let thickness_id = ValueCellId::new("Panel", "thickness");
@@ -176,6 +178,7 @@ fn multi_trait_values() {
 
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
+    assert_no_eval_errors(&result);
 
     // Check Part.size = 100mm = 0.1 SI
     let size_id = ValueCellId::new("Part", "size");
@@ -263,6 +266,7 @@ fn refinement_chain_values() {
 
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
+    assert_no_eval_errors(&result);
 
     // Check Component.size = 200mm = 0.2 SI
     let size_id = ValueCellId::new("Component", "size");
@@ -360,6 +364,7 @@ fn diamond_merging_values() {
 
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
+    assert_no_eval_errors(&result);
 
     // Check Merged.x = 10mm = 0.01 SI
     let x_id = ValueCellId::new("Merged", "x");
