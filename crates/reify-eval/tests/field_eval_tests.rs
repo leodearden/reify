@@ -688,6 +688,7 @@ fn eval_sample_principal_stresses_hydrostatic_dispatch() {
     }
 
     // Eigenvalues should be sorted ascending
+    // Degenerate: all equal, so trivially sorted — guards against regression if tensor changes
     assert!(
         eigenvalues[0] <= eigenvalues[1] && eigenvalues[1] <= eigenvalues[2],
         "eigenvalues should be sorted ascending, got {:?}",
