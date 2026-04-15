@@ -19,6 +19,7 @@ pub(crate) fn is_geometry_let(expr: &reify_syntax::Expr, functions: &[CompiledFu
 /// call expressions as arguments. Each arg is recursively compiled into ops,
 /// and GeomRef::Step indices are assigned globally using `step_offset` (the
 /// index of the first op this call will emit in the flat step_handles array).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_geometry_call(
     expr: &reify_syntax::Expr,
     scope: &CompilationScope,
