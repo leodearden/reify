@@ -37490,11 +37490,11 @@
         "description": "Four test quality fixes across both stress test files and the fixture:\n1. stress_pattern_composition.rs: count_one_single_instance (line 157-161) — add a PatternCountOne-specific assertion (template present, expected realization structure) so removing the template would fail the test.\n2. stress_pattern_composition.rs has_expected_templates (line 106): change assert_eq!(len, 7) to assert!(len >= 7) for resilience to fixture additions, matching stress_large_assembly.rs style.\n3. stress_large_assembly.rs eval_under_5_seconds (lines 319-344): increase the 5s wall-clock threshold (e.g. 15s) for CI resilience, add a comment explaining that cached helpers are intentionally not used here (measuring the full uncached pipeline), and consider #[ignore] for dedicated perf runs.\n4. examples/large_assembly.ri simulation_ready purpose (lines 270-278): replace `constraint 1 > 0` / `constraint 1 >= 0` with real Physical property constraints (e.g. `constraint subject.volume > 0`), or correct the doc comment to reflect that these are placeholder constraints for mechanism testing only.\n\nmemory_hints: search \"assert_eq\" in stress test files for current assertion patterns; get_entity \"PatternCountOne\" for template structure.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T17:47:30.732Z",
+        "updatedAt": "2026-04-15T21:19:55.799Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/stress_large_assembly.rs",
@@ -38034,9 +38034,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:19:53.813Z",
+      "lastModified": "2026-04-15T21:19:55.807Z",
       "taskCount": 1814,
-      "completedCount": 1549,
+      "completedCount": 1550,
       "tags": [
         "master"
       ]
