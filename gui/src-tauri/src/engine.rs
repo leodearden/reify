@@ -705,7 +705,7 @@ impl EngineSession {
                 _ => continue,
             };
             if offset >= span.start && offset < span.end {
-                let is_smaller = best.as_ref().map_or(true, |b| {
+                let is_smaller = best.as_ref().is_none_or(|b| {
                     (span.end - span.start) < (b.span.end - b.span.start)
                 });
                 if is_smaller {
