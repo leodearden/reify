@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { MeshStandardMaterial } from 'three';
 import type { MeshData } from '../../types';
 
-// Track all created mocks
+// Track all created mocks.
+// mockBasicMaterials uses vi.hoisted so it is initialized before the async
+// vi.mock factory runs (async factories run before module-level const declarations).
+const mockBasicMaterials = vi.hoisted<any[]>(() => []);
 const mockGeometries: any[] = [];
 const mockMaterials: any[] = [];
 const mockMeshes: any[] = [];
-const mockBasicMaterials: any[] = [];
 const mockGroups: any[] = [];
 
 const mockSceneAdd = vi.fn();
@@ -16,7 +18,10 @@ const mockDisposeBoundsTree = vi.fn();
 const mockGroupAdd = vi.fn();
 const mockGroupRemove = vi.fn();
 
-vi.mock('three', () => {
+vi.mock('three', async () => {
+  const { makeMockMeshBasicMaterial } = await import('./mocks/threeMocks');
+  const MockMeshBasicMaterial = makeMockMeshBasicMaterial(mockBasicMaterials);
+
   class MockBufferGeometry {
     attributes: Record<string, any> = {};
     index: any = null;
@@ -68,29 +73,6 @@ vi.mock('three', () => {
       this.color = opts?.color;
       this.side = opts?.side;
       mockMaterials.push(this);
-    }
-  }
-
-  class MockMeshBasicMaterial {
-    color: any;
-    transparent: boolean;
-    opacity: number;
-    depthWrite: boolean;
-    side: any;
-    polygonOffset: boolean;
-    polygonOffsetFactor: number;
-    polygonOffsetUnits: number;
-    dispose = vi.fn();
-    constructor(opts?: any) {
-      this.color = opts?.color;
-      this.transparent = opts?.transparent ?? false;
-      this.opacity = opts?.opacity ?? 1;
-      this.depthWrite = opts?.depthWrite ?? true;
-      this.side = opts?.side;
-      this.polygonOffset = opts?.polygonOffset ?? false;
-      this.polygonOffsetFactor = opts?.polygonOffsetFactor ?? 0;
-      this.polygonOffsetUnits = opts?.polygonOffsetUnits ?? 0;
-      mockBasicMaterials.push(this);
     }
   }
 
