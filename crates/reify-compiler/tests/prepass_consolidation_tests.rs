@@ -5,28 +5,7 @@
 //! Each test verifies that declarations of different types can appear in any order
 //! relative to their cross-type dependencies.
 
-/// Helper: parse and compile source, return compiled module.
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(
-        source,
-        reify_types::ModulePath::single("prepass_consolidation_test"),
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: return only error-severity diagnostics (ignoring warnings).
-fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect()
-}
+use reify_test_support::{compile_source, errors_only};
 
 // ── Step 1: Characterization test with ALL declaration types ─────────────
 
@@ -70,7 +49,7 @@ fn all_declaration_types_order_independent() {
         }
     "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
     assert!(
         errors.is_empty(),
@@ -141,7 +120,7 @@ fn function_before_enum_match_compiles() {
         enum Direction { In, Out, Bidi }
     "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
     assert!(
         errors.is_empty(),
@@ -202,7 +181,7 @@ fn field_before_function_compiles() {
         fn scale(x: Real) -> Real { x + x }
     "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
     assert!(
         errors.is_empty(),

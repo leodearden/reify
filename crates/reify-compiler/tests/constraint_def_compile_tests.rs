@@ -5,31 +5,10 @@
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 use reify_compiler::*;
+use reify_test_support::{compile_source, compile_template};
 use reify_types::*;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Parse and compile, returning the template with the given name + all diagnostics.
-fn compile_template(source: &str, name: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let module = compile_module(source);
-    let diags = module.diagnostics.clone();
-    let tmpl = module
-        .templates
-        .into_iter()
-        .find(|t| t.name == name)
-        .unwrap_or_else(|| panic!("expected template '{name}' in compiled module"));
-    (tmpl, diags)
-}
 
 /// Collect only error diagnostics.
 fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
@@ -348,7 +327,7 @@ structure S {
     constraint TwoParam(a: x, b: y, c: z)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = error_diags(&module.diagnostics);
     assert!(
         !errors.is_empty(),
@@ -385,7 +364,7 @@ structure S {
 }
 "#;
     // 'y' is unknown + 'x' is missing → should produce at least two errors
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = error_diags(&module.diagnostics);
     assert!(
         errors.len() >= 2,
@@ -426,7 +405,7 @@ structure S {
     constraint TwoRequired(a: x)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = error_diags(&module.diagnostics);
     assert!(
         !errors.is_empty(),
@@ -627,7 +606,7 @@ structure S {
     constraint MinWall(w: true)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Document current behavior: we check whether a diagnostic is produced.
     // If compile_expr catches the type error (Bool != Length), we get at least one error.

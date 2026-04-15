@@ -4,32 +4,11 @@
 //! and applying field operations (sample, gradient, etc.).
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_test_support::{eval_source, make_engine, parse_and_compile};
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type,
-    ValueMap, FIELD_ENTITY_PREFIX, ModulePath, Severity, Value, ValueCellId,
+    ValueMap, FIELD_ENTITY_PREFIX, Value, ValueCellId,
 };
-
-/// Helper: parse, compile, and eval source, return eval result.
-fn eval_source(source: &str) -> reify_eval::EvalResult {
-    let parsed = reify_syntax::parse(source, ModulePath::single("field_eval_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    engine.eval(&compiled)
-}
 
 /// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
 ///
@@ -161,22 +140,8 @@ fn eval_field_snapshot_consistency() {
     // This ensures incremental re-evaluation via edit_param/warm-starting
     // can see field values.
     let source = "field def temp : Point3 -> Scalar { source = analytical { |p| p } }";
-    let parsed = reify_syntax::parse(source, ModulePath::single("field_snapshot_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
     let _result = engine.eval(&compiled);
 
     // The field should be in the snapshot values

@@ -4,25 +4,15 @@
 //! bound checking at instantiation, and default type parameter handling.
 
 use reify_compiler::*;
+use reify_test_support::compile_source;
 use reify_types::*;
-
-/// Helper: parse source and compile, returning the CompiledModule.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
 
 // ── Step 1: generic trait stores type params ───────────────────────
 
 #[test]
 fn generic_trait_stores_type_params() {
     let source = "trait Container<T: Rigid> { param count : Int }";
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     assert_eq!(module.trait_defs.len(), 1);
     let trait_def = &module.trait_defs[0];
@@ -43,7 +33,7 @@ fn generic_trait_stores_type_params() {
 #[test]
 fn generic_structure_stores_type_params() {
     let source = "structure def Box<T: Rigid> { param width : Length = 10mm }";
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     assert_eq!(module.templates.len(), 1);
     let template = &module.templates[0];
@@ -67,7 +57,7 @@ fn type_param_as_member_type() {
         trait Rigid { param mass : Mass }
         structure def Box<T: Rigid> { param contents : T }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Should compile without errors (T is a known type param, not an unknown type)
     let errors: Vec<_> = module
@@ -108,7 +98,7 @@ fn bound_check_valid_type_arg() {
         structure def Box<T: Rigid> { param width : Length = 10mm }
         structure def Assembly { sub part = Box<Bolt>() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // No error diagnostics about bound violations
     let errors: Vec<_> = module
@@ -133,7 +123,7 @@ fn bound_check_invalid_type_arg() {
         structure def Widget { param x : Length = 5mm }
         structure def Assembly { sub part = Box<Widget>() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Should produce an error: Widget does not satisfy bound Rigid
     let errors: Vec<_> = module
@@ -165,7 +155,7 @@ fn composite_bounds_both_checked() {
         structure def AsmOk { sub x = Container<Full>() }
         structure def AsmBad { sub y = Container<Partial>() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // AsmOk should be fine (Full satisfies A + B)
     // AsmBad should error (Partial only satisfies A, not B)
@@ -206,7 +196,7 @@ fn default_type_param_used_when_omitted() {
         structure def Box<T: Rigid = Steel> { param width : Length = 10mm }
         structure def Assembly { sub part = Box() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Box() with no type args should use default Steel, which satisfies Rigid.
     // No errors expected.
@@ -229,7 +219,7 @@ fn missing_type_arg_no_default_errors() {
         structure def Box<T: Rigid> { param width : Length = 10mm }
         structure def Assembly { sub part = Box() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Box() with no type args and no default on T should produce an error
     // about missing type argument.
@@ -263,7 +253,7 @@ fn default_type_param_overridden() {
         structure def Box<T: Rigid = Steel> { param width : Length = 10mm }
         structure def Assembly { sub part = Box<Bolt>() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Box<Bolt>() overrides default Steel with Bolt, which also satisfies Rigid.
     // No errors expected.
@@ -291,7 +281,7 @@ fn trait_type_params_checked_at_conformance() {
         structure def Crate : Container<Bolt> { param count : Int = 5 }
         structure def Crate2 : Container<Widget> { param count : Int = 5 }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Crate : Container<Bolt> should be fine — Bolt satisfies Rigid.
     // Crate2 : Container<Widget> should error — Widget doesn't satisfy Rigid.
@@ -333,7 +323,7 @@ fn sub_component_stores_type_args() {
         structure def Box<T: Rigid> { param w : Length = 10mm }
         structure def Asm { sub part = Box<Bolt>() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // No errors
     let errors: Vec<_> = module
@@ -387,7 +377,7 @@ fn forward_reference_order_independence() {
         structure def Bolt : Rigid { param mass : Mass = 5kg }
         structure def Widget { param x : Length = 5mm }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Forward references must not produce false-positive bound errors:
     // Assembly's Box<Bolt> is valid, so no error there.
@@ -440,7 +430,7 @@ fn supertrait_chain_satisfies_bound() {
         structure def Box<T: Rigid> { param width : Length = 10mm }
         structure def Assembly { sub part = Box<Bolt>() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Bolt -> ConcreteRigid -> Rigid, so Bolt satisfies Rigid transitively.
     // No errors expected.
@@ -467,7 +457,7 @@ fn type_param_forwarded_as_type_param() {
         structure def Box<T: Rigid> { param w : Length = 10mm }
         structure def Wrapper<U: Rigid> { sub inner = Box<U>() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let wrapper = module
         .templates
@@ -505,7 +495,7 @@ fn diamond_refinement_satisfies_bound() {
         structure def Box<T: D> { param w : Length = 10mm }
         structure def Asm { sub part = Box<Obj>() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -528,7 +518,7 @@ fn multiple_independent_type_params() {
         structure def Ok { sub p = Pair<GoodA, GoodB>() }
         structure def Bad { sub p = Pair<GoodA, BadB>() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -556,7 +546,7 @@ fn too_many_type_args_errors() {
         structure def Box<T: Rigid> { param w : Length = 10mm }
         structure def Asm { sub part = Box<Bolt, Steel>() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -580,7 +570,7 @@ fn generic_forwarding_no_false_positive() {
         structure def Box<T: Rigid> { param w : Length = 10mm }
         structure def Wrapper<U: Rigid> { sub inner = Box<U>() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -611,7 +601,7 @@ fn both_bound_check_paths_combined() {
             sub part = Box<Bolt>()
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Both paths should succeed — Bolt satisfies Rigid.
     let errors: Vec<_> = module
@@ -641,7 +631,7 @@ fn sub_component_bound_error_with_forward_ref() {
         structure def Assembly { sub part = Box<Widget>() }
         structure def Box<T: Rigid> { param width : Length = 10mm }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors: Vec<_> = module
         .diagnostics
