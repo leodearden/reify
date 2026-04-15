@@ -1294,13 +1294,24 @@ pub(crate) fn compile_entity(
                 ))
         });
 
+        // Meta entry hashes: sort by key for deterministic ordering (HashMap is unordered).
+        // Hash both key and value so that key renames and value changes are both detected.
+        let mut sorted_meta_keys: Vec<&str> =
+            scope.meta_entries.keys().map(String::as_str).collect();
+        sorted_meta_keys.sort_unstable();
+        let meta_hashes = sorted_meta_keys.into_iter().flat_map(|k| {
+            let v = scope.meta_entries.get(k).map(String::as_str).unwrap_or("");
+            [ContentHash::of_str(k), ContentHash::of_str(v)]
+        });
+
         let all_hashes = std::iter::once(name_hash)
             .chain(vc_hashes)
             .chain(constraint_hashes)
             .chain(sub_hashes)
             .chain(guard_hashes)
             .chain(port_hashes)
-            .chain(connection_hashes);
+            .chain(connection_hashes)
+            .chain(meta_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
