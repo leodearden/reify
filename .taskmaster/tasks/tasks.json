@@ -36278,6 +36278,17 @@
             "crates/reify-eval/tests/field_eval_tests.rs"
           ]
         }
+      },
+      {
+        "id": 1737,
+        "title": "Add consistent sorted-ascending assertions across all principal stress tests",
+        "description": "Two minor consistency improvements in crates/reify-eval/tests/field_eval_tests.rs:\n\n1. **Add sorted-ascending assertion to `eval_sample_principal_stresses_field_dispatch`** (~line 474): The hydrostatic and full-symmetric principal stress tests both include an explicit `eigenvalues[0] <= eigenvalues[1] && eigenvalues[1] <= eigenvalues[2]` assertion, but the first test (`field_dispatch`) only verifies values match pre-sorted expected values [0.0, 0.0, 100.0] without the explicit sort invariant check. Add the same assertion pattern for self-consistency and regression safety.\n\n2. **Add clarifying comment to hydrostatic test's sort assertion** (~line 663): The sorted-ascending assertion in the hydrostatic test is trivially true because all three eigenvalues equal `p`. Add a brief comment like `// Degenerate: all equal, so trivially sorted — guards against regression if tensor changes` to document intent.\n\nmemory_hints: search \"field_eval_tests eigenvalue ordering\", get_entity \"principal_stresses\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36289,7 +36300,8 @@
         "master"
       ],
       "created": "2026-04-15T07:45:49.345Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-15T07:58:21.880Z"
     }
   }
 }
