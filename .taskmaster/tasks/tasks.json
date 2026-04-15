@@ -35984,15 +35984,16 @@
         "description": "Add a test that uses a type alias in a port member param and/or let with an OptionNone default (e.g. `type MyLen = Length; port p : T { param x : Option<MyLen> = none }`) and verifies the `resolve_type_expr_with_aliases` upgrade in `entity.rs:368` works end-to-end for ports. Currently the only type-alias test covers guarded blocks.",
         "details": "## Context\n\nTask 1098 upgraded port member param/let resolution from `resolve_type_name` to `resolve_type_expr_with_aliases` (entity.rs:368). The type-alias test (`guarded_param_option_type_alias_none_gets_correct_type`) only covers guarded blocks, not port members.\n\n## Approach\n\nAdd a test to `crates/reify-compiler/tests/option_compile_tests.rs` that defines a type alias and uses it in a port member:\n\n```rust\ntype MyLen = Length\n\nentity E {\n    port p : SomePortType {\n        param x : Option<MyLen> = none\n    }\n}\n```\n\nAssert that the port member's `cell_type == Option<Length>` and `default_expr.result_type == Option<Length>`, confirming the alias is resolved correctly through the port path.\n\n## Memory hints\n- Search: \"OptionNone port type alias resolve_type_expr_with_aliases\"\n- Related tasks: 1098 (parent implementation)\n- Related files: `crates/reify-compiler/tests/option_compile_tests.rs`, `crates/reify-compiler/src/entity.rs`",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:29:15.489Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:29:15.124Z",
+      "lastModified": "2026-04-15T06:29:15.489Z",
       "taskCount": 1723,
       "completedCount": 1481,
       "tags": [
