@@ -37203,7 +37203,7 @@
         "description": "Tests in module_dag_tests.rs use manual `fs::remove_dir_all` at the end of each test for cleanup. If an assertion panics before reaching the cleanup lines, temp directories are leaked. This is a pre-existing file-wide pattern, but task 1759 added tests that each create two directories (dir and dir2), doubling the leak surface.\n\nReplace manual cleanup with `tempfile::TempDir` (or a Drop-based scope guard) so cleanup is guaranteed even on test failure. This affects all tests in the file that use manual temp directory management.\n\nmemory_hints: search \"module_dag_tests temp directory\" and \"tempfile TempDir\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -37225,7 +37225,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-15T16:18:34.911Z"
+        "updatedAt": "2026-04-15T16:43:49.474Z"
       },
       {
         "id": "1774",
@@ -37542,9 +37542,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T16:42:27.871Z",
+      "lastModified": "2026-04-15T16:43:49.474Z",
       "taskCount": 1786,
-      "completedCount": 1527,
+      "completedCount": 1528,
       "tags": [
         "master"
       ]
