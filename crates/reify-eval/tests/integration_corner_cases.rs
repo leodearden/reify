@@ -323,8 +323,9 @@ fn option_none_is_determined() {
     );
 }
 
-/// Verify OptionEdgeCases.s evaluates to Value::Option(Some(_)).
-/// some(Undef) wraps the Undef in an Option — the Option itself is determined.
+/// Verify OptionEdgeCases.s evaluates to Value::Option(Some(Undef)).
+/// some(u) where u is an unset param (Undef) wraps Undef in an Option;
+/// the inner value must be Undef — not just Some(_).
 #[test]
 fn option_some_undef_is_determined() {
     let result = eval_ri_file();
@@ -333,11 +334,20 @@ fn option_some_undef_is_determined() {
         .values
         .get(&s_id)
         .unwrap_or_else(|| panic!("OptionEdgeCases.s not found"));
-    assert!(
-        matches!(s_val, Value::Option(Some(_))),
-        "some(undef) should produce Value::Option(Some(_)), got: {:?}",
-        s_val
-    );
+    match s_val {
+        Value::Option(Some(inner)) => {
+            assert_eq!(
+                **inner,
+                Value::Undef,
+                "some(undef) inner value should be Undef, got: {:?}",
+                inner
+            );
+        }
+        other => panic!(
+            "some(undef) should produce Value::Option(Some(Undef)), got: {:?}",
+            other
+        ),
+    }
 }
 
 // ── step-11: recursive depth=0 no child ──────────────────────────────────────
