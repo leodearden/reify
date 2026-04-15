@@ -32,45 +32,45 @@ type MenuDef = {
   items: MenuItemDef[];
 };
 
+const MENU_DEFS: MenuDef[] = [
+  {
+    id: 'file',
+    label: 'File',
+    items: [
+      { label: 'Open', shortcutId: 'open', action: 'onOpen' },
+      { label: 'Save', shortcutId: 'save', action: 'onSave' },
+      { label: 'Export', shortcutId: 'export', action: 'onExport' },
+    ],
+  },
+  {
+    id: 'edit',
+    label: 'Edit',
+    items: [
+      { label: 'Undo', shortcutId: 'undo', disabled: true },
+      { label: 'Redo', shortcutId: 'redo', disabled: true },
+    ],
+  },
+  {
+    id: 'view',
+    label: 'View',
+    items: [
+      { label: 'Re-evaluate', shortcutId: 'reEvaluate', action: 'onReEvaluate' },
+      { label: 'Fit to View', shortcutId: 'fitToView', action: 'onFitToView' },
+      { label: 'Toggle Chat', shortcutId: 'toggleChat', action: 'onToggleChat' },
+    ],
+  },
+  {
+    id: 'help',
+    label: 'Help',
+    items: [
+      { label: 'Keyboard Shortcuts', shortcutId: 'help', action: 'onHelp' },
+    ],
+  },
+];
+
 export const MenuBar: Component<MenuBarProps> = (props) => {
   const [openMenu, setOpenMenu] = createSignal<MenuId | null>(null);
   let containerRef: HTMLDivElement | undefined;
-
-  const MENU_DEFS: MenuDef[] = [
-    {
-      id: 'file',
-      label: 'File',
-      items: [
-        { label: 'Open', shortcutId: 'open', action: 'onOpen' },
-        { label: 'Save', shortcutId: 'save', action: 'onSave' },
-        { label: 'Export', shortcutId: 'export', action: 'onExport' },
-      ],
-    },
-    {
-      id: 'edit',
-      label: 'Edit',
-      items: [
-        { label: 'Undo', shortcutId: 'undo', disabled: true },
-        { label: 'Redo', shortcutId: 'redo', disabled: true },
-      ],
-    },
-    {
-      id: 'view',
-      label: 'View',
-      items: [
-        { label: 'Re-evaluate', shortcutId: 'reEvaluate', action: 'onReEvaluate' },
-        { label: 'Fit to View', shortcutId: 'fitToView', action: 'onFitToView' },
-        { label: 'Toggle Chat', shortcutId: 'toggleChat', action: 'onToggleChat' },
-      ],
-    },
-    {
-      id: 'help',
-      label: 'Help',
-      items: [
-        { label: 'Keyboard Shortcuts', shortcutId: 'help', action: 'onHelp' },
-      ],
-    },
-  ];
 
   function toggleMenu(id: MenuId) {
     setOpenMenu((prev) => (prev === id ? null : id));

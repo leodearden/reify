@@ -241,7 +241,7 @@ describe('MenuBar — interaction behaviors', () => {
     expect(labels.some((l) => l.includes('Open'))).toBe(false);
   });
 
-  it('clicking outside the menu bar when event target is not a Node still closes the menu', () => {
+  it('does not close the menu when mousedown target is not a Node', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
     expect(screen.getByRole('menu')).toBeTruthy();
