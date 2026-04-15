@@ -425,11 +425,11 @@ fn method_conjugate() {
     assert_eq!(result, complex_val(3.0, -4.0, DimensionVector::LENGTH));
 }
 
-/// .conjugate() with NaN real part returns Undef (non-finite sanitization).
-#[test]
-fn conjugate_nan_re_undef() {
+// Non-finite sanitization: any NaN or Inf component returns Undef.
+// Signed-zero and both-components-non-finite cases are intentionally omitted.
+fn assert_conjugate_undef(re: f64, im: f64) {
     let result = eval_method(
-        complex_val(f64::NAN, 1.0, DimensionVector::DIMENSIONLESS),
+        complex_val(re, im, DimensionVector::DIMENSIONLESS),
         Type::complex(Type::Real),
         "conjugate",
         Type::complex(Type::Real),
@@ -437,62 +437,28 @@ fn conjugate_nan_re_undef() {
     assert!(result.is_undef());
 }
 
-/// .conjugate() with NaN imaginary part returns Undef (non-finite sanitization).
 #[test]
-fn conjugate_nan_im_undef() {
-    let result = eval_method(
-        complex_val(1.0, f64::NAN, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        "conjugate",
-        Type::complex(Type::Real),
-    );
-    assert!(result.is_undef());
-}
+fn conjugate_nan_re_undef() { assert_conjugate_undef(f64::NAN, 1.0); }
+#[test]
+fn conjugate_nan_im_undef() { assert_conjugate_undef(1.0, f64::NAN); }
+#[test]
+fn conjugate_inf_re_undef() { assert_conjugate_undef(f64::INFINITY, 1.0); }
+#[test]
+fn conjugate_neg_inf_re_undef() { assert_conjugate_undef(f64::NEG_INFINITY, 1.0); }
+#[test]
+fn conjugate_neg_inf_im_undef() { assert_conjugate_undef(1.0, f64::NEG_INFINITY); }
+#[test]
+fn conjugate_pos_inf_im_undef() { assert_conjugate_undef(1.0, f64::INFINITY); }
 
-/// .conjugate() with +Inf real part returns Undef (non-finite sanitization).
+/// .conjugate() with non-finite re and a LENGTH dimension returns Undef.
+/// Verifies the pre-guard isn't short-circuited by dimension-aware branches.
 #[test]
-fn conjugate_inf_re_undef() {
+fn conjugate_inf_re_undef_dimensioned() {
     let result = eval_method(
-        complex_val(f64::INFINITY, 1.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        complex_val(f64::INFINITY, 1.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
         "conjugate",
-        Type::complex(Type::Real),
-    );
-    assert!(result.is_undef());
-}
-
-/// .conjugate() with -Inf real part returns Undef (non-finite sanitization).
-#[test]
-fn conjugate_neg_inf_re_undef() {
-    let result = eval_method(
-        complex_val(f64::NEG_INFINITY, 1.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        "conjugate",
-        Type::complex(Type::Real),
-    );
-    assert!(result.is_undef());
-}
-
-/// .conjugate() with -Inf imaginary part returns Undef (non-finite sanitization).
-#[test]
-fn conjugate_neg_inf_im_undef() {
-    let result = eval_method(
-        complex_val(1.0, f64::NEG_INFINITY, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        "conjugate",
-        Type::complex(Type::Real),
-    );
-    assert!(result.is_undef());
-}
-
-/// .conjugate() with +Inf imaginary part returns Undef (non-finite sanitization).
-#[test]
-fn conjugate_pos_inf_im_undef() {
-    let result = eval_method(
-        complex_val(1.0, f64::INFINITY, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        "conjugate",
-        Type::complex(Type::Real),
+        Type::complex(Type::length()),
     );
     assert!(result.is_undef());
 }
