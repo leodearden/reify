@@ -35315,10 +35315,11 @@
         "description": "In examples/integration_full_v01.ri, the constraint `constraint height_ok == height_ok` is commented as `// Complex number non-undef` but actually just checks boolean self-equality — a tautology that always holds. It tests neither complex numbers nor provides meaningful validation.\n\nFix: Replace with a meaningful complex-number assertion (e.g. `constraint determined(impedance)` which is already present) or update the comment to `// Sanity: height_ok is determined` and change the constraint to `constraint determined(height_ok)`.\n\nmemory_hints: search \"tautological constraint integration\"; get_entity \"integration_full_v01\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T00:35:32.708Z"
       },
       {
         "id": "1693",
@@ -35334,7 +35335,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:35:32.187Z",
+      "lastModified": "2026-04-15T00:35:32.708Z",
       "taskCount": 1693,
       "completedCount": 1431,
       "tags": [
