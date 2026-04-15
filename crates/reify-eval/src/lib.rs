@@ -3794,6 +3794,14 @@ fn compile_geometry_op(
                         plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
                     })
                 }
+                reify_compiler::PatternKind::Linear2D => {
+                    // TODO: implement in step-10
+                    None
+                }
+                reify_compiler::PatternKind::Arbitrary => {
+                    // TODO: implement in step-12
+                    None
+                }
             }
         }
         CompiledGeometryOp::Sweep {
