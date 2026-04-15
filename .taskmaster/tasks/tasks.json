@@ -11290,7 +11290,15 @@
             "crates/reify-eval/tests/stdlib_prelude_tests.rs",
             "crates/reify-test-support/src/fixtures.rs",
             "crates/reify-test-support/src/helpers.rs"
-          ]
+          ],
+          "memory_hints": {
+            "searches": [
+              "stdlib_loader_tests prelude negative tests HardnessScale enum",
+              "collect_errors helper reify-test-support stdlib prelude trait conformance"
+            ],
+            "entities": []
+          },
+          "_causation_id": "8a9210de-78df-4834-a133-09f74785f437"
         },
         "updatedAt": "2026-04-15T00:25:51.556Z"
       },
