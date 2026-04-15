@@ -291,3 +291,21 @@ fn multiple_annotations_with_test_marks_constraint_def() {
         def.annotations[1].args[0].kind
     );
 }
+
+// ── TopologyTemplate::is_test() method encapsulation ─────────────────────────
+
+#[test]
+fn topology_template_is_test_method_matches_annotation() {
+    let source = r#"
+        @test structure TestS { param x : Real }
+        structure NormalS { param y : Real }
+    "#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let test_tmpl = module.templates.iter().find(|t| t.name == "TestS").unwrap();
+    let normal_tmpl = module.templates.iter().find(|t| t.name == "NormalS").unwrap();
+
+    assert!(test_tmpl.is_test(), "expected is_test() == true for @test structure");
+    assert!(!normal_tmpl.is_test(), "expected is_test() == false for normal structure");
+}
