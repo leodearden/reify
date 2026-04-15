@@ -5500,6 +5500,43 @@ mod tests {
         assert_eq!(round_tripped, Some(matrix));
     }
 
+    // ── try_into_matrix Point/Vector exclusion tests ─────────────────────────
+    // These document that Point and Vector elements inside a Tensor are
+    // intentionally NOT treated as matrix rows (see exclusion comment on guard).
+
+    #[test]
+    fn try_into_matrix_tensor_of_points_returns_none() {
+        // Tensor([Point([1,2,3]), Point([4,5,6])]) → None
+        // A Tensor-of-Points is a point collection, not a matrix.
+        let tensor = Value::Tensor(vec![
+            Value::Point(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::Point(vec![Value::Int(4), Value::Int(5), Value::Int(6)]),
+        ]);
+        assert_eq!(tensor.try_into_matrix(), None);
+    }
+
+    #[test]
+    fn try_into_matrix_tensor_of_vectors_returns_none() {
+        // Tensor([Vector([1,2]), Vector([3,4])]) → None
+        // A Tensor-of-Vectors is a vector collection, not a matrix.
+        let tensor = Value::Tensor(vec![
+            Value::Vector(vec![Value::Int(1), Value::Int(2)]),
+            Value::Vector(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_eq!(tensor.try_into_matrix(), None);
+    }
+
+    #[test]
+    fn try_into_matrix_mixed_tensor_point_returns_none() {
+        // Tensor([Tensor([1,2]), Point([3,4])]) → None
+        // The guard requires ALL elements to be Tensor; any non-Tensor element rejects.
+        let tensor = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Point(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_eq!(tensor.try_into_matrix(), None);
+    }
+
     // ── Value::Frame tests (step-3) ──────────────────────────────────────────
 
     fn make_point3_length() -> Value {
