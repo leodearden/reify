@@ -38092,10 +38092,11 @@
         "description": "Two small test accuracy/consistency fixes from task 1798 review:\n\n1. **Fix misleading comment (Editor.test.tsx:163):** Change \"the guard (if path) must prevent the call\" to \"When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call\". The if(path) guard already passed at dispatch time.\n\n2. **Add defensive waitFor (App.test.tsx:~1340):** Add `await waitFor(() => expect(capturedEditorStore).toBeTruthy())` before accessing `capturedEditorStore!`, matching the pattern at lines 883, 907, 931, 1016, 2360.\n\nmemory_hints: search \"capturedEditorStore waitFor pattern\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:33:11.415Z"
       },
       {
         "id": "1825",
@@ -38174,7 +38175,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:33:10.720Z",
+      "lastModified": "2026-04-15T21:33:11.416Z",
       "taskCount": 1823,
       "completedCount": 1552,
       "tags": [
