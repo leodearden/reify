@@ -476,13 +476,13 @@ fn field_sample_and_gradient() {
 
 // ── Test 13: function overload resolution ─────────────────────────────────────
 
-/// safe_load_real = safety_factor(100.0) → Real overload → 100.0 * 1.5 = 150.0.
+/// safe_load_real = safety_factor(100.5) → Real overload → 100.5 * 1.5 = 150.75.
 /// safe_load_int = safety_factor(100) → Int overload → 100 * 2 = 200.
 #[test]
 fn function_overload_resolution() {
     let result = eval_canonical();
 
-    // safe_load_real: Real overload → ~150.0 (or 150.75 if input is 100.5)
+    // safe_load_real: Real overload → 150.75 (100.5 * 1.5)
     let real_id = ValueCellId::new("Assembly", "safe_load_real");
     let real_val = result
         .values
@@ -491,8 +491,8 @@ fn function_overload_resolution() {
     match real_val {
         Value::Real(v) => {
             assert!(
-                (v - 150.0).abs() < 1.0,
-                "expected ~150.0 for Assembly.safe_load_real (safety_factor(real) * 1.5), got {v}"
+                (v - 150.75).abs() < 0.01,
+                "expected 150.75 for Assembly.safe_load_real (safety_factor(real) * 1.5), got {v}"
             );
         }
         other => panic!("expected Real for Assembly.safe_load_real, got {:?}", other),
@@ -761,10 +761,10 @@ fn test_runner_all_pass() {
     let compiled = compiled();
     let results = reify_eval::run_tests(compiled, || Box::new(SimpleConstraintChecker));
 
-    // Must have at least 5 test results (6 @test structures added in step-22)
+    // Must have at least 6 test results (6 @test structures added in step-22)
     assert!(
-        results.len() >= 5,
-        "expected >=5 @test results, got {}; did you add @test structures in step-22?",
+        results.len() >= 6,
+        "expected >=6 @test results, got {}; did you add @test structures in step-22?",
         results.len()
     );
 
@@ -786,14 +786,16 @@ fn test_runner_all_pass() {
     );
 
     for name in &expected_tests {
-        if let Some(&status) = by_name.get(*name) {
-            assert_eq!(
-                status,
-                reify_eval::TestStatus::Pass,
-                "@test {name} should be Pass, got {status:?}"
-            );
-        }
-        // If not present, it may not have been added yet — will fail the count check above
+        assert!(
+            by_name.contains_key(*name),
+            "@test {name} not found in results"
+        );
+        let &status = by_name.get(*name).unwrap();
+        assert_eq!(
+            status,
+            reify_eval::TestStatus::Pass,
+            "@test {name} should be Pass, got {status:?}"
+        );
     }
 
     // All present tests must be Pass (no intentional failures in integration file)
