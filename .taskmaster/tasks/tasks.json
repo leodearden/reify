@@ -38056,6 +38056,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1822,
+        "title": "Fix misleading test comment in Editor.test.tsx and add defensive waitFor in App.test.tsx",
+        "description": "Two small test accuracy/consistency fixes from task 1798 review:\n\n1. **Fix misleading comment (Editor.test.tsx:163):** The comment says \"the guard (if path) must prevent the call\" but this is incorrect. At dispatch time (line 158), `activeFile` is non-null so the `if (path)` guard at Editor.tsx:139 passes and the 300ms debounce timer IS scheduled. What actually prevents `updateSource` from firing is the `createEffect` at Editor.tsx:218-224, which watches `activeFile` and calls `clearTimeout(debounceTimer)` when `closeFile` sets it to null. Change the comment to: `// When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call`\n\n2. **Add defensive waitFor (App.test.tsx:1340):** The multi-file F5 test accesses `capturedEditorStore!` without first asserting it's been set. Other tests in this file (lines 883, 907, 931, 1016, 2360) use `await waitFor(() => expect(capturedEditorStore).toBeTruthy())` before accessing the store. Add this guard after the `waitFor` for `app-layout` and before the `capturedEditorStore!.updateFileContent(...)` calls at line 1340.\n\nmemory_hints: search \"capturedEditorStore waitFor pattern\", search \"Editor.tsx createEffect clearTimeout\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -38068,7 +38079,7 @@
       ],
       "created": "2026-04-15T21:22:06.203Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T21:22:06.223Z"
+      "updated": "2026-04-15T21:22:27.064Z"
     }
   }
 }
