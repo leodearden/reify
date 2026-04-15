@@ -1362,3 +1362,49 @@ structure def S {
         "expected explicit port mapping d->d"
     );
 }
+
+// ── task-393/step-1: incompatible_directions_suppresses_auto_match_warning ──
+
+#[test]
+fn incompatible_directions_suppresses_auto_match_warning() {
+    // Two In ports with same trait T but different members (a has {d,l}, b has {d,r}).
+    // Forward connect (In->In) is direction-incompatible, which should suppress auto-matching.
+    // Expected: direction-error IS emitted; unmatched-members Warning is NOT emitted.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : in T {
+        param d : Length = 5mm
+        param l : Length = 1mm
+    }
+    port b : in T {
+        param d : Length = 5mm
+        param r : Length = 1mm
+    }
+    connect a -> b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+
+    // Direction error must be present
+    let dir_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("incompatible port directions"))
+        .collect();
+    assert!(
+        !dir_errors.is_empty(),
+        "expected direction-incompatible error, got: {:?}",
+        diagnostics
+    );
+
+    // No unmatched-members warning should be emitted
+    let member_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("do not match"))
+        .collect();
+    assert!(
+        member_warnings.is_empty(),
+        "expected no unmatched-members warning when directions are incompatible, got: {:?}",
+        member_warnings
+    );
+}
