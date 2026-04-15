@@ -35167,11 +35167,11 @@
         "description": "In `crates/reify-eval/tests/collection_sub_eval.rs`, the `edit_param_count_int_undef_undef_int_transition` test checks bolts[0..2) exist and bolts[2..4) are absent after the final Undef→Int(2) edit, but does not verify the total count is exactly 2 via `count_bolt_diameter_instances`. Stray indices beyond [0..4) would go undetected.\n\nAdd after the bolts[2..4) absence checks:\n```rust\nassert_eq!(count_bolt_diameter_instances(&result.values), 2, \"exactly 2 bolt diameter instances after Int(2)\");\n```\n\nThis mirrors the pattern already used in other transition tests (e.g. line 284).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:37:02.083Z"
+        "updatedAt": "2026-04-15T00:02:40.468Z"
       },
       {
         "id": "1685",
@@ -35188,9 +35188,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-14T21:01:03.464Z",
+      "lastModified": "2026-04-15T00:02:40.468Z",
       "taskCount": 1685,
-      "completedCount": 1419,
+      "completedCount": 1420,
       "tags": [
         "master"
       ]
