@@ -51,10 +51,14 @@ fn eval_canonical() -> &'static reify_eval::EvalResult {
     })
 }
 
-/// Check the canonical source with SimpleConstraintChecker.
-fn check_canonical() -> reify_eval::CheckResult {
-    let mut engine = make_simple_engine();
-    engine.check(compiled())
+/// Check the canonical source with SimpleConstraintChecker, caching the result.
+/// Returns a `&'static CheckResult` — no recompute or clone on subsequent calls.
+fn check_canonical() -> &'static reify_eval::CheckResult {
+    static K: std::sync::OnceLock<reify_eval::CheckResult> = std::sync::OnceLock::new();
+    K.get_or_init(|| {
+        let mut engine = make_simple_engine();
+        engine.check(compiled())
+    })
 }
 
 /// Parse, compile (with stdlib), check a mutated source string.
