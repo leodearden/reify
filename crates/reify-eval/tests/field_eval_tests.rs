@@ -277,6 +277,26 @@ fn make_sample_at(field_expr: CompiledExpr, point: f64, result_type: Type) -> Co
     )
 }
 
+/// Tolerance for floating-point equality assertions in Real-value tests.
+const REAL_TOLERANCE: f64 = 1e-10;
+
+/// Assert that `val` is a `Value::Real` whose value is within [`REAL_TOLERANCE`] of `expected`.
+///
+/// Panics with a descriptive message if `val` is not `Value::Real` or if the
+/// absolute difference exceeds [`REAL_TOLERANCE`].
+fn assert_real_approx(val: &Value, expected: f64, label: &str) {
+    match val {
+        Value::Real(v) => {
+            assert!(
+                (v - expected).abs() < REAL_TOLERANCE,
+                "{label}: expected {expected}, got {v} (diff = {})",
+                (v - expected).abs()
+            );
+        }
+        other => panic!("{label}: expected Value::Real({expected}), got {:?}", other),
+    }
+}
+
 // ── Helper test: make_sample_at shape ─────────────────────────────────────────
 
 #[test]
