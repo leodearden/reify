@@ -1327,7 +1327,7 @@ describe('App F5 re-evaluate multi-file', () => {
         { path: '/project/mount.ri', content: 'structure Mount {}' },
       ],
     });
-    vi.mocked(bridge.updateSource).mockResolvedValue(undefined);
+    vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
 
     render(() => <App />);
 
