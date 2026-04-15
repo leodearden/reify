@@ -452,15 +452,10 @@ pub(crate) fn compile_geometry_call(
             }
             let mut profiles = Vec::with_capacity(args.len());
             for i in 0..args.len() {
-                let r = if let Some(r) = geom_refs.get(&i).cloned() {
-                    r
-                } else {
-                    diagnostics.push(Diagnostic::error(format!(
-                        "loft() argument {} must be a geometry expression",
-                        i + 1
-                    )));
-                    GeomRef::Step(0)
-                };
+                let r = geom_refs
+                    .get(&i)
+                    .cloned()
+                    .unwrap_or(GeomRef::Step(step_offset + i));
                 profiles.push(r);
             }
             let loft_args: Vec<(String, CompiledExpr)> = compiled_args
