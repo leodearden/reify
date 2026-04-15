@@ -35765,11 +35765,11 @@
         "description": "In `crates/reify-compiler/tests/let_scope_tests.rs`, the `realization_named` helper (lines 110-127) does not verify that `names.len() == template.realizations.len()`. If the compiler introduces an unexpected extra realization, the positional lookup silently returns the wrong realization. Add `assert_eq!(names.len(), template.realizations.len(), ...)` at the top of the function.\n\n## memory_hints\n- search: \"realization_named let_scope_tests\"\n- search: \"task 1709 op-level assertions\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:01:18.005Z",
+        "updatedAt": "2026-04-15T06:13:25.493Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/let_scope_tests.rs"
@@ -35927,7 +35927,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:13:23.940Z",
+      "lastModified": "2026-04-15T06:13:25.493Z",
       "taskCount": 1721,
       "completedCount": 1476,
       "tags": [
