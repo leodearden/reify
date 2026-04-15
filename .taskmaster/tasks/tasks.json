@@ -36630,7 +36630,20 @@
           "1750"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/viewStore.ts",
+            "gui/src/utils/viewPersistence.ts",
+            "gui/src/bridge.ts",
+            "gui/src/__tests__/viewPersistence.test.ts"
+          ],
+          "modules": [
+            "gui/src/stores",
+            "gui/src/utils",
+            "gui/src"
+          ]
+        }
       },
       {
         "id": 1750,
