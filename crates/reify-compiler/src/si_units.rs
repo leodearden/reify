@@ -574,6 +574,18 @@ mod tests {
         }
     }
 
+    /// `PrefixSet::All.includes()` should panic (debug_assert) when the caller
+    /// passes a symbol that doesn't exist in `SI_PREFIXES`. In production this
+    /// would be a silent logic error; the debug_assert catches it early.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unknown prefix symbol")]
+    fn debug_assert_rejects_unknown_prefix_in_all() {
+        // "bogus" is not in SI_PREFIXES — the debug_assert in the All arm
+        // must fire. Without the guard this call returns `true` silently.
+        let _ = PrefixSet::All.includes("bogus");
+    }
+
     /// Defensive check that every `prefix_combos` entry in `SI_PREFIX_BASES`
     /// references a symbol that actually exists in `SI_PREFIXES`. A typo here
     /// would cause the generator to silently skip that prefix at `load_stdlib()`
