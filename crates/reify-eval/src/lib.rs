@@ -3912,9 +3912,153 @@ fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Curve { kind, args } => {
-            // Stub — wired up in steps 29-30
-            let _ = (kind, args);
-            None
+            use reify_compiler::CurveKind;
+            match kind {
+                CurveKind::LineSegment => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    Some(reify_types::GeometryOp::LineSegment {
+                        x1: f64_arg("x1")?,
+                        y1: f64_arg("y1")?,
+                        z1: f64_arg("z1")?,
+                        x2: f64_arg("x2")?,
+                        y2: f64_arg("y2")?,
+                        z2: f64_arg("z2")?,
+                    })
+                }
+                CurveKind::Arc => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    Some(reify_types::GeometryOp::Arc {
+                        center: [f64_arg("cx")?, f64_arg("cy")?, f64_arg("cz")?],
+                        radius: f64_arg("radius")?,
+                        start_angle: f64_arg("start_angle")?,
+                        end_angle: f64_arg("end_angle")?,
+                        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
+                    })
+                }
+                CurveKind::Helix => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    Some(reify_types::GeometryOp::Helix {
+                        radius: f64_arg("radius")?,
+                        pitch: f64_arg("pitch")?,
+                        height: f64_arg("height")?,
+                    })
+                }
+                CurveKind::InterpCurve => {
+                    // Variadic: args are c0,c1,c2,...  (flat coordinates)
+                    let coords: Option<Vec<f64>> = args
+                        .iter()
+                        .map(|(name, expr)| {
+                            let v = reify_expr::eval_expr(
+                                expr,
+                                &reify_expr::EvalContext::new(values, functions)
+                                    .with_meta(meta_map),
+                            );
+                            match v.as_f64() {
+                                Some(f) if f.is_finite() => Some(f),
+                                _ => {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "interp arg '{}' is non-finite", name
+                                    )));
+                                    None
+                                }
+                            }
+                        })
+                        .collect();
+                    let coords = coords?;
+                    let points: Vec<[f64; 3]> = coords
+                        .chunks_exact(3)
+                        .map(|c| [c[0], c[1], c[2]])
+                        .collect();
+                    Some(reify_types::GeometryOp::InterpCurve { points })
+                }
+                CurveKind::BezierCurve => {
+                    let coords: Option<Vec<f64>> = args
+                        .iter()
+                        .map(|(name, expr)| {
+                            let v = reify_expr::eval_expr(
+                                expr,
+                                &reify_expr::EvalContext::new(values, functions)
+                                    .with_meta(meta_map),
+                            );
+                            match v.as_f64() {
+                                Some(f) if f.is_finite() => Some(f),
+                                _ => {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "bezier arg '{}' is non-finite", name
+                                    )));
+                                    None
+                                }
+                            }
+                        })
+                        .collect();
+                    let coords = coords?;
+                    let control_points: Vec<[f64; 3]> = coords
+                        .chunks_exact(3)
+                        .map(|c| [c[0], c[1], c[2]])
+                        .collect();
+                    Some(reify_types::GeometryOp::BezierCurve { control_points })
+                }
+                CurveKind::NurbsCurve => {
+                    // For NURBS, all args are passed positionally as c0,c1,...
+                    // The eval stage needs structured data; for now we pass raw
+                    // and the caller must provide the right structure.
+                    // Format: first arg = degree, then n_points*3 pole coords,
+                    // then n_points weights, then remaining are knots.
+                    // This will be revisited with a proper syntax later.
+                    let vals: Option<Vec<f64>> = args
+                        .iter()
+                        .map(|(name, expr)| {
+                            let v = reify_expr::eval_expr(
+                                expr,
+                                &reify_expr::EvalContext::new(values, functions)
+                                    .with_meta(meta_map),
+                            );
+                            match v.as_f64() {
+                                Some(f) if f.is_finite() => Some(f),
+                                _ => {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "nurbs arg '{}' is non-finite", name
+                                    )));
+                                    None
+                                }
+                            }
+                        })
+                        .collect();
+                    let vals = vals?;
+                    if vals.len() < 2 {
+                        return None;
+                    }
+                    let degree = vals[0] as usize;
+                    // Remaining: need to know n_points to split.
+                    // Convention: second val is n_points.
+                    let n_points = vals[1] as usize;
+                    let expected_min = 2 + n_points * 3 + n_points; // degree + n + poles + weights
+                    if vals.len() < expected_min {
+                        return None;
+                    }
+                    let pole_start = 2;
+                    let pole_end = pole_start + n_points * 3;
+                    let weight_end = pole_end + n_points;
+                    let control_points: Vec<[f64; 3]> = vals[pole_start..pole_end]
+                        .chunks_exact(3)
+                        .map(|c| [c[0], c[1], c[2]])
+                        .collect();
+                    let weights: Vec<f64> = vals[pole_end..weight_end].to_vec();
+                    let knots: Vec<f64> = vals[weight_end..].to_vec();
+                    Some(reify_types::GeometryOp::NurbsCurve {
+                        control_points,
+                        weights,
+                        knots,
+                        degree,
+                    })
+                }
+            }
         }
     }
 }
