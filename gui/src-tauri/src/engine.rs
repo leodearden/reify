@@ -859,7 +859,17 @@ pub(crate) fn build_template_node(
             .iter()
             .find(|t| t.name == sub.structure_name)
         {
-            build_template_node(child_template, &sub_path, compiled).children
+            // Guard against infinite recursion: if the child template is part of
+            // a recursive cycle (detected by the compiler's Tarjan SCC pass and
+            // stored in `is_recursive`), emit an empty children vec instead of
+            // recursing.  This covers self-reference (A → A), mutual recursion
+            // (A → B → A), and longer cycles — all correctly tagged by the
+            // compiler.
+            if child_template.is_recursive {
+                vec![]
+            } else {
+                build_template_node(child_template, &sub_path, compiled).children
+            }
         } else {
             vec![]
         };
