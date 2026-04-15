@@ -624,7 +624,7 @@ structure def S : ProvidesParamX + ProvidesLetX {
         .iter()
         .filter(|vc| vc.kind == ValueCellKind::Let)
         .collect();
-    assert_eq!(let_cells.len(), 1, "expected exactly 1 Let 'x' cell");
+    assert_eq!(let_cells.len(), 1, "expected exactly 1 Let 'x' cell (let_default_not_discarded)");
 }
 
 /// Step 1b: Two traits each requiring `param x : Length`.
@@ -991,4 +991,82 @@ structure def S : TraitA + TraitB {
         .filter(|vc| vc.kind == ValueCellKind::Let)
         .collect();
     assert_eq!(let_cells.len(), 1, "expected exactly 1 Let 'x' cell");
+}
+
+/// Constraint default coexists with a param default for the same member name.
+///
+/// Trait A provides `param x : Real = 1.0`.
+/// Trait B provides `constraint x > 0` (unlabeled — `name: None`).
+/// Structure implements both with no override.
+///
+/// Unlabeled constraints have `name: None` and are pushed unconditionally in
+/// `collect_all_requirements` (conformance.rs:469-471), bypassing the composite-key
+/// dedup that applies to named Param/Let defaults. They never conflict with a
+/// same-named param, so this test should pass immediately.
+///
+/// This test exercises the Constraint + Param coexistence path through the full
+/// compilation pipeline: pre-registration → expression compilation → constraint
+/// injection.
+#[test]
+fn constraint_default_coexists_with_param_default() {
+    let source = r#"
+trait HasParam {
+    param x : Real = 1.0
+}
+
+trait HasConstraint {
+    constraint x > 0
+}
+
+structure def S : HasParam + HasConstraint {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors when a constraint default coexists with a param default: {:?}",
+        errors
+    );
+
+    // Exactly 1 'x' value cell (the Param from HasParam).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell (Param from HasParam), got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the 'x' cell should be a Param, got {:?}",
+        x_cells[0].kind
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Real,
+        "the Param 'x' should have type Real, got {:?}",
+        x_cells[0].cell_type
+    );
+    assert!(
+        x_cells[0].default_expr.is_some(),
+        "the Param 'x' should have a default expression (= 1.0)"
+    );
+
+    // At least 1 constraint injected (the `x > 0` from HasConstraint).
+    assert!(
+        template.constraints.len() >= 1,
+        "expected at least 1 constraint injected from HasConstraint, got {}",
+        template.constraints.len()
+    );
 }
