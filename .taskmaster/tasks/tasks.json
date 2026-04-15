@@ -35540,15 +35540,16 @@
         "description": "Two small stdlib test quality improvements from task #514 review:\n\n1. **Pin expected variant in prelude_function_merging_path** (stdlib_loader_tests.rs:435-508): The test matches both `UserFunctionCall` and `FunctionCall` as valid outcomes. Since the compiler is expected to resolve prelude functions (producing `FunctionCall`), the test should match only `FunctionCall` and fail if it produces `UserFunctionCall`. Currently a regression from resolved→unresolved calls goes undetected.\n\n2. **Use `&[&str]` slice for EXPECTED_MATERIAL_TRAITS** (fixtures.rs:906): The constant is typed `&[&str; 9]` — adding a new trait requires updating both the array contents AND the size literal. Change to `&[&str]` to remove the redundant size annotation.\n\nmemory_hints: search \"prelude function merging compile_with_prelude\" for context on expected resolution behavior",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T01:38:56.117Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:38:55.859Z",
+      "lastModified": "2026-04-15T01:38:56.117Z",
       "taskCount": 1701,
       "completedCount": 1451,
       "tags": [
