@@ -34899,11 +34899,11 @@
         "description": "Follow-up from esc-1656-21 (reviewer_comprehensive, task 1656). Three items: (1) In optimized_annotation_tests.rs:511-550, test `nonstring_then_valid_optimized_resolves_to_valid_target` is missing assertion that the missing-target warning fires for malformed `@optimized(123)` — add `missing_target_warnings` assertion matching the pattern at lines 430-437 in the sibling test. (2) In optimized_annotation_tests.rs:453-500, test `valid_then_malformed_optimized_keeps_valid_target` docstring claims malformed second `@optimized()` fires warning but assertion is absent — add assertion that `warning_diags` contains 'requires a string literal target'. (3) In annotations.rs:156-173, the `ann.name == \"optimized\" && matches!(ann.args.first(), Some(AnnotationArg::String(_)))` predicate is duplicated at lines 94-98 (inverted) and 159-160 — extract `fn is_valid_optimized(ann: &Annotation) -> bool` helper.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:04:04.829Z",
+        "updatedAt": "2026-04-15T00:53:35.516Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/annotations.rs",
@@ -35370,7 +35370,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:53:35.017Z",
+      "lastModified": "2026-04-15T00:53:35.516Z",
       "taskCount": 1695,
       "completedCount": 1440,
       "tags": [
