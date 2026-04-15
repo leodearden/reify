@@ -1,5 +1,12 @@
 use super::*;
 
+/// Aggregation operations available on collection subs.
+///
+/// When accessed through `self.<sub>.<member>`, these emit a "drop self." recommendation
+/// rather than the indexed-access recommendation used for regular struct members.
+/// Also used by the general method-call path to infer result types for collection methods.
+const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "values"];
+
 /// Extract the `free` flag from an `ExprKind::Auto` expression.
 ///
 /// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
@@ -713,8 +720,10 @@ pub(crate) fn compile_expr_guarded(
                         // Error: collection sub member accessed directly through self.
                         // Aggregation members (count/sum/keys/values) should use bare sub
                         // access, not indexed access — emit a distinct recommendation.
-                        let aggregation_members = ["count", "sum", "keys", "values"];
-                        if aggregation_members.contains(&member.as_str()) {
+                        // For members that don't exist on the sub type at all, emit a
+                        // generic "unknown member" error rather than suggesting indexed
+                        // access to a field that doesn't exist.
+                        if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
                             diagnostics.push(
                                 Diagnostic::error(format!(
                                     "cannot access aggregation '{}' of collection sub '{}' through self; \
@@ -726,7 +735,12 @@ pub(crate) fn compile_expr_guarded(
                                     "collection sub aggregation: drop `self.`",
                                 )),
                             );
-                        } else {
+                        } else if scope
+                            .sub_member_types
+                            .get(sub_name.as_str())
+                            .map_or(false, |m| m.contains_key(member.as_str()))
+                        {
+                            // Known struct member — recommend indexed access.
                             diagnostics.push(
                                 Diagnostic::error(format!(
                                     "cannot access member '{}' of collection sub '{}' directly through self; \
@@ -736,6 +750,19 @@ pub(crate) fn compile_expr_guarded(
                                 .with_label(DiagnosticLabel::new(
                                     expr.span,
                                     "collection sub member requires indexing",
+                                )),
+                            );
+                        } else {
+                            // Member doesn't exist on the element type at all — don't suggest
+                            // indexing a field that isn't there.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unknown member '{}' on collection sub '{}'",
+                                    member, sub_name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "unknown member",
                                 )),
                             );
                         }
@@ -904,8 +931,7 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
-            let collection_methods = ["count", "sum", "keys", "values"];
-            if collection_methods.contains(&member.as_str()) {
+            if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
                 // Infer result type from method and object type
                 let result_type = match member.as_str() {
                     "count" => Type::Int,

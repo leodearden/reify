@@ -802,11 +802,15 @@ structure S {
         .find(|vc| vc.id.member == "d")
         .expect("d value cell");
 
-    // The fallback type should NOT be Type::Real — it should reflect diameter's actual type
-    assert_ne!(
+    // The fallback type should be exactly Scalar{LENGTH} — diameter is declared as `Scalar = 10mm`.
+    // (Type::Scalar { dimension: DimensionVector::LENGTH })
+    assert_eq!(
         d_cell.cell_type,
-        reify_types::Type::Real,
-        "self.items.diameter error fallback should not be Type::Real (cascades spurious diagnostics)"
+        reify_types::Type::Scalar {
+            dimension: reify_types::DimensionVector::LENGTH
+        },
+        "self.items.diameter error fallback should be Scalar{{LENGTH}}, got {:?}",
+        d_cell.cell_type
     );
 }
 
@@ -883,6 +887,53 @@ structure S {
         1,
         "expected exactly 1 error (collection sub access), got {}: {:?}",
         errors.len(),
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1281 amend: self.collection_sub.sum also recommends drop self ───
+
+#[test]
+fn self_dot_collection_sub_sum_aggregation_recommends_drop_self() {
+    // `self.items.sum` should emit an error recommending `items.sum`
+    // (drop self.), NOT `items[i].sum` (the per-instance recommendation).
+    // This guards against partial regressions in the aggregation-member list
+    // (e.g. if a new aggregation is added only to one branch).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let s = self.items.sum
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.sum` on collection sub"
+    );
+
+    // error message should contain 'items.sum' (correct aggregation recommendation)
+    let has_items_sum = errors
+        .iter()
+        .any(|d| d.message.contains("items.sum"));
+    assert!(
+        has_items_sum,
+        "expected error message containing 'items.sum', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // error message should NOT contain 'items[i].sum' (misleading per-instance recommendation)
+    let has_indexed = errors
+        .iter()
+        .any(|d| d.message.contains("items[i].sum"));
+    assert!(
+        !has_indexed,
+        "error message should not recommend 'items[i].sum' for aggregation, got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
