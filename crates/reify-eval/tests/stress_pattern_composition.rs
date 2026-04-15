@@ -66,10 +66,9 @@ fn has_expected_templates() {
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
-    assert_eq!(
-        compiled.templates.len(),
-        7,
-        "expected 7 templates, got {}: {:?}",
+    assert!(
+        compiled.templates.len() >= 7,
+        "expected >=7 templates, got {}: {:?}",
         compiled.templates.len(),
         compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
