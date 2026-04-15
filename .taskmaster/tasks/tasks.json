@@ -8208,8 +8208,8 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
           ]
         }
       },
