@@ -556,6 +556,49 @@ fn compile_collection_sub_as_standalone_identifier() {
     }
 }
 
+// ─── task-1454: combined collection + non-collection sub InstanceQualifiedAccess ───
+
+/// Proof that `sub_member_types` is the single authoritative source for ALL sub types.
+///
+/// A structure with BOTH a non-collection sub (`sub part = Inner()`) and a collection
+/// sub (`sub parts : List<Inner>`) — each accessed via `InstanceQualifiedAccess` —
+/// must compile without errors and without an ICE diagnostic.
+///
+/// The existing tests `sub_member_type_resolves_without_ice` (collection) and
+/// `non_collection_sub_member_type_resolves_without_ice` (non-collection) cover each
+/// form in isolation.  This test locks in the superset property: both subs coexist in
+/// the same entity and both resolve correctly from `sub_member_types`.
+#[test]
+fn mixed_sub_types_instance_qualified_access() {
+    let source = r#"
+        trait MechTrait {
+            param diameter : Length
+        }
+        structure Inner : MechTrait {
+            param diameter : Length = 5mm
+        }
+        structure Outer {
+            sub part = Inner()
+            sub parts : List<Inner>
+            let d1 = part.(MechTrait::diameter)
+            let d2 = parts.(MechTrait::diameter)
+        }
+    "#;
+    let compiled = compile_no_errors(source);
+
+    // Confirm no ICE diagnostics (compile_no_errors already rejects Error-severity
+    // diagnostics, but an explicit ICE check makes the intent of this test clear).
+    let has_ice = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on mixed sub-type instance qualified access, got: {:?}",
+        compiled.diagnostics
+    );
+}
+
 // ─── task-1441 regression: collection/scalar coexistence + bare collection identifier ───
 
 #[test]
