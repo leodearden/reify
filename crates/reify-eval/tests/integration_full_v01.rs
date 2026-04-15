@@ -60,6 +60,19 @@ fn check_source(src: &str) -> reify_eval::CheckResult {
     engine.check(&compiled)
 }
 
+// ── Compile-time Send+Sync guards ─────────────────────────────────────────────
+
+/// Asserts at compile time that `EvalResult` and `CheckResult` satisfy `Send + Sync`.
+///
+/// `OnceLock<T>` requires `T: Send + Sync`. If a future refactor adds a
+/// non-Send field to either type, this function — rather than the OnceLock
+/// statics below — will produce the compiler error with a clear diagnosis.
+fn _assert_send_sync() {
+    fn _assert<T: Send + Sync>() {}
+    _assert::<reify_eval::EvalResult>();
+    _assert::<reify_eval::CheckResult>();
+}
+
 // ── Test 1: file parses without errors ───────────────────────────────────────
 
 /// Read integration_full_v01.ri, verify it parses without errors, and assert
