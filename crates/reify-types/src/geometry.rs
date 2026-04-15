@@ -8,6 +8,14 @@ use crate::value::Value;
 pub struct GeometryHandleId(pub u64);
 
 impl GeometryHandleId {
+    /// Sentinel value representing a failed geometry operation.
+    ///
+    /// Pushed into `step_handles` when `compile_geometry_op` returns `None`
+    /// to maintain step index alignment so independent subsequent ops can
+    /// still be attempted. No real geometry kernel allocates handle ID
+    /// `u64::MAX` (kernels start from 1 and increment).
+    pub const INVALID: GeometryHandleId = GeometryHandleId(u64::MAX);
+
     /// Compute a content hash for incremental caching.
     /// Domain-separated with tag byte [11] followed by the id as le_bytes.
     /// This serves as a proxy hash since OCCT shapes can't be hashed directly.
