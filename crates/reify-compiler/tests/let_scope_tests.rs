@@ -1306,9 +1306,12 @@ fn ident_alias_with_transform() {
 
 #[test]
 fn ident_alias_scope_type_is_geometry() {
-    // After the fix, `alias` has Type::Geometry in scope (not Real). Arithmetic
-    // on a Geometry-typed name produces a compile error (type mismatch). This
-    // verifies the first-pass type registration works for ident aliases.
+    // After the fix, `alias` has Type::Geometry in scope. This means:
+    //   1. `alias` is skipped in the second pass → appears in realizations, NOT value_cells.
+    //   2. `let x = alias + 1` is NOT a geometry let → x IS compiled as a value cell.
+    // Together these prove the first-pass type registration correctly typed `alias` as
+    // Geometry. Without the fix, `alias` would be Type::Real and compiled as a value cell,
+    // so realizations.len() would be 1 (only body), failing assertion (1).
     let source = r#"structure S {
     param r: Scalar = 5mm
     param h: Scalar = 10mm
@@ -1316,14 +1319,23 @@ fn ident_alias_scope_type_is_geometry() {
     let alias = body
     let x = alias + 1
 }"#;
-    let compiled = compile_with_diagnostics(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    // (1) Both `body` and `alias` must be realizations (not value cells).
+    assert_eq!(
+        template.realizations.len(),
+        2,
+        "expected 2 realizations (body, alias), got {} — alias must have Type::Geometry",
+        template.realizations.len()
+    );
+    // (2) `alias` itself must NOT appear as a value cell.
     assert!(
-        !errors.is_empty(),
-        "expected at least one error when performing arithmetic on a geometry-typed alias, got none"
+        !template.value_cells.iter().any(|vc| vc.id.member == "alias"),
+        "alias should NOT be a value cell (it has Type::Geometry)"
+    );
+    // (3) `x = alias + 1` is NOT a geometry let, so x must be a value cell.
+    assert!(
+        template.value_cells.iter().any(|vc| vc.id.member == "x"),
+        "expected value cell 'x' for let x = alias + 1"
     );
 }
