@@ -34,9 +34,11 @@ fn eval_source(source: &str) -> reify_eval::EvalResult {
 /// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
 ///
 /// Panics with a descriptive message if any item is not `Value::Real`.
+/// Panics if `items` does not contain exactly 3 elements.
 /// Used by the three principal-stress tests to avoid duplicating the
 /// extraction loop.
 fn extract_eigenvalues(items: &[Value]) -> [f64; 3] {
+    assert_eq!(items.len(), 3, "expected 3 eigenvalues, got {}", items.len());
     let mut eigenvalues = [0.0_f64; 3];
     for (i, item) in items.iter().enumerate() {
         match item {
@@ -45,6 +47,23 @@ fn extract_eigenvalues(items: &[Value]) -> [f64; 3] {
         }
     }
     eigenvalues
+}
+
+#[test]
+#[should_panic(expected = "expected 3 eigenvalues")]
+fn extract_eigenvalues_panics_on_too_few_items() {
+    extract_eigenvalues(&[Value::Real(1.0), Value::Real(2.0)]);
+}
+
+#[test]
+#[should_panic(expected = "expected 3 eigenvalues")]
+fn extract_eigenvalues_panics_on_too_many_items() {
+    extract_eigenvalues(&[
+        Value::Real(1.0),
+        Value::Real(2.0),
+        Value::Real(3.0),
+        Value::Real(4.0),
+    ]);
 }
 
 // ── Step 21: eval analytical field at point ────────────────────────────
