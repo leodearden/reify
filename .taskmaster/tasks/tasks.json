@@ -26812,11 +26812,11 @@
         "description": "Consolidates CompiledModule filter helper API slimming (return iterators), has_test_annotation helper extraction (eliminate three-site duplication), is_test encapsulation on TopologyTemplate with asymmetry docs, and @test-on-function half-support resolution.",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 1251 plus 3 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 1251: Return iterators and slim API surface of CompiledModule filter helpers\n\n\nIn `crates/reify-compiler/src/lib.rs` lines 178-199, change `test_templates`, `non_test_templates`, `test_constraint_defs`, and `non_test_constraint_defs` to return `impl Iterator<Item = &TopologyTemplate>` / `&ConstraintDef` instead of `Vec`. While doing so, evaluate whether the four methods can be replaced by two (`test_templates_iter`, `test_constraint_defs_iter`) and let callers negate with `.filter(|t| !t.is_test)` — eliminating the API-surface doubling identified in suggestion [1].\n\n### Absorbed from task 1252: Extract has_test_annotation helper to eliminate three-site duplication\nThe expression `annotations.iter().any(|a| a.name == \"test\")` is inlined verbatim in three places: `crates/reify-compiler/src/lib.rs:6384`, `crates/reify-syntax/src/lib.rs:465`, and `crates/reify-test-support/src/builders/topology.rs:356`. Extract a single helper (e.g. `fn has_test_annotation(anns: &[impl HasName]) -> bool` or one helper per annotation type) and replace all three call sites. Document that `\"test\"` is the canonical lowercase spelling.\n\n### Absorbed from task 1253: Encapsulate is_test on TopologyTemplate and document is_test asymmetry\nIn `crates/reify-compiler/src/lib.rs` around line 248: (a) make `is_test` a private field and expose it via a `pub fn is_test(&self) -> bool` getter, with a doc note that mutating `annotations` post-construction is unsupported. This is symmetric with `ConstraintDef::is_test()`. (b) Add TODO comments on `test_constraint_defs`/`non_test_constraint_defs` (lib.rs ~192-199) and on `ConstraintDef::is_test()` in `crates/reify-syntax/src/lib.rs:465` noting that the method will move to a `CompiledConstraintDef::is_test` field once constraint-def lowering lands.\n\n### Absorbed from task 1254: Resolve @test-on-function half-support\nIn `crates/reify-compiler/src/lib.rs:4728`, `function` is listed as a valid context for `@test`, but `CompiledFunction` (re-exported from `reify_types`) has no `is_test` field and `CompiledModule` has no `test_functions()` helper. Either (a) remove `function` from the valid context match arm if test-functions are out of scope for Task 267, or (b) add `CompiledFunction::is_test()` in `reify_types` and `CompiledModule::test_functions()` / `non_test_functions()` in `crates/reify-compiler/src/lib.rs` to make the API coherent.\n",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:57:39.885Z",
+        "updatedAt": "2026-04-15T07:21:15.942Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -36177,7 +36177,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T07:21:15.538Z",
+      "lastModified": "2026-04-15T07:21:15.942Z",
       "taskCount": 1731,
       "completedCount": 1491,
       "tags": [
