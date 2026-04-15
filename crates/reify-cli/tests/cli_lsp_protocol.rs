@@ -23,7 +23,7 @@ static LSP_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// tests. The lock guards `()` (unit type), so there is no inconsistent state
 /// to worry about; silent recovery is strictly better than propagating the
 /// poison. This pattern is used at 14+ other sites in the codebase
-/// (priority_promotion.rs, concurrent.rs, mcp_context.rs, diff.rs, mocks.rs).
+/// (priority_promotion.rs, concurrent.rs, concurrent_eval.rs, diff.rs, mocks.rs).
 fn acquire_lsp_test_lock() -> std::sync::MutexGuard<'static, ()> {
     LSP_TEST_LOCK
         .get_or_init(|| Mutex::new(()))
