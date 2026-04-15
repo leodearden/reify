@@ -38204,11 +38204,11 @@
         "description": "The existing unit test in expr.rs (~line 1737) covers the safety fallback (sub_component_types absent), but there is no unit-level test for the primary new behavior: when sub_component_types IS present and returns a different name than sub_name.\n\nAdd a sibling unit test that populates `scope.sub_component_types.insert(\"parts\".to_string(), \"Fastener\".to_string())` and asserts the result type is `List(StructureRef(\"Fastener\"))`, proving the lookup works at the function level without depending on the full compilation pipeline.\n\nIntegration tests cover this indirectly via the forward-ref and empty-structure tests in self_keyword_tests.rs, but a focused unit test makes the core logic change directly verifiable in isolation.\n\nmemory_hints: search \"resolve_collection_sub_to_list unit test\" in reify project; inspect expr.rs near line 1737.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T21:34:49.101Z",
+        "updatedAt": "2026-04-15T21:56:48.125Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs"
@@ -38346,7 +38346,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:56:47.847Z",
+      "lastModified": "2026-04-15T21:56:48.125Z",
       "taskCount": 1832,
       "completedCount": 1561,
       "tags": [
