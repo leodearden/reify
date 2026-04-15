@@ -37762,15 +37762,16 @@
         "description": "Strengthen builtin constant (pi/tau) shadowing tests added in task 1762.\n\n1. Add a test in `constant_compile_tests.rs` that creates a collection with a sub-structure named `pi` and asserts the identifier resolves to the collection list rather than the builtin constant literal. The code path (collection sub-names checked before `resolve_builtin_constant`) is correct by design, but an explicit test guards against future refactors that reorder checks.\n\n2. In the existing `user_let_pi_shadows_builtin` test, add an assertion that `get_cell_expr(&compiled, \"pi\")` resolves to `Literal(Int(42))` to confirm the user-provided value is preserved. Similarly strengthen `user_param_pi_shadows_builtin`.\n\nmemory_hints: search \"resolve_builtin_constant collection sub-name\", get_entity \"reify-compiler\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T17:17:21.166Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:17:20.908Z",
+      "lastModified": "2026-04-15T17:17:21.166Z",
       "taskCount": 1800,
       "completedCount": 1537,
       "tags": [
