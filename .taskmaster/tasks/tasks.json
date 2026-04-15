@@ -37894,6 +37894,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1814,
+        "title": "Fix unused Value import and stale doc comment in stress_large_assembly.rs",
+        "description": "Two small fixes in crates/reify-eval/tests/stress_large_assembly.rs from task 1786 review:\n\n1. Remove Value from the import on line 19 (now unused after as_f64() refactoring — will produce compiler warning).\n2. Update the doc comment on compiled() (line 39) to say 'Parse, compile with stdlib, and cache the result.' instead of claiming it asserts no compile errors — the assertion lives inside parse_and_compile_with_stdlib, not in this function body.\n\nFiles: crates/reify-eval/tests/stress_large_assembly.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37906,7 +37917,7 @@
       ],
       "created": "2026-04-15T20:32:16.782Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T20:45:33.630Z"
+      "updated": "2026-04-15T20:46:31.300Z"
     }
   }
 }
