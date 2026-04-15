@@ -1,6 +1,6 @@
 //! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
 
-use reify_types::{ModulePath, Severity};
+use reify_types::{Diagnostic, ModulePath, Severity};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::MockConstraintChecker;
@@ -21,6 +21,18 @@ pub fn make_engine() -> reify_eval::Engine {
 #[cfg(feature = "eval-helpers")]
 pub fn make_simple_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
+}
+
+/// Filter diagnostics to only those with [`Severity::Error`].
+///
+/// This replaces the duplicated `error_diags` helper found across multiple
+/// test files (`constraint_inst_tests`, `optimized_annotation_tests`,
+/// `constraint_def_compile_tests`).
+pub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
 }
 
 /// Parse `source`, assert no parse errors, compile, assert no compile errors.
