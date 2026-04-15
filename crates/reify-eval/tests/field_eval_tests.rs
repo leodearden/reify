@@ -265,6 +265,39 @@ fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) ->
     }
 }
 
+// ── Helper test: make_sample_at shape ─────────────────────────────────────────
+
+#[test]
+fn test_make_sample_at_produces_sample_call() {
+    let field_expr = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+    let result = make_sample_at(field_expr.clone(), 0.5, Type::Real);
+
+    // Verify kind is FunctionCall with name "sample"
+    match &result.kind {
+        CompiledExprKind::FunctionCall { function, args } => {
+            assert_eq!(function.name, "sample", "function name should be \"sample\"");
+            assert_eq!(args.len(), 2, "should have exactly 2 args");
+            // First arg should be the original field_expr (same content hash)
+            assert_eq!(
+                args[0].content_hash, field_expr.content_hash,
+                "first arg should be the field_expr"
+            );
+            // Second arg should be a Real literal 0.5
+            match &args[1].kind {
+                CompiledExprKind::Literal(Value::Real(v)) => {
+                    assert!(
+                        (v - 0.5).abs() < 1e-12,
+                        "second arg should be Real(0.5), got {v}"
+                    );
+                }
+                other => panic!("second arg should be Literal(Real(0.5)), got {:?}", other),
+            }
+        }
+        other => panic!("expected FunctionCall kind, got {:?}", other),
+    }
+    assert_eq!(result.result_type, Type::Real, "result_type should be Real");
+}
+
 // ── step-1: von_mises dispatch ────────────────────────────────────────────────
 // (step-2 in the plan was "run test to verify it passes" — a verification step,
 // not a distinct test; there is no step-2 test to write here.
