@@ -1,6 +1,6 @@
 //! Tests for let-binding scope resolution, especially geometry lets.
 
-use reify_compiler::CompiledGeometryOp;
+use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_types::Severity;
 
 /// Helper: parse + compile source, assert no errors, return compiled output.
