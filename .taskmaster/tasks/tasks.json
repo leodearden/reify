@@ -35604,10 +35604,11 @@
         "description": "From task 1674 review: (1) Extract helper for 3-param lambda field setup shared by 4 sample() tests. (2) Fix doc comment at line 506 to say Point or Vector.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T01:57:52.140Z"
       },
       {
         "id": "1705",
@@ -35631,7 +35632,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:57:47.929Z",
+      "lastModified": "2026-04-15T01:57:52.161Z",
       "taskCount": 1705,
       "completedCount": 1455,
       "tags": [
