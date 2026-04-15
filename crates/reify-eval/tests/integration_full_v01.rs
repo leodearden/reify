@@ -902,11 +902,14 @@ fn option_some_none_values() {
         "Assembly.maybe_load should be Value::Option(Some(_)), got {:?}",
         maybe_val
     );
-    // Verify the wrapped value is Real(100.0)
+    // Verify the wrapped value is numerically 100 — Reify compiles whole-number
+    // literals (e.g. 100.0) as Int, so accept both Real(100.0) and Int(100).
     if let Value::Option(Some(inner)) = maybe_val {
+        let ok = matches!(inner.as_ref(), Value::Real(v) if (*v - 100.0).abs() < 1e-12)
+            || matches!(inner.as_ref(), Value::Int(100));
         assert!(
-            matches!(inner.as_ref(), Value::Real(v) if (*v - 100.0).abs() < 1e-12),
-            "Assembly.maybe_load inner should be Real(100.0), got {:?}",
+            ok,
+            "Assembly.maybe_load inner should be Real(100.0) or Int(100), got {:?}",
             inner
         );
     }
