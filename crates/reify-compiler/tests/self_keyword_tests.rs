@@ -847,3 +847,250 @@ structure S {
         bare_refs
     );
 }
+
+// ─── task-1281 step-3: self.collection_sub.member error uses correct fallback type ───
+
+#[test]
+fn self_dot_collection_sub_member_error_has_correct_fallback_type() {
+    // `self.items.diameter` where `items` is List<Bolt> should emit an error AND
+    // have a cell type matching Bolt's diameter type (Scalar with length dimension),
+    // NOT Type::Real.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let d = self.items.diameter
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.diameter` on collection sub"
+    );
+
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let d_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("d value cell");
+
+    // The fallback type should be exactly Scalar{LENGTH} — diameter is declared as `Scalar = 10mm`.
+    // (Type::Scalar { dimension: DimensionVector::LENGTH })
+    assert_eq!(
+        d_cell.cell_type,
+        reify_types::Type::Scalar {
+            dimension: reify_types::DimensionVector::LENGTH
+        },
+        "self.items.diameter error fallback should be Scalar{{LENGTH}}, got {:?}",
+        d_cell.cell_type
+    );
+}
+
+// ─── task-1281 step-5: self.collection_sub aggregation recommends drop self ───
+
+#[test]
+fn self_dot_collection_sub_aggregation_recommends_drop_self() {
+    // `self.items.count` should emit an error recommending `items.count`
+    // (drop self.), NOT `items[i].count` (the per-instance recommendation).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let c = self.items.count
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.count` on collection sub"
+    );
+
+    // (a) an error diagnostic exists — checked above
+
+    // (b) error message should contain 'items.count' (correct aggregation recommendation)
+    let has_items_count = errors
+        .iter()
+        .any(|d| d.message.contains("items.count"));
+    assert!(
+        has_items_count,
+        "expected error message containing 'items.count', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (c) error message should NOT contain 'items[i].count' (misleading per-instance recommendation)
+    let has_indexed = errors
+        .iter()
+        .any(|d| d.message.contains("items[i].count"));
+    assert!(
+        !has_indexed,
+        "error message should not recommend 'items[i].count' for aggregation, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1281 step-7: no cascading diagnostics after type fallback fixes ───
+
+#[test]
+fn self_dot_collection_sub_no_cascading_diagnostics() {
+    // `self.items.diameter` used in a constraint should produce exactly 1 error
+    // (the collection sub error), not additional type-mismatch diagnostics from
+    // d being Type::Real and then being compared with 5mm (Scalar{Length}).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let d = self.items.diameter
+    constraint d > 5mm
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error (collection sub access), got {}: {:?}",
+        errors.len(),
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1281 amend: self.collection_sub.sum also recommends drop self ───
+
+#[test]
+fn self_dot_collection_sub_sum_aggregation_recommends_drop_self() {
+    // `self.items.sum` should emit an error recommending `items.sum`
+    // (drop self.), NOT `items[i].sum` (the per-instance recommendation).
+    // This guards against partial regressions in the aggregation-member list
+    // (e.g. if a new aggregation is added only to one branch).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let s = self.items.sum
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.sum` on collection sub"
+    );
+
+    // error message should contain 'items.sum' (correct aggregation recommendation)
+    let has_items_sum = errors
+        .iter()
+        .any(|d| d.message.contains("items.sum"));
+    assert!(
+        has_items_sum,
+        "expected error message containing 'items.sum', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // error message should NOT contain 'items[i].sum' (misleading per-instance recommendation)
+    let has_indexed = errors
+        .iter()
+        .any(|d| d.message.contains("items[i].sum"));
+    assert!(
+        !has_indexed,
+        "error message should not recommend 'items[i].sum' for aggregation, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1281 review S2: aggregation no-cascading-diagnostics ───
+
+#[test]
+fn self_dot_collection_sub_aggregation_no_cascading_diagnostics() {
+    // `self.items.count` used in a constraint should produce exactly 1 error
+    // (the collection sub aggregation error), not additional type-mismatch
+    // diagnostics from the fallback type being wrong (e.g. Real vs Int).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let c = self.items.count
+    constraint c > 0
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error (collection sub aggregation access), got {}: {:?}",
+        errors.len(),
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1281 review S3: unknown member on collection sub ───
+
+#[test]
+fn self_dot_collection_sub_unknown_member_error() {
+    // `self.items.nonexistent` where `nonexistent` is neither an aggregation method
+    // nor a field of the element struct should emit an "unknown member" error,
+    // NOT suggest indexed access to a field that doesn't exist.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let x = self.items.nonexistent
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.nonexistent`"
+    );
+
+    let has_unknown_member = errors
+        .iter()
+        .any(|d| d.message.contains("unknown member"));
+    assert!(
+        has_unknown_member,
+        "expected 'unknown member' error, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Should NOT suggest indexed access for a member that doesn't exist
+    let has_indexed = errors
+        .iter()
+        .any(|d| d.message.contains("items[i]"));
+    assert!(
+        !has_indexed,
+        "should not suggest indexed access for unknown member, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

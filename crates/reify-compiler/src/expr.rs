@@ -1,5 +1,12 @@
 use super::*;
 
+/// Aggregation operations available on collection subs.
+///
+/// When accessed through `self.<sub>.<member>`, these emit a "drop self." recommendation
+/// rather than the indexed-access recommendation used for regular struct members.
+/// Also used by the general method-call path to infer result types for collection methods.
+const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "values"];
+
 /// Extract the `free` flag from an `ExprKind::Auto` expression.
 ///
 /// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
@@ -660,14 +667,12 @@ pub(crate) fn compile_expr_guarded(
                 if let reify_syntax::ExprKind::Ident(obj_name) = &object.kind
                     && obj_name == "self"
                 {
-                    // Check for self.sub.member chaining (handled at outer level): skip here
-                    // if member is a sub-component name — return a StructureRef for the sub.
-                    // Guard: exclude collection subs (List<T>), which must be accessed via index.
+                    // self.sub — for single-instance subs, return a StructureRef so outer
+                    // chaining works. Collection subs are excluded here and handled below
+                    // via resolve_collection_sub_to_list (self.bolts ≡ bare bolts).
                     if scope.sub_component_types.contains_key(member.as_str())
                         && !scope.collection_sub_names.contains(member.as_str())
                     {
-                        // self.sub_name — return StructureRef so that chaining works
-                        // (but note: this case is handled by the outer MemberAccess pattern below)
                         let structure_name = scope.sub_component_types[member.as_str()].clone();
                         let scoped_entity = format!("{}.{}", scope.entity_name, member);
                         let sub_id = ValueCellId::new(&scoped_entity, "__self");
@@ -705,8 +710,10 @@ pub(crate) fn compile_expr_guarded(
                     }
                 }
 
-                // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name })
-                // Guard: exclude collection subs (List<T>), which must be accessed via index.
+                // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name }).
+                // Single match; branches internally on whether sub_name is a collection sub.
+                // Invariant: collection_sub_names ⊆ sub_component_types.keys(), so the outer
+                // sub_component_types guard is sufficient to cover both branches.
                 if let reify_syntax::ExprKind::MemberAccess {
                     object: inner_obj,
                     member: sub_name,
@@ -714,9 +721,75 @@ pub(crate) fn compile_expr_guarded(
                     && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
                     && self_name == "self"
                     && scope.sub_component_types.contains_key(sub_name.as_str())
-                    && !scope.collection_sub_names.contains(sub_name.as_str())
                 {
-                    // Resolve member type from sub_member_types
+                    if scope.collection_sub_names.contains(sub_name.as_str()) {
+                        // Error: collection sub member accessed directly through self.
+                        // Aggregation members (count/sum/keys/values) should use bare sub
+                        // access, not indexed access — emit a distinct recommendation.
+                        // For members that don't exist on the sub type at all, emit a
+                        // generic "unknown member" error rather than suggesting indexed
+                        // access to a field that doesn't exist.
+                        if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "cannot access aggregation '{}' of collection sub '{}' through self; \
+                                     use `{}.{}` directly",
+                                    member, sub_name, sub_name, member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "collection sub aggregation: drop `self.`",
+                                )),
+                            );
+                        } else if scope
+                            .sub_member_types
+                            .get(sub_name.as_str())
+                            .is_some_and(|m| m.contains_key(member.as_str()))
+                        {
+                            // Known struct member — recommend indexed access.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "cannot access member '{}' of collection sub '{}' directly through self; \
+                                     use `{}[i].{}` for a specific instance",
+                                    member, sub_name, sub_name, member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "collection sub member requires indexing",
+                                )),
+                            );
+                        } else {
+                            // Member doesn't exist on the element type at all — don't suggest
+                            // indexing a field that isn't there.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unknown member '{}' on collection sub '{}'",
+                                    member, sub_name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "unknown member",
+                                )),
+                            );
+                        }
+                        // Use the member's actual type as fallback so downstream expressions
+                        // do not cascade spurious type-mismatch diagnostics.
+                        // Aggregation members are not in sub_member_types (they're methods,
+                        // not struct fields), so infer their types the same way the general
+                        // method-call path does at the bottom of this arm.
+                        let fallback_type = match member.as_str() {
+                            "count" => Type::Int,
+                            "sum" | "keys" | "values" => Type::Real,
+                            _ => scope
+                                .sub_member_types
+                                .get(sub_name.as_str())
+                                .and_then(|m| m.get(member.as_str()))
+                                .cloned()
+                                .unwrap_or(Type::Real),
+                        };
+                        return CompiledExpr::literal(Value::Undef, fallback_type);
+                    }
+                    // Non-collection sub: resolve member type from sub_member_types.
                     let member_type = match scope
                         .sub_member_types
                         .get(sub_name.as_str())
@@ -735,32 +808,9 @@ pub(crate) fn compile_expr_guarded(
                             return CompiledExpr::literal(Value::Undef, Type::Real);
                         }
                     };
-                    let scoped_entity =
-                        format!("{}.{}", scope.entity_name, sub_name);
+                    let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
                     let scoped_id = ValueCellId::new(&scoped_entity, member);
                     return CompiledExpr::value_ref(scoped_id, member_type);
-                }
-                // Error: collection sub member accessed directly through self.
-                if let reify_syntax::ExprKind::MemberAccess {
-                    object: inner_obj,
-                    member: sub_name,
-                } = &object.kind
-                    && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
-                    && self_name == "self"
-                    && scope.collection_sub_names.contains(sub_name.as_str())
-                {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "cannot access member '{}' of collection sub '{}' directly through self; \
-                             use `{}[i].{}` for a specific instance",
-                            member, sub_name, sub_name, member
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            expr.span,
-                            "collection sub member requires indexing",
-                        )),
-                    );
-                    return CompiledExpr::literal(Value::Undef, Type::Real);
                 }
             }
 
@@ -894,8 +944,7 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
-            let collection_methods = ["count", "sum", "keys", "values"];
-            if collection_methods.contains(&member.as_str()) {
+            if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
                 // Infer result type from method and object type
                 let result_type = match member.as_str() {
                     "count" => Type::Int,
