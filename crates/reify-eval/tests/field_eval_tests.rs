@@ -368,20 +368,29 @@ fn test_assert_real_approx_passes_within_tolerance() {
     assert_real_approx(&Value::Real(3.14), 3.14, "pi");
     // Should not panic: difference is exactly at zero
     assert_real_approx(&Value::Real(0.0), 0.0, "zero");
+    // Should not panic: value is just inside tolerance (90% of REAL_TOLERANCE)
+    assert_real_approx(&Value::Real(3.14 + REAL_TOLERANCE * 0.9), 3.14, "near-boundary");
     // Verify REAL_TOLERANCE constant exists and has the expected magnitude
     assert!(REAL_TOLERANCE > 0.0, "REAL_TOLERANCE must be positive");
     assert!(REAL_TOLERANCE <= 1e-10, "REAL_TOLERANCE should be small (≤1e-10)");
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "diff =")]
 fn test_assert_real_approx_panics_outside_tolerance() {
     // Difference of 1.0 is far beyond REAL_TOLERANCE — must panic
     assert_real_approx(&Value::Real(1.0), 2.0, "should fail");
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "diff =")]
+fn test_assert_real_approx_panics_at_exact_boundary() {
+    // Difference of exactly REAL_TOLERANCE is NOT strictly less-than, so must panic
+    assert_real_approx(&Value::Real(3.14 + REAL_TOLERANCE), 3.14, "boundary");
+}
+
+#[test]
+#[should_panic(expected = "expected Value::Real")]
 fn test_assert_real_approx_panics_for_non_real_variant() {
     // Bool is not a Real — must panic with a descriptive message
     assert_real_approx(&Value::Bool(true), 0.0, "should fail");
