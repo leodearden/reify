@@ -638,14 +638,34 @@ pub(crate) fn compile_expr_guarded(
                 if let reify_syntax::ExprKind::Ident(obj_name) = &object.kind
                     && obj_name == "self"
                 {
-                    // Check for self.sub.member chaining (handled at outer level): skip here
-                    // if member is a sub-component name — return a StructureRef for the sub.
-                    // Guard: exclude collection subs (List<T>), which must be accessed via index.
-                    if scope.sub_component_types.contains_key(member.as_str())
-                        && !scope.collection_sub_names.contains(member.as_str())
-                    {
-                        // self.sub_name — return StructureRef so that chaining works
-                        // (but note: this case is handled by the outer MemberAccess pattern below)
+                    // self.sub — for single-instance subs only, return a StructureRef so
+                    // outer chaining works. Collection subs are handled by the error branch
+                    // below (use indexed access instead). Invariant: collection_sub_names ⊆
+                    // sub_component_types.keys(), so a single outer check is sufficient.
+                    if scope.sub_component_types.contains_key(member.as_str()) {
+                        if scope.collection_sub_names.contains(member.as_str()) {
+                            // Error: collection sub accessed directly through self.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "cannot access collection sub '{}' directly through self; \
+                                     use indexed access like `{}[i].<field>` or aggregation like `{}.count`",
+                                    member, member, member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "collection sub requires indexing",
+                                )),
+                            );
+                            // Use List<StructureRef(element_type)> as fallback so downstream
+                            // expressions do not cascade spurious type-mismatch diagnostics.
+                            let fallback_type = scope
+                                .sub_component_types
+                                .get(member.as_str())
+                                .map(|sn| Type::List(Box::new(Type::StructureRef(sn.clone()))))
+                                .unwrap_or(Type::Real);
+                            return CompiledExpr::literal(Value::Undef, fallback_type);
+                        }
+                        // self.sub_name — return StructureRef so that chaining works.
                         let structure_name = scope.sub_component_types[member.as_str()].clone();
                         let scoped_entity = format!("{}.{}", scope.entity_name, member);
                         let sub_id = ValueCellId::new(&scoped_entity, "__self");
@@ -653,28 +673,6 @@ pub(crate) fn compile_expr_guarded(
                             sub_id,
                             Type::StructureRef(structure_name),
                         );
-                    }
-                    // Error: collection sub accessed directly through self.
-                    if scope.collection_sub_names.contains(member.as_str()) {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "cannot access collection sub '{}' directly through self; \
-                                 use indexed access like `{}[i].<field>` or aggregation like `{}.count`",
-                                member, member, member
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "collection sub requires indexing",
-                            )),
-                        );
-                        // Use List<StructureRef(element_type)> as fallback so downstream
-                        // expressions do not cascade spurious type-mismatch diagnostics.
-                        let fallback_type = scope
-                            .sub_component_types
-                            .get(member.as_str())
-                            .map(|sn| Type::List(Box::new(Type::StructureRef(sn.clone()))))
-                            .unwrap_or(Type::Real);
-                        return CompiledExpr::literal(Value::Undef, fallback_type);
                     }
                     // Resolve member from the entity scope (same as bare identifier).
                     match scope.resolve(member) {
@@ -699,8 +697,10 @@ pub(crate) fn compile_expr_guarded(
                     }
                 }
 
-                // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name })
-                // Guard: exclude collection subs (List<T>), which must be accessed via index.
+                // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name }).
+                // Single match; branches internally on whether sub_name is a collection sub.
+                // Invariant: collection_sub_names ⊆ sub_component_types.keys(), so the outer
+                // sub_component_types guard is sufficient to cover both branches.
                 if let reify_syntax::ExprKind::MemberAccess {
                     object: inner_obj,
                     member: sub_name,
@@ -708,9 +708,48 @@ pub(crate) fn compile_expr_guarded(
                     && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
                     && self_name == "self"
                     && scope.sub_component_types.contains_key(sub_name.as_str())
-                    && !scope.collection_sub_names.contains(sub_name.as_str())
                 {
-                    // Resolve member type from sub_member_types
+                    if scope.collection_sub_names.contains(sub_name.as_str()) {
+                        // Error: collection sub member accessed directly through self.
+                        // Aggregation members (count/sum/keys/values) should use bare sub
+                        // access, not indexed access — emit a distinct recommendation.
+                        let aggregation_members = ["count", "sum", "keys", "values"];
+                        if aggregation_members.contains(&member.as_str()) {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "cannot access aggregation '{}' of collection sub '{}' through self; \
+                                     use `{}.{}` directly",
+                                    member, sub_name, sub_name, member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "collection sub aggregation: drop `self.`",
+                                )),
+                            );
+                        } else {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "cannot access member '{}' of collection sub '{}' directly through self; \
+                                     use `{}[i].{}` for a specific instance",
+                                    member, sub_name, sub_name, member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "collection sub member requires indexing",
+                                )),
+                            );
+                        }
+                        // Use the member's actual type as fallback so downstream expressions
+                        // do not cascade spurious type-mismatch diagnostics.
+                        let fallback_type = scope
+                            .sub_member_types
+                            .get(sub_name.as_str())
+                            .and_then(|m| m.get(member.as_str()))
+                            .cloned()
+                            .unwrap_or(Type::Real);
+                        return CompiledExpr::literal(Value::Undef, fallback_type);
+                    }
+                    // Non-collection sub: resolve member type from sub_member_types.
                     let member_type = match scope
                         .sub_member_types
                         .get(sub_name.as_str())
@@ -729,57 +768,9 @@ pub(crate) fn compile_expr_guarded(
                             return CompiledExpr::literal(Value::Undef, Type::Real);
                         }
                     };
-                    let scoped_entity =
-                        format!("{}.{}", scope.entity_name, sub_name);
+                    let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
                     let scoped_id = ValueCellId::new(&scoped_entity, member);
                     return CompiledExpr::value_ref(scoped_id, member_type);
-                }
-                // Error: collection sub member accessed directly through self.
-                if let reify_syntax::ExprKind::MemberAccess {
-                    object: inner_obj,
-                    member: sub_name,
-                } = &object.kind
-                    && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
-                    && self_name == "self"
-                    && scope.collection_sub_names.contains(sub_name.as_str())
-                {
-                    // Aggregation members (count/sum/keys/values) should use bare sub access,
-                    // not indexed access — emit a distinct recommendation for each case.
-                    let aggregation_members = ["count", "sum", "keys", "values"];
-                    if aggregation_members.contains(&member.as_str()) {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "cannot access aggregation '{}' of collection sub '{}' through self; \
-                                 use `{}.{}` directly",
-                                member, sub_name, sub_name, member
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "collection sub aggregation: drop `self.`",
-                            )),
-                        );
-                    } else {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "cannot access member '{}' of collection sub '{}' directly through self; \
-                                 use `{}[i].{}` for a specific instance",
-                                member, sub_name, sub_name, member
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "collection sub member requires indexing",
-                            )),
-                        );
-                    }
-                    // Use the member's actual type as fallback so downstream expressions
-                    // do not cascade spurious type-mismatch diagnostics.
-                    let fallback_type = scope
-                        .sub_member_types
-                        .get(sub_name.as_str())
-                        .and_then(|m| m.get(member.as_str()))
-                        .cloned()
-                        .unwrap_or(Type::Real);
-                    return CompiledExpr::literal(Value::Undef, fallback_type);
                 }
             }
 
