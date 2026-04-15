@@ -36342,6 +36342,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 1742,
+        "title": "Ghost rendering mode in Three.js viewport",
+        "description": "Implement the ghost rendering mode for entities with visibility state \"ghost\". Ghost meshes render as transparent, non-selectable, neutral-colored overlays that provide spatial context without competing for attention. Uses MeshBasicMaterial with low opacity, no depth-write, excluded from raycasting.",
+        "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 5.1 (States table) and 11 (Ghost Rendering).\n\n### Implementation\n\n1. **Ghost material setup** (`viewport/ghostMaterial.ts` or inline in meshManager)\n   - `MeshBasicMaterial` — no lighting response\n   - Color: Catppuccin `surface0` or similar neutral from theme\n   - transparent: true, opacity: 0.12-0.18\n   - depthWrite: false\n   - side: THREE.FrontSide (no backface rendering)\n\n2. **Ghost mesh group** (`viewport/meshManager.ts`)\n   - Add a `ghostGroup` to the Three.js scene, rendered after opaque meshes\n   - When entity visibility = ghost: clone the mesh geometry reference (not the buffer — share vertex/index data), apply ghost material, add to ghostGroup\n   - When entity visibility = show: remove from ghostGroup, add to main scene group with normal material\n   - When entity visibility = hidden: remove from both groups\n\n3. **Raycasting exclusion** (`viewport/selection.ts`)\n   - Exclude ghostGroup from raycaster intersection tests\n   - Clicks on ghost meshes pass through to opaque geometry behind, or to empty space\n   - No hover tooltips for ghost meshes\n\n4. **Performance**\n   - Ghost meshes share vertex/index buffers with opaque counterparts (no geometry duplication)\n   - Switching show<->ghost is a material swap + group reassignment, not a geometry rebuild\n   - Target: < 16ms for visibility toggle (within one frame)\n\n5. **Z-fighting mitigation**\n   - Apply `polygonOffset` on ghost material: `polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1`\n   - This pushes ghost surfaces slightly behind coplanar opaque surfaces\n\n### Requirements covered\nVIS-1, VIS-2, VIS-3, Ghost Rendering section (11.1, 11.2, 11.3)\n\n### memory_hints\n- search: \"meshManager Three.js mesh rendering\"\n- search: \"selection raycasting viewport\"\n- search: \"Catppuccin theme colors\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36354,7 +36365,7 @@
       ],
       "created": "2026-04-15T09:54:32.566Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T09:54:32.599Z"
+      "updated": "2026-04-15T09:55:05.491Z"
     }
   }
 }
