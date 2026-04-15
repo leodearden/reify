@@ -2122,6 +2122,94 @@ mod tests {
         );
     }
 
+    #[test]
+    fn linear_pattern_2d_count1_zero_errors() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::LinearPattern2D {
+            target: box_h.id,
+            direction1: [1.0, 0.0, 0.0],
+            count1: 0,
+            spacing1: Value::Real(20.0),
+            direction2: [0.0, 1.0, 0.0],
+            count2: 3,
+            spacing2: Value::Real(20.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("count1"),
+                    "error should mention count1, got: {msg}"
+                );
+            }
+            other => panic!("expected OperationFailed for count1==0, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn linear_pattern_2d_count2_zero_errors() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::LinearPattern2D {
+            target: box_h.id,
+            direction1: [1.0, 0.0, 0.0],
+            count1: 3,
+            spacing1: Value::Real(20.0),
+            direction2: [0.0, 1.0, 0.0],
+            count2: 0,
+            spacing2: Value::Real(20.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("count2"),
+                    "error should mention count2, got: {msg}"
+                );
+            }
+            other => panic!("expected OperationFailed for count2==0, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn arbitrary_pattern_zero_transforms_errors() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::ArbitraryPattern {
+            target: box_h.id,
+            transforms: vec![],
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("transform"),
+                    "error should mention transform, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected OperationFailed for empty transforms, got {:?}",
+                other
+            ),
+        }
+    }
+
     // --- Loft tests ---
 
     #[test]
