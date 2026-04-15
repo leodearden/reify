@@ -498,7 +498,7 @@ impl Engine {
                     determinacy,
                 };
                 let fallback_results = self.constraint_checker.check(&fallback_input);
-                debug_assert_eq!(
+                assert_eq!(
                     fallback_results.len(),
                     indices.len(),
                     "ConstraintChecker returned {} results for {} constraints during \
@@ -528,7 +528,7 @@ impl Engine {
                 determinacy,
             };
             let fallback_results = self.constraint_checker.check(&input);
-            debug_assert_eq!(
+            assert_eq!(
                 fallback_results.len(),
                 indices.len(),
                 "ConstraintChecker returned {} results for {} constraints",
