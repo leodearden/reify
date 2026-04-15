@@ -1955,6 +1955,77 @@ mod tests {
         }
     }
 
+    #[test]
+    fn linear_pattern_2d_3x4_grid() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box (volume = 1000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Apply LinearPattern2D: 3×4 grid along X and Y with 20mm spacing
+        let pattern_h = kernel
+            .execute(&GeometryOp::LinearPattern2D {
+                target: box_h.id,
+                direction1: [1.0, 0.0, 0.0],
+                count1: 3,
+                spacing1: Value::Real(20.0),
+                direction2: [0.0, 1.0, 0.0],
+                count2: 4,
+                spacing2: Value::Real(20.0),
+            })
+            .unwrap();
+        // Volume should be approximately 3*4 * 1000 = 12000
+        let vol = kernel.query(&GeometryQuery::Volume(pattern_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 12000.0).abs() < 200.0,
+                    "expected linear_pattern_2d volume ~12000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn arbitrary_pattern_3_transforms() {
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10 box (volume = 1000)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Apply ArbitraryPattern with 3 non-overlapping translations
+        let pattern_h = kernel
+            .execute(&GeometryOp::ArbitraryPattern {
+                target: box_h.id,
+                transforms: vec![
+                    [20.0, 0.0, 0.0],
+                    [0.0, 20.0, 0.0],
+                    [20.0, 20.0, 0.0],
+                ],
+            })
+            .unwrap();
+        // Volume should be approximately 4 * 1000 = 4000 (original + 3 copies)
+        let vol = kernel.query(&GeometryQuery::Volume(pattern_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - 4000.0).abs() < 200.0,
+                    "expected arbitrary_pattern volume ~4000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
     // --- Loft tests ---
 
     #[test]
