@@ -260,6 +260,52 @@ mod tests {
         super::compile_template(bracket_source(), "NonExistent");
     }
 
+    #[test]
+    fn test_collect_errors_filters_correctly() {
+        // Source with an undefined reference produces Error diagnostics.
+        let source = r#"structure Bad {
+            let x = unknown_variable
+        }"#;
+        let compiled = super::compile_source(source);
+        let errors = super::collect_errors(&compiled.diagnostics);
+        assert!(
+            !errors.is_empty(),
+            "collect_errors should return error diagnostics for invalid source"
+        );
+        // All returned diagnostics must be Error severity.
+        for d in &errors {
+            assert_eq!(d.severity, Severity::Error, "collect_errors returned non-Error: {:?}", d);
+        }
+    }
+
+    #[test]
+    fn test_errors_only_convenience() {
+        let source = r#"structure Bad {
+            let x = unknown_variable
+        }"#;
+        let compiled = super::compile_source(source);
+        let errors = super::errors_only(&compiled);
+        assert!(
+            !errors.is_empty(),
+            "errors_only should return error diagnostics for invalid source"
+        );
+    }
+
+    #[test]
+    fn test_warnings_only_filters_correctly() {
+        // Use warn_source_with_unknown_port_type which produces warnings.
+        let source = crate::fixtures::warn_source_with_unknown_port_type();
+        let compiled = super::compile_source(source);
+        let warnings = super::warnings_only(&compiled);
+        assert!(
+            !warnings.is_empty(),
+            "warnings_only should return warning diagnostics for warn source"
+        );
+        for d in &warnings {
+            assert_eq!(d.severity, Severity::Warning, "warnings_only returned non-Warning: {:?}", d);
+        }
+    }
+
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_make_engine() {
