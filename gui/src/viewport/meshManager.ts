@@ -283,6 +283,17 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
         }
       }
     }
+
+    // Prune orphan visibilityMap entries: any key not present in meshMap is a
+    // stale pre-set (setVisibility was called for an entity that never arrived,
+    // or arrived in a previous sync cycle but was then removed). meshMap is now
+    // authoritative — orphan entries would otherwise leak and cause a future
+    // arrival of the same entity to silently inherit the stale visibility state.
+    for (const key of visibilityMap.keys()) {
+      if (!meshMap.has(key)) {
+        visibilityMap.delete(key);
+      }
+    }
   }
 
   function dispose(): void {
