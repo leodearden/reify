@@ -144,6 +144,15 @@ fn arc_through_full_eval_pipeline() {
             Type::angle(),
         )
     };
+    // Axis direction is a dimensionless unit vector, not a length quantity.
+    // Using dimensionless literals documents the intended semantics.
+    let dim_literal = |v: f64| reify_types::CompiledExpr::literal(
+        reify_types::Value::Scalar {
+            si_value: v,
+            dimension: reify_types::DimensionVector::DIMENSIONLESS,
+        },
+        Type::dimensionless_scalar(),
+    );
 
     let curve_op = CompiledGeometryOp::Curve {
         kind: CurveKind::Arc,
@@ -154,9 +163,9 @@ fn arc_through_full_eval_pipeline() {
             ("radius".into(), mm_literal(10.0)),
             ("start_angle".into(), rad_literal(0.0)),
             ("end_angle".into(), rad_literal(std::f64::consts::FRAC_PI_2)),
-            ("ax".into(), mm_literal(0.0)),
-            ("ay".into(), mm_literal(0.0)),
-            ("az".into(), mm_literal(1.0)),
+            ("ax".into(), dim_literal(0.0)),
+            ("ay".into(), dim_literal(0.0)),
+            ("az".into(), dim_literal(1.0)),
         ],
     };
 
@@ -335,6 +344,165 @@ fn bezier_through_full_eval_pipeline() {
         }
         other => panic!("expected GeometryOp::BezierCurve, got {:?}", other),
     }
+}
+
+// ---------------------------------------------------------------------------
+// NURBS: happy-path eval pipeline test
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nurbs_through_full_eval_pipeline() {
+    let e = "TestNurbs";
+    let dim_literal = |v: f64| reify_types::CompiledExpr::literal(
+        reify_types::Value::Scalar {
+            si_value: v,
+            dimension: reify_types::DimensionVector::DIMENSIONLESS,
+        },
+        Type::dimensionless_scalar(),
+    );
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // degree=2, n_points=3
+    // 3 control points: (0,0,0), (10mm,20mm,0), (20mm,0,0)
+    // 3 weights: 1.0, 1.0, 1.0
+    // 6 knots (n_points + degree + 1 = 6): 0, 0, 0, 1, 1, 1
+    let curve_op = CompiledGeometryOp::Curve {
+        kind: CurveKind::NurbsCurve,
+        args: vec![
+            ("c0".into(), dim_literal(2.0)),    // degree
+            ("c1".into(), dim_literal(3.0)),    // n_points
+            // control point 1: (0,0,0)
+            ("c2".into(), mm_literal(0.0)),
+            ("c3".into(), mm_literal(0.0)),
+            ("c4".into(), mm_literal(0.0)),
+            // control point 2: (10mm,20mm,0)
+            ("c5".into(), mm_literal(10.0)),
+            ("c6".into(), mm_literal(20.0)),
+            ("c7".into(), mm_literal(0.0)),
+            // control point 3: (20mm,0,0)
+            ("c8".into(), mm_literal(20.0)),
+            ("c9".into(), mm_literal(0.0)),
+            ("c10".into(), mm_literal(0.0)),
+            // weights
+            ("c11".into(), dim_literal(1.0)),
+            ("c12".into(), dim_literal(1.0)),
+            ("c13".into(), dim_literal(1.0)),
+            // knots: 0,0,0,1,1,1
+            ("c14".into(), dim_literal(0.0)),
+            ("c15".into(), dim_literal(0.0)),
+            ("c16".into(), dim_literal(0.0)),
+            ("c17".into(), dim_literal(1.0)),
+            ("c18".into(), dim_literal(1.0)),
+            ("c19".into(), dim_literal(1.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![curve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_nurbs_eval"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // No error diagnostics expected
+    let errors: Vec<_> = result.diagnostics.iter()
+        .filter(|d| matches!(d.severity, reify_types::Severity::Error))
+        .collect();
+    assert!(errors.is_empty(), "unexpected error diagnostics: {:?}", errors);
+
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(ops.len(), 1, "expected 1 geometry operation, got {}", ops.len());
+
+    match &ops[0].op {
+        GeometryOp::NurbsCurve { control_points, weights, knots, degree } => {
+            assert_eq!(*degree, 2);
+            assert_eq!(control_points.len(), 3);
+            assert_eq!(weights.len(), 3);
+            assert_eq!(knots.len(), 6);
+            // control point 1: (0,0,0)
+            assert!((control_points[0][0]).abs() < 1e-9);
+            // control point 2: (10mm=0.01m, 20mm=0.02m, 0)
+            assert!((control_points[1][0] - 0.01).abs() < 1e-9, "expected 0.01, got {}", control_points[1][0]);
+            assert!((control_points[1][1] - 0.02).abs() < 1e-9, "expected 0.02, got {}", control_points[1][1]);
+            // control point 3: (20mm=0.02m, 0, 0)
+            assert!((control_points[2][0] - 0.02).abs() < 1e-9);
+            // all weights = 1.0
+            for (i, w) in weights.iter().enumerate() {
+                assert!((*w - 1.0).abs() < 1e-9, "weight[{}] expected 1.0, got {}", i, w);
+            }
+            // knots: 0,0,0,1,1,1
+            assert!((knots[0]).abs() < 1e-9);
+            assert!((knots[3] - 1.0).abs() < 1e-9);
+        }
+        other => panic!("expected GeometryOp::NurbsCurve, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Compiler: arity rejection tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn arc_compiler_rejects_wrong_arg_count() {
+    let source = r#"structure S {
+    let wire = arc(0mm, 0mm, 0mm, 10mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_arc_bad"));
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.message.contains("arc()")),
+        "expected diagnostic for wrong arg count, got: {:?}", compiled.diagnostics,
+    );
+}
+
+#[test]
+fn interp_compiler_rejects_non_triple_arg_count() {
+    // 7 args — not a multiple of 3
+    let source = r#"structure S {
+    let wire = interp(0mm, 0mm, 0mm, 10mm, 10mm, 0mm, 20mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_interp_bad"));
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.message.contains("interp()")),
+        "expected diagnostic for non-triple arg count, got: {:?}", compiled.diagnostics,
+    );
+}
+
+#[test]
+fn bezier_compiler_rejects_non_triple_arg_count() {
+    // 7 args — not a multiple of 3
+    let source = r#"structure S {
+    let wire = bezier(0mm, 0mm, 0mm, 10mm, 10mm, 0mm, 20mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_bezier_bad"));
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.message.contains("bezier()")),
+        "expected diagnostic for non-triple arg count, got: {:?}", compiled.diagnostics,
+    );
+}
+
+#[test]
+fn nurbs_compiler_rejects_fewer_than_10_args() {
+    // Only 5 args — below the compiler minimum of 10
+    let source = r#"structure S {
+    let wire = nurbs(3, 2, 0mm, 0mm, 0mm)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_nurbs_comp_bad"));
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.iter().any(|d| d.message.contains("nurbs()")),
+        "expected diagnostic for insufficient args, got: {:?}", compiled.diagnostics,
+    );
 }
 
 // ---------------------------------------------------------------------------

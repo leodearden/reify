@@ -48,7 +48,6 @@
 #include <Geom_Surface.hxx>
 
 // OCCT curve construction (arc, helix, interp, bezier, nurbs)
-#include <GC_MakeArcOfCircle.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom2d_Line.hxx>
 #include <GeomAPI_PointsToBSpline.hxx>
@@ -57,7 +56,6 @@
 #include <TColgp_Array1OfPnt.hxx>
 #include <TColStd_Array1OfReal.hxx>
 #include <TColStd_Array1OfInteger.hxx>
-#include <BRepBuilderAPI_MakeEdge2d.hxx>
 
 // OCCT shape utilities
 #include <BRepLib.hxx>

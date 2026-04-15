@@ -3555,6 +3555,39 @@ fn eval_named_arg_f64(
     }
 }
 
+/// Evaluate all args in a variadic curve constructor to f64 values.
+///
+/// Returns `None` if any arg evaluates to a non-finite value, pushing a
+/// warning diagnostic for each bad arg.  Used by InterpCurve, BezierCurve,
+/// and NurbsCurve to avoid duplicating the same eval-and-collect loop.
+fn eval_all_args_to_f64(
+    label: &str,
+    args: &[(String, reify_types::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<f64>> {
+    args.iter()
+        .map(|(name, expr)| {
+            let v = reify_expr::eval_expr(
+                expr,
+                &reify_expr::EvalContext::new(values, functions)
+                    .with_meta(meta_map),
+            );
+            match v.as_f64() {
+                Some(f) if f.is_finite() => Some(f),
+                _ => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{} arg '{}' is non-finite", label, name
+                    )));
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 /// Compile a CompiledGeometryOp into a GeometryOp by evaluating expressions.
 /// Translate a compiled geometry operation into a runtime `GeometryOp`.
 ///
@@ -3950,27 +3983,7 @@ fn compile_geometry_op(
                     })
                 }
                 CurveKind::InterpCurve => {
-                    // Variadic: args are c0,c1,c2,...  (flat coordinates)
-                    let coords: Option<Vec<f64>> = args
-                        .iter()
-                        .map(|(name, expr)| {
-                            let v = reify_expr::eval_expr(
-                                expr,
-                                &reify_expr::EvalContext::new(values, functions)
-                                    .with_meta(meta_map),
-                            );
-                            match v.as_f64() {
-                                Some(f) if f.is_finite() => Some(f),
-                                _ => {
-                                    diagnostics.push(Diagnostic::warning(format!(
-                                        "interp arg '{}' is non-finite", name
-                                    )));
-                                    None
-                                }
-                            }
-                        })
-                        .collect();
-                    let coords = coords?;
+                    let coords = eval_all_args_to_f64("interp", args, values, functions, meta_map, diagnostics)?;
                     let points: Vec<[f64; 3]> = coords
                         .chunks_exact(3)
                         .map(|c| [c[0], c[1], c[2]])
@@ -3978,26 +3991,7 @@ fn compile_geometry_op(
                     Some(reify_types::GeometryOp::InterpCurve { points })
                 }
                 CurveKind::BezierCurve => {
-                    let coords: Option<Vec<f64>> = args
-                        .iter()
-                        .map(|(name, expr)| {
-                            let v = reify_expr::eval_expr(
-                                expr,
-                                &reify_expr::EvalContext::new(values, functions)
-                                    .with_meta(meta_map),
-                            );
-                            match v.as_f64() {
-                                Some(f) if f.is_finite() => Some(f),
-                                _ => {
-                                    diagnostics.push(Diagnostic::warning(format!(
-                                        "bezier arg '{}' is non-finite", name
-                                    )));
-                                    None
-                                }
-                            }
-                        })
-                        .collect();
-                    let coords = coords?;
+                    let coords = eval_all_args_to_f64("bezier", args, values, functions, meta_map, diagnostics)?;
                     let control_points: Vec<[f64; 3]> = coords
                         .chunks_exact(3)
                         .map(|c| [c[0], c[1], c[2]])
@@ -4006,31 +4000,9 @@ fn compile_geometry_op(
                 }
                 CurveKind::NurbsCurve => {
                     // For NURBS, all args are passed positionally as c0,c1,...
-                    // The eval stage needs structured data; for now we pass raw
-                    // and the caller must provide the right structure.
-                    // Format: first arg = degree, then n_points*3 pole coords,
-                    // then n_points weights, then remaining are knots.
-                    // This will be revisited with a proper syntax later.
-                    let vals: Option<Vec<f64>> = args
-                        .iter()
-                        .map(|(name, expr)| {
-                            let v = reify_expr::eval_expr(
-                                expr,
-                                &reify_expr::EvalContext::new(values, functions)
-                                    .with_meta(meta_map),
-                            );
-                            match v.as_f64() {
-                                Some(f) if f.is_finite() => Some(f),
-                                _ => {
-                                    diagnostics.push(Diagnostic::warning(format!(
-                                        "nurbs arg '{}' is non-finite", name
-                                    )));
-                                    None
-                                }
-                            }
-                        })
-                        .collect();
-                    let vals = vals?;
+                    // Format: first arg = degree, second = n_points, then
+                    // n_points*3 pole coords, n_points weights, remaining knots.
+                    let vals = eval_all_args_to_f64("nurbs", args, values, functions, meta_map, diagnostics)?;
                     if vals.len() < 2 {
                         diagnostics.push(Diagnostic::error(
                             "nurbs() requires at least degree and n_points arguments".to_string(),

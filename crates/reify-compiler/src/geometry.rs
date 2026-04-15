@@ -728,9 +728,12 @@ pub(crate) fn compile_geometry_call(
         // Simpler: nurbs takes named-style flat args similar to other constructors.
         // We'll pass all args as positional and decode in eval.
         "nurbs" => {
-            if compiled_args.len() < 2 {
+            // Minimum: degree(1) + n_points(1) + 2×3 coords(6) + 2 weights(2) = 10
+            // (knots are also required but their count depends on degree, so we
+            // defer full validation to the eval layer)
+            if compiled_args.len() < 10 {
                 diagnostics.push(Diagnostic::error(format!(
-                    "nurbs() expects at least 2 arguments, got {}",
+                    "nurbs() expects at least 10 arguments (degree + n_points + coords + weights), got {}",
                     compiled_args.len()
                 )));
                 return None;
