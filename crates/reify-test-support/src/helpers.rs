@@ -327,6 +327,33 @@ pub fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, cont
     );
 }
 
+/// Assert that `diagnostics` contains no `Severity::Error` entries.
+///
+/// `context` is a short label that appears in the panic message to identify
+/// which compilation or evaluation phase failed — e.g. `"compile"`, `"eval"`,
+/// or `"post-link"`. This is useful when a single test exercises multiple
+/// pipeline stages and you need to identify which one produced errors.
+///
+/// Warnings, Info, and other non-Error severities are allowed and do not
+/// cause a panic. Use [`assert_no_diagnostics`] instead when all severities
+/// must be absent.
+///
+/// # Panics
+/// Panics if any `Severity::Error` diagnostic is present. The panic message
+/// includes `context` and the list of error messages.
+#[track_caller]
+pub fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{context}: expected no error diagnostics, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
@@ -766,5 +793,34 @@ mod tests {
         let diags = vec![Diagnostic::error("type mismatch for x")];
         // Should panic — an Error-severity diagnostic containing "type mismatch" exists.
         super::assert_no_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    // ── assert_no_error_diagnostics ───────────────────────────────────────
+
+    /// assert_no_error_diagnostics should not panic when the slice contains only
+    /// Warning diagnostics (no Error-severity entries).
+    #[test]
+    fn test_assert_no_error_diagnostics_passes_with_only_warnings() {
+        let diags = vec![
+            Diagnostic::warning("unused port x"),
+            Diagnostic::warning("deprecated syntax"),
+        ];
+        super::assert_no_error_diagnostics(&diags, "compile phase");
+    }
+
+    /// assert_no_error_diagnostics should not panic on an empty slice.
+    #[test]
+    fn test_assert_no_error_diagnostics_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_error_diagnostics(&diags, "eval phase");
+    }
+
+    /// assert_no_error_diagnostics should panic when an Error-severity diagnostic
+    /// is present; the panic message must include the context label.
+    #[test]
+    #[should_panic(expected = "compile phase")]
+    fn test_assert_no_error_diagnostics_panics_on_error() {
+        let diags = vec![Diagnostic::error("undefined identifier")];
+        super::assert_no_error_diagnostics(&diags, "compile phase");
     }
 }
