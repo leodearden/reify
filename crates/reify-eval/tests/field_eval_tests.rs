@@ -381,7 +381,7 @@ fn test_assert_real_approx_panics_outside_tolerance() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "expected Value::Real")]
 fn test_assert_real_approx_panics_for_non_real_variant() {
     // Bool is not a Real — must panic with a descriptive message
     assert_real_approx(&Value::Bool(true), 0.0, "should fail");
