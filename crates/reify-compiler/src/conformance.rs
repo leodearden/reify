@@ -266,17 +266,18 @@ pub(crate) fn check_trait_conformance(
 
     // Pre-register default member names in scope so their expressions can
     // reference each other (e.g., constraint x > 0 references param x from same trait).
+    // register_if_absent provides the no-overwrite guarantee: first-seen type wins,
+    // and the method itself is safe against cross-kind overwrites without a call-site guard.
     for default in &all_defaults {
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
-            && !scope.names.contains_key(name)
         {
             let ty = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
                 DefaultKind::Let(_) => Type::Real,
                 DefaultKind::Constraint(_) => continue,
             };
-            scope.register(name, ty);
+            scope.register_if_absent(name, ty);
         }
     }
 
