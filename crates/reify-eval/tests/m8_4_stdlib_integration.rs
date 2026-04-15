@@ -83,6 +83,16 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     result
 }
 
+/// Extract a numeric `f64` from `Value::Real` or `Value::Int`.
+/// Panics with a descriptive message including `label` for any other variant.
+fn expect_real_or_int(val: &Value, label: &str) -> f64 {
+    match val {
+        Value::Real(v) => *v,
+        Value::Int(i) => *i as f64,
+        other => panic!("{label} should be Real or Int, got {other:?}"),
+    }
+}
+
 // ── Section 1: linalg.ri ─────────────────────────────────────────────────────
 
 /// Smoke test: linalg.ri parses, compiles (stdlib), evals without errors,
