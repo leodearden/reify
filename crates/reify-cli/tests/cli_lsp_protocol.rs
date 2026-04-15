@@ -15,8 +15,20 @@ use std::time::{Duration, Instant};
 /// from this binary.
 static LSP_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// Acquire the global LSP test serialization lock.
+///
+/// Uses `unwrap_or_else(|e| e.into_inner())` instead of `unwrap()` so that a
+/// poisoned mutex (from a prior test that panicked while holding the lock —
+/// see esc-1672-40) does not cascade into a `PoisonError` panic in subsequent
+/// tests. The lock guards `()` (unit type), so there is no inconsistent state
+/// to worry about; silent recovery is strictly better than propagating the
+/// poison. This pattern is used at 14+ other sites in the codebase
+/// (priority_promotion.rs, concurrent.rs, mcp_context.rs, diff.rs, mocks.rs).
 fn acquire_lsp_test_lock() -> std::sync::MutexGuard<'static, ()> {
-    LSP_TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    LSP_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 /// Send a JSON-RPC message with Content-Length header framing.
