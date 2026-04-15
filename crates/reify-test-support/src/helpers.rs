@@ -785,6 +785,17 @@ mod tests {
         super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
     }
 
+    /// assert_has_diagnostic should panic when the message substring matches but
+    /// the severity is wrong — confirming the severity filter applies in the
+    /// positive-assertion path.
+    #[test]
+    #[should_panic(expected = "expected diagnostic")]
+    fn test_assert_has_diagnostic_panics_when_wrong_severity() {
+        let diags = vec![Diagnostic::warning("type mismatch")];
+        // Should panic — the message matches but severity is Warning, not Error.
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
     // ── assert_no_diagnostic ──────────────────────────────────────────────
 
     /// assert_no_diagnostic should not panic when the slice is empty.
