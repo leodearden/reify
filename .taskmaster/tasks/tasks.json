@@ -38262,15 +38262,16 @@
         "description": "Two code duplication issues in compile_connection (connect.rs):\n\n1. **Remove redundant `is_bare` closure** (~line 279): The `let is_bare = |name: &str| !name.contains('.');` closure is redefined identically inside the asymmetric LocatedPort check block, but the same closure already exists at ~line 197 and is still in scope. Remove the inner definition.\n\n2. **Hoist port lookups to avoid double linear scans** (~lines 281-282): `ctx.ports.iter().find(|p| p.name == left_port)` and the equivalent for `right_port` duplicate the linear scans already done by the `dir_of` closure (~lines 189-194). Hoist port lookups into a single pass early in the function and reuse the result for both direction extraction and type extraction, eliminating duplicate O(n) scans.\n\nMemory hints: search \"compile_connection is_bare port lookup ctx.ports connect.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:42:36.288Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:42:35.877Z",
+      "lastModified": "2026-04-15T21:42:36.288Z",
       "taskCount": 1827,
       "completedCount": 1556,
       "tags": [
