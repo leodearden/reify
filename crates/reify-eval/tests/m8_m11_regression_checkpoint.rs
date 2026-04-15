@@ -37,8 +37,70 @@ use reify_types::{ModulePath, Satisfaction, Value, ValueCellId};
 // step-1 stub; all integration tests below will fail until SOURCE is replaced.
 
 /// Inline Reify source exercising M8–M11 cross-milestone features.
-/// Step-2 replaces this stub with a comprehensive multi-structure source.
-const SOURCE: &str = "";
+///
+/// Milestone coverage:
+///   M8 — stdlib SI units (`mm`, `N`) used in structure params and lets.
+///   M9 — `trait def Measured`, `constraint def InRange`, structure conformance.
+///   M10 — `point3`, `vec3`, `orient_identity`, `transform3`, `frame3` builtins.
+///   M11 — `field def`, `sample`, `gradient` operators; `@test` annotation.
+const SOURCE: &str = r#"
+// M9: trait with inline length constraint
+trait Measured {
+    param length : Length
+    constraint length > 0mm
+}
+
+// M9: reusable constraint definition
+constraint def InRange {
+    param val : Length
+    param lo  : Length
+    param hi  : Length
+    val >= lo
+    val <= hi
+}
+
+// M8 + M9: stdlib Length units, trait conformance, constraint def invocation
+structure def SimpleBox : Measured {
+    param length : Length = 100mm
+    param width  : Length = 50mm
+    param depth  : Length = 25mm
+    let half_length = length / 2.0
+    constraint InRange(val: depth, lo: 10mm, hi: 30mm)
+    constraint width < length
+}
+
+// M10: geometric builtins from the stdlib prelude
+structure def GeomPart {
+    let origin = point3(0mm, 0mm, 0mm)
+    let tip    = point3(100mm, 0mm, 0mm)
+    let disp   = tip - origin
+    let fvec   = vec3(0N, 0N, 1N)
+    let rot    = orient_identity()
+    let tf     = transform3(rot, vec3(10mm, 0mm, 0mm))
+    let fr     = frame3(origin, rot)
+    let moved  = tf * origin
+}
+
+// M11: field calculus — field def, sample, gradient operators
+// Use non-integer values to ensure Real (not Int) evaluation results.
+field def linear_f : Real -> Real { source = analytical { |x| 2.5 * x + 1.0 } }
+
+structure def FieldUser {
+    let f3  = sample(linear_f, 3.0)    // 2.5 * 3.0 + 1.0 = 8.5
+    let gf  = gradient(linear_f)
+    let df3 = sample(gf, 3.0)          // ≈ 2.5 (constant derivative)
+    constraint f3  > 8.4
+    constraint f3  < 8.6
+    constraint df3 > 2.4
+    constraint df3 < 2.6
+}
+
+// M11: @test annotation on a structure (valid on structures, no error diagnostic)
+@test structure def TestBox {
+    param width : Length = 50mm
+    constraint width > 0mm
+}
+"#;
 
 // ── Cached helpers ────────────────────────────────────────────────────────────
 
@@ -197,8 +259,8 @@ fn checkpoint_m11_field_sample_at_three() {
     match val {
         Value::Real(f) => {
             assert!(
-                (f - 7.0).abs() < 1e-6,
-                "expected 7.0 for FieldUser.f3 (sample(linear_f, 3.0) = 2*3+1 = 7.0), got {f}"
+                (f - 8.5).abs() < 1e-6,
+                "expected 8.5 for FieldUser.f3 (sample(linear_f, 3.0) = 2.5*3.0+1.0), got {f}"
             );
         }
         other => panic!("expected Value::Real for FieldUser.f3, got {:?}", other),
