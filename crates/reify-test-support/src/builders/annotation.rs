@@ -86,15 +86,15 @@ mod tests {
 
     #[test]
     fn annotation_produces_empty_args() {
-        let ann = annotation("test");
-        assert_eq!(ann.name, "test");
+        let ann = annotation(TEST_ANNOTATION);
+        assert_eq!(ann.name, TEST_ANNOTATION);
         assert!(ann.args.is_empty());
     }
 
     #[test]
     fn annotation_with_args_produces_annotation_with_args() {
-        let ann = annotation_with_args("deprecated", vec![ann_str("use Foo instead")]);
-        assert_eq!(ann.name, "deprecated");
+        let ann = annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use Foo instead")]);
+        assert_eq!(ann.name, DEPRECATED_ANNOTATION);
         assert_eq!(ann.args.len(), 1);
         assert_eq!(
             ann.args[0],
