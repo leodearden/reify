@@ -284,6 +284,19 @@ fn qualified_access_ice_fallback_returns_undef_literal() {
         "expected at least one conformance error (missing 'diameter'), got none"
     );
 
+    // Assert exactly one info-severity diagnostic for the QualifiedAccess ICE fallback.
+    let info_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Info && d.message.contains("member not found in scope"))
+        .collect();
+    assert_eq!(
+        info_diags.len(),
+        1,
+        "expected one info diagnostic for QualifiedAccess fallback, got: {:?}",
+        info_diags
+    );
+
     // Find the 'Bolt' template and locate the 'd' value cell.
     let bolt_tmpl = module
         .templates
