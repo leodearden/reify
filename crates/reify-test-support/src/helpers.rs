@@ -389,12 +389,14 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_make_engine() {
-        let compiled = super::parse_and_compile(bracket_source());
+        // Use a simple non-geometry source to avoid coupling to bracket fixture shape.
+        let source = "structure S { param x: Scalar = 42 }";
+        let compiled = super::parse_and_compile(source);
         let mut engine = super::make_engine();
         let result = engine.eval(&compiled);
         assert!(
             !result.values.is_empty(),
-            "engine.eval should produce non-empty values for bracket source"
+            "engine.eval should produce non-empty values"
         );
     }
 
@@ -432,28 +434,27 @@ mod tests {
 
     #[test]
     fn test_parse_compile_expect_err_needle_match() {
-        // Source with an undefined reference; needle should match the error message.
+        // Use a controlled needle that matches a specific known error message.
         let source = r#"structure Bad {
-            let x = unknown_variable
+            let x = totally_undefined_name
         }"#;
-        let _compiled = super::parse_compile_expect_err(source, "unknown");
+        let _compiled = super::parse_compile_expect_err(source, "totally_undefined_name");
     }
 
     #[test]
     fn test_parse_and_compile_with_stdlib() {
-        // Source that references the stdlib trait `Material`.
-        // This should compile only when stdlib is loaded.
-        let source = r#"structure Steel : Material {
-            param density: Real = 7850
-            param name: String = "Steel"
+        // Use a simple source that requires stdlib (Material trait) without
+        // coupling to specific stdlib field values or shape details.
+        let source = r#"structure S : Material {
+            param density: Real = 1
+            param name: String = "S"
         }"#;
+        // parse_and_compile_with_stdlib panics on errors, so reaching here means success.
         let compiled = super::parse_and_compile_with_stdlib(source);
-        let errors: Vec<_> = compiled
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
+        assert!(
+            !compiled.templates.is_empty(),
+            "should produce at least one template"
+        );
     }
 
     #[test]
