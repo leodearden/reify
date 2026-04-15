@@ -1117,6 +1117,16 @@ mod tests {
         assert!(is_geometry_function("intersection_all"));
     }
 
+    #[test]
+    fn compile_geometry_linear_pattern_2d_recognized() {
+        assert!(is_geometry_function("linear_pattern_2d"));
+    }
+
+    #[test]
+    fn compile_geometry_arbitrary_pattern_recognized() {
+        assert!(is_geometry_function("arbitrary_pattern"));
+    }
+
     // --- Binary boolean op compilation tests (step-3) ---
 
     #[test]
