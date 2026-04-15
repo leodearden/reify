@@ -1077,8 +1077,8 @@ fn build_primitive_missing_arg_no_kernel_error() {
 /// 1. Call kernel exactly once — for the preceding Box that provides the target
 ///    handle — but never call kernel for the Fillet itself.
 /// 2. Return geometry_output=None (compile failure short-circuits the realization).
-/// 3. Emit a Warning whose message contains 'missing required geometry argument'
-///    and 'radius'.
+/// 3. Emit a Warning whose message contains 'missing required geometry argument',
+///    'radius', and 'Fillet'.
 /// 4. Emit an Error: "failed to compile geometry operation".
 /// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
 ///    called for the Fillet op).
@@ -1144,7 +1144,7 @@ fn build_modify_missing_arg_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         |op| matches!(op, reify_types::GeometryOp::Box { .. }),
-        &["missing required geometry argument", "radius"],
+        &["missing required geometry argument", "radius", "Fillet"],
     );
 }
 
