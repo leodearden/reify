@@ -636,7 +636,7 @@ structure S {
     // precise characterization of "silently ignored".  This also avoids the
     // fragile substring check for "ice" which could false-positive on words like
     // "service" or "notice" in future diagnostic messages.
-    assert_no_error_diagnostics(
+    assert_no_diagnostics(
         &diagnostics,
         "constraint inst in block guard (should be silently dropped)",
     );
@@ -663,7 +663,7 @@ structure def S {
 
     let (template, diagnostics) = compile_first_template(source);
 
-    assert_no_error_diagnostics(
+    assert_no_diagnostics(
         &diagnostics,
         "port in block guard (should be silently dropped)",
     );
@@ -700,7 +700,7 @@ structure def S {
 
     let (template, diagnostics) = compile_first_template(source);
 
-    assert_no_error_diagnostics(
+    assert_no_diagnostics(
         &diagnostics,
         "connect in block guard (should be silently dropped)",
     );
@@ -718,6 +718,65 @@ structure def S {
             .iter()
             .map(|c| format!("{} -> {}", c.left_port, c.right_port))
             .collect::<Vec<_>>()
+    );
+}
+
+/// Characterization test: `AssociatedType` inside a `where {}` block is rejected at
+/// parse time — the grammar does not permit `type X = Y` inside a guarded block.
+///
+/// This means the `AssociatedType` arm in `compile_guarded_members` is unreachable
+/// via normal parsing. This test pins that parser-level boundary: the compiler never
+/// sees an `AssociatedType` in a guarded context because the grammar prevents it.
+#[test]
+fn associated_type_in_block_guard_rejected_by_parser() {
+    let source = r#"
+structure def S {
+    param active : Bool = true
+    where active {
+        type Material = Steel
+    }
+}
+"#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        !parsed.errors.is_empty(),
+        "expected a parse error — `type X = Y` is not valid inside a `where {{}}` guarded block"
+    );
+}
+
+/// Characterization test: `MetaBlock` inside a `where {}` block is silently ignored
+/// by `compile_guarded_members` — no diagnostic of any severity is emitted and the
+/// guarded meta entry does not appear in the compiled template's meta map.
+#[test]
+fn meta_block_in_block_guard_silently_ignored() {
+    let source = r#"
+structure def S {
+    param active : Bool = true
+    meta {
+        tag = "top"
+    }
+    where active {
+        meta {
+            guarded = "yes"
+        }
+    }
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    assert_no_diagnostics(
+        &diagnostics,
+        "meta block in block guard (should be silently dropped)",
+    );
+    // Positive assertion: the meta entry from the guarded block must NOT appear
+    // in the compiled template's meta map — it should be silently dropped.
+    assert!(
+        !template.meta.contains_key("guarded"),
+        "expected 'guarded' key from the guarded meta block to be silently dropped, \
+         got meta: {:?}",
+        template.meta
     );
 }
 
