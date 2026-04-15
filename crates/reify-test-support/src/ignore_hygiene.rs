@@ -611,17 +611,29 @@ mod tests {
     #[test]
     fn check_ignore_reasons_non_canonical_form_is_silently_ignored() {
         // The scanner recognises only the canonical rustfmt form (space-equals-space-quote:
-        // ` = "`).  A non-canonical `#[ignore="..."]` (no spaces around `=`) does not
-        // match any guard branch and is silently passed over — this test pins that
-        // behavior so any future tightening (e.g. stripping whitespace before matching)
-        // must first update this test.
-        // Source assembled at runtime so this file does not contain the guarded adjacent
+        // ` = "`).  Non-canonical attribute forms — no spaces around `=`, space only
+        // before `=`, or space only after `=` — do not match any guard branch and are
+        // silently passed over.  This test pins all three whitespace variants so any
+        // future tightening (e.g. stripping whitespace before matching) must first
+        // update this test.
+        //
+        // The reason string deliberately does NOT start with `known bug:`.  If a future
+        // refactor starts matching non-canonical forms, guard 2 would reject this reason
+        // and the test would fail loudly, providing a clear regression signal.
+        //
+        // Sources assembled at runtime so this file does not contain the guarded adjacent
         // sequences and does not self-trigger the meta-test scanner.
-        let src = ["#[", "ignore=\"known bug: placeholder summary\"]"].concat();
-        assert!(
-            check_ignore_reasons(&src).is_ok(),
-            "expected non-canonical #[ignore=\"...\"] (no spaces around =) to be silently ignored",
-        );
+        let non_canonical_forms = [
+            ["#[", "ignore=\"not a known bug: test\"]"].concat(),   // no spaces around =
+            ["#[", "ignore =\"not a known bug: test\"]"].concat(),  // space before = only
+            ["#[", "ignore= \"not a known bug: test\"]"].concat(),  // space after = only
+        ];
+        for src in &non_canonical_forms {
+            assert!(
+                check_ignore_reasons(src).is_ok(),
+                "expected non-canonical #[ignore...] form to be silently ignored: {src:?}",
+            );
+        }
     }
 
     /// Guard 3 "no-marker" path: a `///` doc-comment line that contains the
