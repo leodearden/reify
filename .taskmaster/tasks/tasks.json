@@ -35758,7 +35758,7 @@
         "description": "`is_geometry_let` in `crates/reify-compiler/src/geometry.rs:3-9` only matches `ExprKind::FunctionCall` expressions. When a user writes `let alias = body` where `body` is itself a geometry let, `alias` is not recognized as a geometry let and won't appear in the `geometry_lets` HashMap. This means `let r = difference(alias, x)` will fail to resolve `alias`.\n\nThe fix is to extend `is_geometry_let` (or the HashMap construction in `entity.rs`) to transitively recognize `ExprKind::Ident` expressions whose referent is another geometry let. This requires either a two-pass approach or iterative fixpoint over the let declarations.\n\n## memory_hints\n- search: \"is_geometry_let forward reference\"\n- search: \"compile_geometry_call boolean op arguments\"\n- entity: \"is_geometry_let\"\n- entity: \"compile_geometry_call\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -35773,7 +35773,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-15T12:16:29.313Z"
+        "updatedAt": "2026-04-15T16:18:43.129Z"
       },
       {
         "id": "1709",
@@ -37427,9 +37427,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T16:18:35.529Z",
+      "lastModified": "2026-04-15T16:18:43.129Z",
       "taskCount": 1780,
-      "completedCount": 1519,
+      "completedCount": 1520,
       "tags": [
         "master"
       ]
