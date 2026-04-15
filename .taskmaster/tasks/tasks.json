@@ -35724,7 +35724,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/field_eval_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 1711,
@@ -35735,7 +35743,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-kernel-occt/src/ffi.rs",
+            "crates/reify-kernel-occt/cpp/occt_wrapper.h",
+            "crates/reify-kernel-occt/cpp/occt_wrapper.cpp"
+          ],
+          "modules": [
+            "crates/reify-kernel-occt/src",
+            "crates/reify-kernel-occt/cpp"
+          ]
+        }
       }
     ],
     "metadata": {
