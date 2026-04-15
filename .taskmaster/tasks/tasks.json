@@ -36798,10 +36798,11 @@
         "description": "The `circular_pattern` function passes its angle argument directly to OCCT's `SetRotation` which expects radians, but users and examples write `360` expecting degrees. This causes holes to be placed at wrong angles (360 rad ≈ 57 full rotations).",
         "details": "memory_hints: search \"circular_pattern angle radians degrees\", search \"OCCT SetRotation\"\n\nThe OCCT C++ FFI (`occt_wrapper.cpp:445`) calls `trsf.SetRotation(axis, angle_i)` which takes radians. The Rust kernel test correctly uses `2.0 * PI`, but the example file and compiler test both use `360` assuming degrees.\n\nOptions:\n1. Convert degrees→radians in reify-eval compile_geometry_op for CircularPattern (breaking change for anyone using radians)\n2. Add an angle unit type (e.g. `360deg` vs `6.2832rad`) with proper dimensional analysis\n3. Document radians requirement and fix examples (least user-friendly)\n\nRecommend option 2 long-term, option 1 as interim fix (all existing examples use degrees).\n\nFiles: crates/reify-eval/src/lib.rs (line ~3854), crates/reify-kernel-occt/cpp/occt_wrapper.cpp (line 445), crates/reify-compiler/src/geometry.rs (line 388), examples/m5_geometry_flange.ri",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:01:47.744Z"
       },
       {
         "id": "1764",
@@ -36861,7 +36862,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T12:01:47.173Z",
+      "lastModified": "2026-04-15T12:01:47.745Z",
       "taskCount": 1765,
       "completedCount": 1507,
       "tags": [
