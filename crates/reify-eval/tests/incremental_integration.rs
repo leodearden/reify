@@ -502,6 +502,15 @@ fn edit_position_x_where_guard_constraints_remain_satisfied() {
         result_count, 49,
         "expected all 49 constraint results (including 2 guarded), got {result_count}"
     );
+    // Lower-bound guard: even with esc-295-78 active, a catastrophic regression that
+    // drops the count far below the expected-broken count of 47 must not silently pass.
+    // 45 = 47 (expected broken floor) minus 2 tolerance for minor guard fluctuations.
+    assert!(
+        result_count >= 45,
+        "expected >= 45 constraint results after position_x=200mm (XFAIL lower bound), \
+         got {result_count} — this indicates a regression beyond the esc-295-78 exclusion \
+         (expected broken count is ~47; this floor prevents silent catastrophic regressions)"
+    );
 
     // 3. The guarded constraints should be Satisfied (determined(origin) is true after edit).
     let guarded_ids: Vec<_> = assembly_template.guarded_groups[0]
