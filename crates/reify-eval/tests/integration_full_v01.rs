@@ -947,6 +947,26 @@ fn lambda_binding_evaluates() {
     );
 }
 
+// ── Test 23: eval produces no error diagnostics ───────────────────────────────
+
+/// Assert `eval_canonical()` produces no error-severity diagnostics.
+/// Verifies the evaluation pipeline runs cleanly on the canonical source.
+#[test]
+fn eval_no_error_diagnostics() {
+    let result = eval_canonical();
+    assert_no_errors(&result.diagnostics, "integration_full_v01.ri eval");
+}
+
+// ── Test 24: check produces no error diagnostics ──────────────────────────────
+
+/// Assert `check_canonical()` produces no error-severity diagnostics.
+/// Verifies the check pipeline runs cleanly on the canonical source.
+#[test]
+fn check_no_error_diagnostics() {
+    let result = check_canonical();
+    assert_no_errors(&result.diagnostics, "integration_full_v01.ri check");
+}
+
 // ── Test 20: violation regression guard ──────────────────────────────────────
 
 /// Regression guard: deliberately make `height < 2000mm` into `height < 100mm`
