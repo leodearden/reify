@@ -36737,15 +36737,16 @@
         "description": "Two test coverage gaps for the reference-based prelude signature introduced in task 1392:\n\n1. **#no_prelude with imports present**: Add a test where a module declares both imports and #no_prelude pragma. Verify that the empty-slice shadowing at lib.rs line 131 (`let prelude: &[&CompiledModule] = if has_no_prelude { &[] } else { prelude };`) works correctly — imported definitions should NOT be visible, and sub_components referencing them should fail to resolve or produce diagnostics.\n\n2. **Private definition filtering through reference indirection**: Add a test where module C defines a non-pub structure, module B imports C and tries to use the structure. Assert that it either fails to compile or produces an appropriate diagnostic. This exercises the `if cu.is_pub` filter through the new reference indirection to confirm private definitions aren't accidentally exposed.\n\nBoth tests belong in crates/reify-compiler/tests/module_dag_tests.rs alongside the existing compile_module/compile_project tests (lines 612-813).\n\nmemory_hints: search \"no_prelude pragma\" and \"is_pub filter prelude\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T11:53:18.799Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T11:53:18.564Z",
+      "lastModified": "2026-04-15T11:53:18.799Z",
       "taskCount": 1756,
       "completedCount": 1505,
       "tags": [
