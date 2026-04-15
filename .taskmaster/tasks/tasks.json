@@ -37743,15 +37743,16 @@
         "description": "Task 1728 added fillet to the compiler dispatch (geometry.rs and units.rs) alongside chamfer, but only chamfer has end-to-end tests (chamfer_e2e.rs). The fillet compiler path is entirely new code that has no compiler/eval integration test coverage.",
         "details": "## Required tests\n1. `fillet_compiler_rejects_one_arg` — fillet() with 1 arg should produce diagnostics\n2. `fillet_compiler_rejects_three_args` — fillet() with 3 args should produce diagnostics\n3. `fillet_compiler_accepts_two_args` — fillet(target, radius) compiles to Modify(Fillet) op\n4. `fillet_through_full_eval_pipeline` — compile→eval path produces GeometryOp::Fillet with correct target handle and radius\n\n## Reference\nPattern the tests after `crates/reify-eval/tests/chamfer_e2e.rs` which covers the exact same structure for chamfer.\n\n## memory_hints\n- search: \"chamfer_e2e.rs test structure\"\n- search: \"fillet compiler dispatch\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T17:13:37.461Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:13:34.353Z",
+      "lastModified": "2026-04-15T17:13:37.461Z",
       "taskCount": 1798,
       "completedCount": 1536,
       "tags": [
