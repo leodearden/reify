@@ -191,6 +191,18 @@ impl CompiledModule {
     pub fn non_test_constraint_defs(&self) -> impl Iterator<Item = &reify_syntax::ConstraintDef> {
         self.constraint_defs.iter().filter(|d| !d.is_test())
     }
+
+    /// Returns all functions tagged with `@test`.
+    ///
+    /// Uses `CompiledFunction::is_test()` as the canonical predicate.
+    pub fn test_functions(&self) -> impl Iterator<Item = &CompiledFunction> {
+        self.functions.iter().filter(|f| f.is_test())
+    }
+
+    /// Returns all functions NOT tagged with `@test`.
+    pub fn non_test_functions(&self) -> impl Iterator<Item = &CompiledFunction> {
+        self.functions.iter().filter(|f| !f.is_test())
+    }
 }
 
 /// Whether a TopologyTemplate was compiled from a structure or an occurrence.
