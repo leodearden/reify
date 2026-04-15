@@ -692,17 +692,16 @@ fn compile_module_multi_import_prelude() {
 /// Creates a three-module cycle: cherry -> apple -> banana -> cherry.
 /// Module names are chosen so alphabetical order (apple, banana, cherry)
 /// DIFFERS from DFS traversal order (cherry, apple, banana).  This ensures
-/// `sort_unstable()` on `in_progress` is the only thing that can produce the
-/// observed sorted output — the test genuinely fails without the sort fix.
+/// IndexSet insertion-order is the source of determinism, not alphabetical sorting.
 ///
 /// Compiles twice (with independent `ModuleDag` instances) and asserts:
 /// (a) both runs produce an error mentioning "circular" or "cycle",
 /// (b) the error messages are identical between runs, and
-/// (c) the module names appear in sorted alphabetical order within the message
-///     ("apple" before "banana" before "cherry").
+/// (c) the module names appear in DFS traversal order within the message
+///     ("cherry" before "apple" before "banana").
 ///
-/// Without the HashSet-to-sorted-Vec fix (step-10), the iteration order of
-/// `in_progress` is hash-order-dependent and may fail the sorted-order assertion.
+/// IndexSet preserves insertion order (= DFS traversal order), so the message
+/// reads "cherry -> apple -> banana -> cherry" — showing the actual import chain.
 #[test]
 fn circular_import_error_message_deterministic() {
     let _tmp = tempfile::tempdir().unwrap();
@@ -732,7 +731,7 @@ fn circular_import_error_message_deterministic() {
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
 
     // First compilation — DFS visits cherry, apple, banana, then detects cherry again.
-    // in_progress = {cherry, apple, banana}; sorted = [apple, banana, cherry].
+    // in_progress = [cherry, apple, banana] (insertion order); message: cherry -> apple -> banana -> cherry.
     let mut dag1 = ModuleDag::new();
     let result1 = dag1.compile_module("cherry", &resolver);
     assert!(result1.is_err(), "expected error for 3-cycle (first run)");
@@ -765,24 +764,23 @@ fn circular_import_error_message_deterministic() {
         "circular-import error messages must be identical across compilations"
     );
 
-    // (c) Module names must appear in sorted alphabetical order within the message.
-    // Alphabetical: apple < banana < cherry.  DFS order is cherry < apple < banana,
-    // so this assertion fails without sort_unstable().
+    // (c) Module names must appear in DFS traversal order within the message.
+    // DFS order: cherry < apple < banana (cherry is the entry, then apple, then banana).
+    // The message should read "cherry -> apple -> banana -> cherry".
+    // cherry appears twice (start and end of the arrow chain); take the first occurrence.
+    let cherry_pos = msg1.find("cherry").expect("'cherry' must appear in error");
     let apple_pos = msg1.find("apple").expect("'apple' must appear in error");
     let banana_pos = msg1.find("banana").expect("'banana' must appear in error");
-    // cherry appears twice (sorted list + triggered-by suffix); take the first occurrence.
-    let cherry_pos = msg1.find("cherry").expect("'cherry' must appear in error");
+    assert!(
+        cherry_pos < apple_pos,
+        "expected 'cherry' before 'apple' (DFS traversal order), got: {}",
+        msg1
+    );
     assert!(
         apple_pos < banana_pos,
-        "expected 'apple' before 'banana' in sorted cycle, got: {}",
+        "expected 'apple' before 'banana' (DFS traversal order), got: {}",
         msg1
     );
-    assert!(
-        banana_pos < cherry_pos,
-        "expected 'banana' before 'cherry' in sorted cycle, got: {}",
-        msg1
-    );
-
 }
 
 // ── amendment (task-1392): compile_project multi-import prelude path ──────────
