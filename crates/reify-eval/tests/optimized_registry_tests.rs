@@ -223,3 +223,134 @@ structure def Mixed {
         "PlainEq should be handled by the language-level checker (Satisfied)"
     );
 }
+
+// ── Test 4: empty registry fast path — single @optimized constraint ──────────
+
+#[test]
+fn empty_registry_fast_path_returns_correct_results() {
+    // A module with a single @optimized constraint and an empty registry.
+    // With no registered impls the language-level checker must handle it.
+    // This test validates the behavioral contract: the constraint should be
+    // Satisfied (1.0 == 1.0) even though no optimized impl is registered.
+    let source = r#"
+@optimized("geo::coincident")
+constraint def Coincident {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def S {
+    param x: Real = 1.0
+    constraint Coincident(a: x, b: x)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    // Empty registry — no register_optimized_impl calls.
+    let mut engine = make_simple_engine();
+
+    let check_result = engine.check(&compiled);
+
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "expected exactly one constraint result, got {:?}",
+        check_result.constraint_results
+    );
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "with empty registry the language-level checker must handle the constraint \
+         (x == x is Satisfied)"
+    );
+}
+
+// ── Test 5: empty registry — multiple mixed constraints preserve order ────────
+
+#[test]
+fn empty_registry_multiple_constraints_preserves_order() {
+    // Three constraints in a single structure: two @optimized-annotated (different
+    // targets) and one plain. With empty optimization_registry ALL fall through to
+    // the language-level checker. This test verifies:
+    //   1. All constraints are evaluated (none silently dropped).
+    //   2. Results appear in declaration order — first OptA, then OptB, then PlainEq.
+    //   3. The language-level checker evaluates each predicate correctly.
+    let source = r#"
+@optimized("target_a")
+constraint def OptA {
+    param a: Real
+    param b: Real
+    a == b
+}
+@optimized("target_b")
+constraint def OptB {
+    param a: Real
+    param b: Real
+    a < b
+}
+constraint def PlainEq {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def Multi {
+    param x: Real = 1.0
+    param y: Real = 2.0
+    constraint OptA(a: x, b: x)
+    constraint OptB(a: x, b: y)
+    constraint PlainEq(a: x, b: x)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    // Empty registry — no register_optimized_impl calls.
+    let mut engine = make_simple_engine();
+
+    let check_result = engine.check(&compiled);
+
+    assert_eq!(
+        check_result.constraint_results.len(),
+        3,
+        "expected three constraint results, got {:?}",
+        check_result.constraint_results
+    );
+
+    let r0 = &check_result.constraint_results[0];
+    let r1 = &check_result.constraint_results[1];
+    let r2 = &check_result.constraint_results[2];
+
+    // Verify declaration order is preserved.
+    let l0 = r0.label.as_deref().unwrap_or("");
+    let l1 = r1.label.as_deref().unwrap_or("");
+    let l2 = r2.label.as_deref().unwrap_or("");
+    assert!(
+        l0.contains("OptA"),
+        "first result should be OptA, got label={:?}",
+        r0.label
+    );
+    assert!(
+        l1.contains("OptB"),
+        "second result should be OptB, got label={:?}",
+        r1.label
+    );
+    assert!(
+        l2.contains("PlainEq"),
+        "third result should be PlainEq, got label={:?}",
+        r2.label
+    );
+
+    // Verify each predicate is evaluated correctly by the language-level checker.
+    assert_eq!(
+        r0.satisfaction,
+        Satisfaction::Satisfied,
+        "OptA: x == x (1.0 == 1.0) should be Satisfied"
+    );
+    assert_eq!(
+        r1.satisfaction,
+        Satisfaction::Satisfied,
+        "OptB: x < y (1.0 < 2.0) should be Satisfied"
+    );
+    assert_eq!(
+        r2.satisfaction,
+        Satisfaction::Satisfied,
+        "PlainEq: x == x (1.0 == 1.0) should be Satisfied"
+    );
+}
