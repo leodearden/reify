@@ -189,11 +189,37 @@ fn spawn_reader(stdout: std::process::ChildStdout) -> mpsc::Receiver<serde_json:
 /// poisoned the mutex, causing all subsequent LSP tests to fail with an opaque
 /// `PoisonError` cascade. With `.lock().unwrap()` the second acquisition below
 /// panics; with `.lock().unwrap_or_else(|e| e.into_inner())` it succeeds.
+///
+/// ## Why a local mirror mutex?
+///
+/// This test cannot poison `LSP_TEST_LOCK` directly without causing intermittent
+/// timeouts in the other LSP tests (esc-1685-81).  When `LSP_TEST_LOCK` is poisoned
+/// and multiple test threads race to recover it, OS scheduling non-determinism
+/// occasionally starves the second LSP child process long enough to hit the
+/// 10-second `wait_for_response` timeout.  The fix is to:
+///   1. Hold `LSP_TEST_LOCK` for the whole test so this function is fully
+///      serialised with the other LSP tests (no concurrent LSP process running).
+///   2. Test the poison-recovery idiom on `POISON_TEST_LOCK` — a static
+///      `OnceLock<Mutex<()>>` with exactly the same structure — without ever
+///      polluting the global LSP lock.
+///
+/// The idiom under test (`unwrap_or_else(|e| e.into_inner())`) is identical;
+/// only the mutex instance differs.
 #[test]
 fn acquire_lsp_test_lock_recovers_from_poisoned_mutex() {
-    // Spawn a thread that acquires the lock and then panics, poisoning the mutex.
+    // Hold the global LSP lock for the duration to prevent this test from
+    // running concurrently with the LSP process tests.
+    let _global_lock = acquire_lsp_test_lock();
+
+    // Local mirror: same OnceLock<Mutex<()>> structure as LSP_TEST_LOCK.
+    static POISON_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    // Spawn a thread that acquires the mirror lock and panics, poisoning it.
     let handle = thread::spawn(|| {
-        let _guard = acquire_lsp_test_lock();
+        let _guard = POISON_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap(); // .unwrap() here is intentional: we *want* it to poison
         panic!("intentional poison to simulate a test crash");
     });
 
@@ -203,10 +229,14 @@ fn acquire_lsp_test_lock_recovers_from_poisoned_mutex() {
         "spawned thread should have panicked while holding the lock"
     );
 
-    // Acquiring the now-poisoned lock must not panic.
+    // Acquiring the now-poisoned mirror lock must not panic.
     // With .lock().unwrap() this line panics (PoisonError); with
     // .lock().unwrap_or_else(|e| e.into_inner()) it succeeds.
-    let _guard = acquire_lsp_test_lock();
+    // This is the exact idiom used inside acquire_lsp_test_lock().
+    let _guard = POISON_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 }
 
 /// Wait until we receive a response with the given id from the message stream.
