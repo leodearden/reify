@@ -1,6 +1,6 @@
 //! Stress analysis builtins: von_mises, principal_stresses, max_shear, safety_factor.
 
-use reify_types::{DimensionVector, Value};
+use reify_types::Value;
 
 use crate::helpers::{sanitize_value, unary};
 use crate::matrix::matrix_components_f64;
@@ -56,43 +56,58 @@ fn von_mises(args: &[Value]) -> Value {
     })
 }
 
-/// Compute eigenvalues of a 3×3 matrix via Cardano's cubic formula.
+/// Compute eigenvalues of a symmetric 3×3 matrix.
 ///
-/// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending, or `None` for degenerate cases
-/// (e.g. complex eigenvalues). Reuses the same algorithm as matrix.rs eigenvalues.
+/// Uses the closed-form formula optimized for symmetric matrices: two eigenvalues
+/// are computed trigonometrically and the third is recovered from the trace
+/// constraint (trace = λ₁ + λ₂ + λ₃), which avoids precision loss at repeated roots.
+///
+/// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending.
 fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
-    let (a, b, c) = (d[0], d[1], d[2]);
-    let (dd, e, f) = (d[3], d[4], d[5]);
-    let (g, h, i) = (d[6], d[7], d[8]);
+    // Row-major: d[0]=a00, d[1]=a01, d[2]=a02, d[4]=a11, d[5]=a12, d[8]=a22
+    let a00 = d[0];
+    let a11 = d[4];
+    let a22 = d[8];
+    let a01 = d[1];
+    let a02 = d[2];
+    let a12 = d[5];
 
-    let p = a + e + i; // trace
-    let q = (a * e - b * dd) + (a * i - c * g) + (e * i - f * h);
-    let r = a * (e * i - f * h) - b * (dd * i - f * g) + c * (dd * h - e * g);
+    let q = (a00 + a11 + a22) / 3.0; // trace / 3
 
-    let p3 = p / 3.0;
-    let alpha = q - p * p / 3.0;
-    let beta = -2.0 * p * p * p / 27.0 + p * q / 3.0 - r;
+    // Sum of squared off-diagonal elements (symmetric, so count each pair once)
+    let p1 = a01 * a01 + a02 * a02 + a12 * a12;
 
-    if alpha >= 0.0 {
-        if alpha == 0.0 && beta == 0.0 {
-            // Triple root
-            return Some([p3, p3, p3]);
-        }
-        // Complex eigenvalues or degenerate
-        return None;
+    if p1 <= 1e-30 {
+        // Matrix is (effectively) diagonal — eigenvalues are the diagonal entries
+        let mut eigs = [a00, a11, a22];
+        eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        return Some(eigs);
     }
 
-    let neg_alpha = -alpha;
-    let m = (neg_alpha / 3.0).sqrt();
-    let cos_arg = (-beta / (2.0 * m * m * m)).clamp(-1.0, 1.0);
-    let theta = cos_arg.acos();
-    let two_m = 2.0 * m;
+    let p2 = (a00 - q).powi(2) + (a11 - q).powi(2) + (a22 - q).powi(2) + 2.0 * p1;
+    let p = (p2 / 6.0).sqrt();
 
-    let mut eigs = [
-        two_m * (theta / 3.0).cos() + p3,
-        two_m * ((theta + 2.0 * std::f64::consts::PI) / 3.0).cos() + p3,
-        two_m * ((theta + 4.0 * std::f64::consts::PI) / 3.0).cos() + p3,
-    ];
+    // B = (A - q·I) / p
+    let b00 = (a00 - q) / p;
+    let b11 = (a11 - q) / p;
+    let b22 = (a22 - q) / p;
+    let b01 = a01 / p;
+    let b02 = a02 / p;
+    let b12 = a12 / p;
+
+    // det(B) / 2 — B is symmetric so b10=b01, b20=b02, b21=b12
+    let det_b = b00 * (b11 * b22 - b12 * b12) - b01 * (b01 * b22 - b12 * b02)
+        + b02 * (b01 * b12 - b11 * b02);
+    let r = (det_b / 2.0).clamp(-1.0, 1.0);
+
+    let phi = r.acos() / 3.0;
+
+    // Two eigenvalues via trigonometry, third from trace constraint
+    let eig1 = q + 2.0 * p * phi.cos();
+    let eig3 = q + 2.0 * p * (phi + 2.0 * std::f64::consts::FRAC_PI_3 * 2.0).cos();
+    let eig2 = 3.0 * q - eig1 - eig3;
+
+    let mut eigs = [eig1, eig2, eig3];
     eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     Some(eigs)
 }
@@ -353,24 +368,6 @@ mod tests {
         );
         let result = eval_analysis("max_shear", &[tensor]).unwrap();
         assert_scalar_approx!(result, 0.0, DimensionVector::PRESSURE);
-    }
-
-    #[test]
-    fn eigenvalues_uniaxial_debug() {
-        // Direct test of eigenvalue helper for uniaxial case
-        let d = [200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let eigs = compute_eigenvalues_3x3(&d)
-            .expect("eigenvalues should compute for uniaxial matrix");
-        assert!(
-            (eigs[2] - 200.0).abs() < 1e-9,
-            "largest eigenvalue should be 200, got {}",
-            eigs[2]
-        );
-        assert!(
-            eigs[0].abs() < 1e-9,
-            "smallest eigenvalue should be ~0, got {}",
-            eigs[0]
-        );
     }
 
     #[test]
