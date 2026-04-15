@@ -734,3 +734,80 @@ fn compile_module_multi_import_prelude() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ── amendment (task-1392): compile_project multi-import prelude path ──────────
+
+/// Covers the block-scoped prelude path in `compile_project` (lines 257-260 in
+/// module_dag.rs) with multiple imports.
+///
+/// Modules p and q each define a pub structure (Pin and Socket). Module r imports
+/// both and references each in a sub declaration. `compile_project` on r must
+/// return a compiled entry module with 2 sub_components, proving that:
+///   1. `collect_import_preludes` aggregates both imports, and
+///   2. the block-scoped borrow in `compile_project` is correct under multiple
+///      simultaneously-borrowed prelude modules.
+#[test]
+fn compile_project_multi_import_prelude() {
+    let dir = test_dir("compile_project_multi_import_prelude");
+
+    // Module p: pub structure Pin
+    fs::write(
+        dir.join("p.ri"),
+        "pub structure Pin {\n    param d: Scalar = 2mm\n}",
+    )
+    .unwrap();
+
+    // Module q: pub structure Socket
+    fs::write(
+        dir.join("q.ri"),
+        "pub structure Socket {\n    param d: Scalar = 2mm\n}",
+    )
+    .unwrap();
+
+    // Entry module r: imports both and uses each in a sub declaration
+    fs::write(
+        dir.join("r.ri"),
+        "import p.Pin\nimport q.Socket\nstructure Connector {\n    sub pin = Pin(d: 3mm)\n    sub sock = Socket(d: 3mm)\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(&dir.join("r.ri"), &resolver);
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    let modules = result.unwrap();
+    // Should have 3 modules in topo order: p, q, r
+    assert_eq!(modules.len(), 3, "expected 3 modules (p, q, r), got {}", modules.len());
+
+    // Entry module r is last (topological order: dependencies first)
+    let r_module = modules.last().unwrap();
+    assert_eq!(r_module.templates.len(), 1, "expected 1 template in r");
+    let template = &r_module.templates[0];
+    assert_eq!(template.name, "Connector");
+
+    // Connector should have 2 sub_components: Pin and Socket
+    assert_eq!(
+        template.sub_components.len(),
+        2,
+        "expected 2 sub_components, got {:?}",
+        template.sub_components.iter().map(|s| &s.structure_name).collect::<Vec<_>>()
+    );
+
+    let structure_names: Vec<&str> = template
+        .sub_components
+        .iter()
+        .map(|s| s.structure_name.as_str())
+        .collect();
+    assert!(
+        structure_names.contains(&"Pin"),
+        "expected sub_component with structure_name 'Pin', got {:?}",
+        structure_names
+    );
+    assert!(
+        structure_names.contains(&"Socket"),
+        "expected sub_component with structure_name 'Socket', got {:?}",
+        structure_names
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

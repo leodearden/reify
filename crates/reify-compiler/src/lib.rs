@@ -74,6 +74,11 @@ pub fn compile_with_stdlib(parsed: &reify_syntax::ParsedModule) -> CompiledModul
 /// This is a thin wrapper around [`compile_with_prelude_refs`] that accepts
 /// owned `CompiledModule` slices for external callers. Internal code should
 /// prefer `compile_with_prelude_refs` to avoid cloning.
+///
+/// **Performance note:** this wrapper allocates a `Vec<&CompiledModule>` on
+/// every call. For the typical call site with a small prelude this is
+/// negligible, but callers in a hot loop should use `compile_with_prelude_refs`
+/// (currently `pub(crate)`) directly to avoid repeated allocation.
 pub fn compile_with_prelude(
     parsed: &reify_syntax::ParsedModule,
     prelude: &[CompiledModule],

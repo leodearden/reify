@@ -188,7 +188,11 @@ impl ModuleDag {
                 }
             }
 
-            // Collect prelude modules (already-compiled imports) for constraint def propagation.
+            // NB: all recursive compile_module calls are done; self.modules is now
+            // stable for shared borrowing. Do not add any code here that mutates
+            // self before compile_with_prelude_refs returns — that would break
+            // the borrow checker (unlike compile_project, this separation is
+            // implicit and not block-scoped).
             let preludes = collect_import_preludes(&parsed, &self.modules);
 
             // Compile this module with prelude context so imported constraint defs are visible.
