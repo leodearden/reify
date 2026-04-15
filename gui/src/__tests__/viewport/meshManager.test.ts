@@ -905,6 +905,23 @@ describe('meshManager', () => {
       expect(manager.getSceneMeshes().has('A')).toBe(false);
     });
 
+    it('(l2) show→show idempotency: second setVisibility show on visible mesh is a no-op', () => {
+      const { manager } = setupWithMesh();
+      // Mesh starts in 'show' state after sync
+      vi.clearAllMocks();
+
+      // Calling show on an already-visible mesh: early-return when prevState === state
+      (manager as any).setVisibility('A', 'show');
+
+      // No scene operations should have occurred
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+      expect(mockSceneRemove).not.toHaveBeenCalled();
+      expect(mockGroupAdd).not.toHaveBeenCalled();
+      // Mesh still in scene, not in ghost map
+      expect(manager.getSceneMeshes().has('A')).toBe(true);
+      expect((manager as any).getGhostMeshes().has('A')).toBe(false);
+    });
+
     it('(m) orphan visibility: setVisibility on never-synced entity stores state without error', () => {
       const scene = new Scene();
       const manager = createMeshManager(scene);
@@ -946,7 +963,26 @@ describe('meshManager', () => {
       expect(mockSceneAdd).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'Z' }));
     });
 
-    it('(o) orphan visibility: pre-stored hidden state suppresses scene and ghost placement on sync', () => {
+    it('(o) orphan visibility: pre-stored show state results in normal scene-add on sync', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Pre-store show visibility before any mesh data arrives
+      (manager as any).setVisibility('Z', 'show');
+
+      // Entity arrives via sync: show is the default path, mesh should be scene-added normally
+      manager.sync({ Z: makeMeshData('Z') });
+
+      // Mesh should be in scene map, not ghost map
+      expect(manager.getSceneMeshes().has('Z')).toBe(true);
+      expect((manager as any).getGhostMeshes().has('Z')).toBe(false);
+      // scene.add was called for the mesh
+      expect(mockSceneAdd).toHaveBeenCalled();
+      expect(mockGroupAdd).not.toHaveBeenCalled();
+    });
+
+    it('(p) orphan visibility: pre-stored hidden state suppresses scene and ghost placement on sync', () => {
       const scene = new Scene();
       const manager = createMeshManager(scene);
       vi.clearAllMocks();
