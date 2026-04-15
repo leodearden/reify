@@ -35805,12 +35805,13 @@
         "description": "Every geometry function that takes a \"target\" or \"profile\" geometry argument is broken for let-bound geometry refs, inline nesting, and cross-let composition. Only boolean ops (difference/union/intersection/union_all/intersection_all) work correctly after task 1609. The remaining 14 functions all hardcode `target: GeomRef::Step(0)` and compile the geometry arg as a scalar expression, which silently produces wrong results (geometry disappears or references the wrong handle).\n\nAffected functions (all in `crates/reify-compiler/src/geometry.rs`):\n- **Transforms (4):** translate, rotate, scale, rotate_around\n- **Patterns (3):** circular_pattern, linear_pattern, mirror\n- **Sweeps (5):** extrude, revolve, revolve_full, sweep, loft\n- **Modifiers (3):** shell, thicken, draft\n\nThe fix should be generic, not per-function copy-paste of the boolean-op pattern.",
         "details": "## Root cause\n\nIn `geometry.rs`, all non-boolean geometry functions fall through to line 238:\n```rust\nlet compiled_args: Vec<CompiledExpr> = args\n    .iter()\n    .map(|arg| compile_expr(arg, scope, enum_defs, functions, diagnostics))\n    .collect();\n```\n\nThis compiles every argument — including geometry targets — as scalar expressions. Geometry identifiers like `hole` or `body` resolve to `Value::Undef` at eval time, and inline geometry calls like `cylinder(...)` are compiled as function-call expressions rather than geometry sub-ops.\n\nMeanwhile, the op is emitted with `target: GeomRef::Step(0)`, which assumes the target shape is the first handle in the current realization — but no sub-op was emitted to produce that handle.\n\n## Proposed approach: argument-type metadata table\n\nDefine a small metadata table mapping each function to which arg positions are geometry refs:\n\n```rust\nfn geometry_arg_indices(name: &str) -> &[usize] {\n    match name {\n        \"translate\" | \"rotate\" | \"scale\" | \"shell\" | \"thicken\" | \"draft\" => &[0],\n        \"rotate_around\" => &[0],\n        \"circular_pattern\" | \"linear_pattern\" | \"mirror\" => &[0],\n        \"extrude\" | \"revolve\" | \"revolve_full\" => &[0],\n        \"sweep\" => &[0, 1],  // profile + path\n        \"loft\" => &[],  // all args are geometry (variadic, handle separately)\n        _ => &[],\n    }\n}\n```\n\nThen a single generic code path:\n1. For each geometry arg index, recursively call `compile_geometry_call` → collect sub-ops → track the step offset\n2. For each scalar arg index, call `compile_expr` as now\n3. Emit sub-ops first, then the main op with correct `GeomRef::Step(N)` indices\n\nThis replaces all 14 broken per-function blocks AND the 5 working boolean blocks with one shared implementation. Boolean ops become just another entry in the metadata table.\n\n## Files to modify\n- `crates/reify-compiler/src/geometry.rs` — main refactor\n- `crates/reify-compiler/tests/let_scope_tests.rs` — add tests for geometry-arg resolution in transforms/patterns/sweeps\n\n## Test strategy\n- `translate(hole, ...)` where hole is a let-bound `cylinder()` → should produce correct sub-ops\n- `circular_pattern(hole, ...)` where hole is a let-bound geometry → should resolve\n- `extrude(profile, ...)` where profile is let-bound → should resolve\n- `difference(body, translate(hole, ...))` — nested composition across categories\n- Cycle detection still works for transitive refs\n\n## memory_hints\n- search: \"compile_geometry_call geometry argument resolution\"\n- search: \"GeomRef::Step(0) hardcoding\"\n- entity: \"compile_geometry_call\"\n- entity: \"task 1609\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1609"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:13:08.365Z"
       },
       {
         "id": "1716",
@@ -35916,7 +35917,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:13:06.433Z",
+      "lastModified": "2026-04-15T06:13:08.365Z",
       "taskCount": 1721,
       "completedCount": 1475,
       "tags": [
