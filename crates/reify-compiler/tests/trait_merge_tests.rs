@@ -565,6 +565,68 @@ structure def S : Left + Right {
     );
 }
 
+/// Kind-aware dedup: TraitA provides `param x : Real = 1`, TraitB provides
+/// `let x : Real = 42`. Structure implements both with no override.
+/// The Let default must NOT be silently discarded by the Param default's
+/// name-only dedup in `seen_defaults`.
+///
+/// Expected: 2 value cells for 'x' (one Param from TraitA, one Let from TraitB).
+/// Before the fix, `seen_defaults["x"]` is populated by TraitA's Param (type Real),
+/// and TraitB's Let also has sentinel type Real — so the name-only dedup treats them
+/// as duplicates and discards the Let, producing only 1 cell.
+#[test]
+fn let_default_not_discarded_by_param_default_same_name() {
+    let source = r#"
+trait ProvidesParamX {
+    param x : Real = 1.0
+}
+
+trait ProvidesLetX {
+    let x : Real = 42.0
+}
+
+structure def S : ProvidesParamX + ProvidesLetX {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected errors when collecting cross-kind defaults: {:?}",
+        errors
+    );
+
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        2,
+        "expected 2 'x' value cells (one Param, one Let) but got {}; \
+         the Let default was silently discarded by the name-only seen_defaults dedup",
+        x_cells.len()
+    );
+
+    let param_cells: Vec<_> = x_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Param)
+        .collect();
+    assert_eq!(param_cells.len(), 1, "expected exactly 1 Param 'x' cell");
+
+    let let_cells: Vec<_> = x_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Let)
+        .collect();
+    assert_eq!(let_cells.len(), 1, "expected exactly 1 Let 'x' cell");
+}
+
 /// Step 1b: Two traits each requiring `param x : Length`.
 /// Structure provides `param x : Length = 5mm` — requirement dedup baseline.
 /// Expect 0 errors (existing behavior).
