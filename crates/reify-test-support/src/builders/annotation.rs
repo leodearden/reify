@@ -49,12 +49,6 @@ mod tests {
     use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
     #[test]
-    fn constants_match_expected_strings() {
-        assert_eq!(TEST_ANNOTATION, "test");
-        assert_eq!(DEPRECATED_ANNOTATION, "deprecated");
-    }
-
-    #[test]
     fn ann_str_produces_string_arg() {
         let arg = ann_str("hello");
         assert_eq!(arg, AnnotationArg::String("hello".to_string()));

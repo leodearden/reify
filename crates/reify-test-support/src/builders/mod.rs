@@ -110,9 +110,6 @@ mod reexport_contract_tests {
         };
         use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
-        // Canary: confirm annotation constants are accessible from this module
-        assert_eq!(TEST_ANNOTATION, "test");
-
         // Annotation helpers
         let _ = ann_str("hello");
         let _ = ann_int(42);

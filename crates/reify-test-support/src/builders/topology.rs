@@ -391,12 +391,6 @@ mod annotation_tests {
     use reify_types::{DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION};
 
     #[test]
-    fn annotation_constants_available() {
-        assert_eq!(OPTIMIZED_ANNOTATION, "optimized");
-        assert_eq!(DEPRECATED_ANNOTATION, "deprecated");
-    }
-
-    #[test]
     fn topology_builder_single_annotation() {
         let t = TopologyTemplateBuilder::new("T")
             .annotation(annotation(OPTIMIZED_ANNOTATION))

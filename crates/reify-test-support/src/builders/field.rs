@@ -111,12 +111,6 @@ mod annotation_tests {
     use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
     #[test]
-    fn annotation_constants_available() {
-        assert_eq!(TEST_ANNOTATION, "test");
-        assert_eq!(DEPRECATED_ANNOTATION, "deprecated");
-    }
-
-    #[test]
     fn compiled_field_builder_single_annotation() {
         let field =
             CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)

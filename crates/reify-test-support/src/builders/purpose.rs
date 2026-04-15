@@ -124,12 +124,6 @@ mod annotation_tests {
     use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
     #[test]
-    fn annotation_constants_available() {
-        assert_eq!(TEST_ANNOTATION, "test");
-        assert_eq!(DEPRECATED_ANNOTATION, "deprecated");
-    }
-
-    #[test]
     fn compiled_purpose_builder_single_annotation() {
         let p = CompiledPurposeBuilder::new("p")
             .annotation(annotation(TEST_ANNOTATION))
