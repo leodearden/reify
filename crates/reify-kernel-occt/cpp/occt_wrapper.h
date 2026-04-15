@@ -23,9 +23,6 @@ std::unique_ptr<OcctShapeVec> new_shape_vec();
 /// Push a shape into the vector (mutable borrow via Pin).
 void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape);
 
-/// Return the number of shapes in the vector.
-size_t shape_vec_len(const OcctShapeVec& vec);
-
 // Shared types — defined by cxx bridge. Forward-declared here for function signatures.
 struct Point3;
 struct BBox;
@@ -92,12 +89,6 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
 std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 
 /// Create a flat circular face (disk) at a given Z height (for extrude profiles).
-std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
-
-/// Loft through two wire profiles to create a solid.
-std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2);
-
-/// Create a flat circular face (disk) at a given Z height (for sweep/extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
 
 /// Create a straight line wire between two 3D points (for sweep paths).

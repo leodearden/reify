@@ -637,27 +637,6 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
     }
 }
 
-std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2) {
-    try {
-        BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False);
-        loft.AddWire(TopoDS::Wire(wire1.shape));
-        loft.AddWire(TopoDS::Wire(wire2.shape));
-        loft.Build();
-        if (!loft.IsDone()) {
-            throw std::runtime_error("BRepOffsetAPI_ThruSections (loft_two_profiles) failed");
-        }
-        auto result = std::make_unique<OcctShape>();
-        result->shape = loft.Shape();
-        return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT loft_two_profiles: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT loft_two_profiles: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT loft_two_profiles: unknown C++ exception");
-    }
-}
-
 // --- OcctShapeVec ---
 
 std::unique_ptr<OcctShapeVec> new_shape_vec() {
@@ -666,10 +645,6 @@ std::unique_ptr<OcctShapeVec> new_shape_vec() {
 
 void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape) {
     vec.shapes.push_back(shape.shape);
-}
-
-size_t shape_vec_len(const OcctShapeVec& vec) {
-    return vec.shapes.size();
 }
 
 // --- make_line_wire ---
