@@ -121,3 +121,27 @@ fn user_let_pi_shadows_builtin() {
         other => panic!("expected ValueRef to user 'pi', got {:?}", other),
     }
 }
+
+// ─── step-7: pi works under #no_prelude ─────────────────────────────────────
+
+#[test]
+fn pi_works_under_no_prelude() {
+    let compiled = compile_source("#no_prelude\nstructure S { let x = pi }");
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "pi should resolve even with #no_prelude, got: {:?}",
+        errors
+    );
+    let expr = get_cell_expr(&compiled, "x");
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => {
+            assert!(
+                (*v - std::f64::consts::PI).abs() < 1e-15,
+                "expected PI, got {}",
+                v
+            );
+        }
+        other => panic!("expected Literal(Real(PI)), got {:?}", other),
+    }
+}
