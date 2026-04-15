@@ -36660,6 +36660,17 @@
             "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
           }
         }
+      },
+      {
+        "id": 1757,
+        "title": "Clean up sentinel test helpers: self-contained assertion + remove noise param",
+        "description": "Two small improvements to the sentinel test helpers in crates/reify-eval/tests/geometry_error_handling.rs:\n\n1. **Rename and refactor `assert_sentinel_kernel_ops` (line ~97)**: Currently accepts a pre-computed `compile_failure_count` from the caller, splitting assertion logic across caller and helper. Change signature to `fn assert_sentinel_invariants(kernel_ops: &[GeometryOpRecord], diagnostics: &[Diagnostic])` and have the helper compute the compile-failure count internally. Rename to `assert_sentinel_invariants` to reflect its broader scope.\n\n2. **Remove unnecessary `param` from `make_sentinel_module` (line ~82)**: The `.param(e, \"width\", ...)` call is inherited from the original test and not relevant to sentinel behavior. Since none of the sentinel tests exercise parameter behavior, remove it to reduce noise in the shared helper.\n\nmemory_hints: search \"assert_sentinel_kernel_ops geometry_error_handling\", get_entity \"make_sentinel_module\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36671,7 +36682,8 @@
         "master"
       ],
       "created": "2026-04-15T11:26:33.179Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-15T11:29:23.427Z"
     }
   }
 }
