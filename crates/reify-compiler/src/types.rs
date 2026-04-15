@@ -261,8 +261,10 @@ pub struct TopologyTemplate {
 impl TopologyTemplate {
     /// Returns `true` if this template is tagged with the `@test` annotation.
     ///
-    /// Derived from `annotations` on each call — symmetric with
-    /// `ConstraintDef::is_test()`.
+    /// Derived from `annotations` on each call (linear scan) — symmetric with
+    /// `ConstraintDef::is_test()`. Annotation lists are typically 0–2 items,
+    /// so the per-call cost is negligible; if profiling ever flags this,
+    /// a cached `bool` field can be reintroduced.
     pub fn is_test(&self) -> bool {
         reify_types::annotation::has_test_annotation(&self.annotations)
     }

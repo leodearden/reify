@@ -233,6 +233,8 @@ fn filter_helpers_return_iterators() {
         constraint def NC { param y : Length
             y > 0
         }
+        @test fn tested() -> Real { 1.0 }
+        fn normal() -> Real { 2.0 }
     "#;
     let module = compile_module(source);
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
@@ -251,6 +253,13 @@ fn filter_helpers_return_iterators() {
 
     let non_test_cd_count = module.non_test_constraint_defs().count();
     assert_eq!(non_test_cd_count, 1);
+
+    // test_functions / non_test_functions return iterators too
+    let test_fn_names: Vec<&str> = module.test_functions().map(|f| f.name.as_str()).collect();
+    assert_eq!(test_fn_names, vec!["tested"]);
+
+    let has_normal = module.non_test_functions().any(|f| f.name == "normal");
+    assert!(has_normal);
 }
 
 // ── Steps 14-15: CompiledModule::test_constraint_defs() / non_test_constraint_defs() ──
@@ -377,4 +386,9 @@ fn compiled_module_function_filter_helpers() {
 
     assert_eq!(module.non_test_functions().count(), 1);
     assert!(module.non_test_functions().any(|f| f.name == "normal"));
+
+    // Edge case: module with no functions at all
+    let no_fns = compile_module("structure A { param x : Real }");
+    assert_eq!(no_fns.test_functions().count(), 0);
+    assert_eq!(no_fns.non_test_functions().count(), 0);
 }
