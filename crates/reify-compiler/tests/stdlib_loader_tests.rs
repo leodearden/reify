@@ -429,16 +429,14 @@ fn hardness_scale_enum_present_in_stdlib() {
     }
 }
 
-// ─── function-merging path (documented gap) ──────────────────────────
+// ─── function-merging path ───────────────────────────────────────────
 
-/// Prelude function resolution is NOT currently implemented: user code that
-/// calls a function defined in a prelude module will produce an unresolved
-/// function error. This test documents the gap.
-///
-/// If prelude function merging is implemented in the future, this test
-/// should be updated to assert zero errors instead.
+/// Prelude functions are resolved during compilation: user code that calls
+/// a function defined in a prelude module compiles without errors.
+/// This test exercises the function-merging path using a synthetic prelude
+/// module (no stdlib modules currently define functions).
 #[test]
-fn prelude_function_merging_path_is_unimplemented() {
+fn prelude_function_merging_path() {
     // Build a synthetic prelude module containing a single function: double(x: Real) -> Real
     let double_fn = CompiledFunction {
         name: "double".to_string(),
@@ -477,13 +475,23 @@ structure def S {
     let compiled = reify_compiler::compile_with_prelude(&parsed, &[synthetic_prelude]);
     let errors = collect_errors(&compiled.diagnostics);
 
-    // Currently, prelude functions are NOT resolved — expect an error.
-    // If/when prelude function merging is implemented, change this to:
-    //   assert!(errors.is_empty(), "...");
+    // Prelude functions are resolved during compilation — no errors expected.
     assert!(
-        !errors.is_empty(),
-        "expected unresolved function error for prelude fn 'double' \
-         (prelude function merging not yet implemented), but got no errors. \
-         If this passes, the feature was implemented — update this test."
+        errors.is_empty(),
+        "compile_with_prelude should resolve prelude function 'double', got errors: {:?}",
+        errors
+    );
+
+    // The output module should contain the user's template.
+    assert!(
+        !compiled.templates.is_empty(),
+        "output module should contain the user's S template"
+    );
+
+    // Prelude functions should NOT be duplicated in the output module.
+    assert!(
+        compiled.functions.is_empty(),
+        "output module should not contain prelude function 'double', but found: {:?}",
+        compiled.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
     );
 }
