@@ -63,6 +63,125 @@ fn geometry_let_in_scope_for_subsequent_let() {
     );
 }
 
+// ─── task-1609 step-1: difference with let-bound args ───
+
+#[test]
+fn difference_with_let_bound_args() {
+    // Both args to difference() are let-bound geometry variables (Idents).
+    // The compiler must resolve these to their initializer expressions.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let hole = cylinder(r2, h)
+    let result = difference(body, hole)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    // body, hole, result → 3 realizations
+    assert_eq!(
+        template.realizations.len(),
+        3,
+        "expected 3 realizations (body, hole, result), got {}",
+        template.realizations.len()
+    );
+}
+
+// ─── task-1609 step-2: union with let-bound args ───
+
+#[test]
+fn union_with_let_bound_args() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let a = cylinder(r, h)
+    let b = sphere(r)
+    let c = union(a, b)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        3,
+        "expected 3 realizations (a, b, c), got {}",
+        template.realizations.len()
+    );
+}
+
+// ─── task-1609 step-3: intersection with let-bound args ───
+
+#[test]
+fn intersection_with_let_bound_args() {
+    let source = r#"structure S {
+    param w: Scalar = 10mm
+    param h: Scalar = 10mm
+    param d: Scalar = 10mm
+    param r: Scalar = 7mm
+    let a = box(w, h, d)
+    let b = sphere(r)
+    let c = intersection(a, b)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        3,
+        "expected 3 realizations (a, b, c), got {}",
+        template.realizations.len()
+    );
+}
+
+// ─── task-1609 step-4: union_all with let-bound args ───
+
+#[test]
+fn union_all_with_let_bound_args() {
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    param w: Scalar = 8mm
+    param d: Scalar = 8mm
+    let a = cylinder(r, h)
+    let b = sphere(r)
+    let c = box(w, h, d)
+    let d_geom = union_all(a, b, c)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        4,
+        "expected 4 realizations (a, b, c, d_geom), got {}",
+        template.realizations.len()
+    );
+}
+
+// ─── task-1609 step-5: nested boolean ops with let args ───
+
+#[test]
+fn nested_boolean_ops_with_let_args() {
+    // combined is a boolean op result used as input to another boolean op via let.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let a = cylinder(r, h)
+    let b = cylinder(r2, h)
+    let combined = difference(a, b)
+    let c = sphere(r)
+    let result = union(combined, c)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    // a, b, combined, c, result → 5 realizations
+    assert_eq!(
+        template.realizations.len(),
+        5,
+        "expected 5 realizations (a, b, combined, c, result), got {}",
+        template.realizations.len()
+    );
+}
+
 // ─── step-4: geometry let still produces realization ───
 
 #[test]
