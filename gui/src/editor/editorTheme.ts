@@ -22,6 +22,9 @@ export const editorThemeSpec: Record<string, Record<string, string>> = {
     backgroundColor: THEME_TOKENS.surfaceHover,
     color: THEME_TOKENS.text,
   },
+  // NOTE: The '+ hex' suffix pattern appends a two-digit alpha channel to produce
+  // 8-digit hex colors (#rrggbbaa). This works because all THEME_TOKENS values are
+  // guaranteed to be 6-digit hex strings — do not change tokens to rgb()/hsl() form.
   '.cm-activeLine': {
     backgroundColor: THEME_TOKENS.surface0 + '40',
   },

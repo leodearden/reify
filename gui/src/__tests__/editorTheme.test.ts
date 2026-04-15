@@ -52,12 +52,20 @@ describe('editorThemeSpec cursor styling', () => {
 });
 
 describe('reifyHighlightStyle syntax tag coverage', () => {
-  const tags = [t.keyword, t.number, t.string, t.bool, t.variableName, t.operator, t.lineComment, t.blockComment];
-  const names = ['keyword', 'number', 'string', 'bool', 'variableName', 'operator', 'lineComment', 'blockComment'];
+  // Single source of truth: keep tag and its display name together to prevent
+  // silent misalignment when new entries are added.
+  const cases = [
+    { tag: t.keyword, name: 'keyword' },
+    { tag: t.number, name: 'number' },
+    { tag: t.string, name: 'string' },
+    { tag: t.bool, name: 'bool' },
+    { tag: t.variableName, name: 'variableName' },
+    { tag: t.operator, name: 'operator' },
+    { tag: t.lineComment, name: 'lineComment' },
+    { tag: t.blockComment, name: 'blockComment' },
+  ];
 
-  for (let i = 0; i < tags.length; i++) {
-    const tag = tags[i];
-    const name = names[i];
+  for (const { tag, name } of cases) {
     it(`covers ${name} tag with a non-null class`, () => {
       const cls = reifyHighlightStyle.style([tag]);
       expect(cls, `${name} tag has no highlight style`).not.toBeNull();
