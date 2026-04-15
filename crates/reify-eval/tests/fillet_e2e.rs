@@ -199,3 +199,74 @@ fn fillet_through_full_eval_pipeline() {
         other => panic!("expected GeometryOp::Fillet at op index 1, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// step-4 (1819): Contract test — eval only needs 'radius' arg for Fillet
+// ---------------------------------------------------------------------------
+
+/// Documents the minimal args contract for Fillet: only 'radius' is needed in args.
+///
+/// The eval layer resolves the target handle from GeomRef::Step(0) on the Modify
+/// variant, not from any 'target' entry in the args vec. This test constructs a
+/// Fillet op with ONLY ('radius', ...) in args (no 'target' entry at all) and
+/// verifies that eval still produces the correct Fillet geometry op.
+#[test]
+fn fillet_modify_only_needs_radius_arg() {
+    let e = "TestFilletMinimal";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Box (produces handle at step index 0)
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(10.0)),
+            ("height".into(), mm_literal(10.0)),
+            ("depth".into(), mm_literal(10.0)),
+        ],
+    };
+
+    // Op 1: Fillet with ONLY 'radius' in args — no 'target' entry.
+    // "target" handle is resolved from GeomRef::Step(0), not from args.
+    let fillet_op = CompiledGeometryOp::Modify {
+        kind: ModifyKind::Fillet,
+        target: GeomRef::Step(0),
+        args: vec![("radius".into(), mm_literal(3.0))],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![box_op, fillet_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_fillet_minimal"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let _result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
+
+    let target_handle = ops[0].result_handle;
+
+    match &ops[1].op {
+        GeometryOp::Fillet { target, radius } => {
+            assert_eq!(
+                *target, target_handle,
+                "Fillet target should be handle from op 0 ({:?}), got {:?}",
+                target_handle, target
+            );
+            let radius_si = radius.as_f64().expect("radius should be a numeric value");
+            assert!(
+                (radius_si - 0.003).abs() < 1e-9,
+                "Fillet radius should be 0.003 m (3 mm SI), got {}",
+                radius_si
+            );
+        }
+        other => panic!("expected GeometryOp::Fillet at op index 1, got {:?}", other),
+    }
+}
