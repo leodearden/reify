@@ -138,6 +138,30 @@ fn solver_hint_missing_collection_warns() {
     );
 }
 
+// ── Step 16: @solver_hint with zero arguments emits warning ───────────────
+
+#[test]
+fn solver_hint_zero_args_warns() {
+    let source = r#"structure S { @solver_hint param x : Real = auto }"#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let template = &module.templates[0];
+    let cell = &template.value_cells[0];
+    assert!(
+        cell.solver_hints.is_empty(),
+        "expected no solver hints for zero-arg @solver_hint, got {:?}",
+        cell.solver_hints
+    );
+
+    let warns = warnings_only(&module);
+    assert!(
+        warns.iter().any(|d| d.message.contains("requires a string literal kind as first argument")),
+        "expected warning about missing kind, got: {:?}",
+        warns.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 // ── Step 17: @solver_hint in guarded block compiles ────────────────────────
 
 #[test]
