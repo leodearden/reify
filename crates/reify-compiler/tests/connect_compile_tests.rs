@@ -3,29 +3,8 @@
 //! Tests for compiling connect and chain declarations into CompiledConnection entries.
 
 use reify_compiler::*;
+use reify_test_support::{compile_first_template, compile_source};
 use reify_types::*;
-
-/// Helper: parse source and compile, returning the CompiledModule.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: parse source and compile, returning first template + diagnostics.
-fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let module = compile_module(source);
-    let template = module
-        .templates
-        .into_iter()
-        .next()
-        .expect("expected 1 template");
-    (template, module.diagnostics)
-}
 
 // ── Step 13: compile_connect_generates_connection ────────────────────
 
@@ -85,7 +64,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     // Get the S template (second one, after BoltSet)
     let s_template = module
         .templates
@@ -222,7 +201,7 @@ structure def S2 {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -493,7 +472,7 @@ structure def S2 {
     connect a -> b : BoltSet { grade = 10.9 }
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -628,7 +607,7 @@ structure def Assembly {
     connect motor.shaft -> gear.input
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let asm = module
         .templates
         .iter()
@@ -866,7 +845,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let s_template = module
         .templates
         .iter()
@@ -1186,7 +1165,7 @@ structure def S {
     connect a -> b : BoltSet { grade = 10.9, count = 6.0, d -> d, length_m -> length_m }
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let s_template = module
         .templates
         .iter()
@@ -1350,7 +1329,7 @@ structure def S {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
     let s_template = module
         .templates
         .iter()
