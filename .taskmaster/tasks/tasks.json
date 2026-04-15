@@ -35616,7 +35616,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "source": "steward-triage",
+          "spawn_context": "steward-triage",
+          "spawned_from": "1674",
+          "modules": [
+            "crates/reify-expr/tests/field_eval_tests.rs"
+          ]
+        }
       }
     ],
     "metadata": {
