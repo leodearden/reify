@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
     match &expr.kind {
@@ -281,9 +281,14 @@ pub(crate) fn compile_connection(
             let left_type = ctx.ports.iter().find(|p| p.name == left_port).map(|p| p.type_name.as_str());
             let right_type = ctx.ports.iter().find(|p| p.name == right_port).map(|p| p.type_name.as_str());
 
+            // NOTE: this check only works for trait-typed ports. Ports declared with a
+            // structure type (or a built-in type) won't be found in the trait_registry,
+            // so trait_satisfies returns false for them — no warning is emitted even if
+            // the structure conforms to LocatedPort via a separate trait declaration.
+            // This is a known limitation acceptable for the current use-cases.
             if let (Some(lt), Some(rt)) = (left_type, right_type) {
-                let mut visited_l = std::collections::HashSet::new();
-                let mut visited_r = std::collections::HashSet::new();
+                let mut visited_l = HashSet::new();
+                let mut visited_r = HashSet::new();
                 let left_located = trait_satisfies(lt, reify_types::LOCATED_PORT_TRAIT, ctx.trait_registry, &mut visited_l);
                 let right_located = trait_satisfies(rt, reify_types::LOCATED_PORT_TRAIT, ctx.trait_registry, &mut visited_r);
 
