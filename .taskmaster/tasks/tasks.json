@@ -8654,7 +8654,14 @@
             "1600"
           ],
           "bundled_at": "2026-04-11",
-          "bundle_key": "M"
+          "bundle_key": "M",
+          "memory_hints": {
+            "searches": [
+              "reify-test-support eval-helpers feature flag compile_source",
+              "test helper migration tests/common/mod.rs reify-compiler reify-eval reify-runtime"
+            ],
+            "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
+          }
         }
       },
       {
