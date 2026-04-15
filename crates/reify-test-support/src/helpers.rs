@@ -46,6 +46,36 @@ pub fn eval_source(source: &str) -> reify_eval::EvalResult {
     result
 }
 
+/// Parse, compile (asserting no errors), and check `source` using a
+/// `SimpleConstraintChecker` engine. Returns the `CheckResult`.
+///
+/// Convenience pipeline for tests that need real constraint satisfaction
+/// semantics (Satisfied/Violated/Indeterminate).
+///
+/// # Panics
+/// Panics on parse errors or compile errors.
+#[cfg(feature = "eval-helpers")]
+pub fn check_source(source: &str) -> reify_eval::CheckResult {
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+    engine.check(&compiled)
+}
+
+/// Parse, compile with stdlib (asserting no errors), and check `source`
+/// using a `SimpleConstraintChecker` engine. Returns the `CheckResult`.
+///
+/// Like [`check_source`] but uses `parse_and_compile_with_stdlib` so that
+/// stdlib types and traits are available during compilation.
+///
+/// # Panics
+/// Panics on parse errors or compile errors.
+#[cfg(feature = "eval-helpers")]
+pub fn check_source_with_stdlib(source: &str) -> reify_eval::CheckResult {
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    engine.check(&compiled)
+}
+
 /// Parse `source` with the canonical `"test"` module path, asserting no parse errors.
 ///
 /// # Panics
