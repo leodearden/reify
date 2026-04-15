@@ -265,6 +265,40 @@ fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) ->
     }
 }
 
+/// Eval `sample(fn_name(constant_tensor_field, …extra_args), 0.5)` and return the result.
+///
+/// Encapsulates the recurring setup pattern in edge-case dispatch tests:
+///   1. Wrap `tensor` in an analytical `Real → Matrix3x3(Real)` field.
+///   2. Build `fn_name(field_lit, …extra_args)` with field-type codomain `codomain`.
+///   3. Wrap in `sample(…, 0.5)`.
+///   4. Evaluate and return the `Value`.
+///
+/// `codomain` is the scalar/list return type of `fn_name`, e.g. `Type::Real` for
+/// von_mises / max_shear, `Type::List(Box::new(Type::Real))` for principal_stresses.
+/// `extra_args` carries any additional literal arguments (e.g. yield stress for
+/// safety_factor) as `(Value, Type)` pairs.
+fn eval_sampled_analysis(
+    fn_name: &str,
+    tensor: Value,
+    extra_args: Vec<(Value, Type)>,
+    codomain: Type,
+) -> Value {
+    let (field, field_type) = make_constant_tensor_field(tensor);
+    let mut args = vec![CompiledExpr::literal(field, field_type)];
+    args.extend(extra_args.into_iter().map(|(v, t)| CompiledExpr::literal(v, t)));
+    let ft = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(codomain.clone()),
+    };
+    let inner = make_function_call(fn_name, args, ft);
+    let sample = make_function_call(
+        "sample",
+        vec![inner, CompiledExpr::literal(Value::Real(0.5), Type::Real)],
+        codomain,
+    );
+    eval_expr(&sample, &EvalContext::simple(&ValueMap::new()))
+}
+
 // ── step-1: von_mises dispatch ────────────────────────────────────────────────
 // (step-2 in the plan was "run test to verify it passes" — a verification step,
 // not a distinct test; there is no step-2 test to write here.
@@ -488,7 +522,7 @@ fn eval_sample_safety_factor_field_dispatch() {
 //   - von_mises = 0  →  safety_factor = yield/0 → infinity → sanitize_value → Undef
 //   - hydrostatic eigenvalues all equal  →  max_shear = 0
 
-// ── step-1 (plan): von_mises of zero tensor through dispatch ──────────────────
+// ── Edge case: von_mises of zero tensor through dispatch ──────────────────────
 
 #[test]
 fn eval_sample_von_mises_zero_tensor_dispatch() {
@@ -496,37 +530,13 @@ fn eval_sample_von_mises_zero_tensor_dispatch() {
     let tensor = make_stress_tensor(
         &[&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
     );
-    let (field, field_type) = make_constant_tensor_field(tensor);
+    let result = eval_sampled_analysis("von_mises", tensor, vec![], Type::Real);
 
-    let vm_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
-    };
-    let vm_expr = make_function_call(
-        "von_mises",
-        vec![CompiledExpr::literal(field, field_type)],
-        vm_field_type.clone(),
-    );
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            vm_expr,
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        ],
-        Type::Real,
-    );
-
-    let values = ValueMap::new();
-    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
-
-    // von Mises of zero tensor = 0
     match &result {
-        Value::Real(v) => {
-            assert!(
-                v.abs() < 1e-10,
-                "expected von Mises ≈ 0.0 for zero tensor, got {v}"
-            );
-        }
+        Value::Real(v) => assert!(
+            v.abs() < 1e-10,
+            "expected von Mises ≈ 0.0 for zero tensor, got {v}"
+        ),
         _ => panic!(
             "sample(von_mises(zero_field), point) should return Real(0.0), got {:?}",
             result
@@ -534,7 +544,7 @@ fn eval_sample_von_mises_zero_tensor_dispatch() {
     }
 }
 
-// ── step-3 (plan): safety_factor of zero tensor → Undef ──────────────────────
+// ── Edge case: safety_factor of zero tensor → Undef (divide by zero) ─────────
 
 #[test]
 fn eval_sample_safety_factor_zero_tensor_dispatch() {
@@ -543,33 +553,13 @@ fn eval_sample_safety_factor_zero_tensor_dispatch() {
     let tensor = make_stress_tensor(
         &[&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
     );
-    let (field, field_type) = make_constant_tensor_field(tensor);
-
-    let sf_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
-    };
-    let sf_expr = make_function_call(
+    let result = eval_sampled_analysis(
         "safety_factor",
-        vec![
-            CompiledExpr::literal(field, field_type),
-            CompiledExpr::literal(Value::Real(yield_val), Type::Real),
-        ],
-        sf_field_type.clone(),
-    );
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            sf_expr,
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        ],
+        tensor,
+        vec![(Value::Real(yield_val), Type::Real)],
         Type::Real,
     );
 
-    let values = ValueMap::new();
-    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
-
-    // von_mises=0 → safety_factor=250/0=infinity → sanitize_value → Undef
     assert!(
         result.is_undef(),
         "sample(safety_factor(zero_field, 250.0), point) should return Undef (divide by zero), got {:?}",
@@ -577,7 +567,7 @@ fn eval_sample_safety_factor_zero_tensor_dispatch() {
     );
 }
 
-// ── step-5 (plan): von_mises of hydrostatic tensor through dispatch ───────────
+// ── Edge case: von_mises of hydrostatic tensor through dispatch ───────────────
 
 #[test]
 fn eval_sample_von_mises_hydrostatic_dispatch() {
@@ -586,37 +576,13 @@ fn eval_sample_von_mises_hydrostatic_dispatch() {
     let tensor = make_stress_tensor(
         &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
     );
-    let (field, field_type) = make_constant_tensor_field(tensor);
+    let result = eval_sampled_analysis("von_mises", tensor, vec![], Type::Real);
 
-    let vm_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
-    };
-    let vm_expr = make_function_call(
-        "von_mises",
-        vec![CompiledExpr::literal(field, field_type)],
-        vm_field_type.clone(),
-    );
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            vm_expr,
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        ],
-        Type::Real,
-    );
-
-    let values = ValueMap::new();
-    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
-
-    // All deviatoric stress differences cancel for hydrostatic state: von Mises = 0
     match &result {
-        Value::Real(v) => {
-            assert!(
-                v.abs() < 1e-10,
-                "expected von Mises ≈ 0.0 for hydrostatic p={p}, got {v}"
-            );
-        }
+        Value::Real(v) => assert!(
+            v.abs() < 1e-10,
+            "expected von Mises ≈ 0.0 for hydrostatic p={p}, got {v}"
+        ),
         _ => panic!(
             "sample(von_mises(hydrostatic_field), point) should return Real(0.0), got {:?}",
             result
@@ -624,38 +590,22 @@ fn eval_sample_von_mises_hydrostatic_dispatch() {
     }
 }
 
-// ── step-7 (plan): principal_stresses of hydrostatic tensor ──────────────────
+// ── Edge case: principal_stresses of hydrostatic tensor ───────────────────────
 
 #[test]
 fn eval_sample_principal_stresses_hydrostatic_dispatch() {
-    // Hydrostatic tensor diag(p, p, p): all eigenvalues equal p
-    // Exercises the diagonal fast-path in compute_eigenvalues_3x3 (off-diagonal sum ≤ 1e-30)
+    // Hydrostatic tensor diag(p, p, p): all eigenvalues equal p.
+    // Exercises the diagonal fast-path in compute_eigenvalues_3x3 (off-diagonal sum ≤ 1e-30).
     let p = 100.0_f64;
     let tensor = make_stress_tensor(
         &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
     );
-    let (field, field_type) = make_constant_tensor_field(tensor);
-
-    let ps_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::List(Box::new(Type::Real))),
-    };
-    let ps_expr = make_function_call(
+    let result = eval_sampled_analysis(
         "principal_stresses",
-        vec![CompiledExpr::literal(field, field_type)],
-        ps_field_type.clone(),
-    );
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            ps_expr,
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        ],
+        tensor,
+        vec![],
         Type::List(Box::new(Type::Real)),
     );
-
-    let values = ValueMap::new();
-    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // Eigenvalues of diag(p, p, p) = [p, p, p] sorted ascending
     let Value::List(items) = &result else {
@@ -667,18 +617,16 @@ fn eval_sample_principal_stresses_hydrostatic_dispatch() {
     assert_eq!(items.len(), 3, "should have 3 principal stresses");
     for (i, item) in items.iter().enumerate() {
         match item {
-            Value::Real(v) => {
-                assert!(
-                    (v - p).abs() < 1e-10,
-                    "principal stress[{i}]: expected {p}, got {v}"
-                );
-            }
+            Value::Real(v) => assert!(
+                (v - p).abs() < 1e-10,
+                "principal stress[{i}]: expected {p}, got {v}"
+            ),
             _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
         }
     }
 }
 
-// ── step-9 (plan): max_shear of hydrostatic tensor ───────────────────────────
+// ── Edge case: max_shear of hydrostatic tensor ────────────────────────────────
 
 #[test]
 fn eval_sample_max_shear_hydrostatic_dispatch() {
@@ -687,37 +635,13 @@ fn eval_sample_max_shear_hydrostatic_dispatch() {
     let tensor = make_stress_tensor(
         &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
     );
-    let (field, field_type) = make_constant_tensor_field(tensor);
+    let result = eval_sampled_analysis("max_shear", tensor, vec![], Type::Real);
 
-    let ms_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
-    };
-    let ms_expr = make_function_call(
-        "max_shear",
-        vec![CompiledExpr::literal(field, field_type)],
-        ms_field_type.clone(),
-    );
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            ms_expr,
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        ],
-        Type::Real,
-    );
-
-    let values = ValueMap::new();
-    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
-
-    // max_shear = (σ₁ − σ₃) / 2 = (p − p) / 2 = 0
     match &result {
-        Value::Real(v) => {
-            assert!(
-                v.abs() < 1e-10,
-                "expected max_shear ≈ 0.0 for hydrostatic p={p}, got {v}"
-            );
-        }
+        Value::Real(v) => assert!(
+            v.abs() < 1e-10,
+            "expected max_shear ≈ 0.0 for hydrostatic p={p}, got {v}"
+        ),
         _ => panic!(
             "sample(max_shear(hydrostatic_field), point) should return Real(0.0), got {:?}",
             result
@@ -725,44 +649,24 @@ fn eval_sample_max_shear_hydrostatic_dispatch() {
     }
 }
 
-// ── step-11 (plan): safety_factor of hydrostatic tensor → Undef ──────────────
+// ── Edge case: safety_factor of hydrostatic tensor → Undef ───────────────────
 
 #[test]
 fn eval_sample_safety_factor_hydrostatic_dispatch() {
-    // Hydrostatic tensor diag(p, p, p) with yield=250: von_mises=0 → Undef
+    // Hydrostatic tensor diag(p, p, p) with yield=250: von_mises=0 → Undef.
     // Confirms dispatch doesn't special-case tensor shape; same divide-by-zero path.
     let p = 100.0_f64;
     let yield_val = 250.0_f64;
     let tensor = make_stress_tensor(
         &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
     );
-    let (field, field_type) = make_constant_tensor_field(tensor);
-
-    let sf_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
-    };
-    let sf_expr = make_function_call(
+    let result = eval_sampled_analysis(
         "safety_factor",
-        vec![
-            CompiledExpr::literal(field, field_type),
-            CompiledExpr::literal(Value::Real(yield_val), Type::Real),
-        ],
-        sf_field_type.clone(),
-    );
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            sf_expr,
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        ],
+        tensor,
+        vec![(Value::Real(yield_val), Type::Real)],
         Type::Real,
     );
 
-    let values = ValueMap::new();
-    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
-
-    // Hydrostatic → von_mises=0 → safety_factor=Undef (same divide-by-zero path as zero tensor)
     assert!(
         result.is_undef(),
         "sample(safety_factor(hydrostatic_field, 250.0), point) should return Undef, got {:?}",
@@ -770,11 +674,11 @@ fn eval_sample_safety_factor_hydrostatic_dispatch() {
     );
 }
 
-// ── step-13 (plan): principal_stresses of full symmetric tensor ───────────────
+// ── Edge case: principal_stresses of fully populated symmetric tensor ──────────
 //
 // Uses [[2,1,1],[1,3,1],[1,1,4]], which exercises the trigonometric eigenvalue
 // branch in compute_eigenvalues_3x3 (non-zero off-diagonals). Trace=9 acts as
-// a checksum; expected eigenvalues ≈ [0.828, 2.637, 5.535].
+// a checksum; expected eigenvalues ≈ [1.3256, 2.4601, 5.2143].
 
 #[test]
 fn eval_sample_principal_stresses_full_symmetric_dispatch() {
@@ -783,28 +687,12 @@ fn eval_sample_principal_stresses_full_symmetric_dispatch() {
     let tensor = make_stress_tensor(
         &[&[2.0, 1.0, 1.0], &[1.0, 3.0, 1.0], &[1.0, 1.0, 4.0]],
     );
-    let (field, field_type) = make_constant_tensor_field(tensor);
-
-    let ps_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::List(Box::new(Type::Real))),
-    };
-    let ps_expr = make_function_call(
+    let result = eval_sampled_analysis(
         "principal_stresses",
-        vec![CompiledExpr::literal(field, field_type)],
-        ps_field_type.clone(),
-    );
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            ps_expr,
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        ],
+        tensor,
+        vec![],
         Type::List(Box::new(Type::Real)),
     );
-
-    let values = ValueMap::new();
-    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     let Value::List(items) = &result else {
         panic!(
@@ -837,13 +725,14 @@ fn eval_sample_principal_stresses_full_symmetric_dispatch() {
         eigenvalues
     );
 
-    // Known approximate eigenvalues (trigonometric closed-form result), tolerance 1e-2.
-    // For [[2,1,1],[1,3,1],[1,1,4]]: characteristic polynomial λ³ - 9λ² + 23λ - 17 = 0
-    // Depressed form t³ - 4t - 2 = 0 (t = λ - 3); trig method gives ≈ [1.325, 2.461, 5.214].
-    let expected = [1.325_f64, 2.461, 5.214];
+    // Known eigenvalues (trigonometric closed-form result): characteristic polynomial
+    // λ³ - 9λ² + 23λ - 17 = 0, depressed form t³ - 4t - 2 = 0 (t = λ - 3).
+    // The closed-form trig computation is accurate to ~1e-12; tolerance 1e-3 gives
+    // comfortable margin for the 4-decimal expected values below.
+    let expected = [1.3256_f64, 2.4601, 5.2143];
     for (i, (&got, &exp)) in eigenvalues.iter().zip(expected.iter()).enumerate() {
         assert!(
-            (got - exp).abs() < 1e-2,
+            (got - exp).abs() < 1e-3,
             "eigenvalue[{i}]: expected ≈ {exp}, got {got}"
         );
     }
