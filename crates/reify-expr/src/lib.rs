@@ -220,6 +220,40 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 codomain_type,
                                 ctx,
                             ),
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::PrincipalStresses,
+                            ) => analysis::sample_principal_stresses_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                codomain_type,
+                                ctx,
+                            ),
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::MaxShear,
+                            ) => analysis::sample_max_shear_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                codomain_type,
+                                ctx,
+                            ),
+                            // SafetyFactor: lambda slot is List[field, yield_val],
+                            // not a nested Field — match on the source kind directly.
+                            (_, FieldSourceKind::SafetyFactor) => {
+                                analysis::sample_safety_factor_at_point(
+                                    lambda,
+                                    &evaluated_args[1],
+                                    codomain_type,
+                                    ctx,
+                                )
+                            }
                             _ => {
                                 #[cfg(debug_assertions)]
                                 eprintln!(
@@ -255,6 +289,24 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         && matches!(&evaluated_args[0], Value::Field { .. }) =>
                 {
                     analysis::compute_von_mises(&evaluated_args[0])
+                }
+                "principal_stresses"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    analysis::compute_principal_stresses(&evaluated_args[0])
+                }
+                "max_shear"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    analysis::compute_max_shear(&evaluated_args[0])
+                }
+                "safety_factor"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    analysis::compute_safety_factor(&evaluated_args[0], &evaluated_args[1])
                 }
                 _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
             }
