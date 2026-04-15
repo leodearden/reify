@@ -188,8 +188,18 @@ pub(crate) fn compile_expr_guarded(
                     if let Some(ce) = crate::constants::resolve_builtin_constant(name) {
                         return ce;
                     }
+                    let msg = if let Some(canonical) =
+                        crate::constants::builtin_constant_hint(name)
+                    {
+                        format!(
+                            "unresolved name: {} (did you mean `{}`?)",
+                            name, canonical
+                        )
+                    } else {
+                        format!("unresolved name: {}", name)
+                    };
                     diagnostics.push(
-                        Diagnostic::error(format!("unresolved name: {}", name))
+                        Diagnostic::error(msg)
                             .with_label(DiagnosticLabel::new(expr.span, "not found in scope")),
                     );
                     CompiledExpr::literal(Value::Undef, Type::Real)
