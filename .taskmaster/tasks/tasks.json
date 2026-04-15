@@ -37797,7 +37797,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T17:19:11.135Z"
+        "updatedAt": "2026-04-15T17:19:11.135Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/collection_compile_tests.rs",
+            "crates/reify-compiler/tests/constant_compile_tests.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs",
+            "crates/reify-test-support/src/helpers.rs"
+          ]
+        }
       },
       {
         "id": 1808,
