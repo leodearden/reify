@@ -315,6 +315,85 @@ fn linalg_complex_magnitude() {
     }
 }
 
+// ── step-1: linalg_complex_conjugate ─────────────────────────────────────────
+
+/// Asserts LinalgDemo.z_conj = conjugate(z) = Complex{re:3.0, im:-4.0, DIMENSIONLESS}.
+/// z = complex(3.0, 4.0) → conjugate flips the sign of the imaginary part.
+#[test]
+fn linalg_complex_conjugate() {
+    use reify_types::DimensionVector;
+
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let id = ValueCellId::new("LinalgDemo", "z_conj");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("LinalgDemo.z_conj not found"));
+
+    match val {
+        Value::Complex { re, im, dimension } => {
+            assert!(
+                (re - 3.0).abs() < 1e-9,
+                "z_conj.re should be ≈3.0, got {}",
+                re
+            );
+            assert!(
+                (im - (-4.0)).abs() < 1e-9,
+                "z_conj.im should be ≈-4.0, got {}",
+                im
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::DIMENSIONLESS,
+                "z_conj should be dimensionless"
+            );
+        }
+        other => panic!(
+            "LinalgDemo.z_conj should be Value::Complex, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── step-2: linalg_complex_phase ─────────────────────────────────────────────
+
+/// Asserts LinalgDemo.z_phase = phase(z) ≈ atan2(4,3) ≈ 0.9273 rad (Value::Scalar, ANGLE).
+/// z = complex(3.0, 4.0) → phase = atan2(im, re) = atan2(4, 3).
+#[test]
+fn linalg_complex_phase() {
+    use reify_types::DimensionVector;
+
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let id = ValueCellId::new("LinalgDemo", "z_phase");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("LinalgDemo.z_phase not found"));
+
+    match val {
+        Value::Scalar { si_value, dimension } => {
+            let expected = (4.0_f64).atan2(3.0);
+            assert!(
+                (si_value - expected).abs() < 1e-9,
+                "z_phase should be ≈{} (atan2(4,3)), got {}",
+                expected,
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::ANGLE,
+                "z_phase should have ANGLE dimension"
+            );
+        }
+        other => panic!(
+            "LinalgDemo.z_phase should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
+
 // ── Section 2: fields_analysis.ri ────────────────────────────────────────────
 
 /// Smoke test: fields_analysis.ri parses, compiles (stdlib), evals without
@@ -555,6 +634,78 @@ fn io_export_tolerance_band() {
         }
         other => panic!(
             "ExportPart.tol.tolerance_band should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── step-3: io_export_flatness_tolerance ─────────────────────────────────────
+
+/// Asserts ExportPart.flat.tolerance_value ≈ 0.00002m (0.02mm in SI).
+/// Flatness sub: tolerance_value: 0.02mm → 2e-5 m.
+#[test]
+fn io_export_flatness_tolerance() {
+    use reify_types::DimensionVector;
+
+    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+
+    let id = ValueCellId::new("ExportPart.flat", "tolerance_value");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("ExportPart.flat.tolerance_value not found in eval result"));
+
+    match val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 0.00002).abs() < 1e-12,
+                "ExportPart.flat.tolerance_value should be ≈0.00002m (0.02mm), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "ExportPart.flat.tolerance_value should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "ExportPart.flat.tolerance_value should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── step-4: io_export_surface_finish ─────────────────────────────────────────
+
+/// Asserts ExportPart.finish.value ≈ 8e-7m (Ra 0.8 μm per ISO 1302).
+/// SurfaceFinish sub: value: 0.8um → 0.8e-6 m = 8e-7 m.
+#[test]
+fn io_export_surface_finish() {
+    use reify_types::DimensionVector;
+
+    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+
+    let id = ValueCellId::new("ExportPart.finish", "value");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("ExportPart.finish.value not found in eval result"));
+
+    match val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 8e-7).abs() < 1e-12,
+                "ExportPart.finish.value should be ≈8e-7m (Ra 0.8 μm), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "ExportPart.finish.value should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "ExportPart.finish.value should be Value::Scalar, got {:?}",
             other
         ),
     }
