@@ -135,7 +135,6 @@ pub mod ffi {
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
-        fn loft_two_profiles(wire1: &OcctShape, wire2: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn make_line_wire(
             x1: f64,
             y1: f64,

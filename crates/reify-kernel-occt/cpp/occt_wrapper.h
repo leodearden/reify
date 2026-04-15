@@ -91,12 +91,6 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 /// Create a flat circular face (disk) at a given Z height (for extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
 
-/// Loft through two wire profiles to create a solid.
-std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2);
-
-/// Create a flat circular face (disk) at a given Z height (for sweep/extrude profiles).
-std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
-
 /// Create a straight line wire between two 3D points (for sweep paths).
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
     double x2, double y2, double z2);
