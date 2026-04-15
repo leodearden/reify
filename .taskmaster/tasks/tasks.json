@@ -36141,6 +36141,19 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1733,
+        "title": "Add geometry-arg resolution test coverage and registry cross-check",
+        "description": "Three test improvements for the geometry-arg resolution system introduced in task 1715:\n\n1. **Registry cross-check (robustness):** Add a `#[cfg(test)]` test that cross-checks the set of function names handled in `geometry_arg_indices` against the set handled in the main `match name { ... }` dispatch block in `compile_geometry_call`. This catches silent omissions when new geometry functions are added. Currently the IMPORTANT comment (line 24) warns about this but there's no compile-time or CI enforcement.\n\n2. **Error-path tests:** Add tests using `compile_with_diagnostics` that pass non-geometry expressions (e.g., literal numbers) as geometry arguments of transform/sweep/loft functions. These exercise the `geom_ref` fallback closure and the loft/sweep diagnostic branches.\n\n3. **Loft 3+ profiles test:** Add a test like `loft_three_profiles_ops` that compiles `loft(p1, p2, p3)` with three let-bound geometry lets and asserts the expected op sequence `[Cylinder, Cylinder, Cylinder, Sweep(Loft, [0, 1, 2])]`. The current test only exercises loft with exactly 2 profiles.\n\n## memory_hints\n- search: \"compile_geometry_call geometry argument resolution\"\n- search: \"let_scope_tests geometry test patterns\"\n- entity: \"geometry_arg_indices\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1715
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36153,7 +36166,7 @@
       ],
       "created": "2026-04-15T07:14:48.704Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T07:16:48.987Z"
+      "updated": "2026-04-15T07:17:46.212Z"
     }
   }
 }
