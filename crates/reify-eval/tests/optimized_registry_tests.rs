@@ -274,6 +274,10 @@ fn empty_registry_multiple_constraints_preserves_order() {
     //   1. All constraints are evaluated (none silently dropped).
     //   2. Results appear in declaration order — first OptA, then OptB, then PlainEq.
     //   3. The language-level checker evaluates each predicate correctly.
+    //
+    // OptB intentionally evaluates to Violated (a > b with x=1.0, y=2.0) so the
+    // ordering assertion depends on both label identity AND distinct satisfaction
+    // values — a misordering cannot hide behind uniform Satisfied results.
     let source = r#"
 @optimized("target_a")
 constraint def OptA {
@@ -285,7 +289,7 @@ constraint def OptA {
 constraint def OptB {
     param a: Real
     param b: Real
-    a < b
+    a > b
 }
 constraint def PlainEq {
     param a: Real
@@ -338,6 +342,7 @@ structure def Multi {
     );
 
     // Verify each predicate is evaluated correctly by the language-level checker.
+    // The Satisfied/Violated mix means a misordering cannot hide behind uniform results.
     assert_eq!(
         r0.satisfaction,
         Satisfaction::Satisfied,
@@ -345,8 +350,8 @@ structure def Multi {
     );
     assert_eq!(
         r1.satisfaction,
-        Satisfaction::Satisfied,
-        "OptB: x < y (1.0 < 2.0) should be Satisfied"
+        Satisfaction::Violated,
+        "OptB: x > y (1.0 > 2.0) should be Violated"
     );
     assert_eq!(
         r2.satisfaction,
