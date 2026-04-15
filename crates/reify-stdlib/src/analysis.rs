@@ -402,4 +402,72 @@ mod tests {
             .unwrap()
             .is_undef());
     }
+
+    // ── safety_factor tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn safety_factor_safe_dimensionless() {
+        // yield=250, uniaxial stress=100 → von_mises=100 → SF=250/100=2.5
+        let sigma = 100.0;
+        let yield_strength = Value::Real(250.0);
+        let tensor = make_matrix(&[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
+        let result = eval_analysis("safety_factor", &[tensor, yield_strength]).unwrap();
+        assert_real_approx!(result, 2.5);
+    }
+
+    #[test]
+    fn safety_factor_safe_pressure() {
+        // yield=250e6 Pa, uniaxial stress=100e6 Pa → SF=2.5 (dimensionless)
+        let sigma = 100e6;
+        let yield_strength = Value::Scalar {
+            si_value: 250e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor = make_dimensioned_matrix(
+            &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("safety_factor", &[tensor, yield_strength]).unwrap();
+        // Result is dimensionless (pressure / pressure)
+        assert_real_approx!(result, 2.5);
+    }
+
+    #[test]
+    fn safety_factor_unsafe() {
+        // yield=100e6, uniaxial stress=200e6 → SF=100/200=0.5 (<1, unsafe)
+        let sigma = 200e6;
+        let yield_strength = Value::Scalar {
+            si_value: 100e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor = make_dimensioned_matrix(
+            &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("safety_factor", &[tensor, yield_strength]).unwrap();
+        assert_real_approx!(result, 0.5);
+    }
+
+    #[test]
+    fn safety_factor_hydrostatic_returns_undef() {
+        // Hydrostatic: von_mises = 0 → division by zero → Undef
+        let p = 100e6;
+        let yield_strength = Value::Scalar {
+            si_value: 250e6,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let tensor = make_dimensioned_matrix(
+            &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("safety_factor", &[tensor, yield_strength]).unwrap();
+        assert!(result.is_undef());
+    }
+
+    #[test]
+    fn safety_factor_wrong_arg_count_returns_undef() {
+        assert!(eval_analysis("safety_factor", &[]).unwrap().is_undef());
+        let t = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
+        assert!(eval_analysis("safety_factor", &[t]).unwrap().is_undef());
+    }
 }
