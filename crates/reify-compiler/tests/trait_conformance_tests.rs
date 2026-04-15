@@ -872,13 +872,41 @@ structure def S : A {
 }
 "#;
 
-    let (_, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
     let errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // x comes from D, reachable via B->E->D and C->D; must appear exactly once.
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 value cell 'x' (diamond dedup), got {}: {:?}",
+        x_cells.len(),
+        x_cells
+    );
+
+    // y comes from E, reachable via one path (B->E); must also appear exactly once.
+    let y_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "y")
+        .collect();
+    assert_eq!(
+        y_cells.len(),
+        1,
+        "expected exactly 1 value cell 'y', got {}: {:?}",
+        y_cells.len(),
+        y_cells
+    );
 }
 
 /// Task-384 step-1: Diamond with conflicting param types produces exactly 1 error.
