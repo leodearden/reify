@@ -36650,7 +36650,16 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T10:29:39.217Z"
+        "updatedAt": "2026-04-15T10:29:39.217Z",
+        "metadata": {
+          "memory_hints": {
+            "searches": [
+              "tessellate_from_values build_snapshot sentinel mixed-success geometry error handling",
+              "geometry_error_handling.rs sentinel placeholder continues independent ops rollback"
+            ],
+            "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
+          }
+        }
       }
     ],
     "metadata": {
