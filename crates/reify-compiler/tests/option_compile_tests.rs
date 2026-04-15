@@ -4,7 +4,7 @@
 //! CompiledExprKind::OptionNone with correct types instead of falling through
 //! to generic function call resolution.
 
-use reify_compiler::TopologyTemplate;
+use reify_compiler::{CompiledGuardedGroup, TopologyTemplate};
 use reify_types::{CompiledExprKind, DimensionVector, Severity, Type};
 
 /// Helper: compile source, return the first topology template and diagnostics.
@@ -396,7 +396,7 @@ structure def S {
     );
     assert!(
         matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone, got {:?}",
+        "expected OptionNone port param, got {:?}",
         default.kind
     );
 }
@@ -459,7 +459,71 @@ structure def S {
     );
     assert!(
         matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone, got {:?}",
+        "expected OptionNone for port let, got {:?}",
+        default.kind
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task 1098: guarded param Option<Length> = none → typed OptionNone (step-5)
+// ---------------------------------------------------------------------------
+
+/// Guarded param with Option<Length> annotation and none default should produce
+/// a ValueCellDecl in guarded_groups[0].members with cell_type == Option<Length>
+/// and default_expr that is OptionNone with result_type == Option<Length>
+/// (not the fallback Option<Real>).
+#[test]
+fn guarded_param_none_with_typed_annotation_gets_correct_type() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    where active {
+        param x : Option<Length> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(
+        template.guarded_groups.len(),
+        1,
+        "expected 1 guarded group"
+    );
+    let group: &CompiledGuardedGroup = &template.guarded_groups[0];
+
+    let member = group
+        .members
+        .iter()
+        .find(|m| m.id.member == "x")
+        .expect("should have guarded member 'x'");
+
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "guarded param cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("guarded member 'x' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "guarded param default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone for guarded param, got {:?}",
         default.kind
     );
 }
