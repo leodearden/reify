@@ -4,3 +4,6 @@
 src/parser.c
 src/grammar.json
 src/node-types.json
+
+# tree-sitter CLI binary — not needed in the repo.
+/tree-sitter
