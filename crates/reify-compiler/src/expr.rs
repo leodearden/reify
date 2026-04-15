@@ -774,12 +774,19 @@ pub(crate) fn compile_expr_guarded(
                         }
                         // Use the member's actual type as fallback so downstream expressions
                         // do not cascade spurious type-mismatch diagnostics.
-                        let fallback_type = scope
-                            .sub_member_types
-                            .get(sub_name.as_str())
-                            .and_then(|m| m.get(member.as_str()))
-                            .cloned()
-                            .unwrap_or(Type::Real);
+                        // Aggregation members are not in sub_member_types (they're methods,
+                        // not struct fields), so infer their types the same way the general
+                        // method-call path does at the bottom of this arm.
+                        let fallback_type = match member.as_str() {
+                            "count" => Type::Int,
+                            "sum" | "keys" | "values" => Type::Real,
+                            _ => scope
+                                .sub_member_types
+                                .get(sub_name.as_str())
+                                .and_then(|m| m.get(member.as_str()))
+                                .cloned()
+                                .unwrap_or(Type::Real),
+                        };
                         return CompiledExpr::literal(Value::Undef, fallback_type);
                     }
                     // Non-collection sub: resolve member type from sub_member_types.

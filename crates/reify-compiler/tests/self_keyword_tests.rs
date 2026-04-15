@@ -1019,3 +1019,78 @@ structure S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ─── task-1281 review S2: aggregation no-cascading-diagnostics ───
+
+#[test]
+fn self_dot_collection_sub_aggregation_no_cascading_diagnostics() {
+    // `self.items.count` used in a constraint should produce exactly 1 error
+    // (the collection sub aggregation error), not additional type-mismatch
+    // diagnostics from the fallback type being wrong (e.g. Real vs Int).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let c = self.items.count
+    constraint c > 0
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error (collection sub aggregation access), got {}: {:?}",
+        errors.len(),
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1281 review S3: unknown member on collection sub ───
+
+#[test]
+fn self_dot_collection_sub_unknown_member_error() {
+    // `self.items.nonexistent` where `nonexistent` is neither an aggregation method
+    // nor a field of the element struct should emit an "unknown member" error,
+    // NOT suggest indexed access to a field that doesn't exist.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let x = self.items.nonexistent
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.nonexistent`"
+    );
+
+    let has_unknown_member = errors
+        .iter()
+        .any(|d| d.message.contains("unknown member"));
+    assert!(
+        has_unknown_member,
+        "expected 'unknown member' error, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Should NOT suggest indexed access for a member that doesn't exist
+    let has_indexed = errors
+        .iter()
+        .any(|d| d.message.contains("items[i]"));
+    assert!(
+        !has_indexed,
+        "should not suggest indexed access for unknown member, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
