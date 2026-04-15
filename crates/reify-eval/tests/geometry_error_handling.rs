@@ -79,7 +79,6 @@ fn make_sentinel_module(
     };
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "width", Type::length(), Some(mm_literal(10.0)))
         .realization(e, 0, vec![sphere_op_0, failing_op, sphere_op_2])
         .build();
 
