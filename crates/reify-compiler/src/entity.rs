@@ -1171,6 +1171,22 @@ pub(crate) fn compile_entity(
     }
 
     // Third pass: compile geometry let bindings into realizations.
+    // Build a lookup table mapping geometry let names to their initializer AST
+    // expressions. This allows compile_geometry_call to resolve Ident references
+    // (let-bound geometry variables) used as arguments to boolean ops.
+    let geometry_lets: HashMap<&str, &reify_syntax::Expr> = structure
+        .members
+        .iter()
+        .filter_map(|m| {
+            if let reify_syntax::MemberDecl::Let(let_decl) = m {
+                if is_geometry_let(&let_decl.value, functions) {
+                    return Some((let_decl.name.as_str(), &let_decl.value));
+                }
+            }
+            None
+        })
+        .collect();
+
     let mut realizations = Vec::new();
     let mut realization_index: u32 = 0;
 
@@ -1184,6 +1200,7 @@ pub(crate) fn compile_entity(
                 functions,
                 diagnostics,
                 0,
+                &geometry_lets,
             )
         {
             realizations.push(RealizationDecl {

@@ -1533,8 +1533,16 @@ mod tests {
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let result =
-            compile_geometry_call(&expr, &scope, &enum_defs, &functions, &mut diagnostics, 0);
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+        );
 
         assert!(
             result.is_none(),

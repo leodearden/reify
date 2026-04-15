@@ -26,7 +26,25 @@ pub(crate) fn compile_geometry_call(
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     step_offset: usize,
+    geometry_lets: &HashMap<&str, &reify_syntax::Expr>,
 ) -> Option<Vec<CompiledGeometryOp>> {
+    // Resolve let-bound geometry variable references: when the expression is an
+    // Ident that names a geometry let, recursively compile the initializer.
+    if let reify_syntax::ExprKind::Ident(name) = &expr.kind {
+        if let Some(init_expr) = geometry_lets.get(name.as_str()) {
+            return compile_geometry_call(
+                init_expr,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                step_offset,
+                geometry_lets,
+            );
+        }
+        return None;
+    }
+
     let (name, args) = match &expr.kind {
         reify_syntax::ExprKind::FunctionCall { name, args } => (name.as_str(), args),
         _ => return None,
@@ -58,11 +76,12 @@ pub(crate) fn compile_geometry_call(
                 functions,
                 diagnostics,
                 step_offset,
+                geometry_lets,
             ) {
                 Some(ops) => ops,
                 None => {
-                    // Only emit extra diagnostic if no FunctionCall was detected
-                    // (i.e., arg is a literal or ident — not a geometry expression).
+                    // Only emit extra diagnostic if no FunctionCall or geometry-let Ident was detected
+                    // (i.e., arg is a literal or non-geometry ident — not a geometry expression).
                     if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. }) {
                         diagnostics.push(Diagnostic::error(format!(
                             "{}() argument 1 must be a geometry expression",
@@ -82,6 +101,7 @@ pub(crate) fn compile_geometry_call(
                 functions,
                 diagnostics,
                 right_offset,
+                geometry_lets,
             ) {
                 Some(ops) => ops,
                 None => {
@@ -132,6 +152,7 @@ pub(crate) fn compile_geometry_call(
                 functions,
                 diagnostics,
                 current_offset,
+                geometry_lets,
             ) {
                 Some(ops) => ops,
                 None => {
@@ -157,6 +178,7 @@ pub(crate) fn compile_geometry_call(
                     functions,
                     diagnostics,
                     current_offset,
+                    geometry_lets,
                 ) {
                     Some(ops) => ops,
                     None => {
