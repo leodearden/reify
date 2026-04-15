@@ -19,7 +19,7 @@ use std::fs;
 use std::sync::OnceLock;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{DimensionVector, ModulePath, Satisfaction, Severity, Value, ValueCellId};
+use reify_types::{Diagnostic, DimensionVector, ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -96,17 +96,23 @@ fn eval_and_check_ri() -> reify_eval::CheckResult {
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.check(&compiled);
-    let check_errors: Vec<_> = result
-        .diagnostics
+    assert_no_errors(&result.diagnostics, "integration_corner_cases.ri eval/check");
+    result
+}
+
+/// Assert that a diagnostics slice contains no entries with [`Severity::Error`].
+/// Panics with the offending diagnostics and `context` label on failure.
+fn assert_no_errors(diagnostics: &[Diagnostic], context: &str) {
+    let errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(
-        check_errors.is_empty(),
-        "eval/check errors in integration_corner_cases.ri: {:?}",
-        check_errors
+        errors.is_empty(),
+        "errors in {}: {:?}",
+        context,
+        errors
     );
-    result
 }
 
 // ── step-1: smoke test ────────────────────────────────────────────────────────
@@ -188,16 +194,7 @@ fn trait_all_member_kinds() {
     let check_result = engine.check(&compiled);
 
     // Assert no eval-severity errors from the single CheckResult.
-    let check_errors: Vec<_> = check_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        check_errors.is_empty(),
-        "eval/check errors in trait_all_member_kinds: {:?}",
-        check_errors
-    );
+    assert_no_errors(&check_result.diagnostics, "trait_all_member_kinds");
 
     // ── param + let: value assertions from CheckResult.values ──
     let size_id = ValueCellId::new("FullTraitImpl", "size");
