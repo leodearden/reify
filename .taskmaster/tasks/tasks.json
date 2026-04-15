@@ -36667,18 +36667,18 @@
         "description": "Two small improvements to the sentinel test helpers in crates/reify-eval/tests/geometry_error_handling.rs:\n\n1. **Rename and refactor `assert_sentinel_kernel_ops` (line ~97)**: Currently accepts a pre-computed `compile_failure_count` from the caller, splitting assertion logic across caller and helper. Change signature to `fn assert_sentinel_invariants(kernel_ops: &[GeometryOpRecord], diagnostics: &[Diagnostic])` and have the helper compute the compile-failure count internally. Rename to `assert_sentinel_invariants` to reflect its broader scope.\n\n2. **Remove unnecessary `param` from `make_sentinel_module` (line ~82)**: The `.param(e, \"width\", ...)` call is inherited from the original test and not relevant to sentinel behavior. Since none of the sentinel tests exercise parameter behavior, remove it to reduce noise in the shared helper.\n\nmemory_hints: search \"assert_sentinel_kernel_ops geometry_error_handling\", get_entity \"make_sentinel_module\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T11:29:33.000Z"
+        "updatedAt": "2026-04-15T11:42:44.976Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T11:29:33.000Z",
+      "lastModified": "2026-04-15T11:42:44.976Z",
       "taskCount": 1754,
-      "completedCount": 1503,
+      "completedCount": 1504,
       "tags": [
         "master"
       ]
