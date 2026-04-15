@@ -23,6 +23,45 @@ pub fn make_simple_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
 }
 
+/// Parse `source` with the canonical `"test"` module path, asserting no parse errors.
+///
+/// # Panics
+/// Panics if there are any parse errors.
+fn parse_or_panic(source: &str) -> reify_syntax::ParsedModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    parsed
+}
+
+/// Parse and compile `source` without asserting absence of compile errors.
+/// Returns the compiled module with whatever diagnostics were produced.
+///
+/// Use this for tests that expect compilation errors/warnings. For tests
+/// that expect clean compilation, use [`parse_and_compile`] instead.
+///
+/// # Panics
+/// Panics if there are any parse errors (but NOT compile errors).
+pub fn compile_source(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = parse_or_panic(source);
+    reify_compiler::compile(&parsed)
+}
+
+/// Parse and compile `source` with stdlib, without asserting absence of compile errors.
+///
+/// Like [`compile_source`] but uses `reify_compiler::compile_with_stdlib` so that
+/// stdlib types and traits are available during compilation.
+///
+/// # Panics
+/// Panics if there are any parse errors (but NOT compile errors).
+pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = parse_or_panic(source);
+    reify_compiler::compile_with_stdlib(&parsed)
+}
+
 /// Parse `source`, assert no parse errors, compile, assert no compile errors.
 /// Returns the compiled module ready for eval.
 ///
