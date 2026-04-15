@@ -150,7 +150,9 @@ fn chamfer_through_full_eval_pipeline() {
         kind: ModifyKind::Chamfer,
         target: GeomRef::Step(0),
         args: vec![
-            // "target" handle is resolved from GeomRef::Step(0), not from args.
+            // Mirrors what the compiler emits (geometry.rs:882-884).
+            // The eval layer resolves the target from GeomRef::Step(0), not from this entry.
+            ("target".into(), mm_literal(20.0)),
             ("distance".into(), mm_literal(3.0)),
         ],
     };
