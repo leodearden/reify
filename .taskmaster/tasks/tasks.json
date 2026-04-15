@@ -8439,7 +8439,16 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "auto_match_port_members direction compatibility compile_connection",
+              "port direction incompatible Forward In->In warning misleading",
+              "compile_guarded_members lib.rs port mapping behavior"
+            ]
+          },
+          "_causation_id": "4d504525-d4ce-4605-941e-30f8b8f17459"
         },
         "subtasks": [],
         "updatedAt": "2026-04-15T16:11:59.097Z"
