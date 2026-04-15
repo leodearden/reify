@@ -2349,7 +2349,17 @@ impl Engine {
                 // Create new instances based on new count
                 let new_count = match &new_count_val {
                     Value::Int(n) => *n,
-                    _ => 0,
+                    // Undef: new count is undetermined; no instances should be created.
+                    Value::Undef => 0,
+                    // Unexpected non-integer type: emit a warning to surface potential upstream bugs.
+                    // Falling back to 0 is safe: a non-Int count cannot produce valid instances.
+                    other => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "Collection count cell {} has non-integer new value {:?}; treating as 0",
+                            col_sub.count_cell, other
+                        )));
+                        0
+                    }
                 };
                 for i in 0..new_count {
                     let scoped_entity =
