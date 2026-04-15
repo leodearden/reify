@@ -583,12 +583,16 @@ mod tests {
         // Regular `//` line comments are NOT skipped — only `///` and `//!` are.
         // This pins the documented limitation so a future refactor that
         // accidentally starts skipping `//` is caught immediately.
+        // The error must mention "bare" to confirm guard 1 (bare-ignore rejection)
+        // fired — not a different guard — pinning which guard rejects the `//` line.
         // Source assembled at runtime to avoid self-triggering.
         let src = ["// regular comment: ", "#[", "ignore]\n"].concat();
+        let err = check_ignore_reasons(&src)
+            .expect_err("expected bare-ignore inside a regular // comment to be rejected \
+                         (// comments are not skipped; only /// and //! are)");
         assert!(
-            check_ignore_reasons(&src).is_err(),
-            "expected bare-ignore inside a regular // comment to be rejected \
-             (// comments are not skipped; only /// and //! are)",
+            err.contains("bare"),
+            "expected the bare-ignore guard (guard 1) to fire, not a different guard: {err:?}",
         );
     }
 
