@@ -35890,6 +35890,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1723,
+        "title": "Clean up field_eval_tests.rs: replace fragile line refs and extract test helpers",
+        "description": "Three related improvements to crates/reify-eval/tests/field_eval_tests.rs:\n\n1. **Replace fragile line-number references** (lines 286-287, 441-442, etc.): Comments reference specific line numbers in lib.rs (e.g., `lib.rs:126-254`, `lib.rs:277-282`). Replace with code landmarks (function name, match arm, enum variant). E.g., \"dispatches via the FieldSourceKind::VonMises match arm in sample_field_at_point\".\n\n2. **Extract `make_sample_at` helper**: The pattern `make_function_call(\"sample\", vec![inner_expr, CompiledExpr::literal(Value::Real(point), Type::Real)], result_type)` is repeated in all six tests. Extract to `make_sample_at(field_expr: CompiledExpr, point: f64, result_type: Type) -> CompiledExpr`.\n\n3. **Extract `assert_real_approx` helper**: The match-based assertion pattern (match on Value::Real then assert, else panic) is repeated in every test. Extract to `fn assert_real_approx(val: &Value, expected: f64, label: &str)` with centralized tolerance constant (1e-10).\n\nmemory_hints: search \"field_eval_tests helpers\", get_entity \"field_eval_tests.rs\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35902,7 +35913,7 @@
       ],
       "created": "2026-04-15T06:10:05.461Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T06:12:15.535Z"
+      "updated": "2026-04-15T06:12:24.498Z"
     }
   }
 }
