@@ -169,8 +169,16 @@ pub(crate) fn compile_expr_guarded(
                 None => {
                     // Check if this is a collection sub name — delegate to shared helper
                     // that also handles `self.sub_name` in the MemberAccess arm.
+                    // Collection sub-names originate from user-declared structures, so they take
+                    // precedence over built-in constants (mirroring how scope.resolve already
+                    // prioritises user definitions).
                     if scope.collection_sub_names.contains(name.as_str()) {
                         return resolve_collection_sub_to_list(scope, name.as_str());
+                    }
+                    // Check built-in constants (pi, tau, …) after scope and collection
+                    // sub-name resolution so that user definitions always shadow builtins.
+                    if let Some(ce) = crate::constants::resolve_builtin_constant(name) {
+                        return ce;
                     }
                     diagnostics.push(
                         Diagnostic::error(format!("unresolved name: {}", name))
