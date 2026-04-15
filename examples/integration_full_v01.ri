@@ -287,7 +287,48 @@ structure def Assembly : Physical + Locatable {
 
 // ── @test structures ──────────────────────────────────────────────────────────
 
-// (Added in step-22; placeholder comment only.)
+/// Height param satisfies > 0mm → PASS.
+@test structure TestHeightPositive {
+    param height : Length = 300mm
+    constraint height > 0mm
+}
+
+/// Width param satisfies InRange constraint def (10mm–500mm) → PASS.
+@test structure TestWidthInRange {
+    param width : Length = 150mm
+    constraint InRange(v: width, lo: 10mm, hi: 500mm)
+}
+
+/// Sub-component span accessed via self.beam: span=300mm > 0mm → PASS.
+@test structure TestSubBeamSpan {
+    sub beam = RecursiveBeam()
+    constraint self.beam.span > 0mm
+}
+
+/// complex(1.0, 2.0) produces a determined value → PASS.
+@test structure TestComplexBinding {
+    let z = complex(1.0, 2.0)
+    constraint determined(z)
+}
+
+/// sample(temperature_profile, 3.0) ≈ 19.0 (within [18.9, 19.1]) → PASS.
+@test structure TestFieldSample {
+    let t = sample(temperature_profile, 3.0)
+    constraint t > 18.9
+    constraint t < 19.1
+}
+
+/// Grade.Premium match → 3; code in (0, 3] → PASS.
+@test structure TestGradeMatch {
+    let g = Grade.Premium
+    let code = match g {
+        Standard   => 1,
+        Reinforced => 2,
+        Premium    => 3
+    }
+    constraint code > 0
+    constraint code <= 3
+}
 
 // ── Purposes ─────────────────────────────────────────────────────────────────
 
