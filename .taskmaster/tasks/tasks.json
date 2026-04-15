@@ -36326,15 +36326,16 @@
         "description": "The reify-test-support crate still has ~40+ hard-coded annotation name strings (\"deprecated\", \"optimized\", \"solver_hint\", \"test\") across fixtures.rs and builders/ (annotation.rs, topology.rs, purpose.rs, field.rs, trait_def.rs, mod.rs). These should use the constants from reify_types (DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION) to complete the single-source-of-truth migration started in Task 1738.\n\nThe dependency on reify-types is already in place (workspace dependency in Cargo.toml).\n\nmemory_hints: search for \"annotation constants\" and \"TEST_ANNOTATION\" to find the constant definitions in reify_types. get_entity for \"reify-test-support\" to understand the crate's structure.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T08:28:07.208Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T08:28:05.014Z",
+      "lastModified": "2026-04-15T08:28:07.208Z",
       "taskCount": 1737,
       "completedCount": 1500,
       "tags": [
