@@ -22,7 +22,8 @@ fn test_dir(name: &str) -> PathBuf {
 
 #[test]
 fn circular_import_detected() {
-    let dir = test_dir("circular");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a imports b
     fs::write(
@@ -54,15 +55,14 @@ fn circular_import_detected() {
         "error should mention circular dependency, got: {}",
         msg
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 21: Diamond import (deduplication) ───────────────────────
 
 #[test]
 fn diamond_import_compiles_each_module_once() {
-    let dir = test_dir("diamond");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // D (leaf) — no imports
     fs::write(dir.join("d.ri"), "structure D { param v: Scalar = 1mm }").unwrap();
@@ -106,15 +106,14 @@ fn diamond_import_compiles_each_module_once() {
     assert!(dag.modules.contains_key("b"), "should have module 'b'");
     assert!(dag.modules.contains_key("c"), "should have module 'c'");
     assert!(dag.modules.contains_key("a"), "should have module 'a'");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 23: Topological ordering ─────────────────────────────────
 
 #[test]
 fn topological_order_leaves_first() {
-    let dir = test_dir("topo");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // C (leaf)
     fs::write(dir.join("c.ri"), "structure C { param v: Scalar = 1mm }").unwrap();
@@ -140,13 +139,12 @@ fn topological_order_leaves_first() {
 
     // Topological order: C first (leaf), then B, then A (root)
     assert_eq!(dag.topo_order, vec!["c", "b", "a"]);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn topological_order_diamond() {
-    let dir = test_dir("topo_diamond");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // D (leaf)
     fs::write(dir.join("d.ri"), "structure D { param v: Scalar = 1mm }").unwrap();
@@ -187,15 +185,14 @@ fn topological_order_diamond() {
     assert!(d_pos < c_pos, "d should come before c");
     assert!(b_pos < a_pos, "b should come before a");
     assert!(c_pos < a_pos, "c should come before a");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 25: Name resolution with entity import ──────────────────
 
 #[test]
 fn entity_import_resolves_structure_name() {
-    let dir = test_dir("entity_resolve");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a defines a pub structure Bolt
     fs::write(
@@ -227,15 +224,14 @@ fn entity_import_resolves_structure_name() {
     assert_eq!(template.sub_components.len(), 1);
     assert_eq!(template.sub_components[0].name, "b");
     assert_eq!(template.sub_components[0].structure_name, "Bolt");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 27: Shadowing warning ───────────────────────────────────
 
 #[test]
 fn local_definition_shadows_import_with_warning() {
-    let dir = test_dir("shadowing");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a defines Bolt
     fs::write(
@@ -261,15 +257,14 @@ fn local_definition_shadows_import_with_warning() {
     let b_module = modules.last().unwrap();
     let template = &b_module.templates[0];
     assert_eq!(template.name, "Bolt");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 29: Re-export ───────────────────────────────────────────
 
 #[test]
 fn pub_import_re_exports_entity() {
-    let dir = test_dir("reexport");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a defines Helper
     fs::write(
@@ -310,8 +305,6 @@ fn pub_import_re_exports_entity() {
         .unwrap();
     assert_eq!(template.sub_components.len(), 1);
     assert_eq!(template.sub_components[0].structure_name, "Helper");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 31: Backward compatibility ──────────────────────────────
@@ -334,7 +327,8 @@ fn backward_compatible_single_module_no_imports() {
     assert_eq!(compiled_single.templates[0].name, "Bracket");
 
     // Via compile_project() — write source to temp file and compile
-    let dir = test_dir("backward_compat");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
     fs::write(dir.join("bracket.ri"), source).unwrap();
 
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
@@ -355,15 +349,14 @@ fn backward_compatible_single_module_no_imports() {
         compiled_single.templates[0].value_cells.len(),
         modules[0].templates[0].value_cells.len(),
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 35: in_progress cleanup on error ────────────────────────
 
 #[test]
 fn dag_recovers_after_parse_error_in_dependency() {
-    let dir = test_dir("in_progress_cleanup");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a imports b
     fs::write(
@@ -400,15 +393,14 @@ fn dag_recovers_after_parse_error_in_dependency() {
     // Verify both modules are in the DAG
     assert!(dag.modules.contains_key("a"), "should have module 'a'");
     assert!(dag.modules.contains_key("b"), "should have module 'b'");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 33: CompiledImport preserves kind and is_pub ────────────
 
 #[test]
 fn compiled_import_preserves_kind_and_is_pub() {
-    let dir = test_dir("compiled_import_fields");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a defines a pub structure Helper
     fs::write(
@@ -446,8 +438,6 @@ fn compiled_import_preserves_kind_and_is_pub() {
     let imp1 = &b_module.imports[1];
     assert_eq!(imp1.kind, reify_syntax::ImportKind::Module);
     assert!(!imp1.is_pub, "second import should not be pub");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── step-2 (task-1074): cross-module unit collision names the source module ───
@@ -459,7 +449,8 @@ fn compiled_import_preserves_kind_and_is_pub() {
 /// (c) have no label with SourceSpan::empty(0).
 #[test]
 fn compile_project_detects_cross_module_unit_collision() {
-    let dir = test_dir("cross_module_unit_collision");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // dep.ri: exports pub unit 'myunit'
     fs::write(dir.join("dep.ri"), "pub unit myunit : Length = 0.001").unwrap();
@@ -502,8 +493,6 @@ fn compile_project_detects_cross_module_unit_collision() {
     // emits only the duplicate decl span and omits the original's
     // SourceSpan::empty(0) to avoid a misleading byte-0 label.
     common::assert_single_non_empty_label(dup_diag);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── step-3 (task-1575): compile_project-level stdlib unit collision mentions stdlib ───
@@ -521,7 +510,8 @@ fn compile_project_detects_cross_module_unit_collision() {
 /// (`prelude_unit_collision_diagnostic_mentions_stdlib`).
 #[test]
 fn compile_project_stdlib_unit_collision_mentions_stdlib() {
-    let dir = test_dir("stdlib_unit_collision");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Minimal stdlib: a single pub unit.  The resolver maps `std.*` imports
     // to files under `<stdlib_root>/`, so `import std.units` resolves to
@@ -582,8 +572,6 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
             label.message
         );
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── step-1 (task-1392): prelude propagation via compile_module ────────────────
@@ -597,7 +585,8 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
 /// is "Part", proving the prelude was collected and propagated correctly.
 #[test]
 fn compile_module_prelude_propagates_pub_structure() {
-    let dir = test_dir("prelude_propagates_pub_structure");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module c: defines pub structure Part
     fs::write(
@@ -636,8 +625,6 @@ fn compile_module_prelude_propagates_pub_structure() {
         "Part",
         "sub_component structure_name should be 'Part'"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── step-2 (task-1392): multi-import prelude via compile_module ───────────────
@@ -650,7 +637,8 @@ fn compile_module_prelude_propagates_pub_structure() {
 /// proving that collect_import_preludes handles multiple imports correctly.
 #[test]
 fn compile_module_multi_import_prelude() {
-    let dir = test_dir("multi_import_prelude");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module x: pub structure Bolt
     fs::write(
@@ -707,8 +695,6 @@ fn compile_module_multi_import_prelude() {
         "expected sub_component with structure_name 'Nut', got {:?}",
         structure_names
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── amendment (task-1392): compile_project multi-import prelude path ──────────
@@ -724,7 +710,8 @@ fn compile_module_multi_import_prelude() {
 ///      simultaneously-borrowed prelude modules.
 #[test]
 fn compile_project_multi_import_prelude() {
-    let dir = test_dir("compile_project_multi_import_prelude");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module p: pub structure Pin
     fs::write(
@@ -784,8 +771,6 @@ fn compile_project_multi_import_prelude() {
         "expected sub_component with structure_name 'Socket', got {:?}",
         structure_names
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── step-1 (task-1759): #no_prelude suppresses import prelude pub units ───────
