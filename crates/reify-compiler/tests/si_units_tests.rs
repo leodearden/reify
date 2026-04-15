@@ -1,5 +1,7 @@
 //! Tests for SI prefix and derived-unit stdlib expansion (task 334).
 
+mod common;
+
 use reify_compiler::{CompiledModule, CompiledUnit, compile, compile_with_stdlib, si_units};
 use reify_types::{DimensionVector, ModulePath, Severity};
 
@@ -290,16 +292,7 @@ fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVect
         .find(|c| c.id.member == "x")
         .expect("x cell not found");
     let expr = cell.default_expr.as_ref().expect("x has no default_expr");
-    if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-        si_value,
-        dimension,
-        ..
-    }) = &expr.kind
-    {
-        (*si_value, *dimension)
-    } else {
-        panic!("unexpected expression kind: {:?}", expr.kind);
-    }
+    common::expect_scalar(expr)
 }
 
 #[test]
