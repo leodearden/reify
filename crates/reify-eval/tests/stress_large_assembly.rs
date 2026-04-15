@@ -81,6 +81,20 @@ fn check_canonical() -> reify_eval::CheckResult {
     engine.check(&compiled())
 }
 
+// ── caching test ──────────────────────────────────────────────────────────────
+
+/// eval_canonical() must return the same static reference on every call.
+/// This verifies the OnceLock caching is in place: two calls produce pointer-equal results.
+#[test]
+fn eval_canonical_is_cached() {
+    let a: &'static reify_eval::EvalResult = eval_canonical();
+    let b: &'static reify_eval::EvalResult = eval_canonical();
+    assert!(
+        std::ptr::eq(a, b),
+        "eval_canonical() must return the same static reference on every call"
+    );
+}
+
 // ── step-5: smoke test ────────────────────────────────────────────────────────
 
 /// Load large_assembly.ri with stdlib, compile, eval — no errors, non-empty values.
