@@ -37188,7 +37188,15 @@
           "modules": [
             "crates/reify-compiler/tests",
             "crates/reify-compiler"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "module_dag_tests temp directory cleanup",
+              "tempfile TempDir drop-based cleanup pattern",
+              "task 1759 module_dag tests temp directory"
+            ]
+          }
         }
       },
       {
