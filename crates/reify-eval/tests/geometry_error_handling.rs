@@ -1494,3 +1494,84 @@ fn build_revolve_zero_angle_emits_diagnostic() {
         &["revolve dropped", "angle"],
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tests for sentinel placeholder (task-612): compile_geometry_op returning None
+// should push INVALID placeholder and continue, not break.
+// ---------------------------------------------------------------------------
+
+/// When op 1 of 3 fails to compile (returns None), a sentinel should be pushed
+/// and op 2 should still be attempted. This verifies that the kernel receives
+/// 2 sphere calls (ops 0 and 2), not just 1.
+///
+/// Currently fails because the loop `break`s on the first None.
+/// After the fix: sentinel pushed at index 1, loop continues, op 2 succeeds.
+/// The realization is rolled back because had_failure=true.
+#[test]
+fn sentinel_placeholder_continues_independent_ops() {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Sphere (will succeed)
+    let sphere_op_0 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(10.0))],
+    };
+
+    // Op 1: Boolean Union referencing Step(99) and Step(99) — indices that don't
+    // exist in step_handles, so compile_geometry_op returns None.
+    let failing_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(99),
+        right: GeomRef::Step(99),
+    };
+
+    // Op 2: Sphere (would succeed if loop continues past op 1)
+    let sphere_op_2 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(10.0)))
+        .realization(e, 0, vec![sphere_op_0, failing_op, sphere_op_2])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_sentinel_continues"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    let kernel_ops = ops_ref.lock().unwrap();
+
+    // After the sentinel fix: both Sphere ops (0 and 2) should reach the kernel
+    let sphere_ops: Vec<_> = kernel_ops
+        .iter()
+        .filter(|rec| matches!(rec.op, reify_types::GeometryOp::Sphere { .. }))
+        .collect();
+
+    assert_eq!(
+        sphere_ops.len(),
+        2,
+        "expected 2 sphere operations (sentinel allows op 2 to proceed), got {}: kernel_ops={:?}",
+        sphere_ops.len(),
+        kernel_ops
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    // The realization should be rolled back (had_failure=true) → no geometry output
+    assert!(
+        result.geometry_output.is_none(),
+        "realization should be rolled back when any op fails, but got geometry output"
+    );
+}
