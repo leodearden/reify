@@ -100,3 +100,24 @@ fn pi_plus_tau_expression() {
         other => panic!("expected BinOp(Add), got {:?}", other),
     }
 }
+
+// ─── step-5: user-defined `let pi` shadows the builtin ──────────────────────
+
+#[test]
+fn user_let_pi_shadows_builtin() {
+    let src = "structure S {\n  let pi = 42\n  let x = pi\n}";
+    let compiled = compile_source(src);
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    let expr = get_cell_expr(&compiled, "x");
+    // x should be a ValueRef to the user-defined pi cell, NOT a Literal(Real(PI)).
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id.member, "pi", "expected ref to 'pi' cell, got {:?}", id);
+        }
+        CompiledExprKind::Literal(Value::Real(_)) => {
+            panic!("x resolved to builtin pi literal — user definition should shadow it");
+        }
+        other => panic!("expected ValueRef to user 'pi', got {:?}", other),
+    }
+}
