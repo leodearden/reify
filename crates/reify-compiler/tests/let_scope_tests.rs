@@ -1147,3 +1147,27 @@ fn geometry_let_not_a_value_cell() {
         "geometry let 'hole' should produce exactly 1 realization"
     );
 }
+
+// ─── task-1708: ident-alias geometry let support ──────────────────────────────
+
+#[test]
+fn ident_alias_geometry_let_produces_realization() {
+    // `alias` is a let-bound name whose init expression is an Ident that names
+    // a geometry let (`body`). The compiler should recognise `alias` as a
+    // geometry let too, producing 2 realizations.
+    // FAILS before fix: only body gets a realization; alias is compiled as a value cell.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        2,
+        "expected 2 realizations (body and alias), got {}",
+        template.realizations.len()
+    );
+}
