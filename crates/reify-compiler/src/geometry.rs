@@ -686,130 +686,15 @@ pub(crate) fn compile_geometry_call(
             compile_transform_op(name, compiled_args, geom_ref(0), diagnostics, sub_ops)
         }
         // --- Modify extensions ---
-        // shell(target, thickness, ...)
-        "shell" => {
-            if compiled_args.len() < 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "shell() expects at least 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let mut shell_args = vec![
-                ("target".to_string(), it.next().unwrap()),
-                ("thickness".to_string(), it.next().unwrap()),
-            ];
-            // Remaining args are face indices to remove
-            for (i, expr) in it.enumerate() {
-                shell_args.push((format!("face_{}", i), expr));
-            }
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Shell,
-                target,
-                args: shell_args,
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
+        // shell/thicken/draft: pass geom_ref(0) as target (correctly resolved from geom_refs).
+        "shell" | "thicken" | "draft" => {
+            compile_modify_op(name, compiled_args, geom_ref(0), expr.span, diagnostics, sub_ops)
         }
-        // thicken(target, offset)
-        "thicken" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "thicken() expects 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Thicken,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("offset".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
-        // draft(target, angle, plane)
-        "draft" => {
-            if compiled_args.len() != 3 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "draft() expects 3 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Draft,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("angle".to_string(), it.next().unwrap()),
-                    ("plane".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
-        // chamfer(target, distance)
-        "chamfer" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "chamfer() expects 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Modify {
-                kind: ModifyKind::Chamfer,
-                target: GeomRef::Step(0),
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("distance".to_string(), it.next().unwrap()),
-                ],
-            }])
-        }
-        // fillet(target, radius)
-        "fillet" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "fillet() expects 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Modify {
-                kind: ModifyKind::Fillet,
-                target: GeomRef::Step(0),
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("radius".to_string(), it.next().unwrap()),
-                ],
-            }])
+        // chamfer/fillet: pass GeomRef::Step(0) explicitly to preserve the known bug.
+        // These are NOT registered in geometry_arg_indices(), so sub_ops is always empty
+        // and geom_ref(0) would fall back to GeomRef::Step(step_offset), not Step(0).
+        "chamfer" | "fillet" => {
+            compile_modify_op(name, compiled_args, GeomRef::Step(0), expr.span, diagnostics, sub_ops)
         }
         // --- Curve constructors ---
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
