@@ -663,14 +663,74 @@ fn checkpoint_value_variant_coverage() {
 /// cargo test -p reify-eval --test m8_m11_regression_checkpoint -- --include-ignored
 /// ```
 ///
-/// **Fails (panics) in step-5** because the body is `todo!()`.
-/// Step-6 replaces the `todo!()` with the subprocess invocation.
+/// Step-6 implementation: subprocess invocation with PASS >= 5400 floor.
 #[test]
 #[ignore = "slow subprocess; run explicitly with --include-ignored to verify test count floor"]
 fn test_count_floor() {
-    // Step-6 will replace this todo! with the subprocess invocation.
-    todo!(
-        "step-6: implement subprocess invocation of `cargo test --workspace` \
-         and assert PASS >= 5400, FAIL == 0"
-    )
+    // Workspace root: CARGO_MANIFEST_DIR is the reify-eval crate directory at
+    // compile time; two parent steps reach the workspace root.
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = crate_dir
+        .parent()
+        .expect("crates/ parent")
+        .parent()
+        .expect("workspace root");
+
+    // Use the cargo binary from the current build (set by cargo's test harness).
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+
+    // Run `cargo test --workspace` with plain text output for easy parsing.
+    let output = std::process::Command::new(&cargo)
+        .args(["test", "--workspace"])
+        .current_dir(workspace_root)
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .expect("failed to spawn `cargo test --workspace`");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let all_output = format!("{stdout}{stderr}");
+
+    // Each test binary emits a line like:
+    //   "test result: ok. 551 passed; 0 failed; 20 ignored; ..."
+    // Sum all the "passed" and "failed" counters across all binaries.
+    let mut total_passed: u64 = 0;
+    let mut total_failed: u64 = 0;
+
+    for line in all_output.lines() {
+        if !line.starts_with("test result:") {
+            continue;
+        }
+        // Split on ";" to get individual "N verb" segments.
+        for part in line.split(';') {
+            let part = part.trim();
+            if let Some(prefix) = part.strip_suffix(" passed") {
+                // "test result: ok. 551 passed" → prefix = "test result: ok. 551"
+                if let Some(n) = prefix.split_whitespace().last() {
+                    total_passed += n.parse::<u64>().unwrap_or(0);
+                }
+            }
+            if let Some(prefix) = part.strip_suffix(" failed") {
+                // " 0 failed" → prefix = "0"
+                if let Some(n) = prefix.split_whitespace().last() {
+                    total_failed += n.parse::<u64>().unwrap_or(0);
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        total_failed,
+        0,
+        "workspace test suite has {total_failed} failing test(s); \
+         zero failures expected.\nOutput:\n{all_output}"
+    );
+
+    // Floor of 5400: 55 below the M8–M11 baseline (5455 pre-existing + 9 new = 5464+),
+    // providing tolerance for normal fluctuation while catching mass regression.
+    assert!(
+        total_passed >= 5400,
+        "workspace test count floor: expected >= 5400 passing tests, got {total_passed}; \
+         if tests were intentionally removed, lower this floor accordingly"
+    );
 }
