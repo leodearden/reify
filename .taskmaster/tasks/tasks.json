@@ -37533,15 +37533,16 @@
         "description": "Three test quality improvements in gui/src-tauri/src/tests/commands_tests.rs from task 1781 review:\n\n1. **Extract shared session helper (code_duplication)**: `make_poisoned_engine()` (lines 124-137) duplicates the `EngineSession::new(Box::new(SimpleConstraintChecker), Some(Box::new(MockGeometryKernel::new())))` construction from `make_loaded_session()` (lines 10-18). Extract a `make_session()` helper that both call, with `make_loaded_session()` adding the `.load_from_source()` step.\n\n2. **Add no-module-loaded edge case tests (test_coverage)**: The healthy-path tests for `get_entity_tree_impl` and `get_entity_identity_map_impl` only test with a loaded session. Add tests that create an `EngineSession` without loading a module and assert that the result is `Ok(empty vec/map)`. This verifies the empty-collection path works correctly after the `unwrap_or_default()` removal.\n\n3. **Assert poison join result (robustness)**: In `make_poisoned_engine()` line 131-135, change `let _ = std::thread::spawn(...).join();` to assert the join result is Err, e.g.: `let join_result = std::thread::spawn(...).join(); assert!(join_result.is_err(), \"thread should have panicked to poison the mutex\");` for clearer failure diagnostics.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T16:42:27.871Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T16:42:25.569Z",
+      "lastModified": "2026-04-15T16:42:27.871Z",
       "taskCount": 1786,
       "completedCount": 1527,
       "tags": [
