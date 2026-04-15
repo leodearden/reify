@@ -7,8 +7,8 @@
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_test_support::*;
 use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Type, Value,
+    Diagnostic, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId,
+    GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Type, Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,7 +79,6 @@ fn make_sentinel_module(
     };
 
     let template = TopologyTemplateBuilder::new(e)
-        .param(e, "width", Type::length(), Some(mm_literal(10.0)))
         .realization(e, 0, vec![sphere_op_0, failing_op, sphere_op_2])
         .build();
 
@@ -94,10 +93,12 @@ fn make_sentinel_module(
 }
 
 /// Assert the sentinel-path invariants shared by all three sentinel-continuation
-/// tests: (a) the kernel received exactly 2 Sphere calls (ops 0 and 2 both
-/// reached the kernel), and (b) exactly 1 compile-failure diagnostic was
-/// produced by op 1.
-fn assert_sentinel_kernel_ops(kernel_ops: &[GeometryOpRecord], compile_failure_count: usize) {
+/// tests. Accepts the recorded kernel ops and the full diagnostics slice from
+/// the eval result. Asserts: (a) the kernel received exactly 2 Sphere calls
+/// (ops 0 and 2 both reached the kernel), and (b) exactly 1 diagnostic whose
+/// message contains "failed to compile geometry operation" was produced (counted
+/// internally by filtering `diagnostics`).
+fn assert_sentinel_invariants(kernel_ops: &[GeometryOpRecord], diagnostics: &[Diagnostic]) {
     let sphere_ops: Vec<_> = kernel_ops
         .iter()
         .filter(|rec| matches!(rec.op, GeometryOp::Sphere { .. }))
@@ -112,6 +113,10 @@ fn assert_sentinel_kernel_ops(kernel_ops: &[GeometryOpRecord], compile_failure_c
             .map(|r| format!("{:?}", r.op))
             .collect::<Vec<_>>()
     );
+    let compile_failure_count = diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .count();
     assert_eq!(
         compile_failure_count,
         1,
@@ -869,12 +874,7 @@ fn tessellate_sentinel_placeholder_continues_independent_ops() {
     let result = engine.tessellate_realizations(&module);
 
     let kernel_ops = ops_ref.lock().unwrap();
-    let compile_failure_count = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("failed to compile geometry operation"))
-        .count();
-    assert_sentinel_kernel_ops(&kernel_ops, compile_failure_count);
+    assert_sentinel_invariants(&kernel_ops, &result.diagnostics);
 
     // Rollback: no meshes produced when had_failure=true.
     assert!(
@@ -1614,12 +1614,7 @@ fn sentinel_placeholder_continues_independent_ops() {
     let result = engine.build(&module, ExportFormat::Step);
 
     let kernel_ops = ops_ref.lock().unwrap();
-    let compile_failure_count = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("failed to compile geometry operation"))
-        .count();
-    assert_sentinel_kernel_ops(&kernel_ops, compile_failure_count);
+    assert_sentinel_invariants(&kernel_ops, &result.diagnostics);
 
     // The realization should be rolled back (had_failure=true) → no geometry output.
     assert!(
@@ -1861,12 +1856,7 @@ fn build_snapshot_sentinel_placeholder_continues_independent_ops() {
         .expect("build_snapshot should return Some after eval()");
 
     let kernel_ops = ops_ref.lock().unwrap();
-    let compile_failure_count = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("failed to compile geometry operation"))
-        .count();
-    assert_sentinel_kernel_ops(&kernel_ops, compile_failure_count);
+    assert_sentinel_invariants(&kernel_ops, &result.diagnostics);
 
     // Rollback: geometry_output is None when had_failure=true.
     assert!(
