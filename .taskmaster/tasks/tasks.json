@@ -34867,11 +34867,11 @@
         "description": "Follow-up from esc-1393-19 (reviewer_comprehensive, task 1393). Two items: (1) The deeply-nested if-let/else/panic pattern for walking expression trees (BinOp -> right -> Scalar) is duplicated across crates/reify-compiler/tests/user_defined_unit_tests.rs, si_units_tests.rs, and unit_registry_tests.rs. Extract `fn expect_binop(expr) -> (&BinOp, &CompiledExpr, &CompiledExpr)` and `fn expect_scalar(expr) -> (f64, DimensionVector)` helpers into a shared test-utilities module. (2) Tolerance inconsistency at user_defined_unit_tests.rs:100 uses 1e-10 while all other unit tests use 1e-9. Normalize to 1e-9 or define a shared `const EPSILON` for all unit tests to prevent spurious platform failures.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:06:58.352Z",
+        "updatedAt": "2026-04-15T00:25:48.558Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/common",
@@ -35296,7 +35296,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:25:48.124Z",
+      "lastModified": "2026-04-15T00:25:48.558Z",
       "taskCount": 1690,
       "completedCount": 1430,
       "tags": [
