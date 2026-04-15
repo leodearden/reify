@@ -35205,7 +35205,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/integration_corner_cases.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 1687,
@@ -35216,7 +35224,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/si_units.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
       },
       {
         "id": 1688,
