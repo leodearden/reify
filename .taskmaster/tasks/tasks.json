@@ -35502,11 +35502,11 @@
         "description": "Two test coverage gaps in crates/reify-eval/tests/integration_full_v01.rs:\n\n1. **Option/lambda coverage (docstring lines 3-9):** The module docstring lists 'some/none' and 'lambda' as exercised features, but no test explicitly asserts Option::Some/None values or lambda evaluation results. Either add dedicated assertions for these features or remove them from the docstring until tested.\n\n2. **Diagnostic-absence assertions:** Neither eval_canonical() nor check_canonical() results are inspected for diagnostics. Other integration test files (e.g., integration_corner_cases.rs) explicitly check for absence of error-severity diagnostics. Add: `assert!(result.diagnostics.iter().all(|d| d.severity != Severity::Error), \"unexpected error diagnostics: {:?}\", result.diagnostics);`\n\nmemory_hints: search \"diagnostic assertions integration test pattern\"; search \"Option Some None lambda test coverage\"",
         "details": "<info added on 2026-04-15T01:50:36.947Z>\nThis task is currently under reconciliation watch due to a stash-fail revert observed in run 5f459407 on 2026-04-15, Stage 2. It reverted from in-progress to pending during reconciliation run ed46c158 but then recovered. If it reverts again in the next cycle, escalate immediately as a branch surgery case, similar to task 1675. Do not allow it to cycle a third time. Before the next automated attempt, check branch task/1698 for any dirty state or persistent merge conflicts.\n</info added on 2026-04-15T01:50:36.947Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T01:46:14.411Z",
+        "updatedAt": "2026-04-15T02:24:12.193Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/integration_full_v01.rs"
@@ -35680,9 +35680,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T02:22:30.027Z",
+      "lastModified": "2026-04-15T02:24:12.193Z",
       "taskCount": 1707,
-      "completedCount": 1460,
+      "completedCount": 1461,
       "tags": [
         "master"
       ]
