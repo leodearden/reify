@@ -34756,11 +34756,11 @@
         "description": "Add an early-return fast path at the top of Engine::dispatch_constraints in crates/reify-eval/src/lib.rs (~line 400) that short-circuits the bucketing/merging machinery when self.optimization_registry.is_empty() — the overwhelmingly common case. Build a ConstraintInput directly from entries (dropping the Option<&str> target field) and return self.constraint_checker.check(&input) with no BTreeMap, no Vec<Option<ConstraintResult>> scratch, no unzip, no rebuild. Behavior must remain identical; goal is to eliminate the 4-5 extra allocations per batch that Task 273 introduced on every check / edit_check / eval_cached hot-path call site, restoring pre-273 performance when no optimized impls are registered.",
         "details": "Source: esc-273-83 suggestion from reviewer_comprehensive (performance, hot path regression).\n\nCurrent state: dispatch_constraints is called from five constraint-checking sites and unconditionally allocates a results Vec<Option<_>>, a BTreeMap, a fallback Vec<(usize, _)>, then unzips into two more Vecs. Pre-Task-273 was a single self.constraint_checker.check(&input).\n\nFix shape:\n```rust\nfn dispatch_constraints(...) -> Vec<ConstraintResult> {\n    if entries.is_empty() { return Vec::new(); }\n    if self.optimization_registry.is_empty() {\n        let (_targets_dropped, constraints): (Vec<_>, Vec<_>) = entries\n            .into_iter()\n            .map(|(id, expr, _)| ((), (id, expr)))\n            .unzip();\n        let input = ConstraintInput { constraints, values, functions, determinacy };\n        return self.constraint_checker.check(&input);\n    }\n    // ... existing bucketing path ...\n}\n```\n(Or cleaner: collect directly into Vec<(ConstraintNodeId, &CompiledExpr)> in one pass.)\n\nVerify with a microbenchmark or existing constraint-heavy test (e.g. a large frame_constraint batch) that allocation counts drop back to pre-273 levels. All existing dispatch tests must continue to pass.\n\nModules: crates/reify-eval/src",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:11:31.377Z",
+        "updatedAt": "2026-04-15T16:55:43.981Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -37646,9 +37646,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T16:55:17.622Z",
+      "lastModified": "2026-04-15T16:55:43.981Z",
       "taskCount": 1793,
-      "completedCount": 1529,
+      "completedCount": 1530,
       "tags": [
         "master"
       ]
