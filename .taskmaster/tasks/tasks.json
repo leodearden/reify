@@ -37673,15 +37673,16 @@
         "description": "Add a check_canonical_is_cached() test that calls check_canonical() twice and asserts pointer equality, matching the pattern of the existing eval_canonical_is_cached() test (lines 96-104). Both eval_canonical() and check_canonical() were changed to use OnceLock caching, but only eval_canonical has a test verifying the caching behavior.\n\nInsert the new test near line 104, right after eval_canonical_is_cached().\n\nmemory_hints: search \"eval_canonical_is_cached\" in stress_large_assembly.rs for the pattern to follow.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T17:05:33.506Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:05:33.178Z",
+      "lastModified": "2026-04-15T17:05:33.506Z",
       "taskCount": 1794,
       "completedCount": 1533,
       "tags": [
