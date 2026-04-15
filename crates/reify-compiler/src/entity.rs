@@ -1509,7 +1509,6 @@ pub(crate) fn compile_entity(
     let annotations = lower_annotations(structure.annotations, diagnostics);
     validate_annotations(&annotations, context, diagnostics);
     validate_pragmas(structure.pragmas, context, diagnostics);
-    let is_test = annotations.iter().any(|a| a.name == "test");
 
     TopologyTemplate {
         name: entity_name.to_string(),
@@ -1529,7 +1528,6 @@ pub(crate) fn compile_entity(
         meta: scope.meta_entries.clone(),
         content_hash,
         is_recursive: false,
-        is_test,
         annotations,
         pragmas: structure.pragmas.to_vec(),
     }

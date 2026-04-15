@@ -67,7 +67,7 @@ pub(crate) fn validate_annotations(
             "deprecated" => {
                 // Valid on any context — no warning.
             }
-            "test" => {
+            reify_types::TEST_ANNOTATION => {
                 if !matches!(context, "structure" | "occurrence" | "function" | "constraint_def") {
                     diagnostics.push(
                         Diagnostic::warning(format!(
