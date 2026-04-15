@@ -37927,6 +37927,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1817,
+        "title": "MenuBar: ShortcutId union type + test assertion specificity",
+        "description": "From task 1794 review: (1) Derive ShortcutId union type from SHORTCUTS registry in shortcuts.ts, use it in MenuItemDef.shortcutId. (2) Replace ~12 toBeTruthy() with toBeDefined() in MenuBar.test.tsx.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37939,7 +37950,7 @@
       ],
       "created": "2026-04-15T20:32:16.782Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T20:48:38.878Z"
+      "updated": "2026-04-15T20:49:44.303Z"
     }
   }
 }
