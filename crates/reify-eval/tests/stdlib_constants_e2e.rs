@@ -3,7 +3,9 @@
 //! These tests exercise the full parse → compile → eval pipeline to confirm
 //! that `pi` and `tau` evaluate to the expected Real values.
 
-use reify_test_support::eval_source;
+use reify_test_support::{
+    assert_no_eval_errors, eval_source, make_engine, parse_and_compile_with_stdlib,
+};
 use reify_types::{Value, ValueCellId};
 
 // ─── step-9: pi and tau evaluate to correct Real values ─────────────────────
@@ -47,5 +49,60 @@ fn tau_evaluates_to_real_tau() {
             );
         }
         other => panic!("expected Real(TAU), got {:?}", other),
+    }
+}
+
+// ─── step-11: trig functions with pi and tau ────────────────────────────────
+
+/// Helper: compile with stdlib, eval, assert no errors.
+fn eval_with_stdlib(source: &str) -> reify_eval::EvalResult {
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_engine();
+    let result = engine.eval(&compiled);
+    assert_no_eval_errors(&result);
+    result
+}
+
+#[test]
+fn sin_pi_is_approximately_zero() {
+    let result = eval_with_stdlib(
+        "structure S {\n  let half_turn = pi\n  let x = sin(half_turn)\n}",
+    );
+    let id = ValueCellId::new("S", "x");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("'x' not found in eval result"));
+    match val {
+        Value::Real(v) => {
+            assert!(
+                v.abs() < 1e-10,
+                "sin(pi) should be ~0, got {}",
+                v
+            );
+        }
+        other => panic!("expected Real(~0), got {:?}", other),
+    }
+}
+
+#[test]
+fn cos_tau_is_approximately_one() {
+    let result = eval_with_stdlib(
+        "structure S {\n  let full_turn = tau\n  let y = cos(full_turn)\n}",
+    );
+    let id = ValueCellId::new("S", "y");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("'y' not found in eval result"));
+    match val {
+        Value::Real(v) => {
+            assert!(
+                (*v - 1.0).abs() < 1e-10,
+                "cos(tau) should be ~1, got {}",
+                v
+            );
+        }
+        other => panic!("expected Real(~1), got {:?}", other),
     }
 }
