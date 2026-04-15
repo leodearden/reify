@@ -78,6 +78,14 @@ pub fn newton(v: f64) -> Value {
     }
 }
 
+/// Create a Scalar with MASS dimension from kilograms (SI base unit).
+pub fn kg(v: f64) -> Value {
+    Value::Scalar {
+        si_value: v,
+        dimension: DimensionVector::MASS,
+    }
+}
+
 /// Create a Scalar with LENGTH dimension from meters.
 pub fn meters(v: f64) -> Value {
     Value::Scalar {
@@ -790,6 +798,22 @@ mod tests {
                     "212°F should be 373.15 K, got {}",
                     si_value
                 );
+            }
+            _ => panic!("expected Value::Scalar"),
+        }
+    }
+
+    // step-1: failing test for kg() constructor (task 1718)
+    #[test]
+    fn kg_creates_mass_scalar() {
+        let v = kg(2.5);
+        match v {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!((si_value - 2.5).abs() < 1e-9, "si_value should be 2.5");
+                assert_eq!(dimension, DimensionVector::MASS);
             }
             _ => panic!("expected Value::Scalar"),
         }

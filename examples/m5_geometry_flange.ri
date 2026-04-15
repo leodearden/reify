@@ -11,4 +11,5 @@ structure def BoltFlange {
     let body = cylinder(outer_radius, height)
     let hole = cylinder(hole_radius, height)
     let holes = circular_pattern(hole, 0, 0, 0, 0, 0, 1, hole_count, 360)
+    let flange = difference(body, holes)
 }

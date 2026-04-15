@@ -26,6 +26,18 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
     compiled
 }
 
+/// Helper: parse + compile source, return compiled output without asserting zero errors.
+/// Use this for negative tests that expect compiler diagnostics.
+fn compile_module(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_coll"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    reify_compiler::compile(&parsed)
+}
+
 // ─── step-1: parse collection sub form ───
 
 #[test]
@@ -556,6 +568,115 @@ fn compile_collection_sub_as_standalone_identifier() {
     }
 }
 
+// ─── task-1454: combined collection + non-collection sub InstanceQualifiedAccess ───
+
+/// Proof that `sub_member_types` is the single authoritative source for ALL sub types.
+///
+/// A structure with BOTH a non-collection sub (`sub part = Inner()`) and a collection
+/// sub (`sub parts : List<Inner>`) — each accessed via `InstanceQualifiedAccess` —
+/// must compile without errors and without an ICE diagnostic.
+///
+/// The existing tests `sub_member_type_resolves_without_ice` (collection) and
+/// `non_collection_sub_member_type_resolves_without_ice` (non-collection) cover each
+/// form in isolation.  This test locks in the superset property: both subs coexist in
+/// the same entity and both resolve correctly from `sub_member_types`.
+#[test]
+fn mixed_sub_types_instance_qualified_access() {
+    let source = r#"
+        trait MechTrait {
+            param diameter : Length
+        }
+        structure Inner : MechTrait {
+            param diameter : Length = 5mm
+        }
+        structure Outer {
+            sub part = Inner()
+            sub parts : List<Inner>
+            let d1 = part.(MechTrait::diameter)
+            let d2 = parts.(MechTrait::diameter)
+        }
+    "#;
+    let compiled = compile_no_errors(source);
+
+    // Confirm no ICE diagnostics (compile_no_errors already rejects Error-severity
+    // diagnostics, but an explicit ICE check makes the intent of this test clear).
+    let has_ice = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on mixed sub-type instance qualified access, got: {:?}",
+        compiled.diagnostics
+    );
+
+    // Positive correctness check: verify that d1 and d2 resolved to the expected
+    // ValueRef IDs and types — not the ICE fallback (Type::Real) or an error result.
+    //
+    // For non-collection subs, InstanceQualifiedAccess produces a ValueRef scoped to
+    // "Outer.part" with the element type from Inner (Length).
+    // For collection subs it produces a ValueRef scoped to "Outer.parts" with the same
+    // element type — the evaluator handles list-expansion semantics at runtime.
+    let outer_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("should have template Outer");
+
+    // --- d1: non-collection sub member access ---
+    let d1_cell = outer_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d1")
+        .expect("should have let binding 'd1'");
+    let d1_expr = d1_cell
+        .default_expr
+        .as_ref()
+        .expect("d1 should have an expression");
+    match &d1_expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                id.entity, "Outer.part",
+                "d1 should reference sub-scope Outer.part"
+            );
+            assert_eq!(id.member, "diameter", "d1 should reference member 'diameter'");
+        }
+        other => panic!("expected ValueRef for d1, got {:?}", other),
+    }
+    assert_eq!(
+        d1_expr.result_type,
+        reify_types::Type::length(),
+        "d1 (non-collection sub InstanceQualifiedAccess) should resolve to Length"
+    );
+
+    // --- d2: collection sub member access ---
+    let d2_cell = outer_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d2")
+        .expect("should have let binding 'd2'");
+    let d2_expr = d2_cell
+        .default_expr
+        .as_ref()
+        .expect("d2 should have an expression");
+    match &d2_expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                id.entity, "Outer.parts",
+                "d2 should reference sub-scope Outer.parts"
+            );
+            assert_eq!(id.member, "diameter", "d2 should reference member 'diameter'");
+        }
+        other => panic!("expected ValueRef for d2, got {:?}", other),
+    }
+    assert_eq!(
+        d2_expr.result_type,
+        reify_types::Type::length(),
+        "d2 (collection sub InstanceQualifiedAccess) should resolve to Length (element type; \
+         list-expansion is handled by the evaluator at runtime)"
+    );
+}
+
 // ─── task-1441 regression: collection/scalar coexistence + bare collection identifier ───
 
 #[test]
@@ -617,4 +738,82 @@ fn compile_collection_identifier_after_noncollection_sub() {
         reify_types::Type::List(_) => {}
         other => panic!("expected List type for bare collection identifier, got {:?}", other),
     }
+}
+
+// ─── task-1729: negative test for mixed-sub wrong-trait InstanceQualifiedAccess ───
+
+/// Negative counterpart to `mixed_sub_types_instance_qualified_access`.
+///
+/// When a non-collection sub (`sub part = Inner()`) and a collection sub
+/// (`sub parts : List<Inner>`) are both accessed via `InstanceQualifiedAccess`
+/// with a trait that `Inner` does NOT implement, the compiler must emit an
+/// Error-severity diagnostic for EACH access — not silently succeed or ICE.
+///
+/// The diagnostic path lives at expr.rs:1631-1639 and is identical for both
+/// sub kinds (both go through `sub_structure_traits` lookup).
+#[test]
+fn mixed_sub_types_wrong_trait_diagnostic() {
+    let source = r#"
+        trait MechTrait {
+            param diameter : Length
+        }
+        trait UnrelatedTrait {
+            param weight : Scalar
+        }
+        structure Inner : MechTrait {
+            param diameter : Length = 5mm
+        }
+        structure Outer {
+            sub part = Inner()
+            sub parts : List<Inner>
+            let d1 = part.(UnrelatedTrait::weight)
+            let d2 = parts.(UnrelatedTrait::weight)
+        }
+    "#;
+    let compiled = compile_module(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // Both sub accesses (non-collection 'part' and collection 'parts') must each
+    // produce an error diagnostic.
+    assert!(
+        errors.len() >= 2,
+        "expected at least 2 error diagnostics (one per sub), got {}: {:?}",
+        errors.len(),
+        errors
+    );
+
+    // Every error must mention "does not implement trait".
+    for err in &errors {
+        assert!(
+            err.message.contains("does not implement trait"),
+            "error message should contain 'does not implement trait': {:?}",
+            err.message
+        );
+    }
+
+    // Non-collection sub: error mentions "'part'" (quoted, to exclude the "parts" match)
+    // and "UnrelatedTrait". The diagnostic format is: sub-component 'part' (type ...).
+    let part_err = errors
+        .iter()
+        .find(|e| e.message.contains("'part'") && e.message.contains("UnrelatedTrait"));
+    assert!(
+        part_err.is_some(),
+        "expected an error mentioning 'part' and 'UnrelatedTrait', got: {:?}",
+        errors
+    );
+
+    // Collection sub: error mentions "parts" and "UnrelatedTrait".
+    let parts_err = errors
+        .iter()
+        .find(|e| e.message.contains("parts") && e.message.contains("UnrelatedTrait"));
+    assert!(
+        parts_err.is_some(),
+        "expected an error mentioning 'parts' and 'UnrelatedTrait', got: {:?}",
+        errors
+    );
 }

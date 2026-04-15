@@ -6005,7 +6005,7 @@
         "dependencies": [
           "291"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-types/src",
@@ -6021,7 +6021,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-15T05:38:56.434Z"
+        "updatedAt": "2026-04-15T06:47:19.973Z"
       },
       {
         "id": "297",
@@ -23903,13 +23903,13 @@
         "description": "Extend the OptionNone-at-binding-site fixup (currently applied only to top-level entity params, and via task 1083 to top-level entity lets) to cover port-scoped and guarded-group-scoped param/let bindings. Test-first: write failing tests before touching the compiler.",
         "details": "## Background\n\nA bare `none` literal is compiled with a fallback `result_type = Option[Real]` at `crates/reify-compiler/src/lib.rs:2161-2164`, because the parser has no contextual type information. Binding sites with an explicit annotation (`param x: Option[T] = none` / `let x: Option[T] = none`) must re-stamp the `OptionNone`'s `result_type` to match, or downstream type queries, goto-def, and qualified access see the wrong inner type. The port-let case is especially bad because the wrong type is also propagated into the scope entry at `lib.rs:5505`, poisoning every later name resolution in that scope.\n\nThe reference fix for top-level entity params lives at `crates/reify-compiler/src/lib.rs:5176-5186`. Task 1083 extends it to top-level entity lets. This task covers the remaining four arms.\n\n## Four sites to cover\n\nAll in `crates/reify-compiler/src/lib.rs`:\n\n1. **Port member param arm** (~`lib.rs:5476-5478`): `compile_expr(...)` with no OptionNone fixup. A port-scoped `param x: Option[Vec2] = none` would stamp the default with `Option[Real]`.\n2. **Port member let arm** (~`lib.rs:5491-5520`): `cell_type` is derived from `compiled_expr.result_type` at `lib.rs:5500` with no annotation check. The wrong type also enters the scope at `lib.rs:5505`.\n3. **Guarded member param arm** in `compile_guarded_members` (~`lib.rs:6875-6886`): `compile_expr_guarded(...)` with no fixup.\n4. **Guarded member let arm** (~`lib.rs:6898-6930`): `cell_type = compiled_expr.result_type.clone()` at `lib.rs:6914` with no annotation check.\n\n## Approach (test-first)\n\n**Step 1 — Write failing tests.** Add one test per site (4 tests total) to the appropriate test file (likely `crates/reify-compiler/tests/qualified_access_compile_tests.rs` alongside the task-1083 test, or `option_compile_tests.rs`). Each test should:\n- Construct source exercising the site (e.g., `entity E { port p: Bar { param x: Option[Vec2] = none } }`).\n- Compile it.\n- Assert the resulting `ValueCellDecl`'s `cell_type` (and where applicable, the `default_expr`'s `result_type`) matches the annotated `Option[T]` — NOT the fallback `Option[Real]`.\n\n**Step 1b — Grammar reachability check.** If any of the four constructs is not admitted by the current grammar (`tree-sitter-reify`), mark that site unreachable, close out its sub-scope, and document it in the PR. Do not write compiler logic for an unreachable path.\n\n**Step 2 — Fix the reachable sites.** Mirror the `lib.rs:5181-5184` pattern:\n```rust\nif matches!(&compiled.kind, CompiledExprKind::OptionNone)\n    && matches!(&cell_type, Type::Option(_))\n{\n    compiled = CompiledExpr::option_none(cell_type.clone());\n}\n```\nFor the let arms, the fixup needs to happen *before* `cell_type` is derived from `compiled_expr.result_type` — resolve the annotation from `let_decl.type_expr` first (mirroring the pattern task 1083 establishes for the top-level entity let arm), then fix up.\n\n**Step 2b — Consider extraction.** If the four fixups look identical, extract a `fixup_option_none(compiled, declared_type) -> CompiledExpr` helper. Do not extract if sites diverge; three similar call sites is fine.\n\n## Dependencies\n\n- Task 1083 (top-level entity let fix) establishes the annotation-resolution pattern for let arms. This task should land *after* 1083 so the let-arm pattern has a reference implementation.\n\n## Acceptance\n\n- 4 new tests (or fewer if some sites are unreachable), each failing on main before the fix and passing after.\n- Fix mirrors task 1083 / `lib.rs:5181-5184` without introducing new behavior.\n- No drive-by refactoring of unrelated code.\n- `cargo test -p reify-compiler` clean, no clippy warnings in the touched file.\n\n## Memory hints\n\n- Search: \"OptionNone typed annotation let binding\"\n- Related task: 1083 (top-level entity let fix)\n- Related files: `crates/reify-compiler/src/lib.rs`, `crates/reify-compiler/tests/qualified_access_compile_tests.rs`, `crates/reify-types/src/expr.rs`\n- Prior context: task 162 restored some/none compilation interception (commit 81d333299)\n- Feedback: `feedback_silent_defaults_pattern` — avoid silent fallback types on error/uncovered paths",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1083"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T05:38:56.793Z",
+        "updatedAt": "2026-04-15T06:29:12.752Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -26816,18 +26816,18 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T12:56:55.407Z",
+        "updatedAt": "2026-04-15T06:57:39.885Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src/annotations.rs",
             "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/scc.rs",
             "crates/reify-compiler/src/types.rs",
-            "crates/reify-compiler/tests/annotation_compile_tests.rs",
             "crates/reify-compiler/tests/test_marker_compile_tests.rs",
             "crates/reify-eval/src/test_runner.rs",
             "crates/reify-syntax/src/lib.rs",
             "crates/reify-test-support/src/builders",
             "crates/reify-types/src/annotation.rs",
+            "crates/reify-types/src/expr.rs",
             "crates/reify-types/src/lib.rs"
           ],
           "files": [
@@ -30808,11 +30808,11 @@
         "description": "Two related issues around sub_member_types semantics:\n\n1. **Unreachable `or_else` fallback (expr.rs:1512-1517):** The `.or_else(|| scope.collection_sub_member_types.get(...))` fallback is unreachable because `sub_member_types` is populated for ALL subs (entity.rs:417-429), making it a strict superset of `collection_sub_member_types`. Either remove the fallback entirely or add an explicit comment marking it as a defensive guard.\n\n2. **Misleading docstring (scope.rs:36):** The docstring says \"Member types for non-collection sub-components\" but `sub_member_types` is populated for ALL subs unconditionally. Update to: `/// Member types for all sub-components: sub_name → { member_name → Type }. /// Populated for both collection and non-collection subs to resolve self.sub.member chains and instance qualified access.`\n\nMemory hints: search \"sub_member_types collection_sub_member_types superset defensive\" for prior analysis confirming the or_else is unreachable.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:04:13.257Z",
+        "updatedAt": "2026-04-15T06:52:46.155Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -32805,11 +32805,11 @@
         "description": "Two follow-up improvements: (1) entity.rs:417-447: collapse duplicate HashMap building for sub_member_types and collection_sub_member_types into single build. (2) expr.rs:1518-1530: ICE fallback should return CompiledExpr::literal(Value::Undef, Type::Real) instead of value_ref with fabricated type, matching other error paths in the same match arm.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-10T11:08:22.866Z",
+        "updatedAt": "2026-04-15T06:52:54.898Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -34065,14 +34065,23 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-11T16:05:43.576Z",
+        "updatedAt": "2026-04-15T06:54:10.826Z",
         "metadata": {
           "modules": [
-            "crates/reify-types/src",
-            "crates/reify-expr/src",
-            "crates/reify-eval/src",
-            "crates/reify-stdlib/src",
-            "crates/reify-test-support/src"
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/field_eval_tests.rs",
+            "crates/reify-eval/tests/m8_m11_regression_checkpoint.rs",
+            "crates/reify-expr/src/analysis.rs",
+            "crates/reify-expr/src/calculus.rs",
+            "crates/reify-expr/tests/field_analysis_tests.rs",
+            "crates/reify-expr/tests/field_calculus_tests.rs",
+            "crates/reify-expr/tests/field_eval_tests.rs",
+            "crates/reify-expr/tests/gradient_tests.rs",
+            "crates/reify-expr/tests/lambda_eval_tests.rs",
+            "crates/reify-stdlib/src/geometry.rs",
+            "crates/reify-test-support/src/builders",
+            "crates/reify-types/src/value.rs",
+            "gui/src-tauri/src/tests"
           ],
           "memory_hints": {
             "entities": [
@@ -35047,13 +35056,13 @@
         "id": "1675",
         "title": "si_units: disambiguate prefix_combos field semantics between SiPrefixBase and SiDerivedUnit",
         "description": "The `prefix_combos` field on `SiPrefixBase` and `SiDerivedUnit` shares the same name and type (`&'static [&'static str]`) but has opposite empty-slice semantics: `&[]` on `SiDerivedUnit` means \"no prefixed variants\" (unprefixed only), while `&[]` on `SiPrefixBase` means \"emit all 20 prefixes.\" This is a maintenance hazard.\n\nOptions:\n(a) Rename the field on `SiPrefixBase` to something distinct like `restrict_to_prefixes` to signal the different semantics.\n(b) Introduce a small enum wrapper (e.g. `PrefixSet::All` vs `PrefixSet::Only(&[&str])`) so both structs can share the same empty-means-none convention.\n\nModules: crates/reify-compiler/src/si_units.rs\n\nmemory_hints: search \"SiPrefixBase prefix_combos semantics\" for prior context on this inconsistency.",
-        "details": "<info added on 2026-04-15T00:58:48.074Z>\nRECONCILIATION WARNING (run 39b398b0, 2026-04-15): This task has experienced stash-fail revert cycles in three consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0). Normal stash-fail recovery is not working. Before attempting this task again, the implementor MUST: (1) inspect branch task/1675 for persistent merge conflicts or dirty state, (2) consider fresh worktree checkout or cherry-pick onto a clean branch rather than standard stash-pop recovery. Memory hints: search \"task 1675 stash fail recurring branch\" for history; search \"SiPrefixBase prefix_combos semantics\" for the implementation context.\n</info added on 2026-04-15T00:58:48.074Z>\n<info added on 2026-04-15T01:27:55.682Z>\nESCALATION UPDATE (run ed46c158, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FOUR consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158). Normal orchestrator recovery is NOT working. This task REQUIRES manual intervention before any further automated attempt. Required actions: (1) Inspect branch task/1675 for persistent merge conflicts, dirty state, or unresolved conflict markers. (2) Checkout a fresh worktree and cherry-pick any completed work onto it. (3) Do NOT attempt stash-pop recovery — create a clean branch instead. If no completed work exists on the branch, start fresh from main. This pattern has been escalated to the highest severity for the reify project.\n</info added on 2026-04-15T01:27:55.682Z>\n<info added on 2026-04-15T05:32:54.024Z>\nESCALATION UPDATE (run dc802ff2, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FIVE consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2). The previous update at run ed46c158 explicitly flagged this for manual intervention — that intervention has NOT occurred. This task must be manually unblocked before the orchestrator attempts it again. Suggested path: checkout task/1675 branch, inspect for persistent conflict markers or unresolved state, and either (a) force-resolve and push a clean branch, or (b) abandon the branch and create a fresh worktree from main. DO NOT allow the orchestrator to retry via stash-pop.\n</info added on 2026-04-15T05:32:54.024Z>",
+        "details": "<info added on 2026-04-15T00:58:48.074Z>\nRECONCILIATION WARNING (run 39b398b0, 2026-04-15): This task has experienced stash-fail revert cycles in three consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0). Normal stash-fail recovery is not working. Before attempting this task again, the implementor MUST: (1) inspect branch task/1675 for persistent merge conflicts or dirty state, (2) consider fresh worktree checkout or cherry-pick onto a clean branch rather than standard stash-pop recovery. Memory hints: search \"task 1675 stash fail recurring branch\" for history; search \"SiPrefixBase prefix_combos semantics\" for the implementation context.\n</info added on 2026-04-15T00:58:48.074Z>\n<info added on 2026-04-15T01:27:55.682Z>\nESCALATION UPDATE (run ed46c158, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FOUR consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158). Normal orchestrator recovery is NOT working. This task REQUIRES manual intervention before any further automated attempt. Required actions: (1) Inspect branch task/1675 for persistent merge conflicts, dirty state, or unresolved conflict markers. (2) Checkout a fresh worktree and cherry-pick any completed work onto it. (3) Do NOT attempt stash-pop recovery — create a clean branch instead. If no completed work exists on the branch, start fresh from main. This pattern has been escalated to the highest severity for the reify project.\n</info added on 2026-04-15T01:27:55.682Z>\n<info added on 2026-04-15T05:32:54.024Z>\nESCALATION UPDATE (run dc802ff2, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FIVE consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2). The previous update at run ed46c158 explicitly flagged this for manual intervention — that intervention has NOT occurred. This task must be manually unblocked before the orchestrator attempts it again. Suggested path: checkout task/1675 branch, inspect for persistent conflict markers or unresolved state, and either (a) force-resolve and push a clean branch, or (b) abandon the branch and create a fresh worktree from main. DO NOT allow the orchestrator to retry via stash-pop.\n</info added on 2026-04-15T05:32:54.024Z>\n<info added on 2026-04-15T06:43:56.673Z>\nRECONCILIATION RESET (run f08db30b, 2026-04-15, Stage 2): Stage 1 of this reconciliation cycle confirmed that the \"done\" status set at 06:09:27Z was PHANTOM — no implementation commits exist on branch task/1675. The add_memory call during that cycle returned memory_ids=[] confirming nothing was captured. Status reset to pending. This task has now had 5 stash-fail cycles AND a phantom done. MANDATORY: implementor must use a fresh worktree checkout from main — do NOT use stash-pop recovery on the existing task/1675 branch. The branch likely has persistent conflict markers or dirty state that prevents clean checkout.\n</info added on 2026-04-15T06:43:56.673Z>",
         "testStrategy": "",
         "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:09:27.034Z",
+        "updatedAt": "2026-04-15T06:52:35.664Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/si_units.rs",
@@ -35062,10 +35071,13 @@
           "memory_hints": {
             "entities": [],
             "queries": [
-              "resolution for: si_units: disambiguate prefix_combos field semantics between SiPrefixBase and SiDerivedUnit"
+              "SiPrefixBase prefix_combos semantics",
+              "task 1675 stash fail recurring branch",
+              "task 1675 phantom done reconciliation reset",
+              "si_units disambiguate prefix_combos SiDerivedUnit"
             ]
           },
-          "_causation_id": "dc802ff2-ae92-42fe-979d-29937db06c0c",
+          "_causation_id": "f08db30b-65e0-4c3a-b67c-92bf80f570c7",
           "stash_fail_cycle_count": 5,
           "stash_fail_cycles": [
             "2e441149",
@@ -35075,7 +35087,10 @@
             "dc802ff2"
           ],
           "escalation_severity": "critical",
-          "requires_manual_intervention": true
+          "requires_manual_intervention": true,
+          "phantom_done_reset": true,
+          "phantom_done_run": "f08db30b",
+          "fresh_worktree_mandatory": true
         }
       },
       {
@@ -35158,7 +35173,7 @@
         "id": "1680",
         "title": "Restore Fillet needle and generalize assert_rejected_at_compile",
         "description": "From esc-1628-28. Two fixes in geometry_error_handling.rs. S1: Restore 'Fillet' needle in build_modify_missing_arg_no_kernel_error. S2: Generalize assert_rejected_at_compile to accept Option for primitive check.",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "1628"
         ],
@@ -35194,7 +35209,8 @@
           "modules": [
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T07:11:17.126Z"
       },
       {
         "id": "1681",
@@ -35765,11 +35781,11 @@
         "description": "In `crates/reify-compiler/tests/let_scope_tests.rs`, the `realization_named` helper (lines 110-127) does not verify that `names.len() == template.realizations.len()`. If the compiler introduces an unexpected extra realization, the positional lookup silently returns the wrong realization. Add `assert_eq!(names.len(), template.realizations.len(), ...)` at the top of the function.\n\n## memory_hints\n- search: \"realization_named let_scope_tests\"\n- search: \"task 1709 op-level assertions\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:01:18.005Z",
+        "updatedAt": "2026-04-15T06:24:45.352Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/let_scope_tests.rs"
@@ -35782,11 +35798,11 @@
         "description": "In `crates/reify-compiler/tests/let_scope_tests.rs`, the `ExpectedOp` enum (lines 52-58) covers `BoolDiff` and `BoolUnion` but omits `BoolIntersect`. The existing `intersection_with_let_bound_args` and `intersection_all_with_let_bound_args` tests only check realization count, not the op sequence. Add a `BoolIntersect(usize, usize)` variant to `ExpectedOp`, a corresponding arm in `op_matches`, and new op-level tests for `intersection` and `intersection_all` analogous to the difference/union/union_all op-level tests.\n\n## memory_hints\n- search: \"ExpectedOp BoolDiff BoolUnion op_matches\"\n- search: \"intersection_with_let_bound_args let_scope_tests\"\n- search: \"task 1709 op-level assertions\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T05:59:01.410Z"
+        "updatedAt": "2026-04-15T06:13:23.939Z"
       },
       {
         "id": "1714",
@@ -35794,10 +35810,11 @@
         "description": "Two C FFI functions declared in the OCCT kernel bridge are never called from Rust and constitute dead code: `loft_two_profiles` and `shape_vec_len`. They should be removed from both the C/C++ header/implementation and the Rust `extern \"C\"` declaration block to keep the FFI surface minimal and honest.\\n\\nFound during task 1588 ~70-module code review (2026-04-15).\\n\\n## memory_hints\\n- search: \\\"OCCT kernel FFI vestigial functions loft_two_profiles shape_vec_len\\\"\\n- search: \\\"OCCT FFI dead code cleanup\\\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:20:39.754Z"
       },
       {
         "id": "1715",
@@ -35805,13 +35822,19 @@
         "description": "Every geometry function that takes a \"target\" or \"profile\" geometry argument is broken for let-bound geometry refs, inline nesting, and cross-let composition. Only boolean ops (difference/union/intersection/union_all/intersection_all) work correctly after task 1609. The remaining 14 functions all hardcode `target: GeomRef::Step(0)` and compile the geometry arg as a scalar expression, which silently produces wrong results (geometry disappears or references the wrong handle).\n\nAffected functions (all in `crates/reify-compiler/src/geometry.rs`):\n- **Transforms (4):** translate, rotate, scale, rotate_around\n- **Patterns (3):** circular_pattern, linear_pattern, mirror\n- **Sweeps (5):** extrude, revolve, revolve_full, sweep, loft\n- **Modifiers (3):** shell, thicken, draft\n\nThe fix should be generic, not per-function copy-paste of the boolean-op pattern.",
         "details": "## Root cause\n\nIn `geometry.rs`, all non-boolean geometry functions fall through to line 238:\n```rust\nlet compiled_args: Vec<CompiledExpr> = args\n    .iter()\n    .map(|arg| compile_expr(arg, scope, enum_defs, functions, diagnostics))\n    .collect();\n```\n\nThis compiles every argument — including geometry targets — as scalar expressions. Geometry identifiers like `hole` or `body` resolve to `Value::Undef` at eval time, and inline geometry calls like `cylinder(...)` are compiled as function-call expressions rather than geometry sub-ops.\n\nMeanwhile, the op is emitted with `target: GeomRef::Step(0)`, which assumes the target shape is the first handle in the current realization — but no sub-op was emitted to produce that handle.\n\n## Proposed approach: argument-type metadata table\n\nDefine a small metadata table mapping each function to which arg positions are geometry refs:\n\n```rust\nfn geometry_arg_indices(name: &str) -> &[usize] {\n    match name {\n        \"translate\" | \"rotate\" | \"scale\" | \"shell\" | \"thicken\" | \"draft\" => &[0],\n        \"rotate_around\" => &[0],\n        \"circular_pattern\" | \"linear_pattern\" | \"mirror\" => &[0],\n        \"extrude\" | \"revolve\" | \"revolve_full\" => &[0],\n        \"sweep\" => &[0, 1],  // profile + path\n        \"loft\" => &[],  // all args are geometry (variadic, handle separately)\n        _ => &[],\n    }\n}\n```\n\nThen a single generic code path:\n1. For each geometry arg index, recursively call `compile_geometry_call` → collect sub-ops → track the step offset\n2. For each scalar arg index, call `compile_expr` as now\n3. Emit sub-ops first, then the main op with correct `GeomRef::Step(N)` indices\n\nThis replaces all 14 broken per-function blocks AND the 5 working boolean blocks with one shared implementation. Boolean ops become just another entry in the metadata table.\n\n## Files to modify\n- `crates/reify-compiler/src/geometry.rs` — main refactor\n- `crates/reify-compiler/tests/let_scope_tests.rs` — add tests for geometry-arg resolution in transforms/patterns/sweeps\n\n## Test strategy\n- `translate(hole, ...)` where hole is a let-bound `cylinder()` → should produce correct sub-ops\n- `circular_pattern(hole, ...)` where hole is a let-bound geometry → should resolve\n- `extrude(profile, ...)` where profile is let-bound → should resolve\n- `difference(body, translate(hole, ...))` — nested composition across categories\n- Cycle detection still works for transitive refs\n\n## memory_hints\n- search: \"compile_geometry_call geometry argument resolution\"\n- search: \"GeomRef::Step(0) hardcoding\"\n- entity: \"compile_geometry_call\"\n- entity: \"task 1609\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1609"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:13:08.365Z"
+        "updatedAt": "2026-04-15T06:48:30.165Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/tests/let_scope_tests.rs"
+          ]
+        }
       },
       {
         "id": "1716",
@@ -35822,7 +35845,14 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:19:16.930Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/incremental_integration.rs"
+          ]
+        }
       },
       {
         "id": "1717",
@@ -35830,10 +35860,17 @@
         "description": "Task 1588 (70-module review) found doc comment inaccuracies in two compiler modules:\\n\\n1. **scope.rs** — doc comments describe behaviour or fields that have diverged from the actual implementation (exact locations in mem0 entry 00fb2c91).\\n2. **entity.rs** — similar stale/inaccurate doc comments.\\n\\nAlso flagged: module-level doc comment needs clarification for conditional branches/match arms (mem0 entry 00e618fc) — the description of control-flow behavior in the doc comment does not accurately describe all code paths.\\n\\nActions:\\n- Audit the flagged doc comments against current code\\n- Rewrite inaccurate descriptions to match actual behavior\\n- Add clarifying notes for any conditional/match arm paths that are non-obvious\\n\\n## memory_hints\\n- search: \\\"doc comment mismatch scope.rs entity.rs\\\"\\n- search: \\\"module doc conditional branches match arms clarification\\\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:13:10.201Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/scope.rs"
+          ]
+        }
       },
       {
         "id": "1718",
@@ -35841,10 +35878,11 @@
         "description": "Add `pub fn kg(v: f64) -> Value` to crates/reify-test-support/src/values.rs following the exact pattern of mm()/newton()/kelvin(). Then replace the local kg() in crates/reify-eval/tests/incremental_integration.rs (lines ~63-68) with an import from reify_test_support.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:22:00.835Z"
       },
       {
         "id": "1719",
@@ -35857,7 +35895,15 @@
           "1609"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:55:26.867Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/units.rs",
+            "crates/reify-compiler/tests/let_scope_tests.rs"
+          ]
+        }
       },
       {
         "id": "1720",
@@ -35865,10 +35911,16 @@
         "description": "During the task 1588 70-module code review (2026-04-15), a guard pattern match in `crates/reify-types/src/value.rs` was found to handle some Value variants but omit `Value::Point` and `Value::Vector` without explanation (mem0 entry 004caee9).\\n\\nThe fix is one of:\\n(a) **Extend the guard** to also handle `Value::Point` and `Value::Vector` if the behavior should apply to them.\\n(b) **Add an exclusion comment** explaining why these variants are intentionally omitted (e.g., they are handled elsewhere, or the behavior is inapplicable).\\n\\nThe implementor should inspect the guard, determine the correct intent, and apply option (a) or (b) accordingly.\\n\\n## memory_hints\\n- search: \\\"Value::Point Value::Vector guard pattern exclusion\\\"\\n- search: \\\"value.rs match arm intentional omission\\\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T07:05:22.425Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src/value.rs"
+          ]
+        }
       },
       {
         "id": "1721",
@@ -35876,10 +35928,17 @@
         "description": "During the task 1588 70-module code review (2026-04-15), a guard pattern match in value.rs was found to handle some Value variants but omit Value::Point and Value::Vector without explanation (mem0 entry 004caee9). Fix: either (a) extend the guard to also handle Point/Vector if the behavior applies, or (b) add an exclusion comment explaining why they are intentionally omitted. memory_hints: search \\\"Value::Point Value::Vector guard pattern exclusion\\\"; search \\\"value.rs match arm intentional omission\\\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:43:42.222Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src/value.rs",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": "1722",
@@ -35887,10 +35946,17 @@
         "description": "Code review (task 1588, mem0 004caee9): a guard pattern in crates/reify-types/src/value.rs omits Value::Point and Value::Vector without explanation. Either extend to cover them or add a comment explaining the intentional exclusion. memory_hints: search \\\"Value::Point Value::Vector guard pattern exclusion\\\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:43:42.443Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src/value.rs",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": "1723",
@@ -35898,10 +35964,16 @@
         "description": "Three related improvements to crates/reify-eval/tests/field_eval_tests.rs:\n\n1. **Replace fragile line-number references** (lines 286-287, 441-442, etc.): Comments reference specific line numbers in lib.rs (e.g., `lib.rs:126-254`, `lib.rs:277-282`). Replace with code landmarks (function name, match arm, enum variant). E.g., \"dispatches via the FieldSourceKind::VonMises match arm in sample_field_at_point\".\n\n2. **Extract `make_sample_at` helper**: The pattern `make_function_call(\"sample\", vec![inner_expr, CompiledExpr::literal(Value::Real(point), Type::Real)], result_type)` is repeated in all six tests. Extract to `make_sample_at(field_expr: CompiledExpr, point: f64, result_type: Type) -> CompiledExpr`.\n\n3. **Extract `assert_real_approx` helper**: The match-based assertion pattern (match on Value::Real then assert, else panic) is repeated in every test. Extract to `fn assert_real_approx(val: &Value, expected: f64, label: &str)` with centralized tolerance constant (1e-10).\n\nmemory_hints: search \"field_eval_tests helpers\", get_entity \"field_eval_tests.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T07:03:58.385Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/field_eval_tests.rs"
+          ]
+        }
       },
       {
         "id": "1724",
@@ -35909,17 +35981,130 @@
         "description": "The field analysis dispatch tests in crates/reify-eval/tests/field_eval_tests.rs all use the same uniaxial/pure-shear stress patterns. Add edge-case tests through the eval dispatch path:\n\n1. **Zero tensor**: von_mises=0, safety_factor=yield/0 → infinity or error. Verifies divide-by-zero handling in the safety_factor dispatch path.\n2. **Hydrostatic stress** (σI): von_mises=0, a known special case. The sister file (field_analysis_tests.rs) covers hydrostatic for von_mises but not at the eval dispatch level.\n3. Optionally: a fully populated symmetric tensor with off-diagonal entries for principal_stresses, to exercise eigenvalue computation on a non-trivial input.\n\nThese strengthen confidence in dispatch correctness beyond the happy-path tensors.\n\nmemory_hints: search \"field analysis dispatch tests\", search \"hydrostatic stress test\", get_entity \"FieldSourceKind\"",
         "details": "",
         "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:23:47.699Z"
+      },
+      {
+        "id": "1725",
+        "title": "Add test for OptionNone fixup in guarded else-branch",
+        "description": "Add a test that places `param x : Option<Length> = none` inside an `else` block of a `where` guard and asserts the OptionNone fixup produces the correct `Option<Length>` type. The existing guarded-block tests only exercise the main branch; the else-branch path through `register_guarded_names` and `compile_guarded_members` is untested for OptionNone typing.",
+        "details": "## Context\n\nTask 1098 added OptionNone fixup for guarded members and port members, with tests for the main branch of guarded groups. The `else_members` path is processed identically (see `guards.rs:154` for `register_guarded_names` and the corresponding compile path), but no test exercises it.\n\n## Approach\n\nAdd a test to `crates/reify-compiler/tests/option_compile_tests.rs` similar to `guarded_param_none_with_typed_annotation_gets_correct_type` but using the `else` block:\n\n```rust\nentity E {\n    param active : Bool = true\n    where active {\n        // main branch (already tested)\n    } else {\n        param x : Option<Length> = none\n    }\n}\n```\n\nAssert that the guarded group's else-branch member has `cell_type == Option<Length>` and `default_expr.result_type == Option<Length>`.\n\n## Memory hints\n- Search: \"OptionNone guarded else branch fixup\"\n- Related tasks: 1098 (parent implementation)\n- Related files: `crates/reify-compiler/tests/option_compile_tests.rs`, `crates/reify-compiler/src/guards.rs`",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:42:37.463Z"
+      },
+      {
+        "id": "1726",
+        "title": "Add test for port member OptionNone fixup with type alias",
+        "description": "Add a test that uses a type alias in a port member param and/or let with an OptionNone default (e.g. `type MyLen = Length; port p : T { param x : Option<MyLen> = none }`) and verifies the `resolve_type_expr_with_aliases` upgrade in `entity.rs:368` works end-to-end for ports. Currently the only type-alias test covers guarded blocks.",
+        "details": "## Context\n\nTask 1098 upgraded port member param/let resolution from `resolve_type_name` to `resolve_type_expr_with_aliases` (entity.rs:368). The type-alias test (`guarded_param_option_type_alias_none_gets_correct_type`) only covers guarded blocks, not port members.\n\n## Approach\n\nAdd a test to `crates/reify-compiler/tests/option_compile_tests.rs` that defines a type alias and uses it in a port member:\n\n```rust\ntype MyLen = Length\n\nentity E {\n    port p : SomePortType {\n        param x : Option<MyLen> = none\n    }\n}\n```\n\nAssert that the port member's `cell_type == Option<Length>` and `default_expr.result_type == Option<Length>`, confirming the alias is resolved correctly through the port path.\n\n## Memory hints\n- Search: \"OptionNone port type alias resolve_type_expr_with_aliases\"\n- Related tasks: 1098 (parent implementation)\n- Related files: `crates/reify-compiler/tests/option_compile_tests.rs`, `crates/reify-compiler/src/entity.rs`",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T07:02:08.131Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/option_compile_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1727",
+        "title": "Tighten eigenvalue precision and add ordering assertion in field_eval edge-case tests",
+        "description": "Two test-quality improvements in crates/reify-eval/tests/field_eval_tests.rs:\n\n1. **Tighten eigenvalue tolerance in `eval_sample_principal_stresses_full_symmetric_dispatch`** (lines 732-738): The expected eigenvalues are hardcoded to 4 decimal places ([1.3256, 2.4601, 5.2143]) with tolerance 1e-3, but the comment notes the closed-form trig computation is accurate to ~1e-12. Use higher-precision expected values (e.g., [1.32554567, 2.46013747, 5.21431686]) and tighten tolerance to 1e-6 or 1e-8 to catch numerical regressions earlier.\n\n2. **Add ordering assertion to `eval_sample_principal_stresses_hydrostatic_dispatch`** (lines 618-626): The full-symmetric test checks `eigenvalues[0] <= eigenvalues[1] <= eigenvalues[2]` but the hydrostatic test does not. Add the same ascending-order invariant check for consistency, even though all eigenvalues are equal.\n\nmemory_hints: search \"field_eval_tests eigenvalue\", search \"principal_stresses dispatch test\"",
+        "details": "",
+        "testStrategy": "",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:42:38.296Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/field_eval_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1728",
+        "title": "Wire GeometryOp::Chamfer through compiler dispatch, eval, and FFI",
+        "description": "GeometryOp::Chamfer exists in reify-types and has a stdlib implementation (task 315 done), but there is no compiler dispatch path for it. The compiler→eval→FFI wiring is missing. Code review of task 1588 (70-module review, 2026-04-15) identified this gap via mem0 entries 1f659e54 and 26d8f165.",
+        "details": "## Problem\nGeometryOp::Chamfer is defined in reify-types but the compiler has no dispatch arm for it. Without a compiler dispatch path, the op can never be emitted from user code, making the stdlib implementation unreachable.\n\n## Required work\n1. Add `GeometryOp::Chamfer` handling to the compiler's geometry dispatch (likely in `crates/reify-compiler/src/geometry.rs` or the compile_geometry_op function)\n2. Ensure eval handles `GeometryOp::Chamfer` (check `crates/reify-eval/src/` for the eval dispatch)\n3. Verify FFI/CAD kernel call is wired up\n4. Add compiler test: chamfer(body, ...) should compile to a GeometryOp::Chamfer op\n5. Add eval/integration test: chamfered shape evaluates correctly\n\n## memory_hints\n- search: \"GeometryOp::Chamfer compiler dispatch\"\n- search: \"task 315 chamfer stdlib implementation\"\n- search: \"compile_geometry_op geometry dispatch arms\"\n- entity: \"GeometryOp::Chamfer\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:53:29.360Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/units.rs",
+            "crates/reify-eval/tests/boundary4_geometry.rs",
+            "crates/reify-eval/tests/chamfer_e2e.rs",
+            "crates/reify-kernel-occt/cpp/occt_wrapper.cpp",
+            "crates/reify-kernel-occt/cpp/occt_wrapper.h",
+            "crates/reify-kernel-occt/src/ffi.rs",
+            "crates/reify-kernel-occt/src/handle.rs",
+            "crates/reify-kernel-occt/src/lib.rs"
+          ]
+        }
+      },
+      {
+        "id": "1729",
+        "title": "Add negative test for mixed-sub wrong-trait InstanceQualifiedAccess",
+        "description": "Add a complementary negative test in collection_sub_tests.rs that expects a diagnostic when InstanceQualifiedAccess references a trait not implemented by one of the mixed subs (collection + non-collection coexisting). The existing test at line 541 covers the happy path (both sub kinds coexist and resolve); this would lock down error reporting for the failure case.\n\nMemory hints: search \"InstanceQualifiedAccess mixed sub collection_sub_tests\" for test context; search \"sub_member_types collection_sub_member_types\" for the compilation model.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T07:07:57.110Z"
+      },
+      {
+        "id": "1730",
+        "title": "Extract assert_option_none_length helper in option_compile_tests.rs",
+        "description": "Extract a shared helper function in option_compile_tests.rs to reduce boilerplate across the OptionNone assertion tests. Currently ~6 tests repeat the same three-assertion pattern: cell_type == Option<Length>, default_expr.result_type == Option<Length>, kind == OptionNone. A helper like `fn assert_option_none_length(member: &ValueCellDecl, label: &str)` would deduplicate this.\n\nAdditionally, tighten the member lookup from `m.id.member.contains(\"p.x\")` to `m.id.member == \"p.x\"` (exact match) to prevent false matches. This applies to both the type-alias tests added by task 1726 and the original tests (lines ~376, ~439, ~780).\n\n## Memory hints\n- Search: \"option_compile_tests OptionNone assertion pattern\"\n- Related tasks: 1726 (added the type-alias tests with the duplicated pattern), 1098 (parent implementation)\n- Related files: crates/reify-compiler/tests/option_compile_tests.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T07:02:47.836Z"
+      },
+      {
+        "id": "1731",
+        "title": "Harden field_eval helper tests: pin should_panic messages and add tolerance boundary case",
+        "description": "Two test-quality improvements in crates/reify-eval/tests/field_eval_tests.rs for the helpers introduced by Task 1723:\n\n1. **Pin `#[should_panic]` expected messages** (lines 377, 384): The two `#[should_panic]` tests (`test_assert_real_approx_panics_outside_tolerance`, `test_assert_real_approx_panics_for_non_real_variant`) don't use `expected = \"...\"` to assert the panic message. They would silently pass if the function panicked for an unrelated reason. Add `expected` substrings to pin the panic source, e.g. `#[should_panic(expected = \"should fail\")]`.\n\n2. **Add near-boundary tolerance test case** (line 366-374): `test_assert_real_approx_passes_within_tolerance` only tests exact matches (3.14 vs 3.14, 0.0 vs 0.0). Add a case like `assert_real_approx(&Value::Real(3.14 + REAL_TOLERANCE * 0.9), 3.14, \"near-boundary\");` to exercise the tolerance comparison for non-trivial deltas.\n\nmemory_hints: search \"field_eval_tests helpers assert_real_approx\", get_entity \"REAL_TOLERANCE\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T07:05:35.446Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/field_eval_tests.rs"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:13:08.365Z",
-      "taskCount": 1721,
-      "completedCount": 1475,
+      "lastModified": "2026-04-15T07:11:17.126Z",
+      "taskCount": 1728,
+      "completedCount": 1490,
       "tags": [
         "master"
       ]

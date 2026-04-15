@@ -120,12 +120,14 @@ pub(crate) fn register_guarded_names(
     scope: &mut CompilationScope,
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
 ) {
     for member in members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    resolve_type_name(&type_expr.name).unwrap_or_else(|| {
+                    resolve_type_expr_with_aliases(type_expr, type_param_names, alias_registry, diagnostics).unwrap_or_else(|| {
                         diagnostics.push(
                             Diagnostic::error(format!("unresolved type: {}", type_expr.name))
                                 .with_label(DiagnosticLabel::new(
@@ -148,8 +150,8 @@ pub(crate) fn register_guarded_names(
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                register_guarded_names(&g.members, scope, functions, diagnostics);
-                register_guarded_names(&g.else_members, scope, functions, diagnostics);
+                register_guarded_names(&g.members, scope, functions, diagnostics, type_param_names, alias_registry);
+                register_guarded_names(&g.else_members, scope, functions, diagnostics, type_param_names, alias_registry);
             }
             _ => {}
         }
@@ -173,6 +175,8 @@ pub(crate) fn compile_block_guard(
     structure_controlling: &mut HashSet<ValueCellId>,
     guard_index: &mut u32,
     constraint_index: &mut u32,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
 ) {
     let inner_condition = compile_expr(&g.condition, scope, enum_defs, functions, diagnostics);
 
@@ -206,6 +210,8 @@ pub(crate) fn compile_block_guard(
         structure_controlling,
         guard_index,
         constraint_index,
+        type_param_names,
+        alias_registry,
     );
 
     let mut else_members = Vec::new();
@@ -227,6 +233,8 @@ pub(crate) fn compile_block_guard(
             structure_controlling,
             guard_index,
             constraint_index,
+            type_param_names,
+            alias_registry,
         );
     }
 
@@ -266,6 +274,8 @@ pub(crate) fn compile_guarded_members(
     structure_controlling: &mut HashSet<ValueCellId>,
     guard_index: &mut u32,
     constraint_index: &mut u32,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
 ) {
     let guard_ctx = Some(current_guard);
     for member in ast_members {
@@ -311,7 +321,7 @@ pub(crate) fn compile_guarded_members(
                 } else {
                     let default_expr = param.default.as_ref().map(|expr| {
                         let mut lc = 0u32;
-                        compile_expr_guarded(
+                        let mut compiled = compile_expr_guarded(
                             expr,
                             scope,
                             enum_defs,
@@ -319,7 +329,9 @@ pub(crate) fn compile_guarded_members(
                             diagnostics,
                             guard_ctx,
                             &mut lc,
-                        )
+                        );
+                        fixup_option_none_for_param(&mut compiled, &cell_type);
+                        compiled
                     });
                     ValueCellDecl {
                         id,
@@ -337,7 +349,7 @@ pub(crate) fn compile_guarded_members(
                 if is_geometry_let(&let_decl.value, functions) {
                     continue;
                 }
-                let compiled_expr = {
+                let mut compiled_expr = {
                     let mut lc = 0u32;
                     compile_expr_guarded(
                         &let_decl.value,
@@ -349,6 +361,13 @@ pub(crate) fn compile_guarded_members(
                         &mut lc,
                     )
                 };
+                fixup_option_none_for_let(
+                    &mut compiled_expr,
+                    let_decl.type_expr.as_ref(),
+                    type_param_names,
+                    alias_registry,
+                    diagnostics,
+                );
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -422,6 +441,8 @@ pub(crate) fn compile_guarded_members(
                     structure_controlling,
                     guard_index,
                     constraint_index,
+                    type_param_names,
+                    alias_registry,
                 );
             }
             reify_syntax::MemberDecl::Sub(s) => {
