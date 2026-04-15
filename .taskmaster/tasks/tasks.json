@@ -36302,15 +36302,16 @@
         "description": "In `crates/reify-compiler/src/annotations.rs:67`, only `@test` uses the `TEST_ANNOTATION` constant from `reify_types`. The other annotation names — `\"deprecated\"`, `\"optimized\"`, `\"solver_hint\"` — remain hardcoded string literals. Add named constants (e.g. `DEPRECATED_ANNOTATION`, `OPTIMIZED_ANNOTATION`, `SOLVER_HINT_ANNOTATION`) in `reify_types` alongside `TEST_ANNOTATION` and replace all literal usages to complete the single-source-of-truth pattern.\n\nmemory_hints: search for \"TEST_ANNOTATION constant\" and \"annotation name\" to find all usage sites.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T08:06:49.533Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T08:06:45.301Z",
+      "lastModified": "2026-04-15T08:06:49.533Z",
       "taskCount": 1735,
       "completedCount": 1497,
       "tags": [
