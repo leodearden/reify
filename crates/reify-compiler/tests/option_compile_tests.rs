@@ -58,15 +58,15 @@ fn compile_expecting_errors(source: &str) -> reify_compiler::CompiledModule {
     reify_compiler::compile(&parsed)
 }
 
-/// Helper: assert that `member` has cell_type == Option<Length>, a default_expr
-/// of kind OptionNone, and that default_expr.result_type == Option<Length>.
+/// Helper: assert that `member` has cell_type == Option<inner_type>, a default_expr
+/// of kind OptionNone, and that default_expr.result_type == Option<inner_type>.
 /// `label` is incorporated into assertion failure messages for diagnostics.
-fn assert_option_none_length(member: &ValueCellDecl, label: &str) {
-    let option_length = Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }));
+fn assert_option_none(member: &ValueCellDecl, inner_type: Type, label: &str) {
+    let option_type = Type::Option(Box::new(inner_type));
     assert_eq!(
         member.cell_type,
-        option_length,
-        "{label}: cell_type should be Option<Length>, got {:?}",
+        option_type,
+        "{label}: cell_type should be Option<{option_type:?}>, got {:?}",
         member.cell_type
     );
     let default = member
@@ -75,8 +75,8 @@ fn assert_option_none_length(member: &ValueCellDecl, label: &str) {
         .unwrap_or_else(|| panic!("{label}: member should have a default_expr"));
     assert_eq!(
         default.result_type,
-        option_length,
-        "{label}: default_expr.result_type should be Option<Length>, got {:?}",
+        option_type,
+        "{label}: default_expr.result_type should be Option<{option_type:?}>, got {:?}",
         default.result_type
     );
     assert!(
@@ -404,7 +404,7 @@ structure def S {
         .find(|m| m.id.member == "p.x")
         .expect("should have port member 'p.x'");
 
-    assert_option_none_length(member, "port param");
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port param");
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +445,7 @@ structure def S {
         .find(|m| m.id.member == "p.y")
         .expect("should have port member 'p.y'");
 
-    assert_option_none_length(member, "port let");
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port let");
 }
 
 // ---------------------------------------------------------------------------
@@ -487,7 +487,7 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have guarded member 'x'");
 
-    assert_option_none_length(member, "guarded param");
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded param");
 }
 
 // ---------------------------------------------------------------------------
@@ -529,7 +529,7 @@ structure S {
         .find(|m| m.id.member == "y")
         .expect("should have guarded member 'y'");
 
-    assert_option_none_length(member, "guarded let");
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded let");
 }
 
 // ---------------------------------------------------------------------------
@@ -577,7 +577,7 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have nested guarded member 'x'");
 
-    assert_option_none_length(member, "nested guarded param");
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "nested guarded param");
 }
 
 // ---------------------------------------------------------------------------
@@ -625,7 +625,7 @@ structure S {
         .expect("should have guarded member 'x'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_option_none_length(member, "guarded param (alias)");
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded param (alias)");
 }
 
 // ---------------------------------------------------------------------------
@@ -675,7 +675,7 @@ structure def S {
         .expect("should have port member 'p.x'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_option_none_length(member, "port param (alias)");
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port param (alias)");
 }
 
 // ---------------------------------------------------------------------------
@@ -725,7 +725,7 @@ structure def S {
         .expect("should have port member 'p.y'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_option_none_length(member, "port let (alias)");
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port let (alias)");
 }
 
 // ---------------------------------------------------------------------------
@@ -776,7 +776,7 @@ structure S {
         .expect("should have guarded member 'y'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_option_none_length(member, "guarded let (alias)");
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded let (alias)");
 }
 
 // ---------------------------------------------------------------------------
@@ -819,5 +819,5 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have else-branch guarded member 'x'");
 
-    assert_option_none_length(member, "else-branch guarded param");
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "else-branch guarded param");
 }
