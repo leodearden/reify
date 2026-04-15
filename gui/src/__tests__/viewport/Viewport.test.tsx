@@ -43,6 +43,8 @@ const mockControlsDispose = vi.fn();
 const mockMeshSync = vi.fn();
 const mockMeshDispose = vi.fn();
 const mockMeshGetSceneMeshes = vi.fn(() => new Map());
+const mockMeshGetGhostMeshes = vi.fn(() => new Map());
+const mockMeshSetVisibility = vi.fn();
 
 const mockGrid = { type: 'GridHelper', visible: true };
 const mockAxes = { type: 'AxesHelper', visible: true };
@@ -86,6 +88,8 @@ vi.mock('../../viewport/meshManager', () => ({
     sync: mockMeshSync,
     dispose: mockMeshDispose,
     getSceneMeshes: mockMeshGetSceneMeshes,
+    getGhostMeshes: mockMeshGetGhostMeshes,
+    setVisibility: mockMeshSetVisibility,
   })),
 }));
 

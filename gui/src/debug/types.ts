@@ -46,6 +46,7 @@ export interface DebugViewport {
   camera: PerspectiveCamera;
   renderer: WebGLRenderer;
   getMeshes: () => Map<string, unknown>;
+  getGhostMeshes: () => Map<string, unknown>;
   fitToView: () => void;
   flyToEntity: (entityPath: string) => void;
 }

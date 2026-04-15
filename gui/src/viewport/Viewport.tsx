@@ -1,5 +1,5 @@
 import { onMount, onCleanup, createEffect, createSignal, Show } from 'solid-js';
-import type { MeshData, EvaluationStatus } from '../types';
+import type { MeshData, EvaluationStatus, VisibilityState } from '../types';
 import { Box3 } from 'three';
 import { createScene } from './scene';
 import { createControls } from './controls';
@@ -16,6 +16,7 @@ export interface ViewportProps {
   onFitToView?: () => void;
   flyToEntityRef?: (fn: (entityPath: string) => void) => void;
   fitToViewRef?: (fn: () => void) => void;
+  entityVisibility?: Record<string, VisibilityState>;
 }
 
 export function Viewport(props: ViewportProps) {
@@ -56,6 +57,7 @@ export function Viewport(props: ViewportProps) {
         camera,
         renderer,
         getMeshes: () => meshManager.getSceneMeshes(),
+        getGhostMeshes: () => meshManager.getGhostMeshes(),
         fitToView: () => selection.fitToView(),
         flyToEntity: (entityPath: string) => selection.flyToEntity(entityPath),
       };
@@ -86,12 +88,26 @@ export function Viewport(props: ViewportProps) {
       // Refresh selection wireframe to reflect updated geometry
       selection.refreshSelected();
 
-      // Adjust camera clipping planes based on scene bounds
+      // Adjust camera clipping planes based on scene bounds (include ghost meshes for correct framing)
       const bounds = new Box3();
       for (const mesh of meshManager.getSceneMeshes().values()) {
         bounds.expandByObject(mesh);
       }
+      for (const mesh of meshManager.getGhostMeshes().values()) {
+        bounds.expandByObject(mesh);
+      }
       adjustClipping(bounds);
+      requestRender();
+    });
+
+    // Sync entity visibility reactively
+    createEffect(() => {
+      const visibility = props.entityVisibility;
+      if (visibility) {
+        for (const [entityPath, state] of Object.entries(visibility)) {
+          meshManager.setVisibility(entityPath, state);
+        }
+      }
       requestRender();
     });
 
