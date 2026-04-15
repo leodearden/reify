@@ -79,10 +79,14 @@ fn eval_canonical() -> &'static reify_eval::EvalResult {
     })
 }
 
-/// Check the canonical source with SimpleConstraintChecker, return CheckResult.
-fn check_canonical() -> reify_eval::CheckResult {
-    let mut engine = make_simple_engine();
-    engine.check(&compiled())
+/// Check the canonical source with SimpleConstraintChecker, cache and return a static reference.
+/// Uses the same OnceLock pattern as eval_canonical() for API consistency.
+fn check_canonical() -> &'static reify_eval::CheckResult {
+    static K: OnceLock<reify_eval::CheckResult> = OnceLock::new();
+    K.get_or_init(|| {
+        let mut engine = make_simple_engine();
+        engine.check(&compiled())
+    })
 }
 
 // ── caching test ──────────────────────────────────────────────────────────────
