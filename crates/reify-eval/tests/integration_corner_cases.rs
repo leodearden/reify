@@ -481,8 +481,14 @@ fn range_equal_bounds_value() {
                 upper.as_deref(),
                 "EqualRange.r lower and upper bounds should be equal (5mm..5mm)"
             );
-            let _ = lower_inclusive;
-            let _ = upper_inclusive;
+            assert!(
+                *lower_inclusive,
+                "EqualRange.r lower_inclusive should be true for `5mm..5mm` (non-exclusive `..`)"
+            );
+            assert!(
+                *upper_inclusive,
+                "EqualRange.r upper_inclusive should be true for `5mm..5mm` (non-exclusive `..`)"
+            );
         }
         other => panic!("EqualRange.r should be Value::Range, got: {:?}", other),
     }
