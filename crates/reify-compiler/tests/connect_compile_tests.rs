@@ -1682,6 +1682,144 @@ structure def S {
     assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
 
+// ── task-1832/step-1: hoisted_lookup_matches_original_behavior ───────────────
+
+/// Characterization test that pins behavior for all three port-lookup paths before
+/// the hoisting refactor in compile_connection:
+///   (a) bare port found, direction compatible → auto-match runs, identity mappings produced
+///   (b) bare port not found → undefined-port error emitted
+///   (c) dotted port (sub-component ref) → no undefined check, no auto-match, empty mappings
+#[test]
+fn hoisted_lookup_matches_original_behavior() {
+    // ── Case (a): bare port found, direction compatible, auto-match runs ──────
+    {
+        let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b
+}
+"#;
+        let (template, diagnostics) = compile_first_template(source);
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "case (a): unexpected errors: {:?}",
+            errors
+        );
+        assert_eq!(
+            template.connections.len(),
+            1,
+            "case (a): expected 1 connection"
+        );
+        // Auto-match ran and produced identity mapping for param 'd'
+        assert_eq!(
+            template.connections[0].port_mappings,
+            vec![("d".to_string(), "d".to_string())],
+            "case (a): expected auto-generated identity mapping for param 'd'"
+        );
+    }
+
+    // ── Case (b): bare port not found → undefined-port error ─────────────────
+    {
+        let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    connect a -> nonexistent
+}
+"#;
+        let (_template, diagnostics) = compile_first_template(source);
+        let undef_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+            .collect();
+        assert!(
+            !undef_errors.is_empty(),
+            "case (b): expected undefined-port error, got: {:?}",
+            diagnostics
+        );
+        // The undefined port name is included in the error message
+        let names_nonexistent = undef_errors
+            .iter()
+            .any(|d| d.message.contains("nonexistent"));
+        assert!(
+            names_nonexistent,
+            "case (b): error message should name the undefined port, got: {:?}",
+            undef_errors
+        );
+    }
+
+    // ── Case (c): dotted port → no undefined check, no auto-match ────────────
+    {
+        let source = r#"
+trait RotaryPort { param d : Length }
+structure def Motor {
+    port shaft : out RotaryPort { param d : Length = 10mm }
+}
+structure def Gear {
+    port input : in RotaryPort { param d : Length = 10mm }
+}
+structure def Assembly {
+    sub motor = Motor()
+    sub gear = Gear()
+    connect motor.shaft -> gear.input
+}
+"#;
+        let module = compile_source(source);
+        let asm = module
+            .templates
+            .iter()
+            .find(|t| t.name == "Assembly")
+            .expect("Assembly template");
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "case (c): unexpected errors: {:?}",
+            errors
+        );
+        assert_eq!(
+            asm.connections.len(),
+            1,
+            "case (c): expected 1 connection"
+        );
+        assert_eq!(
+            asm.connections[0].left_port,
+            "motor.shaft",
+            "case (c): expected dotted left_port"
+        );
+        assert_eq!(
+            asm.connections[0].right_port,
+            "gear.input",
+            "case (c): expected dotted right_port"
+        );
+        // Dotted ports: no undefined-port error, no auto-match, empty port_mappings
+        let undef_errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+            .collect();
+        assert!(
+            undef_errors.is_empty(),
+            "case (c): expected NO undefined-port errors for dotted ports, got: {:?}",
+            undef_errors
+        );
+        assert_eq!(
+            asm.connections[0].port_mappings,
+            Vec::<(String, String)>::new(),
+            "case (c): expected empty port_mappings for dotted port references"
+        );
+    }
+}
+
 // ── task-393/step-5: compatible_directions_still_emits_unmatched_warning ──
 
 #[test]
