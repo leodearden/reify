@@ -35279,7 +35279,7 @@
         "description": "The `keyword_description()` function in `crates/reify-lsp/src/hover.rs` (lines 149-167) only covers 15 of the 25 keywords recognized by the completion engine. When a user hovers over one of the missing keywords, they get no hover information.\n\nMissing keywords (all have completion entries but no hover descriptions):\n- Top-level: `occurrence`, `fn`, `trait`, `enum`\n- Body-level: `purpose`, `minimize`, `maximize`, `port`, `connect`, `where`\n\nFix: Add match arms to `keyword_description()` for each missing keyword with a brief description string, matching the pattern of existing entries. Add a test that verifies all keywords in `TOP_LEVEL_KEYWORDS`, `BODY_KEYWORDS`, and `EXPR_KEYWORDS` (from completion.rs) have corresponding hover descriptions.\n\nmemory_hints: search \"keyword hover LSP\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -35290,12 +35290,13 @@
           "modules": [
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T00:25:47.537Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:25:47.335Z",
+      "lastModified": "2026-04-15T00:25:47.537Z",
       "taskCount": 1690,
       "completedCount": 1430,
       "tags": [
