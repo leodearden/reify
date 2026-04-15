@@ -37143,7 +37143,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/module_dag_tests.rs",
+            "crates/reify-compiler/Cargo.toml"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests",
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": 1774,
