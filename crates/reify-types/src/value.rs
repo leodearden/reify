@@ -711,6 +711,34 @@ impl Value {
                 }
                 Value::Option(Some(inner)) => Type::Option(Box::new(inner.infer_type())),
                 Value::Option(None) => Type::Option(Box::new(Type::Bool)),
+                Value::Point(components) => {
+                    let q = components
+                        .first()
+                        .map(|v| v.infer_type())
+                        .unwrap_or(Type::Real);
+                    Type::Point {
+                        n: components.len(),
+                        quantity: Box::new(q),
+                    }
+                }
+                Value::Vector(components) => {
+                    let q = components
+                        .first()
+                        .map(|v| v.infer_type())
+                        .unwrap_or(Type::Real);
+                    Type::Vector {
+                        n: components.len(),
+                        quantity: Box::new(q),
+                    }
+                }
+                Value::Range { lower, upper, .. } => {
+                    let elem_ty = lower
+                        .as_ref()
+                        .or(upper.as_ref())
+                        .map(|v| v.infer_type())
+                        .unwrap_or(Type::Real);
+                    Type::Range(Box::new(elem_ty))
+                }
                 Value::Tensor(_) => panic!(
                     "infer_type() cannot infer Tensor type (rank/n/quantity). \
                      Use CompiledExpr::literal(value, type) directly."
@@ -729,8 +757,9 @@ impl Value {
                 ),
                 // try_infer_type() only returns None for the variants above
                 // (List, Set, Map, Option(None), Option(Some(ambiguous_inner)),
-                // Tensor, Matrix, Frame, Transform); all other variants return
-                // Some, so this arm is unreachable.
+                // Point(empty/ambiguous), Vector(empty/ambiguous),
+                // Range(unbounded/ambiguous), Tensor, Matrix, Frame, Transform);
+                // all other variants return Some, so this arm is unreachable.
                 _ => unreachable!("try_infer_type returned None for an unexpected variant"),
             },
         }
@@ -747,9 +776,10 @@ impl Value {
     ///
     /// For all other variants this returns `Some(type)`, using the same logic
     /// as [`infer_type()`]. Internal recursive calls propagate ambiguity: if a
-    /// non-empty `List` contains an element that is itself ambiguous, the result
-    /// will still be deterministic because the element type is derived from the
-    /// first element's type, not its contents.
+    /// non-empty `List` contains an element that is itself ambiguous (e.g.,
+    /// `List([Option(None)])`), this method returns `None` rather than guessing
+    /// a default. Use [`infer_type()`] if you want compiler-aligned defaults
+    /// applied.
     pub fn try_infer_type(&self) -> Option<crate::ty::Type> {
         use crate::ty::Type;
         match self {
@@ -803,20 +833,14 @@ impl Value {
             })),
             Value::Matrix(_) => None,
             Value::Point(components) => {
-                let q = components
-                    .first()
-                    .and_then(Value::try_infer_type)
-                    .unwrap_or(Type::Real);
+                let q = components.first()?.try_infer_type()?;
                 Some(Type::Point {
                     n: components.len(),
                     quantity: Box::new(q),
                 })
             }
             Value::Vector(components) => {
-                let q = components
-                    .first()
-                    .and_then(Value::try_infer_type)
-                    .unwrap_or(Type::Real);
+                let q = components.first()?.try_infer_type()?;
                 Some(Type::Vector {
                     n: components.len(),
                     quantity: Box::new(q),
@@ -829,11 +853,8 @@ impl Value {
             Value::Axis { .. } => Some(Type::Axis),
             Value::BoundingBox { .. } => Some(Type::BoundingBox),
             Value::Range { lower, upper, .. } => {
-                let elem_ty = lower
-                    .as_ref()
-                    .or(upper.as_ref())
-                    .and_then(|v| v.try_infer_type())
-                    .unwrap_or(Type::Real);
+                let bound = lower.as_ref().or(upper.as_ref())?;
+                let elem_ty = bound.try_infer_type()?;
                 Some(Type::Range(Box::new(elem_ty)))
             }
             Value::Undef => Some(Type::Bool),
@@ -6689,6 +6710,15 @@ mod tests {
             v.infer_type(),
             Type::Map(Box::new(Type::String), Box::new(Type::Real)),
             "empty Map should default value type to Real (key stays String, matching compiler)"
+        );
+    }
+
+    #[test]
+    fn infer_type_option_none_uses_bool_fallback() {
+        assert_eq!(
+            Value::Option(None).infer_type(),
+            crate::ty::Type::Option(Box::new(crate::ty::Type::Bool)),
+            "Option(None).infer_type() should default inner type to Bool"
         );
     }
 
