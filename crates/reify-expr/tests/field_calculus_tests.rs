@@ -116,7 +116,11 @@ fn make_field_with_source_builds_field_with_given_source() {
             | FieldSourceKind::Gradient
             | FieldSourceKind::Divergence
             | FieldSourceKind::Curl
-            | FieldSourceKind::Laplacian => {}
+            | FieldSourceKind::Laplacian
+            | FieldSourceKind::VonMises
+            | FieldSourceKind::PrincipalStresses
+            | FieldSourceKind::MaxShear
+            | FieldSourceKind::SafetyFactor => {}
         }
     }
 
@@ -129,6 +133,10 @@ fn make_field_with_source_builds_field_with_given_source() {
         FieldSourceKind::Divergence,
         FieldSourceKind::Curl,
         FieldSourceKind::Laplacian,
+        FieldSourceKind::VonMises,
+        FieldSourceKind::PrincipalStresses,
+        FieldSourceKind::MaxShear,
+        FieldSourceKind::SafetyFactor,
     ] {
         let (field, field_type) =
             make_field_with_source(Type::Real, Type::Real, source_kind.clone(), lambda.clone());
