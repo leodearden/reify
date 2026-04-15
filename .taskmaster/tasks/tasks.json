@@ -37041,17 +37041,6 @@
         "subtasks": []
       },
       {
-        "id": 1773,
-        "title": "Migrate existing compile_project tests to use compile_errors helper and move helper to common module",
-        "description": "The `compile_errors` helper introduced in task 1759 (module_dag_tests.rs lines 23-33) extracts the pattern already duplicated inline in existing tests (e.g., lines 474-486 and 552-565). Those existing call sites still use the verbose inline version.\n\n1. Move `compile_errors` into `tests/common/mod.rs` so it can be reused by other test files.\n2. Migrate existing `compile_project`-based tests that only inspect error-severity diagnostics from the entry module to use the helper (e.g., `compile_project_detects_duplicate_unit_from_import`, `compile_project_stdlib_unit_collision`).\n3. Tests that also check labels or non-error diagnostics may need a variant that returns full diagnostics — consider adding one if needed.\n\nmemory_hints: search \"compile_errors helper\" and \"module_dag_tests\"",
-        "details": "",
-        "testStrategy": "",
-        "status": "pending",
-        "dependencies": [],
-        "priority": "low",
-        "subtasks": []
-      },
-      {
         "id": 1774,
         "title": "Guard cross-kind scope pre-registration + add constraint coexistence test",
         "description": "Two related follow-ups from the task-1287 review (kind-aware seen_defaults dedup):\n\n**Robustness (conformance.rs:269-280):** The pre-registration loop `scope.register(name, ty)` can be called twice for the same name when cross-kind defaults survive (e.g., Param `x : Length` and Let `x : Real`). `CompilationScope::register` uses `HashMap::insert`, so the second call silently overwrites the first type. If a default expression in the earlier kind references `x`, it will resolve to the wrong type. Fix: guard with `if !scope.names.contains_key(name)` or use the `entry` API, or register once per kind by keying on `(name, kind)` in a pre-pass.\n\n**Test coverage (trait_merge_tests.rs):** No test covers a Constraint default coexisting with a Param or Let default for the same member name. The `DefaultKindTag::Constraint` variant is the third leg of the composite key and should be exercised. Add a test with two traits: one providing `param x : Real = 1.0`, the other providing `constraint x : x > 0`. Verify no conflict error and both the Param cell and Constraint are emitted.\n\nMemory hints: search \"scope register pre-registration cross-kind default overwrite\", search \"DefaultKindTag Constraint Param coexistence test\"",
