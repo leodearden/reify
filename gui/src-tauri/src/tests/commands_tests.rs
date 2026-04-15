@@ -156,6 +156,45 @@ fn get_entity_tree_impl_returns_ok_on_healthy_mutex() {
     assert!(!tree.is_empty(), "entity tree should be non-empty for a loaded module");
 }
 
+#[test]
+fn get_entity_identity_map_impl_returns_err_on_poisoned_mutex() {
+    use crate::commands::get_entity_identity_map_impl;
+
+    let session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let engine = Arc::new(Mutex::new(session));
+    let engine_clone = Arc::clone(&engine);
+
+    // Poison the mutex by panicking in a thread while holding the lock.
+    let _ = std::thread::spawn(move || {
+        let _guard = engine_clone.lock().unwrap();
+        panic!("poison the mutex");
+    })
+    .join();
+
+    let result = get_entity_identity_map_impl(&engine);
+    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.unwrap_err().contains("Lock error"),
+        "error message should contain 'Lock error'"
+    );
+}
+
+#[test]
+fn get_entity_identity_map_impl_returns_ok_on_healthy_mutex() {
+    use crate::commands::get_entity_identity_map_impl;
+
+    let session = make_loaded_session();
+    let engine = Mutex::new(session);
+
+    let result = get_entity_identity_map_impl(&engine);
+    assert!(result.is_ok(), "expected Ok on healthy mutex");
+    let map = result.unwrap();
+    assert!(!map.is_empty(), "entity identity map should be non-empty for a loaded module");
+}
+
 // --- Integration tests (step-11) ---
 
 #[test]
