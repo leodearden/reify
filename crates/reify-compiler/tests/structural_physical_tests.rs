@@ -199,7 +199,7 @@ fn physical_trait_has_correct_members_and_refinements() {
     let let_defaults: Vec<_> = physical
         .defaults
         .iter()
-        .filter(|d| matches!(d.kind, DefaultKind::Let(_)))
+        .filter(|d| matches!(d.kind, DefaultKind::Let { .. }))
         .collect();
     assert!(
         let_defaults
