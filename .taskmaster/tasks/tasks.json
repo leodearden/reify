@@ -33116,11 +33116,11 @@
         "description": "In crates/reify-eval/src/lib.rs line 2151, the `old_count` match has a silent `_ => 0` catch-all that mirrors the new_count silent default addressed by task 957. This path runs during edit_param's collection count re-elaboration, iterating `0..old_count` to remove stale instances. If old_count_val is any non-Int (e.g. Value::Undef from a previously-undetermined count cell), the code silently defaults to removing 0 instances, which can leave stale child value cells behind in the graph. Replace `_ => 0,` with either unreachable!() (if the guard at line 2144 makes this truly unreachable) or an explicit warning-emitting branch. Co-ordinate with task 957 so both old_count and new_count fallbacks are handled consistently.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T11:03:09.716Z",
+        "updatedAt": "2026-04-15T00:07:08.305Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -35188,7 +35188,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:07:05.972Z",
+      "lastModified": "2026-04-15T00:07:08.305Z",
       "taskCount": 1685,
       "completedCount": 1424,
       "tags": [
