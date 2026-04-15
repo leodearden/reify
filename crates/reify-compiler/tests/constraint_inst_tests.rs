@@ -393,3 +393,88 @@ structure S {
         tmpl.constraints[1].label
     );
 }
+
+// ── Step 3 (task-1717): substitute_expr recurses into Conditional branches ───
+
+/// substitute_expr must recurse into all three branches of a Conditional
+/// (condition, then-branch, else-branch).  This test verifies the behavior
+/// by instantiating a constraint def whose predicate is an `if/then/else`
+/// expression and asserting that ValueRefs (not bare idents) appear in every
+/// branch after substitution + compilation.
+#[test]
+fn constraint_inst_conditional_substitution() {
+    let source = r#"
+constraint def Gated {
+    param x: Length
+    param threshold: Length
+    if x > threshold then x < 100mm else x > 0mm
+}
+structure S {
+    param width: Length
+    param limit: Length
+    constraint Gated(x: width, threshold: limit)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(tmpl.constraints.len(), 1, "expected exactly 1 constraint");
+
+    let cc = &tmpl.constraints[0];
+    // The compiled constraint should be a Conditional expression.
+    match &cc.expr.kind {
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            // condition: x > threshold  →  BinOp(Gt, ValueRef(S.width), ValueRef(S.limit))
+            match &condition.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Gt, "condition op should be Gt");
+                    assert!(
+                        matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "width"),
+                        "condition left should be ValueRef(S.width), got {:?}",
+                        left.kind
+                    );
+                    assert!(
+                        matches!(&right.kind, CompiledExprKind::ValueRef(id) if id.member == "limit"),
+                        "condition right should be ValueRef(S.limit), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp for condition, got {:?}", other),
+            }
+            // then_branch: x < 100mm  →  BinOp(Lt, ValueRef(S.width), Literal)
+            match &then_branch.kind {
+                CompiledExprKind::BinOp { op, left, .. } => {
+                    assert_eq!(*op, BinOp::Lt, "then_branch op should be Lt");
+                    assert!(
+                        matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "width"),
+                        "then_branch left should be ValueRef(S.width), got {:?}",
+                        left.kind
+                    );
+                }
+                other => panic!("expected BinOp for then_branch, got {:?}", other),
+            }
+            // else_branch: x > 0mm  →  BinOp(Gt, ValueRef(S.width), Literal)
+            match &else_branch.kind {
+                CompiledExprKind::BinOp { op, left, .. } => {
+                    assert_eq!(*op, BinOp::Gt, "else_branch op should be Gt");
+                    assert!(
+                        matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "width"),
+                        "else_branch left should be ValueRef(S.width), got {:?}",
+                        left.kind
+                    );
+                }
+                other => panic!("expected BinOp for else_branch, got {:?}", other),
+            }
+        }
+        other => panic!(
+            "expected Conditional constraint expr, got {:?}",
+            other
+        ),
+    }
+}
