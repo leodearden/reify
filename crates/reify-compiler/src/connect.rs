@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 pub(crate) fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
     match &expr.kind {
@@ -130,6 +131,8 @@ pub(crate) struct ConnectContext<'a> {
     pub(crate) scope: &'a CompilationScope<'a>,
     pub(crate) enum_defs: &'a [reify_types::EnumDef],
     pub(crate) functions: &'a [CompiledFunction],
+    /// Trait registry for transitive LocatedPort checking.
+    pub(crate) trait_registry: &'a HashMap<String, &'a CompiledTrait>,
 }
 
 /// Per-statement inputs for compiling a single connection.
@@ -267,6 +270,41 @@ pub(crate) fn compile_connection(
             _ => true,
         },
     };
+
+    // Asymmetric LocatedPort check: warn when exactly one side of a connection
+    // satisfies LocatedPort (directly or via refinement chain). Dotted port names
+    // (sub-component references) are skipped because they cannot be resolved to a
+    // CompiledPort in the current entity scope.
+    {
+        let is_bare = |name: &str| !name.contains('.');
+        if is_bare(&left_port) && is_bare(&right_port) {
+            let left_type = ctx.ports.iter().find(|p| p.name == left_port).map(|p| p.type_name.as_str());
+            let right_type = ctx.ports.iter().find(|p| p.name == right_port).map(|p| p.type_name.as_str());
+
+            if let (Some(lt), Some(rt)) = (left_type, right_type) {
+                let mut visited_l = std::collections::HashSet::new();
+                let mut visited_r = std::collections::HashSet::new();
+                let left_located = trait_satisfies(lt, reify_types::LOCATED_PORT_TRAIT, ctx.trait_registry, &mut visited_l);
+                let right_located = trait_satisfies(rt, reify_types::LOCATED_PORT_TRAIT, ctx.trait_registry, &mut visited_r);
+
+                if left_located != right_located {
+                    let (located_port, located_type, unlocated_port, unlocated_type) = if left_located {
+                        (&left_port, lt, &right_port, rt)
+                    } else {
+                        (&right_port, rt, &left_port, lt)
+                    };
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "asymmetric LocatedPort: port \"{}\" ({}) satisfies LocatedPort but port \"{}\" ({}) does not \
+                             — frame alignment constraint will not be generated",
+                            located_port, located_type, unlocated_port, unlocated_type,
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "asymmetric spatial frame")),
+                    );
+                }
+            }
+        }
+    }
 
     // Create compatibility constraint
     let compat_id = ConstraintNodeId::new(ctx.entity_name, *acc.constraint_index);

@@ -990,6 +990,7 @@ pub(crate) fn compile_entity(
                     scope: &scope,
                     enum_defs,
                     functions,
+                    trait_registry,
                 };
                 let mut acc = ConnectAccumulator {
                     constraints: &mut constraints,
@@ -1026,6 +1027,7 @@ pub(crate) fn compile_entity(
                     scope: &scope,
                     enum_defs,
                     functions,
+                    trait_registry,
                 };
                 // Desugar chain into pairwise Forward connections
                 for pair in chain_decl.elements.windows(2) {
