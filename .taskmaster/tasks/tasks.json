@@ -29695,7 +29695,14 @@
           "files": [
             "crates/reify-compiler/src/module_dag.rs",
             "crates/reify-compiler/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "searches": [
+              "prelude-collection module_dag compile_project duplicate clone refactor",
+              "compile_with_prelude signature CompiledModule reference"
+            ],
+            "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
+          }
         }
       },
       {
