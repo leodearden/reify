@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn has_test_annotation_returns_true_when_test_present() {
-        let anns = vec![make_annotation("test")];
+        let anns = vec![make_annotation(TEST_ANNOTATION)];
         assert!(has_test_annotation(&anns));
     }
 
@@ -109,15 +109,15 @@ mod tests {
 
     #[test]
     fn has_test_annotation_returns_false_when_other_annotations_present() {
-        let anns = vec![make_annotation("deprecated"), make_annotation("inline")];
+        let anns = vec![make_annotation(DEPRECATED_ANNOTATION), make_annotation("inline")];
         assert!(!has_test_annotation(&anns));
     }
 
     #[test]
     fn has_test_annotation_returns_true_when_test_among_multiple() {
         let anns = vec![
-            make_annotation("deprecated"),
-            make_annotation("test"),
+            make_annotation(DEPRECATED_ANNOTATION),
+            make_annotation(TEST_ANNOTATION),
             make_annotation("inline"),
         ];
         assert!(has_test_annotation(&anns));
@@ -125,13 +125,13 @@ mod tests {
 
     #[test]
     fn annotation_is_test_method_returns_true_for_test() {
-        let ann = make_annotation("test");
+        let ann = make_annotation(TEST_ANNOTATION);
         assert!(ann.is_test());
     }
 
     #[test]
     fn annotation_is_test_method_returns_false_for_other() {
-        let ann = make_annotation("deprecated");
+        let ann = make_annotation(DEPRECATED_ANNOTATION);
         assert!(!ann.is_test());
     }
 
