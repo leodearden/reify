@@ -754,12 +754,12 @@ fn eval_sample_principal_stresses_full_symmetric_dispatch() {
 
     // Known eigenvalues (trigonometric closed-form result): characteristic polynomial
     // λ³ - 9λ² + 23λ - 17 = 0, depressed form t³ - 4t - 2 = 0 (t = λ - 3).
-    // The closed-form trig computation is accurate to ~1e-12; tolerance 1e-3 gives
-    // comfortable margin for the 4-decimal expected values below.
+    // The closed-form trig computation is accurate to ~1e-12; tolerance 1e-8 gives
+    // comfortable margin while catching regressions much earlier than 1e-3.
     let expected = [1.3256_f64, 2.4601, 5.2143];
     for (i, (&got, &exp)) in eigenvalues.iter().zip(expected.iter()).enumerate() {
         assert!(
-            (got - exp).abs() < 1e-3,
+            (got - exp).abs() < 1e-8,
             "eigenvalue[{i}]: expected ≈ {exp}, got {got}"
         );
     }
