@@ -149,7 +149,9 @@ pub(crate) fn check_trait_conformance(
                 DefaultKind::Param { cell_type, .. } => {
                     (AvailableDefaultKind::Param, cell_type.clone())
                 }
-                DefaultKind::Let(_) => (AvailableDefaultKind::Let, Type::Real),
+                DefaultKind::Let { cell_type, .. } => {
+                    (AvailableDefaultKind::Let, cell_type.clone().unwrap_or(Type::Real))
+                }
                 DefaultKind::Constraint(_) => return None,
             };
             Some((name.to_string(), (kind, ty)))
@@ -253,7 +255,7 @@ pub(crate) fn check_trait_conformance(
         {
             let ty = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let(_) => Type::Real,
+                DefaultKind::Let { cell_type, .. } => cell_type.clone().unwrap_or(Type::Real),
                 DefaultKind::Constraint(_) => continue,
             };
             scope.register(name, ty);
@@ -294,7 +296,7 @@ pub(crate) fn check_trait_conformance(
                     });
                 }
             }
-            DefaultKind::Let(let_decl) => {
+            DefaultKind::Let { let_decl, .. } => {
                 let name = default
                     .name
                     .as_deref()
@@ -437,7 +439,7 @@ pub(crate) fn collect_all_requirements(
         } else if let Some(name) = &default.name {
             // For let bindings: use content_hash comparison to distinguish same
             // expression (dedup) vs different expression (conflict).
-            if let DefaultKind::Let(let_decl) = &default.kind {
+            if let DefaultKind::Let { let_decl, .. } = &default.kind {
                 if let Some((existing_hash, existing_trait)) = seen_let_hashes.get(name.as_str()) {
                     if existing_hash != &let_decl.content_hash
                         && !structure_members.contains_key(name.as_str())
@@ -468,7 +470,7 @@ pub(crate) fn collect_all_requirements(
             // Extract type for dedup comparison (non-Let defaults).
             let default_type = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let(_) => Type::Real,
+                DefaultKind::Let { cell_type, .. } => cell_type.clone().unwrap_or(Type::Real),
                 DefaultKind::Constraint(_) => Type::Bool, // sentinel for constraint label dedup
             };
 

@@ -55,11 +55,12 @@ pub(crate) fn compile_trait(
                 }
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
-                // Let bindings always have a value expression → default
-                let ty = if let Some(type_expr) = &let_decl.type_expr {
+                // Let bindings always have a value expression → default.
+                // Resolve the annotation type when present; None when absent.
+                let cell_type = if let Some(type_expr) = &let_decl.type_expr {
                     match resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry)
                     {
-                        Some(t) => t,
+                        Some(t) => Some(t),
                         None => {
                             diagnostics.push(
                                 Diagnostic::error(format!(
@@ -71,16 +72,18 @@ pub(crate) fn compile_trait(
                                     "unknown type name",
                                 )),
                             );
-                            Type::Real
+                            Some(Type::Real) // error-recovery fallback
                         }
                     }
                 } else {
-                    Type::Real
+                    None // no annotation → no cell_type
                 };
-                let _ = ty; // type used for future type checking
                 defaults.push(TraitDefault {
                     name: Some(let_decl.name.clone()),
-                    kind: DefaultKind::Let(let_decl.clone()),
+                    kind: DefaultKind::Let {
+                        cell_type,
+                        let_decl: let_decl.clone(),
+                    },
                     span: let_decl.span,
                 });
             }

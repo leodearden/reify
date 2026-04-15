@@ -72,7 +72,12 @@ pub enum DefaultKind {
         default_decl: reify_syntax::ParamDecl,
     },
     /// A let with a value expression: `let x = expr`
-    Let(reify_syntax::LetDecl),
+    Let {
+        /// The resolved type from the annotation (e.g. `let x : Length = …` → `Some(Type::length())`).
+        /// `None` when no annotation is present.
+        cell_type: Option<reify_types::Type>,
+        let_decl: reify_syntax::LetDecl,
+    },
     /// A constraint with an expression: `constraint label : expr`
     Constraint(reify_syntax::ConstraintDecl),
 }
