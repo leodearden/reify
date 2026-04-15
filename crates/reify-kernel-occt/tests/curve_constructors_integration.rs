@@ -163,3 +163,30 @@ fn nurbs_curve_valid_creates_wire() {
     let handle = result.expect("nurbs_curve should succeed");
     assert_eq!(handle.repr, ReprKind::Wire);
 }
+
+#[test]
+fn nurbs_curve_mismatched_weights_returns_error() {
+    let mut kernel = OcctKernel::new();
+    // 4 control points but only 2 weights — must return an error, not UB
+    let result = kernel.execute(&GeometryOp::NurbsCurve {
+        control_points: vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+        ],
+        weights: vec![1.0, 1.0], // only 2 instead of 4
+        knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        degree: 3,
+    });
+    match result {
+        Err(GeometryError::OperationFailed(msg)) => {
+            assert!(
+                msg.contains("weights count must equal control points count"),
+                "expected weights mismatch message, got: {}", msg,
+            );
+        }
+        Ok(_) => panic!("expected error for mismatched weights/control_points, got Ok"),
+        Err(other) => panic!("expected OperationFailed, got {:?}", other),
+    }
+}
