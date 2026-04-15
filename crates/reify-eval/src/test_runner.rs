@@ -48,7 +48,7 @@ fn build_isolated_module(module: &CompiledModule, target: &TopologyTemplate) -> 
     isolated.templates = module
         .templates
         .iter()
-        .filter(|t| !t.is_test || t.name == target.name)
+        .filter(|t| !t.is_test() || t.name == target.name)
         .map(|t| {
             let mut t = t.clone();
             if t.name != target.name {

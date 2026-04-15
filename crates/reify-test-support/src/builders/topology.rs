@@ -378,7 +378,6 @@ impl TopologyTemplateBuilder {
             meta: self.meta,
             content_hash,
             is_recursive: self.is_recursive,
-            is_test: self.annotations.iter().any(|a| a.name == "test"),
             annotations: self.annotations,
             pragmas: self.pragmas,
         }

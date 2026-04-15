@@ -62,8 +62,8 @@ fn template_marked_is_test_when_test_annotation_present() {
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     assert!(
-        module.templates[0].is_test,
-        "expected is_test == true for @test-annotated structure"
+        module.templates[0].is_test(),
+        "expected is_test() == true for @test-annotated structure"
     );
 }
 
@@ -75,8 +75,8 @@ fn template_not_marked_is_test_when_no_annotation() {
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     assert!(
-        !module.templates[0].is_test,
-        "expected is_test == false for unannotated structure"
+        !module.templates[0].is_test(),
+        "expected is_test() == false for unannotated structure"
     );
 }
 
@@ -91,8 +91,8 @@ fn occurrence_marked_is_test_when_test_annotation_present() {
         "expected Occurrence entity_kind"
     );
     assert!(
-        module.templates[0].is_test,
-        "expected is_test == true for @test-annotated occurrence"
+        module.templates[0].is_test(),
+        "expected is_test() == true for @test-annotated occurrence"
     );
 }
 
@@ -254,7 +254,7 @@ fn multiple_annotations_with_test_marks_template() {
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let template = &module.templates[0];
 
-    assert!(template.is_test, "expected is_test == true");
+    assert!(template.is_test(), "expected is_test() == true");
     assert_eq!(
         template.annotations.len(),
         2,

@@ -170,14 +170,14 @@ impl CompiledModule {
     /// this over scanning `template.annotations` manually. Per Task 267, test
     /// entities are excluded from the normal evaluation graph.
     pub fn test_templates(&self) -> Vec<&TopologyTemplate> {
-        self.templates.iter().filter(|t| t.is_test).collect()
+        self.templates.iter().filter(|t| t.is_test()).collect()
     }
 
     /// Returns all templates NOT tagged with `@test`.
     ///
     /// These are the templates that participate in the normal evaluation graph.
     pub fn non_test_templates(&self) -> Vec<&TopologyTemplate> {
-        self.templates.iter().filter(|t| !t.is_test).collect()
+        self.templates.iter().filter(|t| !t.is_test()).collect()
     }
 
     /// Returns all constraint defs tagged with `@test`.
@@ -236,14 +236,20 @@ pub struct TopologyTemplate {
     /// True if this template participates in a recursive sub-component cycle.
     /// Set by the post-compilation recursive structure detection pass.
     pub is_recursive: bool,
-    /// True if this template is tagged with the `@test` annotation.
-    /// Derived at compile time from `annotations`; consumers should prefer this
-    /// flag over scanning `annotations` themselves.
-    pub is_test: bool,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<reify_types::Annotation>,
     /// Block-level pragmas from the parsed declaration (e.g., `#solver(backend="ipopt")`).
     pub pragmas: Vec<reify_syntax::Pragma>,
+}
+
+impl TopologyTemplate {
+    /// Returns `true` if this template is tagged with the `@test` annotation.
+    ///
+    /// Derived from `annotations` on each call — symmetric with
+    /// `ConstraintDef::is_test()`.
+    pub fn is_test(&self) -> bool {
+        reify_types::annotation::has_test_annotation(&self.annotations)
+    }
 }
 
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
