@@ -655,3 +655,205 @@ structure def T : NeedsX + AlsoNeedsX {
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 }
+
+// ─── Kind-aware dedup guard tests (task 1287) ─────────────────────────────────
+
+/// TraitA requires `param x : Real` (no default), TraitB provides `param x : Real = 1`,
+/// TraitC provides `let x : Real = 42`. Structure implements all three with no override.
+/// The Param requirement must still be satisfied by the Param default even though a
+/// Let default for the same name is also present.
+///
+/// Guards against the `available_defaults` lookup regressing to name-only keying: if the
+/// key were just the name, the HashMap might store only the last-written kind (collision),
+/// causing the Param lookup to fail or return a Let type.
+#[test]
+fn param_requirement_still_satisfied_with_let_default_present() {
+    let source = r#"
+trait NeedsParam {
+    param x : Real
+}
+
+trait ProvidesParamDefault {
+    param x : Real = 1.0
+}
+
+trait ProvidesLetDefault {
+    let x : Real = 42.0
+}
+
+structure def S : NeedsParam + ProvidesParamDefault + ProvidesLetDefault {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: Param requirement must be satisfied by Param default \
+         even when a Let default for the same name is also present, got: {:?}",
+        errors
+    );
+
+    // Both the Param default and the Let default should be materialized.
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        2,
+        "expected 2 'x' cells (one Param from ProvidesParamDefault, one Let from \
+         ProvidesLetDefault), got {}",
+        x_cells.len()
+    );
+}
+
+/// TraitA provides `param x : Real = 1`, TraitB provides `let x : Real = 42`.
+/// Structure provides its own `param x : Real = 5` — the structure member overrides.
+///
+/// Verifies: no errors, exactly 1 'x' value cell (the structure's own), kind Param.
+/// The structure override path must still work when both-kind defaults survive collection.
+#[test]
+fn cross_kind_defaults_structure_override_suppresses_both() {
+    let source = r#"
+trait ProvidesParamX {
+    param x : Real = 1.0
+}
+
+trait ProvidesLetX {
+    let x : Real = 42.0
+}
+
+structure def S : ProvidesParamX + ProvidesLetX {
+    param x : Real = 5.0
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors when structure overrides cross-kind defaults, got: {:?}",
+        errors
+    );
+
+    // Exactly 1 'x' cell — the structure's own (both trait defaults suppressed).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' cell (structure override, no trait defaults injected), \
+         got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the surviving cell should be the structure's Param, got {:?}",
+        x_cells[0].kind
+    );
+}
+
+/// TraitA provides `param x : Length = 1mm`, TraitB provides `let x : Real = 42`.
+/// Structure implements both with no override.
+///
+/// Before the fix, the name-only `seen_defaults` compared Length (Param cell_type)
+/// against Real (Let sentinel type) and emitted a false "conflicting trait defaults"
+/// error. After the fix, the two defaults occupy separate `(name, kind)` slots and
+/// do not interact.
+#[test]
+fn cross_kind_defaults_different_types_no_false_conflict() {
+    let source = r#"
+trait ProvidesLengthParam {
+    param x : Length = 1mm
+}
+
+trait ProvidesRealLet {
+    let x : Real = 42.0
+}
+
+structure def S : ProvidesLengthParam + ProvidesRealLet {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let conflict_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && format!("{:?}", d).contains("conflicting")
+        })
+        .collect();
+    assert!(
+        conflict_errors.is_empty(),
+        "expected no false conflict error for cross-kind different-type defaults, \
+         got: {:?}",
+        conflict_errors
+    );
+}
+
+/// Two traits each providing `param x : Real = 1.0`. Structure implements both.
+/// Same-kind, same-type dedup must still produce exactly 1 'x' value cell.
+///
+/// Guards against the kind-aware keying accidentally breaking the happy-path dedup
+/// for same-kind defaults (regression: if we forgot the `continue` on a seen key, we
+/// would inject two cells).
+#[test]
+fn same_kind_same_type_param_dedup_unchanged() {
+    let source = r#"
+trait FirstParam {
+    param x : Real = 1.0
+}
+
+trait SecondParam {
+    param x : Real = 1.0
+}
+
+structure def S : FirstParam + SecondParam {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected errors for same-kind same-type dedup: {:?}",
+        errors
+    );
+
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' cell after same-kind dedup, got {}; \
+         kind-aware keying must not break same-kind dedup",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the surviving cell should be Param"
+    );
+}
