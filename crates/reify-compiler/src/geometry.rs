@@ -686,7 +686,7 @@ pub(crate) fn compile_geometry_call(
         }
         // interp(x1,y1,z1, x2,y2,z2, ...) — variadic, triples of coordinates
         "interp" => {
-            if compiled_args.len() < 6 || compiled_args.len() % 3 != 0 {
+            if compiled_args.len() < 6 || !compiled_args.len().is_multiple_of(3) {
                 diagnostics.push(Diagnostic::error(format!(
                     "interp() expects coordinate triples (at least 6 args for 2 points), got {}",
                     compiled_args.len()
@@ -705,7 +705,7 @@ pub(crate) fn compile_geometry_call(
         }
         // bezier(x1,y1,z1, x2,y2,z2, ...) — variadic, triples of coordinates
         "bezier" => {
-            if compiled_args.len() < 6 || compiled_args.len() % 3 != 0 {
+            if compiled_args.len() < 6 || !compiled_args.len().is_multiple_of(3) {
                 diagnostics.push(Diagnostic::error(format!(
                     "bezier() expects coordinate triples (at least 6 args for 2 points), got {}",
                     compiled_args.len()
