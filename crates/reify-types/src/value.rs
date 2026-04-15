@@ -6504,4 +6504,46 @@ mod tests {
             }
         }
     }
+
+    // ── try_infer_type() tests: None for genuinely ambiguous cases ─────────
+
+    #[test]
+    fn try_infer_type_empty_list_returns_none() {
+        let v = Value::List(vec![]);
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "empty List has no inferable element type"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_empty_set_returns_none() {
+        let v = Value::Set(BTreeSet::new());
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "empty Set has no inferable element type"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_empty_map_returns_none() {
+        let v = Value::Map(BTreeMap::new());
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "empty Map has no inferable key/value types"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_option_none_returns_none() {
+        let v = Value::Option(None);
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "Option(None) has no inferable inner type"
+        );
+    }
 }
