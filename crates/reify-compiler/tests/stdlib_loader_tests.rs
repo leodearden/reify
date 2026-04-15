@@ -493,9 +493,6 @@ structure def S {
         .as_ref()
         .expect("param 'x' should have a default expression");
     match &default_expr.kind {
-        CompiledExprKind::UserFunctionCall { function_name, .. } => {
-            assert_eq!(function_name, "double", "expected call to 'double'");
-        }
         CompiledExprKind::FunctionCall { function, .. } => {
             assert_eq!(function.name, "double", "expected resolved call to 'double'");
         }
