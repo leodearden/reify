@@ -36576,7 +36576,19 @@
           "1746"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/viewportStore.ts",
+            "gui/src/stores/index.ts",
+            "gui/src/viewport/Viewport.tsx",
+            "gui/src/__tests__/viewportStore.test.ts"
+          ],
+          "modules": [
+            "gui/src/stores",
+            "gui/src/viewport"
+          ]
+        }
       },
       {
         "id": 1748,
