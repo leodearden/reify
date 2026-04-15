@@ -666,6 +666,46 @@ structure def PlasticBody : Plastic {
     );
 }
 
+// ─── task-1688: hardening_modulus=0.0 boundary value compiles ────────────────
+
+/// Boundary-value test: compile a structure with hardening_modulus=0.0.
+/// Verifies two things:
+/// 1. The structure compiles without errors (zero hardening_modulus is accepted
+///    at compile time — the compiler injects but does not evaluate constraints).
+/// 2. The injected constraint for hardening_modulus uses `>` (Gt), not `>=` (Ge).
+///    This is the strictly-greater-than boundary, distinct from plastic_strain's
+///    `>=` boundary. Mirrors plastic_strain_zero_boundary_compiles for the other
+///    Plastic boundary dimension.
+#[test]
+fn hardening_modulus_zero_boundary_compiles() {
+    let compiled = compile_structure(
+        r#"
+structure def PlasticBody : Plastic {
+    param plastic_strain : Real = 0.05
+    param hardening_modulus : Real = 0.0
+}
+"#,
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    // Confirm the injected constraint for hardening_modulus uses Gt (>), not Ge (>=).
+    let hm_constraint = template.constraints.iter().find(|cc| {
+        matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
+            if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "hardening_modulus")
+        )
+    });
+    let cc = hm_constraint.expect("expected a constraint referencing hardening_modulus");
+    assert!(
+        matches!(&cc.expr.kind, CompiledExprKind::BinOp { op: BinOp::Gt, .. }),
+        "hardening_modulus constraint must use BinOp::Gt (>), not BinOp::Ge (>=), got: {:?}",
+        cc.expr.kind
+    );
+}
+
 // ─── step-21: load_stdlib_module uses production path (wrong code path) ──────
 
 /// Step 21: Regression test for review issue [wrong_code_path_under_test].
