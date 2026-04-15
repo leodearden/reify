@@ -288,6 +288,66 @@ fn tau_all_caps_suggests_tau() {
     );
 }
 
+// ─── task-1806 step-4: unrelated names do NOT produce 'did you mean' hints ───
+
+#[test]
+fn unrelated_name_no_did_you_mean_hint() {
+    let compiled = compile_source("structure S { let x = Foo }");
+    let errors = errors_only(&compiled);
+    assert!(!errors.is_empty(), "expected a compile error for 'Foo'");
+    assert!(
+        errors.iter().any(|d| d.message.contains("unresolved name")),
+        "expected 'unresolved name' error, got: {:?}",
+        errors
+    );
+    assert!(
+        !errors.iter().any(|d| d.message.contains("did you mean")),
+        "expected NO 'did you mean' hint for unrelated name 'Foo', got: {:?}",
+        errors
+    );
+}
+
+// ─── task-1806 step-5: lowercase pi and tau still compile without hint ────────
+
+#[test]
+fn lowercase_pi_no_hint() {
+    let compiled = compile_source("structure S { let x = pi }");
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors for lowercase 'pi', got: {:?}", errors);
+    assert!(
+        !errors.iter().any(|d| d.message.contains("did you mean")),
+        "expected NO 'did you mean' hint for correct spelling 'pi', got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn lowercase_tau_no_hint() {
+    let compiled = compile_source("structure S { let x = tau }");
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors for lowercase 'tau', got: {:?}", errors);
+    assert!(
+        !errors.iter().any(|d| d.message.contains("did you mean")),
+        "expected NO 'did you mean' hint for correct spelling 'tau', got: {:?}",
+        errors
+    );
+}
+
+// ─── task-1806 step-6: user-defined Pi in scope does NOT produce a hint ───────
+
+#[test]
+fn user_defined_pi_caps_in_scope_no_hint() {
+    let src = "structure S {\n  let Pi = 42\n  let x = Pi\n}";
+    let compiled = compile_source(src);
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors when user defines 'Pi' and uses it, got: {:?}", errors);
+    assert!(
+        !errors.iter().any(|d| d.message.contains("did you mean")),
+        "expected NO 'did you mean' hint when 'Pi' is in scope, got: {:?}",
+        errors
+    );
+}
+
 // ─── step-7: pi works under #no_prelude ─────────────────────────────────────
 
 #[test]
