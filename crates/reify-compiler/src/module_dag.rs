@@ -141,7 +141,8 @@ impl ModuleDag {
 
         // Cycle detection
         if self.in_progress.contains(module_path) {
-            let cycle: Vec<&str> = self.in_progress.iter().map(|s| s.as_str()).collect();
+            let mut cycle: Vec<&str> = self.in_progress.iter().map(|s| s.as_str()).collect();
+            cycle.sort_unstable();
             return Err(vec![Diagnostic::error(format!(
                 "circular dependency detected: {} -> {}",
                 cycle.join(" -> "),
