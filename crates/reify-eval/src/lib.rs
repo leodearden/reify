@@ -2322,7 +2322,18 @@ impl Engine {
                 // Remove old instances from graph and snapshot
                 let old_count = match &old_count_val {
                     Value::Int(n) => *n,
-                    _ => 0,
+                    // Undef: count was undetermined; no instances were created, so nothing to remove.
+                    Value::Undef => 0,
+                    // Unexpected non-integer type: emit a warning to surface potential upstream bugs.
+                    // Falling back to 0 is safe: from_templates only creates instances for Int counts,
+                    // so a non-Int count cell implies no instances exist to remove.
+                    other => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "Collection count cell {} has non-integer old value {:?}; treating as 0",
+                            col_sub.count_cell, other
+                        )));
+                        0
+                    }
                 };
                 for i in 0..old_count {
                     let scoped_entity =
