@@ -375,6 +375,11 @@ mod tests {
             violations[0],
             expected_fragment
         );
+        assert!(
+            violations[0].starts_with("line 1:"),
+            "expected violation to report the attribute line (line 1), not the needle line (line 2): {:?}",
+            violations[0]
+        );
     }
 
     // ── find_stale_plan_pointers_in_source — doc-comment skipping ────────────
