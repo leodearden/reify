@@ -312,11 +312,16 @@ fn cmd_gui(args: &[String]) -> ExitCode {
 }
 
 fn cmd_lsp() -> ExitCode {
-    // Use the default multi-thread runtime for CI reliability: under heavy
-    // parallel test load a current-thread runtime can be starved of CPU time,
-    // causing the lsp_initialize_returns_capabilities test to time out.
-    // Matches the pattern used by cmd_mcp_server().
-    match tokio::runtime::Runtime::new() {
+    // Use a multi-thread runtime with a small worker pool for CI reliability:
+    // under heavy parallel test load a current-thread runtime can be starved
+    // of CPU time, causing lsp_initialize_returns_capabilities to time out.
+    // Two worker threads provide the multi-thread scheduler's preemption
+    // benefits without spawning num_cpus threads for a single-connection server.
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
         Ok(rt) => {
             rt.block_on(reify_lsp::run_server());
             ExitCode::SUCCESS
