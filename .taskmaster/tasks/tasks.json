@@ -37052,17 +37052,6 @@
         "subtasks": []
       },
       {
-        "id": 1775,
-        "title": "Guard cross-kind scope pre-registration + add constraint coexistence test",
-        "description": "Two related follow-ups from the task-1287 review (kind-aware seen_defaults dedup):\n\n**Robustness (conformance.rs:269-280):** The pre-registration loop `scope.register(name, ty)` can be called twice for the same name when cross-kind defaults survive (e.g., Param `x : Length` and Let `x : Real`). `CompilationScope::register` uses `HashMap::insert`, so the second call silently overwrites the first type. Fix: guard with `if !scope.names.contains_key(name)` or use the `entry` API.\n\n**Test coverage (trait_merge_tests.rs):** No test covers a Constraint default coexisting with a Param or Let default for the same member name. Add a test with two traits: one providing `param x : Real = 1.0`, the other providing `constraint x : x > 0`. Verify no conflict error and both the Param cell and Constraint are emitted.\n\nMemory hints: search \"scope register pre-registration cross-kind default overwrite\", search \"DefaultKindTag Constraint coexistence test\"",
-        "details": "",
-        "testStrategy": "",
-        "status": "pending",
-        "dependencies": [],
-        "priority": "medium",
-        "subtasks": []
-      },
-      {
         "id": 1776,
         "title": "Guard cross-kind scope pre-registration + constraint coexistence test",
         "description": "From task-1287 review. (1) conformance.rs:269-280: scope.register(name,ty) overwrites when cross-kind defaults coexist. Guard with contains_key or entry API. (2) trait_merge_tests.rs: add test for Constraint+Param coexistence on same member name.",
