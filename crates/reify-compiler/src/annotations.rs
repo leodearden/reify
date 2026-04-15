@@ -64,7 +64,7 @@ pub(crate) fn validate_annotations(
 ) {
     for ann in annotations {
         match ann.name.as_str() {
-            "deprecated" => {
+            reify_types::DEPRECATED_ANNOTATION => {
                 // Valid on any context — no warning.
             }
             reify_types::TEST_ANNOTATION => {
@@ -77,7 +77,7 @@ pub(crate) fn validate_annotations(
                     );
                 }
             }
-            "optimized" => {
+            reify_types::OPTIMIZED_ANNOTATION => {
                 // @optimized is accepted on structure and occurrence even though
                 // optimized_target is only consumed in constraint_def context
                 // (entity.rs reads it when lowering a ConstraintDef to a
@@ -111,7 +111,7 @@ pub(crate) fn validate_annotations(
                     );
                 }
             }
-            "solver_hint" => {
+            reify_types::SOLVER_HINT_ANNOTATION => {
                 if !matches!(context, "structure" | "occurrence" | "param" | "let") {
                     diagnostics.push(
                         Diagnostic::warning(format!(
@@ -172,7 +172,7 @@ pub(crate) fn validate_annotations(
 /// Return `true` if `ann` is a well-formed `@optimized("target")` annotation —
 /// i.e. its name is `"optimized"` and its first argument is a string literal.
 pub(crate) fn is_valid_optimized(ann: &reify_types::Annotation) -> bool {
-    ann.name == "optimized"
+    ann.name == reify_types::OPTIMIZED_ANNOTATION
         && matches!(ann.args.first(), Some(reify_types::AnnotationArg::String(_)))
 }
 
@@ -205,7 +205,7 @@ pub(crate) fn validate_pragmas(
 /// is no `@deprecated` annotation at all.
 pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Option<String> {
     for ann in annotations {
-        if ann.name == "deprecated" {
+        if ann.name == reify_types::DEPRECATED_ANNOTATION {
             return Some(match ann.args.first() {
                 Some(reify_types::AnnotationArg::String(s)) => s.clone(),
                 _ => String::new(),
@@ -228,7 +228,7 @@ pub(crate) fn deprecation_message(annotations: &[reify_types::Annotation]) -> Op
 /// `ConstraintDef.annotations` before lowering.
 pub(crate) fn optimized_target(annotations: &[reify_syntax::Annotation]) -> Option<String> {
     for ann in annotations {
-        if ann.name == "optimized"
+        if ann.name == reify_types::OPTIMIZED_ANNOTATION
             && let Some(first) = ann.args.first()
             && let reify_syntax::ExprKind::StringLiteral(s) = &first.kind
         {
@@ -249,7 +249,7 @@ pub(crate) fn extract_solver_hints(
 ) -> Vec<SolverHint> {
     let mut hints = Vec::new();
     for ann in annotations {
-        if ann.name != "solver_hint" {
+        if ann.name != reify_types::SOLVER_HINT_ANNOTATION {
             continue;
         }
         // First arg: string literal for hint kind
