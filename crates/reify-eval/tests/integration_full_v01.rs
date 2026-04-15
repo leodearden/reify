@@ -761,10 +761,10 @@ fn test_runner_all_pass() {
     let compiled = compiled();
     let results = reify_eval::run_tests(compiled, || Box::new(SimpleConstraintChecker));
 
-    // Must have at least 5 test results (6 @test structures added in step-22)
+    // Must have at least 6 test results (6 @test structures added in step-22)
     assert!(
-        results.len() >= 5,
-        "expected >=5 @test results, got {}; did you add @test structures in step-22?",
+        results.len() >= 6,
+        "expected >=6 @test results, got {}; did you add @test structures in step-22?",
         results.len()
     );
 
@@ -786,14 +786,14 @@ fn test_runner_all_pass() {
     );
 
     for name in &expected_tests {
-        if let Some(&status) = by_name.get(*name) {
-            assert_eq!(
-                status,
-                reify_eval::TestStatus::Pass,
-                "@test {name} should be Pass, got {status:?}"
-            );
-        }
-        // If not present, it may not have been added yet — will fail the count check above
+        let &status = by_name
+            .get(*name)
+            .unwrap_or_else(|| panic!("@test {name} not found in results"));
+        assert_eq!(
+            status,
+            reify_eval::TestStatus::Pass,
+            "@test {name} should be Pass, got {status:?}"
+        );
     }
 
     // All present tests must be Pass (no intentional failures in integration file)
