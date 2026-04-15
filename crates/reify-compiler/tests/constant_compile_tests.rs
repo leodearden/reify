@@ -1,7 +1,7 @@
 //! Compiler tests for built-in mathematical constants (pi, tau).
 
-use reify_test_support::{compile_source, errors_only};
-use reify_types::{BinOp, CompiledExprKind, Value};
+use reify_test_support::{compile_source, errors_only, parse_and_compile};
+use reify_types::{BinOp, CompiledExprKind, Type, Value};
 
 /// Helper: get the default_expr for a value cell by member name.
 fn get_cell_expr<'a>(
@@ -120,11 +120,18 @@ fn user_let_pi_shadows_builtin() {
         }
         other => panic!("expected ValueRef to user 'pi', got {:?}", other),
     }
+    // The pi cell itself should hold the user-provided literal 42, not the builtin Real constant.
+    let pi_expr = get_cell_expr(&compiled, "pi");
+    match &pi_expr.kind {
+        CompiledExprKind::Literal(Value::Int(42)) => {}
+        other => panic!("expected Literal(Int(42)) for user 'pi' cell, got {:?}", other),
+    }
 }
 
 #[test]
 fn user_param_pi_shadows_builtin() {
-    let src = "structure S {\n  param pi: Real = 1.0\n  let x = pi\n}";
+    // Use 1.5 (genuinely fractional) so the compiler emits Literal(Real(1.5)), not Int.
+    let src = "structure S {\n  param pi: Real = 1.5\n  let x = pi\n}";
     let compiled = compile_source(src);
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
@@ -138,6 +145,73 @@ fn user_param_pi_shadows_builtin() {
             panic!("x resolved to builtin pi literal — param definition should shadow it");
         }
         other => panic!("expected ValueRef to param 'pi', got {:?}", other),
+    }
+    // The pi param cell should hold the user-provided default 1.5, not the builtin pi ≈ 3.14159.
+    let pi_expr = get_cell_expr(&compiled, "pi");
+    match &pi_expr.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => {
+            assert!(
+                (*v - 1.5_f64).abs() < 1e-15,
+                "expected param default 1.5, got {}",
+                v
+            );
+        }
+        other => panic!("expected Literal(Real(1.5)) for user 'pi' param cell, got {:?}", other),
+    }
+}
+
+// ─── collection sub-name shadows builtin constant ────────────────────────────
+
+#[test]
+fn collection_sub_named_pi_shadows_builtin() {
+    // `sub pi : List<PiPart>` declares a collection sub whose name coincides with the
+    // builtin `pi` constant. The compiler checks collection_sub_names BEFORE
+    // resolve_builtin_constant, so `let x = pi` must resolve to the collection list,
+    // not the Real constant.
+    let src = "\
+structure PiPart { param diameter : Scalar = 5mm }
+structure S {
+  sub pi : List<PiPart>
+  constraint pi.count == 2
+  let x = pi
+}";
+    let compiled = parse_and_compile(src);
+    // Find template S (not PiPart).
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("should have template 'S'");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("should have 'x' value cell");
+    let expr = cell
+        .default_expr
+        .as_ref()
+        .expect("'x' should have a default expr");
+    // x must resolve to the collection list ValueRef, NOT Literal(Real(PI)).
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert!(
+                id.member.starts_with("__list_pi__"),
+                "expected member starting with '__list_pi__', got {:?}",
+                id.member
+            );
+            assert!(
+                matches!(&expr.result_type, Type::List(_)),
+                "expected result_type Type::List(_), got {:?}",
+                expr.result_type
+            );
+        }
+        CompiledExprKind::Literal(Value::Real(_)) => {
+            panic!("x resolved to builtin pi literal — collection sub name should shadow it");
+        }
+        other => panic!(
+            "expected ValueRef with __list_pi__ member for collection sub 'pi', got {:?}",
+            other
+        ),
     }
 }
 
