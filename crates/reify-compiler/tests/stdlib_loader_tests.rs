@@ -221,16 +221,11 @@ structure def Steel : Elastic {
 
 /// compile_with_prelude injects trait constraint defaults from the prelude.
 /// A structure conforming to the prelude's Strong trait gets the
-/// `uts >= yield_strength` constraint injected.
+/// `uts >= yield_strength` constraint injected. Verifies both presence
+/// and content of the injected constraint.
 #[test]
 fn compile_with_prelude_injects_trait_constraints() {
-    let source = r#"
-structure def Steel : Strong {
-    param yield_strength : Real = 250.0
-    param uts : Real = 400.0
-    param compressive_strength : Real = 250.0
-}
-"#;
+    let source = steel_strong_source();
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
@@ -241,11 +236,7 @@ structure def Steel : Strong {
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(
         errors.is_empty(),
         "compile_with_prelude should produce no errors for Strong-conforming Steel, got: {:?}",
@@ -259,6 +250,24 @@ structure def Steel : Strong {
     assert!(
         !template.constraints.is_empty(),
         "expected constraint from Strong trait (uts >= yield_strength) injected into Steel, but constraints is empty"
+    );
+
+    // Verify the constraint content encodes the uts >= yield_strength relationship.
+    // The Debug representation of the BinOp expr contains the ValueRef operands.
+    let constraint_debug_strs: Vec<String> = template
+        .constraints
+        .iter()
+        .map(|c| format!("{:?}", c.expr))
+        .collect();
+    let has_uts_ref = constraint_debug_strs.iter().any(|s| s.contains("uts"));
+    let has_yield_ref = constraint_debug_strs
+        .iter()
+        .any(|s| s.contains("yield_strength"));
+    assert!(
+        has_uts_ref && has_yield_ref,
+        "expected constraint expression to reference both 'uts' and 'yield_strength', \
+         got constraint exprs: {:?}",
+        constraint_debug_strs
     );
 }
 
