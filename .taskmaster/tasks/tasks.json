@@ -37787,11 +37787,11 @@
         "description": "When a user writes `Pi`, `PI`, `TAU`, `Tau` etc., the identifier silently falls through to an \"unresolved name\" error. While case-sensitivity is consistent with the language's identifier rules, users coming from languages with uppercase constants may be surprised.\n\nIn the unresolved-name error path in `expr.rs`, add a check: if the lowercase version of the identifier matches a builtin constant name (via `resolve_builtin_constant`), include a \"did you mean `pi`?\" suggestion in the diagnostic. This is a UX improvement, not a correctness change.\n\nmemory_hints: search \"unresolved name error path expr.rs\", search \"resolve_builtin_constant\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T21:33:00.285Z",
+        "updatedAt": "2026-04-15T21:56:45.245Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/constants.rs",
@@ -38346,9 +38346,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:56:41.784Z",
+      "lastModified": "2026-04-15T21:56:45.245Z",
       "taskCount": 1832,
-      "completedCount": 1560,
+      "completedCount": 1561,
       "tags": [
         "master"
       ]
