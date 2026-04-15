@@ -37758,11 +37758,11 @@
         "description": "Commit ceede7afc switched cmd_lsp() in crates/reify-cli/src/main.rs from tokio::runtime::Runtime::new() (multi-thread) to Builder::new_current_thread().enable_all().build(). Under CI load, lsp_initialize_returns_capabilities times out at 30s because the single-thread runtime can't get enough CPU scheduling time when competing with parallel test binaries.\n\nFix: In crates/reify-cli/src/main.rs, revert cmd_lsp() to use tokio::runtime::Runtime::new() instead of Builder::new_current_thread(). Keep the 30s timeout in the test (better safety margin).\n\nmemory_hints: search \"cmd_lsp current_thread runtime ceede7afc\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T17:17:20.461Z"
+        "updatedAt": "2026-04-15T21:10:09.571Z"
       },
       {
         "id": "1805",
@@ -37974,9 +37974,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:08:50.963Z",
+      "lastModified": "2026-04-15T21:10:09.571Z",
       "taskCount": 1814,
-      "completedCount": 1547,
+      "completedCount": 1548,
       "tags": [
         "master"
       ]
