@@ -638,10 +638,10 @@ structure def S : A {
         errors
     );
 
-    let msg = format!("{:?}", errors[0]);
+    let msg = &errors[0].message;
     assert!(
-        msg.contains("missing required member") && msg.contains("x"),
-        "expected 'missing required member x', got: {}",
+        msg.contains("missing required member 'x'"),
+        "expected 'missing required member \\'x\\'' in error message, got: {}",
         msg
     );
 }
