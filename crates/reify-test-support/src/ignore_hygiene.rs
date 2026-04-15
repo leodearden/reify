@@ -528,17 +528,18 @@ mod tests {
     #[test]
     fn check_ignore_reasons_rejects_non_known_bug_reason() {
         // A reason string that does NOT begin with "known bug:" must be rejected
-        // by the positive-invariant guard.  The reason deliberately does not
-        // contain the stale-pointer needle so only the positive guard fires.
-        // The error must mention "known bug:" so we can tell the positive-invariant
-        // guard fired (not the bare-ignore guard or the stale-pointer sentinel).
+        // by the positive-invariant guard (guard 2).  The reason deliberately does
+        // not contain the stale-pointer needle so only the positive guard fires.
+        // The error must mention "does not begin with" — a substring unique to
+        // guard 2's error format — to confirm the positive-invariant guard fired
+        // (not the bare-ignore guard or the stale-pointer sentinel).
         // Source assembled at runtime.
         let src = ["#[", "ignore = \"some other prefix here\"]"].concat();
         let err = check_ignore_reasons(&src)
             .expect_err("expected a non-\"known bug:\" reason string to be rejected");
         assert!(
-            err.contains("known bug:"),
-            "expected error message to identify the positive-invariant guard: {err:?}",
+            err.contains("does not begin with"),
+            "expected error to identify the positive-invariant guard via 'does not begin with': {err:?}",
         );
     }
 
