@@ -13,6 +13,44 @@ const EXAMPLE_PATH: &str = concat!(
     "/../../examples/m9_trait_conformance.ri"
 );
 
+// ── Local helper ────────────────────────────────────────────────────
+//
+// Scalar value lookup + SI assertion. Extracted from the repeated
+// `get → unwrap_or_else → match Scalar → assert abs diff` pattern
+// that appears for every dimensional field in this test file.
+//
+// Component.density uses a Real/Scalar union and is left inline.
+
+#[track_caller]
+fn assert_scalar_si(
+    result: &reify_eval::EvalResult,
+    entity: &str,
+    field: &str,
+    expected_si: f64,
+) {
+    let id = ValueCellId::new(entity, field);
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("value for {:?} not found in result", id));
+    match val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - expected_si).abs() < 1e-12,
+                "expected {} SI for {}.{}, got {}",
+                expected_si,
+                entity,
+                field,
+                si_value
+            );
+        }
+        other => panic!(
+            "expected Scalar for {}.{}, got {:?}",
+            entity, field, other
+        ),
+    }
+}
+
 // ── Step 1: parse succeeds ──────────────────────────────────────────
 
 /// Read m9_trait_conformance.ri and verify it parses without errors.
@@ -51,12 +89,12 @@ fn trait_conformance_compiles_and_evals() {
     assert_no_eval_errors(&eval_result);
 
     // Check constraints — all should be Satisfied
-    let result = engine.check(&compiled);
+    let check_result = engine.check(&compiled);
     assert!(
-        !result.constraint_results.is_empty(),
+        !check_result.constraint_results.is_empty(),
         "expected constraints from trait + structure"
     );
-    for entry in &result.constraint_results {
+    for entry in &check_result.constraint_results {
         assert_eq!(
             entry.satisfaction,
             Satisfaction::Satisfied,
@@ -75,42 +113,14 @@ fn basic_trait_values() {
     let compiled = parse_and_compile(&source);
 
     let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-    assert_no_eval_errors(&result);
+    let eval_result = engine.eval(&compiled);
+    assert_no_eval_errors(&eval_result);
 
     // Check Box.size = 50mm = 0.05 SI (metres)
-    let size_id = ValueCellId::new("Box", "size");
-    let size_val = result
-        .values
-        .get(&size_id)
-        .unwrap_or_else(|| panic!("value for {:?} not found in result", size_id));
-    match size_val {
-        reify_types::Value::Scalar { si_value, .. } => {
-            assert!(
-                (si_value - 0.05).abs() < 1e-12,
-                "expected 0.05 SI for Box.size, got {}",
-                si_value
-            );
-        }
-        other => panic!("expected Scalar for Box.size, got {:?}", other),
-    }
+    assert_scalar_si(&eval_result, "Box", "size", 0.05);
 
     // Check Box.half_size = 25mm = 0.025 SI (let binding from trait)
-    let half_size_id = ValueCellId::new("Box", "half_size");
-    let half_size_val = result
-        .values
-        .get(&half_size_id)
-        .unwrap_or_else(|| panic!("value for {:?} not found in result", half_size_id));
-    match half_size_val {
-        reify_types::Value::Scalar { si_value, .. } => {
-            assert!(
-                (si_value - 0.025).abs() < 1e-12,
-                "expected 0.025 SI for Box.half_size, got {}",
-                si_value
-            );
-        }
-        other => panic!("expected Scalar for Box.half_size, got {:?}", other),
-    }
+    assert_scalar_si(&eval_result, "Box", "half_size", 0.025);
 }
 
 // ── Step 5: default injection ───────────────────────────────────────
@@ -125,25 +135,11 @@ fn default_injection_values() {
     let compiled = parse_and_compile(&source);
 
     let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-    assert_no_eval_errors(&result);
+    let eval_result = engine.eval(&compiled);
+    assert_no_eval_errors(&eval_result);
 
     // Check Panel.thickness = 5mm = 0.005 SI (injected from trait default)
-    let thickness_id = ValueCellId::new("Panel", "thickness");
-    let thickness_val = result
-        .values
-        .get(&thickness_id)
-        .unwrap_or_else(|| panic!("value for {:?} not found in result", thickness_id));
-    match thickness_val {
-        reify_types::Value::Scalar { si_value, .. } => {
-            assert!(
-                (si_value - 0.005).abs() < 1e-12,
-                "expected 0.005 SI for Panel.thickness (5mm default), got {}",
-                si_value
-            );
-        }
-        other => panic!("expected Scalar for Panel.thickness, got {:?}", other),
-    }
+    assert_scalar_si(&eval_result, "Panel", "thickness", 0.005);
 
     // Constraint from trait (thickness > 0mm) should be satisfied
     let check_result = engine.check(&compiled);
@@ -177,59 +173,17 @@ fn multi_trait_values() {
     let compiled = parse_and_compile(&source);
 
     let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-    assert_no_eval_errors(&result);
+    let eval_result = engine.eval(&compiled);
+    assert_no_eval_errors(&eval_result);
 
     // Check Part.size = 100mm = 0.1 SI
-    let size_id = ValueCellId::new("Part", "size");
-    let size_val = result
-        .values
-        .get(&size_id)
-        .unwrap_or_else(|| panic!("value for {:?} not found in result", size_id));
-    match size_val {
-        reify_types::Value::Scalar { si_value, .. } => {
-            assert!(
-                (si_value - 0.1).abs() < 1e-12,
-                "expected 0.1 SI for Part.size, got {}",
-                si_value
-            );
-        }
-        other => panic!("expected Scalar for Part.size, got {:?}", other),
-    }
+    assert_scalar_si(&eval_result, "Part", "size", 0.1);
 
     // Check Part.mass = 2kg = 2.0 SI
-    let mass_id = ValueCellId::new("Part", "mass");
-    let mass_val = result
-        .values
-        .get(&mass_id)
-        .unwrap_or_else(|| panic!("value for {:?} not found in result", mass_id));
-    match mass_val {
-        reify_types::Value::Scalar { si_value, .. } => {
-            assert!(
-                (si_value - 2.0).abs() < 1e-12,
-                "expected 2.0 SI for Part.mass, got {}",
-                si_value
-            );
-        }
-        other => panic!("expected Scalar for Part.mass, got {:?}", other),
-    }
+    assert_scalar_si(&eval_result, "Part", "mass", 2.0);
 
     // Check Part.half_size = 50mm = 0.05 SI (inherited let from Measurable: half_size = size / 2)
-    let half_size_id = ValueCellId::new("Part", "half_size");
-    let half_size_val = result
-        .values
-        .get(&half_size_id)
-        .unwrap_or_else(|| panic!("value for {:?} not found in result", half_size_id));
-    match half_size_val {
-        reify_types::Value::Scalar { si_value, .. } => {
-            assert!(
-                (si_value - 0.05).abs() < 1e-12,
-                "expected 0.05 SI for Part.half_size (inherited let from Measurable), got {}",
-                si_value
-            );
-        }
-        other => panic!("expected Scalar for Part.half_size, got {:?}", other),
-    }
+    assert_scalar_si(&eval_result, "Part", "half_size", 0.05);
 
     // All constraints from both traits + structure should be satisfied
     let check_result = engine.check(&compiled);
@@ -265,46 +219,18 @@ fn refinement_chain_values() {
     let compiled = parse_and_compile(&source);
 
     let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-    assert_no_eval_errors(&result);
+    let eval_result = engine.eval(&compiled);
+    assert_no_eval_errors(&eval_result);
 
     // Check Component.size = 200mm = 0.2 SI
-    let size_id = ValueCellId::new("Component", "size");
-    let size_val = result
-        .values
-        .get(&size_id)
-        .unwrap_or_else(|| panic!("value for {:?} not found in result", size_id));
-    match size_val {
-        reify_types::Value::Scalar { si_value, .. } => {
-            assert!(
-                (si_value - 0.2).abs() < 1e-12,
-                "expected 0.2 SI for Component.size, got {}",
-                si_value
-            );
-        }
-        other => panic!("expected Scalar for Component.size, got {:?}", other),
-    }
+    assert_scalar_si(&eval_result, "Component", "size", 0.2);
 
     // Check Component.mass = 5kg = 5.0 SI
-    let mass_id = ValueCellId::new("Component", "mass");
-    let mass_val = result
-        .values
-        .get(&mass_id)
-        .unwrap_or_else(|| panic!("value for {:?} not found in result", mass_id));
-    match mass_val {
-        reify_types::Value::Scalar { si_value, .. } => {
-            assert!(
-                (si_value - 5.0).abs() < 1e-12,
-                "expected 5.0 SI for Component.mass, got {}",
-                si_value
-            );
-        }
-        other => panic!("expected Scalar for Component.mass, got {:?}", other),
-    }
+    assert_scalar_si(&eval_result, "Component", "mass", 5.0);
 
-    // Check Component.density = 2.5 (dimensionless Real)
+    // Check Component.density = 2.5 (dimensionless Real — not SI-typed, so left inline)
     let density_id = ValueCellId::new("Component", "density");
-    let density_val = result
+    let density_val = eval_result
         .values
         .get(&density_id)
         .unwrap_or_else(|| panic!("value for {:?} not found in result", density_id));
@@ -331,21 +257,7 @@ fn refinement_chain_values() {
 
     // Check Component.half_size = size/2 = 200mm/2 = 100mm = 0.1 SI
     // (inherited let binding from Measurable trait: half_size = size / 2)
-    let half_size_id = ValueCellId::new("Component", "half_size");
-    let half_size_val = result
-        .values
-        .get(&half_size_id)
-        .unwrap_or_else(|| panic!("value for {:?} not found in result", half_size_id));
-    match half_size_val {
-        reify_types::Value::Scalar { si_value, .. } => {
-            assert!(
-                (si_value - 0.1).abs() < 1e-12,
-                "expected 0.1 SI for Component.half_size (size/2 = 200mm/2), got {}",
-                si_value
-            );
-        }
-        other => panic!("expected Scalar for Component.half_size, got {:?}", other),
-    }
+    assert_scalar_si(&eval_result, "Component", "half_size", 0.1);
 
     // All constraints from the full chain should be satisfied
     let check_result = engine.check(&compiled);
@@ -381,25 +293,11 @@ fn diamond_merging_values() {
     let compiled = parse_and_compile(&source);
 
     let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-    assert_no_eval_errors(&result);
+    let eval_result = engine.eval(&compiled);
+    assert_no_eval_errors(&eval_result);
 
     // Check Merged.x = 10mm = 0.01 SI
-    let x_id = ValueCellId::new("Merged", "x");
-    let x_val = result
-        .values
-        .get(&x_id)
-        .unwrap_or_else(|| panic!("value for {:?} not found in result", x_id));
-    match x_val {
-        reify_types::Value::Scalar { si_value, .. } => {
-            assert!(
-                (si_value - 0.01).abs() < 1e-12,
-                "expected 0.01 SI for Merged.x, got {}",
-                si_value
-            );
-        }
-        other => panic!("expected Scalar for Merged.x, got {:?}", other),
-    }
+    assert_scalar_si(&eval_result, "Merged", "x", 0.01);
 
     // Constraint deduplication: Left and Right both refine Base, so the `x > 0mm`
     // constraint from Base appears exactly once (diamond merging deduplicates it).
@@ -439,8 +337,8 @@ fn total_constraint_count() {
     let compiled = parse_and_compile(&source);
 
     let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-    assert_no_eval_errors(&result);
+    let eval_result = engine.eval(&compiled);
+    assert_no_eval_errors(&eval_result);
 
     let check_result = engine.check(&compiled);
     assert!(
@@ -471,8 +369,8 @@ fn qualified_access_disambiguation() {
     let compiled = parse_and_compile(&source);
 
     let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-    assert_no_eval_errors(&result);
+    let eval_result = engine.eval(&compiled);
+    assert_no_eval_errors(&eval_result);
 
     let check_result = engine.check(&compiled);
 
