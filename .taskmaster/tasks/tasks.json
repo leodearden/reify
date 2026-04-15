@@ -35243,7 +35243,7 @@
         "description": "Three improvements to crates/reify-compiler/tests/structural_physical_tests.rs from task 558 review:\n\n1. **Reuse common helper (S1):** The `compile_structure` helper (lines 24-44) duplicates `compile_with_stdlib_helper` + `errors_only` from `tests/common/mod.rs`. Add `mod common;` to the file and rewrite `compile_structure` to delegate: `let compiled = common::compile_with_stdlib_helper(source); assert!(common::errors_only(&compiled).is_empty(), ...); compiled`. Note: module path changes from \"test\" to \"unit_test\" — verify this is acceptable. Removes ~15 lines of duplication.\n\n2. **Improve operator-match diagnostics (S3):** In `plastic_constraint_expressions_use_correct_operators` (lines 598-616), the operator-matching loop falls through silently on unexpected IR shapes (`_ => {}` and `_ => continue`). If the compiler's IR ever changes the expression shape, the test passes vacuously. Collect the actual `(member, op)` pairs found and include them in assertion messages, or add an explicit else branch that logs unrecognised shapes.\n\n3. **Add hardening_modulus=0.0 boundary test (S4):** There is `plastic_strain_zero_boundary_compiles` (lines 640-675) but no analogous test for `hardening_modulus = 0.0`. Since the trait uses `Gt` (strictly greater-than) for hardening_modulus, add a test that compiles a structure with `hardening_modulus = 0.0` and confirms the injected constraint uses `BinOp::Gt`.\n\nmemory_hints: search \"compile_with_stdlib_helper common helper\" for shared test helper pattern; get_entity \"structural_physical_tests\" for test file context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -35255,7 +35255,8 @@
           "modules": [
             "crates/reify-compiler/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T00:58:04.672Z"
       },
       {
         "id": "1689",
@@ -35393,7 +35394,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:58:02.978Z",
+      "lastModified": "2026-04-15T00:58:04.672Z",
       "taskCount": 1697,
       "completedCount": 1442,
       "tags": [
