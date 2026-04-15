@@ -150,7 +150,7 @@ fn chamfer_through_full_eval_pipeline() {
         kind: ModifyKind::Chamfer,
         target: GeomRef::Step(0),
         args: vec![
-            // Mirrors what the compiler emits (geometry.rs:882-884).
+            // Mirrors what the compiler emits in compile_geometry_call() for the "chamfer" match arm.
             // The eval layer resolves the target from GeomRef::Step(0), not from this entry.
             ("target".into(), mm_literal(20.0)),
             ("distance".into(), mm_literal(3.0)),
@@ -170,7 +170,8 @@ fn chamfer_through_full_eval_pipeline() {
     let ops_ref = kernel.operations_ref();
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let _result = engine.build(&module, ExportFormat::Step);
+    let result = engine.build(&module, ExportFormat::Step);
+    assert_no_error_diagnostics(&result.diagnostics, "chamfer full-pipeline build");
 
     let ops = ops_ref.lock().unwrap();
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
@@ -241,7 +242,8 @@ fn chamfer_modify_only_needs_distance_arg() {
     let ops_ref = kernel.operations_ref();
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let _result = engine.build(&module, ExportFormat::Step);
+    let result = engine.build(&module, ExportFormat::Step);
+    assert_no_error_diagnostics(&result.diagnostics, "chamfer minimal build");
 
     let ops = ops_ref.lock().unwrap();
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
