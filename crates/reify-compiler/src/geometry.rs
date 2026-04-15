@@ -452,15 +452,9 @@ pub(crate) fn compile_geometry_call(
             }
             let mut profiles = Vec::with_capacity(args.len());
             for i in 0..args.len() {
-                let r = if let Some(r) = geom_refs.get(&i).cloned() {
-                    r
-                } else {
-                    diagnostics.push(Diagnostic::error(format!(
-                        "loft() argument {} must be a geometry expression",
-                        i + 1
-                    )));
-                    GeomRef::Step(step_offset)
-                };
+                // Silent fallback — consistent with extrude/revolve_full which use
+                // geom_ref() and never emit an error for non-geometry profiles.
+                let r = geom_refs.get(&i).cloned().unwrap_or(GeomRef::Step(step_offset));
                 profiles.push(r);
             }
             let loft_args: Vec<(String, CompiledExpr)> = compiled_args
