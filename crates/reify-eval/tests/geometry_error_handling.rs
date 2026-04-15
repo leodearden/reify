@@ -8,7 +8,7 @@ use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 use reify_test_support::*;
 use reify_types::{
     ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value,
+    GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Type, Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -18,8 +18,6 @@ use reify_types::{
 /// Creates a compiled module with a single structure containing one box
 /// primitive realization, so there is exactly one geometry operation to process.
 fn module_with_box_realization() -> reify_compiler::CompiledModule {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -42,6 +40,83 @@ fn module_with_box_realization() -> reify_compiler::CompiledModule {
     CompiledModuleBuilder::new(reify_types::ModulePath::single("test_shape"))
         .template(template)
         .build()
+}
+
+// ---------------------------------------------------------------------------
+// Helpers: sentinel test setup and common assertions
+// ---------------------------------------------------------------------------
+
+/// Build the standard 3-op sentinel test module used by the three
+/// sentinel-continuation tests:
+/// - Op 0: Sphere(radius=10) — succeeds
+/// - Op 1: Boolean(Union, Step(99), Step(99)) — compile fails (OOB refs)
+/// - Op 2: Sphere(radius=5) — succeeds if sentinel continues the loop
+///
+/// Returns `(module, checker, kernel, ops_ref)` ready for engine construction.
+fn make_sentinel_module(
+    path: &str,
+) -> (
+    reify_compiler::CompiledModule,
+    MockConstraintChecker,
+    MockGeometryKernel,
+    std::sync::Arc<std::sync::Mutex<Vec<GeometryOpRecord>>>,
+) {
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let sphere_op_0 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(10.0))],
+    };
+    let failing_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(99),
+        right: GeomRef::Step(99),
+    };
+    let sphere_op_2 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(10.0)))
+        .realization(e, 0, vec![sphere_op_0, failing_op, sphere_op_2])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(path))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    (module, checker, kernel, ops_ref)
+}
+
+/// Assert the sentinel-path invariants shared by all three sentinel-continuation
+/// tests: (a) the kernel received exactly 2 Sphere calls (ops 0 and 2 both
+/// reached the kernel), and (b) exactly 1 compile-failure diagnostic was
+/// produced by op 1.
+fn assert_sentinel_kernel_ops(kernel_ops: &[GeometryOpRecord], compile_failure_count: usize) {
+    let sphere_ops: Vec<_> = kernel_ops
+        .iter()
+        .filter(|rec| matches!(rec.op, GeometryOp::Sphere { .. }))
+        .collect();
+    assert_eq!(
+        sphere_ops.len(),
+        2,
+        "expected 2 sphere operations (sentinel allows op 2 to proceed), got {}: kernel_ops={:?}",
+        sphere_ops.len(),
+        kernel_ops
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        compile_failure_count,
+        1,
+        "expected exactly 1 compile-failure diagnostic from op 1, got {compile_failure_count}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -85,8 +160,6 @@ fn build_returns_no_geometry_when_all_kernel_ops_fail() {
 /// build() should also return geometry_output=None with appropriate diagnostics.
 #[test]
 fn build_returns_no_geometry_when_all_ops_fail_to_compile() {
-    use reify_types::Type;
-
     // Boolean union referencing Step(0) and Step(1) but no prior primitives,
     // so compile_geometry_op returns None (last_handle is None, resolve_ref fails).
     let union_op = CompiledGeometryOp::Boolean {
@@ -229,7 +302,6 @@ fn build_with_no_realizations_still_exports() {
 #[test]
 fn loft_through_full_eval_pipeline() {
     use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
-    use reify_types::Type;
 
     let e = "TestLoft";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
@@ -323,8 +395,6 @@ fn loft_through_full_eval_pipeline() {
 /// The realization is still rolled back because had_failure=true.
 #[test]
 fn cascading_compile_failures_aborted_after_first() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -393,8 +463,6 @@ fn cascading_compile_failures_aborted_after_first() {
 /// abort after the first Err from kernel.execute, preventing cascading errors.
 #[test]
 fn cascading_kernel_failures_aborted_after_first() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -463,8 +531,6 @@ fn cascading_kernel_failures_aborted_after_first() {
 /// exactly 1 compile-failure diagnostic and realization 2 succeeds normally.
 #[test]
 fn realization_abort_is_per_realization() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -548,8 +614,6 @@ fn realization_abort_is_per_realization() {
 /// realization because it is rolled back.
 #[test]
 fn tessellate_aborts_cascading_compile_failures() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -620,8 +684,6 @@ fn tessellate_aborts_cascading_compile_failures() {
 #[test]
 fn mixed_failure_then_dependent_ops_aborted() {
     use reify_compiler::ModifyKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -722,8 +784,6 @@ fn mixed_failure_then_dependent_ops_aborted() {
 /// tessellated and added to meshes — callers receive an incorrect partial mesh.
 #[test]
 fn partial_failure_tessellate_produces_no_mesh() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -788,6 +848,43 @@ fn partial_failure_tessellate_produces_no_mesh() {
     );
 }
 
+/// When op 1 of 3 fails to compile in tessellate_from_values, a sentinel should
+/// be pushed and op 2 should still be attempted. This mirrors
+/// sentinel_placeholder_continues_independent_ops (the build() path) and verifies
+/// the same sentinel logic in the tessellate_from_values loop.
+///
+/// Op 0: Sphere(radius=10) — succeeds, kernel gets Sphere call.
+/// Op 1: Boolean(Union, Step(99), Step(99)) — compile fails (OOB refs).
+/// Op 2: Sphere(radius=5) — succeeds because sentinel allows loop to continue.
+///
+/// Assertions:
+/// (a) kernel receives 2 Sphere calls (ops 0 and 2).
+/// (b) meshes.is_empty() — rollback because had_failure=true.
+/// (c) exactly 1 compile-failure diagnostic from op 1.
+#[test]
+fn tessellate_sentinel_placeholder_continues_independent_ops() {
+    let (module, checker, kernel, ops_ref) =
+        make_sentinel_module("test_tess_sentinel_continues");
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.tessellate_realizations(&module);
+
+    let kernel_ops = ops_ref.lock().unwrap();
+    let compile_failure_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .count();
+    assert_sentinel_kernel_ops(&kernel_ops, compile_failure_count);
+
+    // Rollback: no meshes produced when had_failure=true.
+    assert!(
+        result.meshes.is_empty(),
+        "expected no meshes (sentinel rollback in tessellate_from_values), \
+         but got {} mesh(es)",
+        result.meshes.len()
+    );
+}
+
 /// When a realization has [Box (succeeds), Boolean union with bad refs (compile
 /// failure)], build() should return geometry_output=None — the partial success
 /// should not leak the intermediate Box handle into the export.
@@ -796,8 +893,6 @@ fn partial_failure_tessellate_produces_no_mesh() {
 /// handle so the partially-complete geometry gets exported.
 #[test]
 fn partial_failure_build_produces_no_geometry() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -872,8 +967,6 @@ fn partial_failure_build_produces_no_geometry() {
 /// output is isolated and correct.
 #[test]
 fn partial_failure_does_not_contaminate_subsequent_realization() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -991,8 +1084,6 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
 /// primitive predicate, indicating zero preceding kernel calls are expected.
 #[test]
 fn build_primitive_missing_arg_no_kernel_error() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1061,8 +1152,6 @@ fn build_primitive_missing_arg_no_kernel_error() {
 #[test]
 fn build_modify_missing_arg_no_kernel_error() {
     use reify_compiler::ModifyKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1244,8 +1333,6 @@ fn assert_rejected_at_compile(
 #[test]
 fn build_scale_negative_factor_emits_diagnostic() {
     use reify_compiler::TransformKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
@@ -1315,8 +1402,6 @@ fn build_scale_negative_factor_emits_diagnostic() {
 #[test]
 fn build_extrude_nonfinite_distance_emits_diagnostic() {
     use reify_compiler::SweepKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1384,8 +1469,6 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
 #[test]
 fn build_revolve_degenerate_axis_emits_diagnostic() {
     use reify_compiler::SweepKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
@@ -1460,8 +1543,6 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
 #[test]
 fn build_revolve_zero_angle_emits_diagnostic() {
     use reify_compiler::SweepKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
@@ -1527,67 +1608,20 @@ fn build_revolve_zero_angle_emits_diagnostic() {
 /// The realization is rolled back because had_failure=true.
 #[test]
 fn sentinel_placeholder_continues_independent_ops() {
-    use reify_types::Type;
-
-    let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-
-    // Op 0: Sphere (will succeed)
-    let sphere_op_0 = CompiledGeometryOp::Primitive {
-        kind: PrimitiveKind::Sphere,
-        args: vec![("radius".into(), mm_literal(10.0))],
-    };
-
-    // Op 1: Boolean Union referencing Step(99) and Step(99) — indices that don't
-    // exist in step_handles, so compile_geometry_op returns None.
-    let failing_op = CompiledGeometryOp::Boolean {
-        op: BooleanOp::Union,
-        left: GeomRef::Step(99),
-        right: GeomRef::Step(99),
-    };
-
-    // Op 2: Sphere (would succeed if loop continues past op 1)
-    let sphere_op_2 = CompiledGeometryOp::Primitive {
-        kind: PrimitiveKind::Sphere,
-        args: vec![("radius".into(), mm_literal(5.0))],
-    };
-
-    let template = TopologyTemplateBuilder::new(e)
-        .param(e, "width", Type::length(), Some(mm_literal(10.0)))
-        .realization(e, 0, vec![sphere_op_0, failing_op, sphere_op_2])
-        .build();
-
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_sentinel_continues"))
-            .template(template)
-            .build();
-
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
+    let (module, checker, kernel, ops_ref) =
+        make_sentinel_module("test_sentinel_continues");
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     let kernel_ops = ops_ref.lock().unwrap();
-
-    // After the sentinel fix: both Sphere ops (0 and 2) should reach the kernel
-    let sphere_ops: Vec<_> = kernel_ops
+    let compile_failure_count = result
+        .diagnostics
         .iter()
-        .filter(|rec| matches!(rec.op, reify_types::GeometryOp::Sphere { .. }))
-        .collect();
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .count();
+    assert_sentinel_kernel_ops(&kernel_ops, compile_failure_count);
 
-    assert_eq!(
-        sphere_ops.len(),
-        2,
-        "expected 2 sphere operations (sentinel allows op 2 to proceed), got {}: kernel_ops={:?}",
-        sphere_ops.len(),
-        kernel_ops
-            .iter()
-            .map(|r| format!("{:?}", r.op))
-            .collect::<Vec<_>>()
-    );
-
-    // The realization should be rolled back (had_failure=true) → no geometry output
+    // The realization should be rolled back (had_failure=true) → no geometry output.
     assert!(
         result.geometry_output.is_none(),
         "realization should be rolled back when any op fails, but got geometry output"
@@ -1608,8 +1642,6 @@ fn sentinel_placeholder_continues_independent_ops() {
 /// a compile-failure diagnostic is emitted for op1.
 #[test]
 fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1694,8 +1726,6 @@ fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
 #[test]
 fn draft_plane_invalid_sentinel_causes_compile_failure() {
     use reify_compiler::ModifyKind;
-    use reify_types::Type;
-
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
     let real_literal =
@@ -1784,5 +1814,63 @@ fn draft_plane_invalid_sentinel_causes_compile_failure() {
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests for sentinel in build_snapshot inline loop (step-2)
+// ---------------------------------------------------------------------------
+
+/// When op 1 of 3 fails to compile in build_snapshot's inline loop, a sentinel
+/// should be pushed and op 2 should still be attempted. Mirrors
+/// sentinel_placeholder_continues_independent_ops (build() path) for the
+/// build_snapshot code path.
+///
+/// Setup: eval() populates the snapshot, then build_snapshot() exercises the
+/// inline geometry loop that is separate from tessellate_from_values.
+///
+/// Op 0: Sphere(radius=10) — succeeds, kernel gets Sphere call.
+/// Op 1: Boolean(Union, Step(99), Step(99)) — compile fails (OOB refs).
+/// Op 2: Sphere(radius=5) — succeeds because sentinel allows loop to continue.
+///
+/// Assertions:
+/// (a) kernel receives 2 Sphere calls (ops 0 and 2).
+/// (b) geometry_output is None — rollback because had_failure=true.
+/// (c) exactly 1 compile-failure diagnostic from op 1.
+#[test]
+fn build_snapshot_sentinel_placeholder_continues_independent_ops() {
+    let (module, checker, kernel, ops_ref) =
+        make_sentinel_module("test_build_snapshot_sentinel_continues");
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Populate the snapshot first so build_snapshot returns Some(...).
+    // Eval runs constraint solving only, not geometry compilation, so the bad
+    // GeomRef indices in op 1 do not produce diagnostics here.
+    let eval_result = engine.eval(&module);
+    assert!(
+        eval_result.diagnostics.is_empty(),
+        "eval() produced unexpected diagnostics: {:?}",
+        eval_result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    // Isolate kernel ops for the build_snapshot call: clear any ops that might
+    // have been accumulated during eval() so the count assertion below is exact.
+    ops_ref.lock().unwrap().clear();
+
+    let result = engine
+        .build_snapshot(&module, ExportFormat::Step)
+        .expect("build_snapshot should return Some after eval()");
+
+    let kernel_ops = ops_ref.lock().unwrap();
+    let compile_failure_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .count();
+    assert_sentinel_kernel_ops(&kernel_ops, compile_failure_count);
+
+    // Rollback: geometry_output is None when had_failure=true.
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output=None (build_snapshot rollback when any op fails)"
     );
 }
