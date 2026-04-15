@@ -310,6 +310,19 @@ fn test_make_sample_at_produces_sample_call() {
     assert_eq!(result.result_type, Type::Real, "result_type should be Real");
 }
 
+// ── Helper test: assert_real_approx behavior ─────────────────────────────────
+
+#[test]
+fn test_assert_real_approx_passes_within_tolerance() {
+    // Should not panic: value matches expected within REAL_TOLERANCE
+    assert_real_approx(&Value::Real(3.14), 3.14, "pi");
+    // Should not panic: difference is exactly at zero
+    assert_real_approx(&Value::Real(0.0), 0.0, "zero");
+    // Verify REAL_TOLERANCE constant exists and has the expected magnitude
+    assert!(REAL_TOLERANCE > 0.0, "REAL_TOLERANCE must be positive");
+    assert!(REAL_TOLERANCE < 1e-8, "REAL_TOLERANCE should be small (≤1e-10)");
+}
+
 // ── step-1: von_mises dispatch ────────────────────────────────────────────────
 // (step-2 in the plan was "run test to verify it passes" — a verification step,
 // not a distinct test; there is no step-2 test to write here.
