@@ -1447,6 +1447,19 @@ fn cyclic_let_bindings_emit_diagnostic() {
          naming 'count_x' and 'count_y', got: {:?}",
         result.diagnostics
     );
+
+    // The cycle diagnostic should also include the template name "S" in the format
+    // 'in template S (entity ...)' — not just the entity path.
+    let has_template_in_diagnostic = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && d.message.contains("circular")
+            && d.message.contains("template S")
+    });
+    assert!(
+        has_template_in_diagnostic,
+        "Expected cycle diagnostic to include 'template S' in message, got: {:?}",
+        result.diagnostics
+    );
 }
 
 // ─── BFS traversal gate tests ───────────────────────────────────────────────
@@ -1609,69 +1622,6 @@ fn missing_template_ref_emits_error_diagnostic() {
     assert!(
         !has_only_warning,
         "Unknown structure reference should be Error, not Warning: {:?}",
-        result.diagnostics
-    );
-}
-
-// ─── Cycle diagnostic UX: template name in message ──────────────────────────
-
-/// The cyclic let-binding diagnostic should include the template name, not just
-/// the entity path. Format: 'in template S (entity S.child): [count_x, count_y]'
-/// to match the termination-check diagnostic style.
-///
-/// This is a separate test from `cyclic_let_bindings_emit_diagnostic` which checks
-/// for 'circular'/'cycle' and names 'count_x'/'count_y'. This test specifically
-/// verifies the template name appears in the message.
-///
-/// Binding names updated to count_x/count_y for consistency with the companion
-/// test (task 553 improvement #3).
-#[test]
-fn cyclic_let_binding_diagnostic_includes_template_name() {
-    // let count_x = count_y + 1 (depends on S.count_y)
-    let count_x_expr = binop(
-        BinOp::Add,
-        value_ref_typed("S", "count_y", Type::Int),
-        literal(Value::Int(1)),
-    );
-    // let count_y = count_x + 1 (depends on S.count_x)
-    let count_y_expr = binop(
-        BinOp::Add,
-        value_ref_typed("S", "count_x", Type::Int),
-        literal(Value::Int(1)),
-    );
-
-    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
-    let n_minus_1 = binop(
-        BinOp::Sub,
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(1)),
-    );
-
-    let template = TopologyTemplateBuilder::new("S")
-        .param(
-            "S",
-            "n",
-            Type::Int,
-            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
-        )
-        .let_binding("S", "count_x", Type::Int, count_x_expr)
-        .let_binding("S", "count_y", Type::Int, count_y_expr)
-        .is_recursive(true)
-        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
-        .build();
-
-    let result = eval_single_template(template);
-
-    // The cycle diagnostic should include the template name "S" in the format
-    // 'in template S (entity ...)' — not just the entity path.
-    let has_template_in_diagnostic = result.diagnostics.iter().any(|d| {
-        d.severity == Severity::Error
-            && d.message.contains("circular")
-            && d.message.contains("template S")
-    });
-    assert!(
-        has_template_in_diagnostic,
-        "Expected cycle diagnostic to include 'template S' in message, got: {:?}",
         result.diagnostics
     );
 }
