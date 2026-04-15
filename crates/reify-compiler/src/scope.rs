@@ -27,8 +27,8 @@ pub(crate) struct CompilationScope<'u> {
     /// Reference to the active unit registry.
     /// Set by compile_entity/compile_purpose. None for scopes that don't need it (functions, fields).
     pub(crate) unit_registry: Option<&'u UnitRegistry>,
-    /// Whether this scope is an entity (structure/purpose) scope where `self` is valid.
-    /// False for function scopes, where `self` must produce an "unresolved name" error.
+    /// Whether this scope is an entity (structure or occurrence) scope where `self` is valid.
+    /// False for function and purpose scopes, where `self` must produce an "unresolved name" error.
     pub(crate) is_entity_scope: bool,
     /// Member types for all sub-components: sub_name → { member_name → Type }.
     /// Populated for both collection and non-collection subs to resolve self.sub.member
