@@ -1846,3 +1846,60 @@ structure def S {
     assert_no_diagnostic(&diagnostics, Severity::Error, "incompatible port directions");
     assert_has_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
+
+// ── task-1832/step-3: auto_match_with_prelooked_ports_same_result ────────────
+
+/// Pinning test: verifies that compile_connection with pre-looked-up (hoisted) port
+/// references produces exactly the same auto-match output as the original lookup-based
+/// path. This pins expected behavior before the auto_match_port_members signature change.
+///
+/// Scenario: two bare ports of same trait with two matching params (radius, angle).
+/// Compatible Out->In direction. Expected: identity mappings sorted alphabetically.
+#[test]
+fn auto_match_with_prelooked_ports_same_result() {
+    let source = r#"
+trait PipePort {
+    param radius : Length
+    param angle : Real
+}
+structure def S {
+    port feed : out PipePort {
+        param radius : Length = 12mm
+        param angle : Real = 0.0
+    }
+    port inlet : in PipePort {
+        param radius : Length = 12mm
+        param angle : Real = 0.0
+    }
+    connect feed -> inlet
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+
+    // Auto-match should produce sorted identity mappings: angle, radius
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![
+            ("angle".to_string(), "angle".to_string()),
+            ("radius".to_string(), "radius".to_string()),
+        ],
+        "expected sorted identity mappings for PipePort members (angle, radius)"
+    );
+
+    // No warnings — ports match completely
+    let warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "expected no warnings, got: {:?}",
+        warnings
+    );
+}
