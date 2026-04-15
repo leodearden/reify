@@ -34808,11 +34808,11 @@
         "description": "In crates/reify-eval/src/lib.rs dispatch_constraints (lines 456-463), convert the `assert_eq!` that checks `output.results.len() == indices.len()` for a registered OptimizedImpl into a soft failure: emit a Diagnostic::error naming the target and per-constraint ids, and reroute the affected constraints to the language-level self.constraint_checker fallback instead of panicking. The registry is a third-party extension point intended to support hot-reload and external impls, so a single buggy plugin should not crash the engine. Keep the internal ConstraintChecker result-count assertion (lines 481-487) as a debug_assert — that path is in-tree and far less likely to fire in production, but we still want the safety net during dev.",
         "details": "Source: esc-273-83 suggestion #5 (robustness) from reviewer_comprehensive.\n\nDesign trade-off: panicking is simpler and catches plugin bugs loudly, but for a user-extension point it converts a plugin defect into a process crash. Graceful degradation (diagnostic + fallback) is the right default.\n\nFlow:\n- On contract violation, push a Diagnostic::error with context like \"OptimizedImpl for target {:?} returned {} results for {} constraints — falling back to language-level checker for this batch\".\n- Rebuild a ConstraintInput from the bucket's (ConstraintNodeId, &CompiledExpr) pairs and dispatch through self.constraint_checker.check(...).\n- Weave those results into the `results` vec via the original indices as today.\n- The engine needs a handle to emit diagnostics from dispatch_constraints. Check whether the current call sites thread a diagnostic sink — if not, this task may need to collect violations and return them alongside ConstraintResult, or store them on the Engine for the caller to drain.\n\nTests to add:\n- A #[should_panic] test removed in favor of a test that registers a MockOptimizedImpl returning the wrong result count and asserts (a) a diagnostic is emitted, (b) all N constraints still get a ConstraintResult via the fallback.\n\nConvert the internal-path assertion to `debug_assert_eq!` in the same patch.\n\nModules: crates/reify-eval/src, crates/reify-eval/tests",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:55:47.569Z",
+        "updatedAt": "2026-04-15T17:52:55.082Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -37854,9 +37854,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:47:30.732Z",
+      "lastModified": "2026-04-15T17:52:55.083Z",
       "taskCount": 1804,
-      "completedCount": 1545,
+      "completedCount": 1546,
       "tags": [
         "master"
       ]
