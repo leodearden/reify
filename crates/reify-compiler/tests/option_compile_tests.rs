@@ -529,29 +529,7 @@ structure S {
         .find(|m| m.id.member == "y")
         .expect("should have guarded member 'y'");
 
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded let cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("guarded member 'y' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded let default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for guarded let, got {:?}",
-        default.kind
-    );
+    assert_option_none_length(member, "guarded let");
 }
 
 // ---------------------------------------------------------------------------
@@ -669,29 +647,7 @@ structure S {
         .expect("should have guarded member 'x'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded param (alias) cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("guarded member 'x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded param (alias) default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for guarded param with type alias, got {:?}",
-        default.kind
-    );
+    assert_option_none_length(member, "guarded param (alias)");
 }
 
 // ---------------------------------------------------------------------------
@@ -842,29 +798,7 @@ structure S {
         .expect("should have guarded member 'y'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded let (alias) cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("guarded member 'y' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded let (alias) default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for guarded let with type alias, got {:?}",
-        default.kind
-    );
+    assert_option_none_length(member, "guarded let (alias)");
 }
 
 // ---------------------------------------------------------------------------
