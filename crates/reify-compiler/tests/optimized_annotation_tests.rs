@@ -539,6 +539,17 @@ structure S {
         cc.optimized_target
     );
 
+    // The missing-target warning must still fire (on the non-string first @optimized).
+    let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .collect();
+    assert!(
+        !missing_target_warnings.is_empty(),
+        "expected a missing-target warning for the non-string first @optimized(123), got none; all diags: {:?}",
+        module.diagnostics
+    );
+
     // No duplicate warning: the non-string first annotation is not a valid
     // @optimized entry, so the valid second one is not a duplicate.
     let duplicate_warnings: Vec<_> = warning_diags(&module.diagnostics)
