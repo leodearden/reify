@@ -56,7 +56,7 @@ pub enum PrefixSet {
 impl PrefixSet {
     /// Returns `true` if `sym` should be emitted for this `PrefixSet`.
     ///
-    /// - `All` → always `true`.
+    /// - `All` → always `true` (debug-asserts that `sym` is a known `SI_PREFIXES` symbol).
     /// - `Only(list)` → `list.contains(&sym)`.
     pub fn includes(&self, sym: &str) -> bool {
         match self {
