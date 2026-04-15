@@ -3795,12 +3795,54 @@ fn compile_geometry_op(
                     })
                 }
                 reify_compiler::PatternKind::Linear2D => {
-                    // TODO: implement in step-10
-                    None
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    let direction1 = [f64_arg("dx1")?, f64_arg("dy1")?, f64_arg("dz1")?];
+                    let count1 = f64_arg("count1")? as usize;
+                    let spacing1 = eval_named_arg("spacing1", kind, args, values, functions, meta_map, diagnostics)?;
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    let direction2 = [f64_arg("dx2")?, f64_arg("dy2")?, f64_arg("dz2")?];
+                    let count2 = f64_arg("count2")? as usize;
+                    let spacing2 = eval_named_arg("spacing2", kind, args, values, functions, meta_map, diagnostics)?;
+                    Some(reify_types::GeometryOp::LinearPattern2D {
+                        target: target_id,
+                        direction1,
+                        count1,
+                        spacing1,
+                        direction2,
+                        count2,
+                        spacing2,
+                    })
                 }
                 reify_compiler::PatternKind::Arbitrary => {
-                    // TODO: implement in step-12
-                    None
+                    // Iterate named transform args: t0_dx, t0_dy, t0_dz, t1_dx, ...
+                    let mut transforms = Vec::new();
+                    let mut idx = 0;
+                    loop {
+                        let dx_name = format!("t{}_dx", idx);
+                        // Check if this triple exists by looking for the dx arg
+                        if !args.iter().any(|(name, _)| name == &dx_name) {
+                            break;
+                        }
+                        let mut f64_arg = |name: &str| {
+                            eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                        };
+                        let dx = f64_arg(&format!("t{}_dx", idx))?;
+                        let dy = f64_arg(&format!("t{}_dy", idx))?;
+                        let dz = f64_arg(&format!("t{}_dz", idx))?;
+                        transforms.push([dx, dy, dz]);
+                        idx += 1;
+                    }
+                    if transforms.is_empty() {
+                        return None;
+                    }
+                    Some(reify_types::GeometryOp::ArbitraryPattern {
+                        target: target_id,
+                        transforms,
+                    })
                 }
             }
         }
@@ -5186,6 +5228,146 @@ mod tests {
             }
             other => panic!("expected Some(Mirror), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn compile_geometry_op_linear_pattern_2d_valid_args() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear2D,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx1".into(), literal_f64(1.0)),
+                ("dy1".into(), literal_f64(0.0)),
+                ("dz1".into(), literal_f64(0.0)),
+                ("count1".into(), literal_f64(3.0)),
+                ("spacing1".into(), literal_length(0.02)),
+                ("dx2".into(), literal_f64(0.0)),
+                ("dy2".into(), literal_f64(1.0)),
+                ("dz2".into(), literal_f64(0.0)),
+                ("count2".into(), literal_f64(4.0)),
+                ("spacing2".into(), literal_length(0.03)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        match result {
+            Some(reify_types::GeometryOp::LinearPattern2D {
+                target,
+                direction1,
+                count1,
+                spacing1,
+                direction2,
+                count2,
+                spacing2,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(direction1, [1.0, 0.0, 0.0]);
+                assert_eq!(count1, 3);
+                assert!(
+                    !matches!(spacing1, reify_types::Value::Undef),
+                    "spacing1 should not be Undef"
+                );
+                assert_eq!(direction2, [0.0, 1.0, 0.0]);
+                assert_eq!(count2, 4);
+                assert!(
+                    !matches!(spacing2, reify_types::Value::Undef),
+                    "spacing2 should not be Undef"
+                );
+            }
+            other => panic!("expected Some(LinearPattern2D), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_arbitrary_pattern_valid_3_transforms() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Arbitrary,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("t0_dx".into(), literal_f64(0.01)),
+                ("t0_dy".into(), literal_f64(0.0)),
+                ("t0_dz".into(), literal_f64(0.0)),
+                ("t1_dx".into(), literal_f64(0.0)),
+                ("t1_dy".into(), literal_f64(0.02)),
+                ("t1_dz".into(), literal_f64(0.0)),
+                ("t2_dx".into(), literal_f64(0.01)),
+                ("t2_dy".into(), literal_f64(0.02)),
+                ("t2_dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        match result {
+            Some(reify_types::GeometryOp::ArbitraryPattern {
+                target,
+                transforms,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(transforms.len(), 3);
+                assert_eq!(transforms[0], [0.01, 0.0, 0.0]);
+                assert_eq!(transforms[1], [0.0, 0.02, 0.0]);
+                assert_eq!(transforms[2], [0.01, 0.02, 0.0]);
+            }
+            other => panic!("expected Some(ArbitraryPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_linear_pattern_2d_missing_spacing2_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear2D,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx1".into(), literal_f64(1.0)),
+                ("dy1".into(), literal_f64(0.0)),
+                ("dz1".into(), literal_f64(0.0)),
+                ("count1".into(), literal_f64(3.0)),
+                ("spacing1".into(), literal_length(0.02)),
+                ("dx2".into(), literal_f64(0.0)),
+                ("dy2".into(), literal_f64(1.0)),
+                ("dz2".into(), literal_f64(0.0)),
+                ("count2".into(), literal_f64(4.0)),
+                // spacing2 deliberately omitted
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "missing spacing2 should return None"
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_arbitrary_pattern_missing_transform_coord_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // Only 2 coords for what should be a complete triple
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Arbitrary,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("t0_dx".into(), literal_f64(0.01)),
+                ("t0_dy".into(), literal_f64(0.0)),
+                // t0_dz deliberately omitted
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "missing transform coord should return None"
+        );
     }
 
     // ── compile_geometry_op diagnostic tests ─────────────────────────────────
