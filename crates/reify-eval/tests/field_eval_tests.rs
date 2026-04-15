@@ -53,6 +53,17 @@ fn extract_eigenvalues_panics_on_too_few_items() {
     extract_eigenvalues(&[Value::Real(1.0), Value::Real(2.0)]);
 }
 
+#[test]
+#[should_panic(expected = "expected 3 eigenvalues")]
+fn extract_eigenvalues_panics_on_too_many_items() {
+    extract_eigenvalues(&[
+        Value::Real(1.0),
+        Value::Real(2.0),
+        Value::Real(3.0),
+        Value::Real(4.0),
+    ]);
+}
+
 // ── Step 21: eval analytical field at point ────────────────────────────
 
 #[test]
