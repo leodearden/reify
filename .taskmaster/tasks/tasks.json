@@ -37104,7 +37104,15 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/self_keyword_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "collection sub self keyword resolution",
+              "self.items bare items asymmetry fix task 1280",
+              "self_keyword_tests equivalence test collection sub"
+            ]
+          }
         }
       },
       {
