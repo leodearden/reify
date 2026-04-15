@@ -36128,6 +36128,19 @@
             "crates/reify-eval/tests/field_eval_tests.rs"
           ]
         }
+      },
+      {
+        "id": 1732,
+        "title": "Fix GeomRef::Step(0) in loft/sweep error-path fallbacks",
+        "description": "The loft error-path fallback (geometry.rs line 462) uses `GeomRef::Step(0)` and the sweep profile fallback (line 597) also uses `GeomRef::Step(0)`. When `compile_geometry_call` is invoked with a non-zero `step_offset` (e.g., loft/sweep nested inside a boolean op or another geometry function), `Step(0)` references a completely unrelated step.\n\nFix: Change line 462 to `GeomRef::Step(step_offset)` and line 597 to `GeomRef::Step(step_offset)` to match the convention used in the `geom_ref` closure (line 304). The sweep path fallback at line 605 already correctly uses `step_offset + 1`.\n\n## memory_hints\n- search: \"compile_geometry_call step_offset GeomRef fallback\"\n- entity: \"compile_geometry_call\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1715
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36139,7 +36152,8 @@
         "master"
       ],
       "created": "2026-04-15T07:14:48.704Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-15T07:16:48.987Z"
     }
   }
 }
