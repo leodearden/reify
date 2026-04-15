@@ -366,8 +366,15 @@ pub(crate) fn compile_connection(
     };
 
     // Determine effective port mappings: explicit takes priority; otherwise auto-match.
+    // Auto-matching is only attempted when directions are compatible — if incompatible,
+    // skip auto-match entirely to avoid emitting a misleading "members do not match" warning
+    // when the real problem is direction incompatibility.
     let effective_mappings = if port_mappings.is_empty() {
-        auto_match_port_members(&left_port, &right_port, ctx.ports, diagnostics, span)
+        if compatible {
+            auto_match_port_members(&left_port, &right_port, ctx.ports, diagnostics, span)
+        } else {
+            Vec::new() // direction error already emitted; skip auto-match
+        }
     } else {
         port_mappings.to_vec()
     };

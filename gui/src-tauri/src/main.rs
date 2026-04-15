@@ -230,6 +230,37 @@ fn get_source_location(
 }
 
 #[tauri::command]
+fn get_entity_tree(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<reify_gui::types::EntityTreeNode>, String> {
+    reify_gui::commands::get_entity_tree_impl(&state.engine)
+}
+
+#[tauri::command]
+fn get_entity_identity_map(
+    state: tauri::State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, reify_gui::types::EntityIdentity>, String> {
+    reify_gui::commands::get_entity_identity_map_impl(&state.engine)
+}
+
+#[tauri::command]
+fn get_def_preview(
+    state: tauri::State<'_, AppState>,
+    def_name: String,
+) -> Result<reify_gui::types::GuiState, String> {
+    reify_gui::commands::get_def_preview_impl(&state.engine, &def_name)
+}
+
+#[tauri::command]
+fn get_containing_definition(
+    state: tauri::State<'_, AppState>,
+    line: u32,
+    col: u32,
+) -> Result<Option<reify_gui::types::DefInfo>, String> {
+    reify_gui::commands::get_containing_definition_impl(&state.engine, line, col)
+}
+
+#[tauri::command]
 fn focus_entity(app: tauri::AppHandle, entity_path: String) -> Result<(), String> {
     // Emit an event to the frontend to focus on the given entity
     app.emit("focus-entity", entity_path)
@@ -482,6 +513,10 @@ fn main() {
             open_file_engine,
             export,
             get_source_location,
+            get_entity_tree,
+            get_entity_identity_map,
+            get_def_preview,
+            get_containing_definition,
             focus_entity,
             update_selection,
             mcp_tool_call,

@@ -48,6 +48,7 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
 // --- Modifications ---
 
 std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radius);
+std::unique_ptr<OcctShape> chamfer_all_edges(const OcctShape& shape, double distance);
 
 // --- Transforms ---
 
