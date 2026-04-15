@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use reify_compiler::{CompiledModule, compile_with_prelude};
-use reify_test_support::{compile_source, errors_only};
+use reify_test_support::{compile_source, compile_source_named, errors_only};
 use reify_types::ModulePath;
 
 // ─── helpers ───────────────────────────────────────────────────────────────────
@@ -383,7 +383,8 @@ fn compile_project_entry_does_not_see_imported_private_unit() {
 #[test]
 fn local_unit_duplicating_imported_pub_unit_produces_error() {
     // Prelude module exports pub unit `mil`.
-    let prelude_module = compile_source("pub unit mil : Length = 0.0000254");
+    // Use a distinctive module name so we can assert the diagnostic references it.
+    let prelude_module = compile_source_named("pub unit mil : Length = 0.0000254", "imported_mod");
     assert!(
         errors_only(&prelude_module).is_empty(),
         "prelude errors: {:?}",
@@ -407,17 +408,17 @@ fn local_unit_duplicating_imported_pub_unit_produces_error() {
         panic!("error should mention 'duplicate' and 'mil'; got: {:?}", errors)
     });
 
-    // (a) The message must NOT say 'stdlib' — the source module is 'unit_test', not 'std/*'
+    // (a) The message must NOT say 'stdlib' — the source module is 'imported_mod', not 'std/*'
     assert!(
         !dup_diag.message.contains("stdlib"),
         "diagnostic should NOT mention 'stdlib' for user-module collision, got: {:?}",
         dup_diag.message
     );
 
-    // (b) The message must name the source module 'unit_test' (where `mil` was declared)
+    // (b) The message must name the source module 'imported_mod' (where `mil` was declared)
     assert!(
-        dup_diag.message.contains("unit_test"),
-        "diagnostic should mention 'unit_test' as the source module, got: {:?}",
+        dup_diag.message.contains("imported_mod"),
+        "diagnostic should mention 'imported_mod' as the source module, got: {:?}",
         dup_diag.message
     );
 
