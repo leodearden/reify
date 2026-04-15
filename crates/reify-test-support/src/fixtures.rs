@@ -1,6 +1,9 @@
 use reify_compiler::{CompiledModule, RequirementKind};
 use reify_syntax::ParsedModule;
-use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
+use reify_types::{
+    BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value,
+    DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
+};
 
 use crate::builders::{
     CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
@@ -873,23 +876,23 @@ pub fn mutual_recursion_module() -> CompiledModule {
 pub fn annotated_module() -> CompiledModule {
     let rigid_trait = CompiledTraitBuilder::new("Rigid")
         .annotation(annotation_with_args(
-            "deprecated",
+            DEPRECATED_ANNOTATION,
             vec![ann_str("use Rigid2")],
         ))
         .build();
 
     let bolt_template = TopologyTemplateBuilder::new("Bolt")
-        .annotation(annotation("test"))
-        .annotation(annotation("optimized"))
+        .annotation(annotation(TEST_ANNOTATION))
+        .annotation(annotation(OPTIMIZED_ANNOTATION))
         .build();
 
     let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
         .imported()
-        .annotation(annotation("deprecated"))
+        .annotation(annotation(DEPRECATED_ANNOTATION))
         .build();
 
     let purpose = CompiledPurposeBuilder::new("mfg_ready")
-        .annotation(annotation("solver_hint"))
+        .annotation(annotation(SOLVER_HINT_ANNOTATION))
         .build();
 
     CompiledModuleBuilder::new(ModulePath::single("annotated_module"))
@@ -1125,7 +1128,7 @@ mod tests {
         let rigid = &module.trait_defs[0];
         assert_eq!(rigid.name, "Rigid");
         assert_eq!(rigid.annotations.len(), 1);
-        assert_eq!(rigid.annotations[0].name, "deprecated");
+        assert_eq!(rigid.annotations[0].name, DEPRECATED_ANNOTATION);
         assert_eq!(rigid.annotations[0].args.len(), 1);
         assert!(matches!(
             &rigid.annotations[0].args[0],
@@ -1138,9 +1141,9 @@ mod tests {
         assert_eq!(bolt.name, "Bolt");
         assert_eq!(bolt.annotations.len(), 2);
         let ann_names: Vec<&str> = bolt.annotations.iter().map(|a| a.name.as_str()).collect();
-        assert!(ann_names.contains(&"test"), "expected @test annotation");
+        assert!(ann_names.contains(&TEST_ANNOTATION), "expected @test annotation");
         assert!(
-            ann_names.contains(&"optimized"),
+            ann_names.contains(&OPTIMIZED_ANNOTATION),
             "expected @optimized annotation"
         );
 
@@ -1149,14 +1152,14 @@ mod tests {
         let temp_field = &module.fields[0];
         assert_eq!(temp_field.name, "temp");
         assert_eq!(temp_field.annotations.len(), 1);
-        assert_eq!(temp_field.annotations[0].name, "deprecated");
+        assert_eq!(temp_field.annotations[0].name, DEPRECATED_ANNOTATION);
 
         // (d) one purpose with @solver_hint annotation
         assert_eq!(module.compiled_purposes.len(), 1);
         let purpose = &module.compiled_purposes[0];
         assert_eq!(purpose.name, "mfg_ready");
         assert_eq!(purpose.annotations.len(), 1);
-        assert_eq!(purpose.annotations[0].name, "solver_hint");
+        assert_eq!(purpose.annotations[0].name, SOLVER_HINT_ANNOTATION);
     }
 
     #[test]

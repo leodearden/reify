@@ -108,16 +108,17 @@ impl CompiledFieldBuilder {
 mod annotation_tests {
     use super::*;
     use crate::builders::{ann_str, annotation, annotation_with_args};
+    use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
     #[test]
     fn compiled_field_builder_single_annotation() {
         let field =
             CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
                 .imported()
-                .annotation(annotation("deprecated"))
+                .annotation(annotation(DEPRECATED_ANNOTATION))
                 .build();
         assert_eq!(field.annotations.len(), 1);
-        assert_eq!(field.annotations[0].name, "deprecated");
+        assert_eq!(field.annotations[0].name, DEPRECATED_ANNOTATION);
     }
 
     #[test]
@@ -125,7 +126,7 @@ mod annotation_tests {
         let field =
             CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
                 .imported()
-                .annotation(annotation_with_args("deprecated", vec![ann_str("use bar")]))
+                .annotation(annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use bar")]))
                 .build();
         assert_eq!(field.annotations.len(), 1);
         assert_eq!(field.annotations[0].args.len(), 1);
@@ -150,7 +151,7 @@ mod annotation_tests {
         let f2 =
             CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
                 .imported()
-                .annotation(annotation("test"))
+                .annotation(annotation(TEST_ANNOTATION))
                 .build();
         assert_eq!(f1.content_hash, f2.content_hash);
     }
