@@ -819,6 +819,14 @@ structure def S {
          got meta: {:?}",
         template.meta
     );
+    // Positive assertion: the top-level meta block must still compile correctly.
+    // Without this, an entirely-empty meta map would trivially satisfy the
+    // negative assertion above, masking a complete compilation failure.
+    assert_eq!(
+        template.meta.get("tag").map(String::as_str),
+        Some("top"),
+        "top-level meta block should still compile — only the guarded meta block is dropped"
+    );
 }
 
 /// Reference safety: a top-level constraint referencing a guarded param should
