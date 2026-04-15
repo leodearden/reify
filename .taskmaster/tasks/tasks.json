@@ -35411,11 +35411,11 @@
         "description": "In crates/reify-syntax/src/ts_parser.rs:1266-1269 (lower_members), annotations placed before non-param/non-let members (e.g., constraints, sub-components) are silently consumed and dropped with a comment \"no defined semantics yet\". Users who mistakenly place @solver_hint on a constraint get no feedback that their annotation had no effect. Emit a warning diagnostic when annotations are consumed by a non-param/non-let member, e.g. 'annotation @<name> is not supported on <member_kind> members and was ignored'. This requires threading the annotation names through the drop path.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T01:38:55.859Z",
+        "updatedAt": "2026-04-15T01:44:22.253Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/boundary1_consumer.rs",
@@ -35555,9 +35555,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:41:54.417Z",
+      "lastModified": "2026-04-15T01:44:22.254Z",
       "taskCount": 1701,
-      "completedCount": 1451,
+      "completedCount": 1452,
       "tags": [
         "master"
       ]
