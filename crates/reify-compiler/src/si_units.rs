@@ -580,6 +580,24 @@ mod tests {
         }
     }
 
+    /// Regression guard: `SI_PREFIXES` entries must be in strictly ascending
+    /// order of magnitude (factor). The ordering doc-comment on the
+    /// derived-unit prefix loop states that prefixed variants are emitted in
+    /// `SI_PREFIXES` declaration order, so this test locks that invariant.
+    /// A future reordering of `SI_PREFIXES` would be caught here.
+    #[test]
+    fn si_prefixes_are_in_ascending_magnitude_order() {
+        for window in SI_PREFIXES.windows(2) {
+            let (sym_a, factor_a) = window[0];
+            let (sym_b, factor_b) = window[1];
+            assert!(
+                factor_a < factor_b,
+                "SI_PREFIXES out of order: `{}` ({}) must be < `{}` ({})",
+                sym_a, factor_a, sym_b, factor_b
+            );
+        }
+    }
+
     /// `PrefixSet::All.includes()` should panic (debug_assert) when the caller
     /// passes a symbol that doesn't exist in `SI_PREFIXES`. In production this
     /// would be a silent logic error; the debug_assert catches it early.
