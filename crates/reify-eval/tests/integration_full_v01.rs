@@ -103,88 +103,15 @@ fn integration_full_v01_ri_parses() {
 
     use reify_syntax::Declaration;
 
-    let trait_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Trait(_)))
-        .count();
-    let structure_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Structure(_)))
-        .count();
-    let purpose_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Purpose(_)))
-        .count();
-    let constraint_def_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Constraint(_)))
-        .count();
-    let enum_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Enum(_)))
-        .count();
-    let function_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Function(_)))
-        .count();
-    let field_def_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Field(_)))
-        .count();
-    let unit_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Unit(_)))
-        .count();
-    let type_alias_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::TypeAlias(_)))
-        .count();
-
-    assert!(
-        trait_count >= 2,
-        "expected >=2 Trait declarations, got {trait_count}"
-    );
-    assert!(
-        structure_count >= 2,
-        "expected >=2 Structure declarations, got {structure_count}"
-    );
-    assert!(
-        purpose_count >= 1,
-        "expected >=1 Purpose declaration, got {purpose_count}"
-    );
-    assert!(
-        constraint_def_count >= 2,
-        "expected >=2 ConstraintDef declarations, got {constraint_def_count}"
-    );
-    assert!(
-        enum_count >= 1,
-        "expected >=1 Enum declaration, got {enum_count}"
-    );
-    assert!(
-        function_count >= 2,
-        "expected >=2 Function declarations (safety_factor overloads), got {function_count}"
-    );
-    assert!(
-        field_def_count >= 1,
-        "expected >=1 FieldDef declaration, got {field_def_count}"
-    );
-    assert!(
-        unit_count >= 1,
-        "expected >=1 Unit declaration, got {unit_count}"
-    );
-    assert!(
-        type_alias_count >= 1,
-        "expected >=1 TypeAlias declaration, got {type_alias_count}"
-    );
+    assert_min_count!(parsed, Declaration::Trait(_), "Trait", 2);
+    assert_min_count!(parsed, Declaration::Structure(_), "Structure", 2);
+    assert_min_count!(parsed, Declaration::Purpose(_), "Purpose", 1);
+    assert_min_count!(parsed, Declaration::Constraint(_), "ConstraintDef", 2);
+    assert_min_count!(parsed, Declaration::Enum(_), "Enum", 1);
+    assert_min_count!(parsed, Declaration::Function(_), "Function", 2);
+    assert_min_count!(parsed, Declaration::Field(_), "FieldDef", 1);
+    assert_min_count!(parsed, Declaration::Unit(_), "Unit", 1);
+    assert_min_count!(parsed, Declaration::TypeAlias(_), "TypeAlias", 1);
 }
 
 // ── Test 2: file compiles with expected templates ─────────────────────────────
