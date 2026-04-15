@@ -35916,13 +35916,13 @@
         "description": "All non-boolean geometry functions (translate, rotate, scale, rotate_around, circular_pattern, linear_pattern, mirror, extrude, revolve, revolve_full, sweep, loft, shell, thicken, draft) hardcode GeomRef::Step(0) and compile geometry target args as scalars. Fix: metadata table mapping function→geometry arg indices, single generic resolution path replacing all 14 broken + 5 boolean blocks. See geometry.rs line 238+. Depends on task 1609 pattern.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [
           "1609"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:55:26.867Z",
+        "updatedAt": "2026-04-15T08:01:17.878Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
@@ -36299,7 +36299,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T08:00:39.583Z",
+      "lastModified": "2026-04-15T08:01:17.878Z",
       "taskCount": 1734,
       "completedCount": 1495,
       "tags": [
