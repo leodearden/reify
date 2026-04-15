@@ -10,6 +10,30 @@ use reify_types::Diagnostic;
 
 use crate::CompiledModule;
 
+/// Collect the already-compiled modules that correspond to the import declarations
+/// in `parsed`, returning references into `modules`.
+///
+/// For each import declaration in `parsed`, looks up `import.path` in `modules`.
+/// Returns a `Vec` of references to the compiled modules that were found.
+/// Missing entries (not yet compiled) are silently skipped — the caller is
+/// responsible for ensuring dependencies are compiled before calling this.
+fn collect_import_preludes<'a>(
+    parsed: &reify_syntax::ParsedModule,
+    modules: &'a HashMap<String, CompiledModule>,
+) -> Vec<&'a CompiledModule> {
+    parsed
+        .declarations
+        .iter()
+        .filter_map(|d| {
+            if let reify_syntax::Declaration::Import(import) = d {
+                modules.get(&import.path)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Resolves import dot-paths to filesystem paths.
 ///
 /// Conventions:
@@ -165,16 +189,9 @@ impl ModuleDag {
             }
 
             // Collect prelude modules (already-compiled imports) for constraint def propagation.
-            let preludes: Vec<CompiledModule> = parsed
-                .declarations
-                .iter()
-                .filter_map(|d| {
-                    if let reify_syntax::Declaration::Import(import) = d {
-                        self.modules.get(&import.path).cloned()
-                    } else {
-                        None
-                    }
-                })
+            let preludes: Vec<CompiledModule> = collect_import_preludes(&parsed, &self.modules)
+                .into_iter()
+                .cloned()
                 .collect();
 
             // Compile this module with prelude context so imported constraint defs are visible.
@@ -238,16 +255,9 @@ pub fn compile_project(
 
     // Collect imported modules as prelude so their pub units (and other
     // exported definitions) are visible in the entry module.
-    let preludes: Vec<CompiledModule> = parsed
-        .declarations
-        .iter()
-        .filter_map(|d| {
-            if let reify_syntax::Declaration::Import(import) = d {
-                dag.modules.get(&import.path).cloned()
-            } else {
-                None
-            }
-        })
+    let preludes: Vec<CompiledModule> = collect_import_preludes(&parsed, &dag.modules)
+        .into_iter()
+        .cloned()
         .collect();
 
     // Compile the entry module with prelude context
