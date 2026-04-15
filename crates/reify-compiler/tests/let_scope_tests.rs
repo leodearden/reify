@@ -142,17 +142,17 @@ fn realization_named<'a>(
     names: &[&str],
     target: &str,
 ) -> &'a RealizationDecl {
+    assert_eq!(
+        names.len(),
+        template.realizations.len(),
+        "names count ({}) does not match realizations count ({})",
+        names.len(),
+        template.realizations.len()
+    );
     let idx = names
         .iter()
         .position(|&n| n == target)
         .unwrap_or_else(|| panic!("geometry let '{}' not found in names list {:?}", target, names));
-    assert!(
-        idx < template.realizations.len(),
-        "realization index {} for '{}' is out of bounds (len={})",
-        idx,
-        target,
-        template.realizations.len()
-    );
     &template.realizations[idx]
 }
 
@@ -525,6 +525,21 @@ fn shared_let_operand_step_indices_correct() {
             ExpectedOp::BoolUnion(0, 1),
         ],
     );
+}
+
+// ─── task-1712 step-1: realization_named panics on names/realizations count mismatch ───
+
+#[test]
+#[should_panic(expected = "names count")]
+fn realization_named_panics_on_count_mismatch() {
+    // SRC_DIFFERENCE_LET_BOUND produces 3 realizations: body, hole, result.
+    // Passing only &["body"] (1 element) with target "body" would silently
+    // succeed without the guard: idx=0 is in bounds, returning realizations[0]
+    // even though the mapping is wrong. The names-count guard must catch this.
+    let compiled = compile_no_errors(SRC_DIFFERENCE_LET_BOUND);
+    let template = &compiled.templates[0];
+    // Deliberate mismatch: 1 name vs 3 realizations
+    let _ = realization_named(template, &["body"], "body");
 }
 
 // ─── task-1713 step-1: intersection op-level assertions ───
