@@ -978,3 +978,101 @@ structure Bolt {
         other => panic!("expected List type, got: {:?}", other),
     }
 }
+
+// ─── task-1770 step-4: self/bare equivalence on the fallback path ───
+
+#[test]
+fn collection_sub_fallback_equivalence_self_and_bare() {
+    // Extends the equivalence pattern from self_dot_collection_sub_equivalence_with_bare
+    // to the fallback scenario: `structure Empty {}` (no params) triggers the fallback.
+    // Both `self.parts` and bare `parts` should resolve to the same cell and type.
+    //
+    // Assertions:
+    //   (a) both via_self and via_bare reference S.__list_parts (same coarse ID)
+    //   (b) both have type List(StructureRef("Empty"))
+    let source = r#"structure Empty {}
+structure S {
+    sub parts : List<Empty>
+    let via_self = self.parts
+    let via_bare = parts
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let via_self_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_self")
+        .expect("via_self value cell");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    // (a) Both should reference S.__list_parts
+    let expected_id = ValueCellId::new("S", "__list_parts");
+
+    let self_refs = via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .collect_value_refs();
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        self_refs.contains(&expected_id),
+        "via_self (fallback) should reference S.__list_parts, got: {:?}",
+        self_refs
+    );
+    assert!(
+        bare_refs.contains(&expected_id),
+        "via_bare (fallback) should reference S.__list_parts, got: {:?}",
+        bare_refs
+    );
+
+    // (b) Both should have type List(StructureRef("Empty"))
+    let self_ty = &via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .result_type;
+    let bare_ty = &via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .result_type;
+
+    let expected_inner = reify_types::Type::StructureRef("Empty".to_string());
+
+    match self_ty {
+        reify_types::Type::List(inner) => {
+            assert_eq!(
+                inner.as_ref(),
+                &expected_inner,
+                "via_self fallback type inner should be StructureRef(\"Empty\"), got: {:?}",
+                inner
+            );
+        }
+        other => panic!("via_self: expected List type, got: {:?}", other),
+    }
+    match bare_ty {
+        reify_types::Type::List(inner) => {
+            assert_eq!(
+                inner.as_ref(),
+                &expected_inner,
+                "via_bare fallback type inner should be StructureRef(\"Empty\"), got: {:?}",
+                inner
+            );
+        }
+        other => panic!("via_bare: expected List type, got: {:?}", other),
+    }
+}
