@@ -386,3 +386,54 @@ fn nurbs_fewer_than_2_args_emits_diagnostic() {
         "expected diagnostic about missing NURBS args, got: {:?}", diag_messages,
     );
 }
+
+#[test]
+fn nurbs_insufficient_coordinate_args_emits_diagnostic() {
+    let e = "TestNurbsShortCoords";
+    let dim_literal = |v: f64| reify_types::CompiledExpr::literal(
+        reify_types::Value::Scalar {
+            si_value: v,
+            dimension: reify_types::DimensionVector::DIMENSIONLESS,
+        },
+        Type::dimensionless_scalar(),
+    );
+
+    // degree=3, n_points=4, but only provide 3 more args instead of
+    // the required 4*3 + 4 = 16 coordinate+weight args
+    let curve_op = CompiledGeometryOp::Curve {
+        kind: CurveKind::NurbsCurve,
+        args: vec![
+            ("c0".into(), dim_literal(3.0)),  // degree
+            ("c1".into(), dim_literal(4.0)),  // n_points
+            ("c2".into(), dim_literal(0.0)),  // only 3 extra args
+            ("c3".into(), dim_literal(0.0)),
+            ("c4".into(), dim_literal(0.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![curve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_nurbs_short"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // Should produce NO geometry ops (NURBS eval returns None)
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(ops.len(), 0, "expected no geometry ops for insufficient NURBS args, got {}", ops.len());
+
+    // Should emit a diagnostic error about expected n_points
+    let diag_messages: Vec<String> = result.diagnostics.iter().map(|d| d.message.clone()).collect();
+    assert!(
+        diag_messages.iter().any(|m| m.contains("nurbs() got fewer arguments than expected for 4 control points")),
+        "expected diagnostic about insufficient NURBS coordinate args, got: {:?}", diag_messages,
+    );
+}
