@@ -1,8 +1,9 @@
 //! Built-in mathematical constants available as language-level identifiers.
 //!
 //! Constants resolve to compile-time `Value::Real` literals (dimensionless).
-//! They are checked AFTER scope lookup, so user-defined `let pi = ...` shadows
-//! the builtin.
+//! They are checked AFTER scope lookup AND collection sub-name resolution,
+//! so both user-defined `let pi = ...` and collection sub-names shadow
+//! the builtins.
 
 use reify_types::{CompiledExpr, Type, Value};
 

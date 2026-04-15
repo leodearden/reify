@@ -122,11 +122,10 @@ pub(crate) fn compile_expr_guarded(
             match scope.resolve(name) {
                 Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
                 None => {
-                    // Check built-in constants (pi, tau, …) before collection sub-names.
-                    if let Some(ce) = crate::constants::resolve_builtin_constant(name) {
-                        return ce;
-                    }
-                    // Check if this is a collection sub name — resolve to per-member __list_{name}__{member}
+                    // Check if this is a collection sub name — resolve to per-member __list_{name}__{member}.
+                    // Collection sub-names originate from user-declared structures, so they take
+                    // precedence over built-in constants (mirroring how scope.resolve already
+                    // prioritises user definitions).
                     if scope.collection_sub_names.contains(name.as_str()) {
                         if let Some(members) = scope.sub_member_types.get(name.as_str())
                         {
@@ -146,6 +145,11 @@ pub(crate) fn compile_expr_guarded(
                             ValueCellId::new(&scope.entity_name, format!("__list_{}", name));
                         let list_type = Type::List(Box::new(Type::StructureRef(name.clone())));
                         return CompiledExpr::value_ref(list_id, list_type);
+                    }
+                    // Check built-in constants (pi, tau, …) after scope and collection
+                    // sub-name resolution so that user definitions always shadow builtins.
+                    if let Some(ce) = crate::constants::resolve_builtin_constant(name) {
+                        return ce;
                     }
                     diagnostics.push(
                         Diagnostic::error(format!("unresolved name: {}", name))

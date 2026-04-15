@@ -122,6 +122,25 @@ fn user_let_pi_shadows_builtin() {
     }
 }
 
+#[test]
+fn user_param_pi_shadows_builtin() {
+    let src = "structure S {\n  param pi: Real = 1.0\n  let x = pi\n}";
+    let compiled = compile_source(src);
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    let expr = get_cell_expr(&compiled, "x");
+    // x should be a ValueRef to the parameter's cell, NOT the builtin literal.
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id.member, "pi", "expected ref to 'pi' param cell, got {:?}", id);
+        }
+        CompiledExprKind::Literal(Value::Real(_)) => {
+            panic!("x resolved to builtin pi literal — param definition should shadow it");
+        }
+        other => panic!("expected ValueRef to param 'pi', got {:?}", other),
+    }
+}
+
 // ─── step-7: pi works under #no_prelude ─────────────────────────────────────
 
 #[test]
