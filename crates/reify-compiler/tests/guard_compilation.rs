@@ -28,6 +28,11 @@ fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
 /// Centralises the repeated filter→assert pattern used by the silent-drop
 /// characterization tests so changes to the assertion message only need to
 /// happen in one place.
+///
+/// Kept alongside `assert_no_diagnostics` for tests that legitimately need to
+/// allow warnings while rejecting errors — e.g. a variant that emits a
+/// deprecation warning but must not error.
+#[allow(dead_code)]
 fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
     let errors: Vec<_> = diagnostics
         .iter()
@@ -91,6 +96,32 @@ structure def S {
             .iter()
             .map(|c| format!("{} -> {}", c.left_port, c.right_port))
             .collect::<Vec<_>>()
+    );
+    // Verify that the surrounding structure compiled correctly: ports a and b
+    // (declared at the top level) should still appear in the compiled template.
+    // If this assertion fails, the whole template failed to compile rather than
+    // just the chain being dropped — which would make the connections.is_empty()
+    // assertion trivially true for the wrong reason.
+    assert_eq!(
+        template.ports.len(),
+        2,
+        "ports a and b should still compile — only the chain should be dropped"
+    );
+    // Verify the guarded group itself exists (the `where active {}` block should
+    // always produce a group) but contains no chain-derived members.  A chain
+    // does not lower to a value cell, so members and constraints inside the group
+    // must both be empty after the silent drop.
+    assert_eq!(
+        template.guarded_groups.len(),
+        1,
+        "expected exactly one guarded group for the `where active {{}}` block"
+    );
+    let group = &template.guarded_groups[0];
+    assert!(
+        group.members.is_empty(),
+        "chain inside guarded block should produce no compiled members in the guard, \
+         got: {:?}",
+        group.members.iter().map(|m| m.id.member.as_str()).collect::<Vec<_>>()
     );
 }
 
@@ -742,6 +773,16 @@ structure def S {
     assert!(
         !parsed.errors.is_empty(),
         "expected a parse error — `type X = Y` is not valid inside a `where {{}}` guarded block"
+    );
+    // Pin the exact error count so a future grammar change that makes `type`
+    // valid inside guards (but introduces a different parse error) cannot
+    // silently make this test pass for the wrong reason.
+    assert_eq!(
+        parsed.errors.len(),
+        1,
+        "expected exactly one parse error for `type X = Y` inside a guarded block, \
+         got: {:?}",
+        parsed.errors
     );
 }
 
