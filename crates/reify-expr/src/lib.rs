@@ -145,7 +145,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 // preserving the single-param binding contract.
                                 // See also: calculus.rs::extract_point_coords.
                                 if params.len() > 1
-                                    && let (Value::Point(items) | Value::Vector(items)) =
+                                    && let Value::Point(items) | Value::Vector(items) =
                                         &evaluated_args[1]
                                     && params.len() == items.len()
                                 {
