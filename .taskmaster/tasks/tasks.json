@@ -38275,15 +38275,16 @@
         "description": "The cycle detection error message in compile_module (module_dag.rs ~lines 144-149) was changed from non-deterministic HashSet iteration to a sorted list for determinism (task 370). However, sorting loses the actual DFS traversal order — the user can no longer see which module imports which (e.g., `a -> b -> c -> a`).\n\nReplace the `HashSet` used for `in_progress` with an `IndexSet` (from the `indexmap` crate). This preserves insertion order deterministically while providing O(1) lookups, so the error message can show the actual import chain in traversal order without needing a sort.\n\nNote: `indexmap` is not currently a dependency — it will need to be added to reify-compiler's Cargo.toml. It is a widely-used, zero-unsafe crate commonly pulled in transitively (check if it's already in the lockfile as a transitive dep).\n\nMemory hints: search \"module_dag cycle detection in_progress HashSet compile_module\", entity: module_dag",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:45:58.956Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:45:58.737Z",
+      "lastModified": "2026-04-15T21:45:58.956Z",
       "taskCount": 1828,
       "completedCount": 1556,
       "tags": [
