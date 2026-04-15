@@ -339,14 +339,7 @@ fn eval_sample_von_mises_field_dispatch() {
         vec![CompiledExpr::literal(field, field_type)],
         vm_field_type.clone(),
     );
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            vm_expr,
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        ],
-        Type::Real,
-    );
+    let sample_expr = make_sample_at(vm_expr, 0.5, Type::Real);
 
     let values = ValueMap::new();
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -387,14 +380,7 @@ fn eval_sample_principal_stresses_field_dispatch() {
         vec![CompiledExpr::literal(field, field_type)],
         ps_field_type.clone(),
     );
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            ps_expr,
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        ],
-        Type::List(Box::new(Type::Real)),
-    );
+    let sample_expr = make_sample_at(ps_expr, 0.5, Type::List(Box::new(Type::Real)));
 
     let values = ValueMap::new();
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -443,14 +429,7 @@ fn eval_sample_max_shear_field_dispatch() {
         vec![CompiledExpr::literal(field, field_type)],
         ms_field_type.clone(),
     );
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            ms_expr,
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        ],
-        Type::Real,
-    );
+    let sample_expr = make_sample_at(ms_expr, 0.5, Type::Real);
 
     let values = ValueMap::new();
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -497,14 +476,7 @@ fn eval_sample_safety_factor_field_dispatch() {
         ],
         sf_field_type.clone(),
     );
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            sf_expr,
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
-        ],
-        Type::Real,
-    );
+    let sample_expr = make_sample_at(sf_expr, 0.5, Type::Real);
 
     let values = ValueMap::new();
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -593,14 +565,7 @@ fn eval_sample_von_mises_spatially_varying_field() {
         vec![CompiledExpr::literal(field.clone(), field_type.clone())],
         vm_field_type.clone(),
     );
-    let sample_high = make_function_call(
-        "sample",
-        vec![
-            vm_expr_high,
-            CompiledExpr::literal(Value::Real(75.0), Type::Real),
-        ],
-        Type::Real,
-    );
+    let sample_high = make_sample_at(vm_expr_high, 75.0, Type::Real);
     let values = ValueMap::new();
     let result_high = eval_expr(&sample_high, &EvalContext::simple(&values));
     match &result_high {
@@ -617,14 +582,7 @@ fn eval_sample_von_mises_spatially_varying_field() {
         vec![CompiledExpr::literal(field, field_type)],
         vm_field_type,
     );
-    let sample_low = make_function_call(
-        "sample",
-        vec![
-            vm_expr_low,
-            CompiledExpr::literal(Value::Real(25.0), Type::Real),
-        ],
-        Type::Real,
-    );
+    let sample_low = make_sample_at(vm_expr_low, 25.0, Type::Real);
     let result_low = eval_expr(&sample_low, &EvalContext::simple(&values));
     match &result_low {
         Value::Real(v) => assert!(
