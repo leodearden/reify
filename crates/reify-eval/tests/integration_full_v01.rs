@@ -633,6 +633,11 @@ fn purpose_compiled_and_activatable() {
     // (See examples/integration_full_v01.ri: mfg_ready uses literal placeholder constraints;
     // adding subject-referencing constraints is tracked as a follow-up task.)
     let expected_extra = mfg_ready.constraints.len();
+    assert!(
+        expected_extra > 0,
+        "mfg_ready should have at least 1 constraint \
+         — a zero count makes the delta assertion tautological"
+    );
     assert_eq!(
         constraint_count_from_engine(&engine),
         before + expected_extra,
