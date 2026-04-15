@@ -35499,11 +35499,11 @@
         "description": "Two test coverage gaps in crates/reify-eval/tests/integration_full_v01.rs:\n\n1. **Option/lambda coverage (docstring lines 3-9):** The module docstring lists 'some/none' and 'lambda' as exercised features, but no test explicitly asserts Option::Some/None values or lambda evaluation results. Either add dedicated assertions for these features or remove them from the docstring until tested.\n\n2. **Diagnostic-absence assertions:** Neither eval_canonical() nor check_canonical() results are inspected for diagnostics. Other integration test files (e.g., integration_corner_cases.rs) explicitly check for absence of error-severity diagnostics. Add: `assert!(result.diagnostics.iter().all(|d| d.severity != Severity::Error), \"unexpected error diagnostics: {:?}\", result.diagnostics);`\n\nmemory_hints: search \"diagnostic assertions integration test pattern\"; search \"Option Some None lambda test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T01:05:04.153Z",
+        "updatedAt": "2026-04-15T01:46:14.411Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/integration_full_v01.rs"
@@ -35555,7 +35555,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:46:12.247Z",
+      "lastModified": "2026-04-15T01:46:14.411Z",
       "taskCount": 1701,
       "completedCount": 1453,
       "tags": [
