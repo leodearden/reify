@@ -11,8 +11,8 @@
 //!   - Mixed batches (one optimized + one fallback) produce correct per-id
 //!     results in the order `active_constraint_ids` returns them.
 
-use reify_test_support::{MockOptimizedImpl, make_simple_engine, parse_and_compile};
-use reify_types::Satisfaction;
+use reify_test_support::{BrokenCountOptimizedImpl, MockOptimizedImpl, make_simple_engine, parse_and_compile};
+use reify_types::{Satisfaction, Severity};
 
 // ── Test 1: register_optimized_impl stores & dispatches ─────────────────────
 
@@ -396,5 +396,84 @@ structure def Multi {
         r2.satisfaction,
         Satisfaction::Satisfied,
         "PlainEq: x == x (1.0 == 1.0) should be Satisfied"
+    );
+}
+
+// ── Test 6: BrokenCountOptimizedImpl (returns 0 results) triggers fallback ───
+
+#[test]
+fn optimized_impl_wrong_result_count_falls_back_with_diagnostic() {
+    // A module with a single @optimized("geo::coincident") constraint where
+    // a == b (1.0 == 1.0). We register a BrokenCountOptimizedImpl that returns
+    // an empty Vec, triggering the count mismatch.
+    //
+    // Expected behavior after Task 1657 impl:
+    //   (a) no panic
+    //   (b) check_result.diagnostics contains a Diagnostic with Severity::Error
+    //       whose message contains "OptimizedImpl" and "falling back"
+    //   (c) constraint_results has exactly 1 entry with Satisfaction::Satisfied
+    //       (from the language-level fallback evaluating 1.0 == 1.0)
+    //
+    // Currently: panics at assert_eq! in dispatch_constraints.
+    let source = r#"
+@optimized("geo::coincident")
+constraint def Coincident {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def S {
+    param x: Real = 1.0
+    constraint Coincident(a: x, b: x)
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    let mock = BrokenCountOptimizedImpl::new(vec![]); // wrong count: 0 results for 1 constraint
+    let calls = mock.calls_handle();
+    let mut engine = make_simple_engine();
+    engine.register_optimized_impl("geo::coincident", Box::new(mock));
+
+    let check_result = engine.check(&compiled);
+
+    // (c) fallback evaluation: x == x is Satisfied
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "expected exactly one constraint result from fallback, got {:?}",
+        check_result.constraint_results
+    );
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "fallback checker must evaluate x == x as Satisfied"
+    );
+
+    // (b) diagnostic error for the contract violation
+    let error_diags: Vec<_> = check_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "expected at least one Error diagnostic for the broken OptimizedImpl, \
+         got diagnostics: {:?}",
+        check_result.diagnostics
+    );
+    let violation_diag = error_diags.iter().find(|d| {
+        d.message.contains("OptimizedImpl") && d.message.contains("falling back")
+    });
+    assert!(
+        violation_diag.is_some(),
+        "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
+         got error diagnostics: {:?}",
+        error_diags
+    );
+
+    // Broken impl was still invoked (before fallback kicked in)
+    assert!(
+        !calls.lock().unwrap().is_empty(),
+        "the broken impl must have been called before the fallback"
     );
 }
