@@ -125,6 +125,26 @@ describe('Editor doc change handling', () => {
     vi.advanceTimersByTime(300);
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('doc change with null activeFile does not call markDirty or updateSource', () => {
+    // setupStore([]) leaves activeFile as null — validates the `if (path)` guard at Editor.tsx:139
+    const store = setupStore([]);
+    const markDirtySpy = vi.spyOn(store, 'markDirty');
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Dispatch a doc change — the EditorView has an empty doc but accepts dispatches
+    view.dispatch({ changes: { from: 0, insert: 'x' } });
+
+    // markDirty must not be called immediately (no activeFile to mark)
+    expect(markDirtySpy).not.toHaveBeenCalled();
+
+    // Advance past the debounce timer — updateSource must also not be called
+    vi.advanceTimersByTime(300);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('Editor save (Ctrl+S)', () => {
