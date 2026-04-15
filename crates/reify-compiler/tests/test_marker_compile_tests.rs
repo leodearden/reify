@@ -360,3 +360,21 @@ fn compiled_function_is_test_returns_correct_values() {
     assert!(tested_fn.is_test(), "expected is_test() == true for @test fn");
     assert!(!normal_fn.is_test(), "expected is_test() == false for normal fn");
 }
+
+// ── CompiledModule::test_functions() / non_test_functions() ──────────────────
+
+#[test]
+fn compiled_module_function_filter_helpers() {
+    let source = r#"
+        @test fn tested() -> Real { 1.0 }
+        fn normal() -> Real { 2.0 }
+    "#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    assert_eq!(module.test_functions().count(), 1);
+    assert!(module.test_functions().any(|f| f.name == "tested"));
+
+    assert_eq!(module.non_test_functions().count(), 1);
+    assert!(module.non_test_functions().any(|f| f.name == "normal"));
+}
