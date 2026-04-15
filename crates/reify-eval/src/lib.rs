@@ -3787,6 +3787,9 @@ fn compile_geometry_op(
                         f64_arg("axis_y")?,
                         f64_arg("axis_z")?,
                     ],
+                    // NOTE: bare numeric angle is passed through as-is (radians).
+                    // circular_pattern converts bare numbers as degrees; aligning
+                    // rotate/rotate_around/revolve is tracked as a follow-up task.
                     angle_rad: f64_arg("angle")?,
                 }),
                 reify_compiler::TransformKind::Scale => {
@@ -3818,6 +3821,9 @@ fn compile_geometry_op(
                             f64_arg("axis_y")?,
                             f64_arg("axis_z")?,
                         ],
+                        // NOTE: bare numeric angle is passed through as-is (radians).
+                        // circular_pattern converts bare numbers as degrees; aligning
+                        // rotate/rotate_around/revolve is tracked as a follow-up task.
                         angle_rad: f64_arg("angle")?,
                     })
                 }
@@ -3856,27 +3862,18 @@ fn compile_geometry_op(
                     // interpreted as degrees and converted to radians.  Values
                     // that already carry an ANGLE dimension (from `deg`/`rad`
                     // suffixes in source) pass through unchanged.
+                    let mut convert_bare_angle = |deg: f64| -> reify_types::Value {
+                        let rad = deg * std::f64::consts::PI / 180.0;
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
+                             use `{}deg` or `{:.6}rad` for explicit units",
+                            deg, deg, deg, rad
+                        )));
+                        reify_types::Value::angle(rad)
+                    };
                     let angle = match raw_angle {
-                        reify_types::Value::Real(v) => {
-                            let deg = v;
-                            let rad = deg * std::f64::consts::PI / 180.0;
-                            diagnostics.push(Diagnostic::warning(format!(
-                                "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
-                                 use `{}deg` or `{:.6}rad` for explicit units",
-                                deg, deg, deg, rad
-                            )));
-                            reify_types::Value::angle(rad)
-                        }
-                        reify_types::Value::Int(i) => {
-                            let deg = i as f64;
-                            let rad = deg * std::f64::consts::PI / 180.0;
-                            diagnostics.push(Diagnostic::warning(format!(
-                                "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
-                                 use `{}deg` or `{:.6}rad` for explicit units",
-                                deg, deg, deg, rad
-                            )));
-                            reify_types::Value::angle(rad)
-                        }
+                        reify_types::Value::Real(v) => convert_bare_angle(v),
+                        reify_types::Value::Int(i) => convert_bare_angle(i as f64),
                         other => other,
                     };
                     Some(reify_types::GeometryOp::CircularPattern {
@@ -4026,6 +4023,9 @@ fn compile_geometry_op(
                         )));
                         return None;
                     }
+                    // NOTE: bare numeric angle is passed through as-is (radians).
+                    // circular_pattern converts bare numbers as degrees; aligning
+                    // rotate/rotate_around/revolve is tracked as a follow-up task.
                     let angle_rad = f64_arg("angle")?;
                     // Reject sub-picoradian angles as degenerate: an angle at
                     // the f64 rounding floor cannot produce a meaningful

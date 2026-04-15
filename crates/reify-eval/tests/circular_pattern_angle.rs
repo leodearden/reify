@@ -5,7 +5,7 @@
 //!   deprecation warning in the build diagnostics.
 //! - An explicit angle unit (`360deg`) passes through without any warning.
 
-use reify_eval::Engine;
+use reify_eval::{BuildResult, Engine};
 use reify_test_support::{parse_and_compile, MockConstraintChecker, MockGeometryKernel};
 use reify_types::{ExportFormat, Severity};
 
@@ -23,14 +23,14 @@ fn plate_source(angle_expr: &str) -> String {
 }
 
 /// Build a plate from the given source using a MockGeometryKernel so that
-/// compile_geometry_op is exercised.  Returns the build diagnostics.
-fn build_plate(source: &str) -> Vec<reify_types::Diagnostic> {
+/// compile_geometry_op is exercised.  Returns the full BuildResult so callers
+/// can verify both that the build succeeded and what diagnostics it produced.
+fn build_plate(source: &str) -> BuildResult {
     let compiled = parse_and_compile(source);
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&compiled, ExportFormat::Step);
-    result.diagnostics
+    engine.build(&compiled, ExportFormat::Step)
 }
 
 // ── step-6 ───────────────────────────────────────────────────────────────────
@@ -40,9 +40,23 @@ fn build_plate(source: &str) -> Vec<reify_types::Diagnostic> {
 #[test]
 fn circular_pattern_bare_360_emits_deprecation_warning() {
     let source = plate_source("360");
-    let diagnostics = build_plate(&source);
+    let result = build_plate(&source);
 
-    let degree_warnings: Vec<_> = diagnostics
+    // Guard: ensure the build did not fail with hard errors before reaching
+    // the angle-conversion code (which would make the diagnostic check vacuous).
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "build produced unexpected errors before angle conversion: {:?}",
+        errors
+    );
+
+    let degree_warnings: Vec<_> = result
+        .diagnostics
         .iter()
         .filter(|d| {
             d.severity == Severity::Warning
@@ -54,7 +68,7 @@ fn circular_pattern_bare_360_emits_deprecation_warning() {
         !degree_warnings.is_empty(),
         "expected at least one Warning diagnostic about implicit degree conversion, \
          but got: {:?}",
-        diagnostics
+        result.diagnostics
     );
 }
 
@@ -65,9 +79,23 @@ fn circular_pattern_bare_360_emits_deprecation_warning() {
 #[test]
 fn circular_pattern_360deg_no_deprecation_warning() {
     let source = plate_source("360deg");
-    let diagnostics = build_plate(&source);
+    let result = build_plate(&source);
 
-    let degree_warnings: Vec<_> = diagnostics
+    // Guard: ensure the build did not fail with hard errors (which would make
+    // the "no warning" assertion vacuously true).
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "build produced unexpected errors: {:?}",
+        errors
+    );
+
+    let degree_warnings: Vec<_> = result
+        .diagnostics
         .iter()
         .filter(|d| {
             d.severity == Severity::Warning
