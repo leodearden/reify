@@ -123,6 +123,12 @@ structure def S {
          got: {:?}",
         group.members.iter().map(|m| m.id.member.as_str()).collect::<Vec<_>>()
     );
+    assert!(
+        group.constraints.is_empty(),
+        "chain inside guarded block should produce no compiled constraints in the guard, \
+         got: {:?}",
+        group.constraints
+    );
 }
 
 /// Parse `param x : Scalar = 5mm where active` — the per-declaration where clause
