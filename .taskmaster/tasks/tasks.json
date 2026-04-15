@@ -35057,13 +35057,13 @@
         "description": "From esc-1628-28. S1: Add 'Fillet' back to warning_needles in build_modify_missing_arg_no_kernel_error. S2: Make helper accept Option for primitive check so primitive test can use it too.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [
           "1628"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:30:32.449Z",
+        "updatedAt": "2026-04-15T00:23:39.167Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/geometry_error_handling.rs"
@@ -35235,7 +35235,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:23:38.873Z",
+      "lastModified": "2026-04-15T00:23:39.167Z",
       "taskCount": 1689,
       "completedCount": 1430,
       "tags": [
