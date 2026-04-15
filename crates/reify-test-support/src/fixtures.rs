@@ -99,6 +99,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(38, 42),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(24, 42),
                 content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
             }),
@@ -118,6 +119,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(69, 74),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(47, 74),
                 content_hash: ContentHash::of_str("param height: Scalar = 100mm"),
             }),
@@ -137,6 +139,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(104, 107),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(79, 107),
                 content_hash: ContentHash::of_str("param thickness: Scalar = 5mm"),
             }),
@@ -156,6 +159,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(141, 144),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(112, 144),
                 content_hash: ContentHash::of_str("param fillet_radius: Scalar = 3mm"),
             }),
@@ -175,6 +179,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(178, 181),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(149, 181),
                 content_hash: ContentHash::of_str("param hole_diameter: Scalar = 6mm"),
             }),
@@ -208,6 +213,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(200, 226),
                 },
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(187, 226),
                 content_hash: ContentHash::of_str("let volume = width * height * thickness"),
             }),
@@ -321,6 +327,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(356, 385),
                 },
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(346, 385),
                 content_hash: ContentHash::of_str("let body = box(width, height, thickness)"),
             }),
@@ -891,6 +898,56 @@ pub fn annotated_module() -> CompiledModule {
         .field(temp_field)
         .compiled_purpose(purpose)
         .build()
+}
+
+// ─── shared stdlib test constants ──────────────────────────────────────
+
+/// Material traits defined in `materials_mechanical.ri`.
+pub const EXPECTED_MATERIAL_TRAITS: &[&str] = &[
+    "Material",
+    "Elastic",
+    "Strong",
+    "Hard",
+    "FatigueRated",
+    "FractureTough",
+    "Ductile",
+    "ImpactResistant",
+    "Damping",
+];
+
+/// Steel:Elastic conformance source — 3 params for the Elastic trait.
+pub fn steel_elastic_source() -> &'static str {
+    r#"
+structure def Steel : Elastic {
+    param youngs_modulus : Real = 200.0
+    param poissons_ratio : Real = 0.3
+    param shear_modulus : Real = 77.0
+}
+"#
+}
+
+/// Steel:Strong conformance source — 3 params for the Strong trait.
+pub fn steel_strong_source() -> &'static str {
+    r#"
+structure def Steel : Strong {
+    param yield_strength : Real = 250.0
+    param uts : Real = 400.0
+    param compressive_strength : Real = 250.0
+}
+"#
+}
+
+/// Steel:Material+Elastic conformance source — 5 params for both traits.
+pub fn steel_material_elastic_source() -> &'static str {
+    r#"
+structure def Steel : Material + Elastic {
+    param density : Real = 7800.0
+    param name : String = "A36"
+    param youngs_modulus : Real = 200.0
+    param poissons_ratio : Real = 0.3
+    param shear_modulus : Real = 77.0
+}
+"#
 }
 
 #[cfg(test)]

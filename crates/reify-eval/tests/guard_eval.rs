@@ -24,6 +24,7 @@ fn make_param_decl(entity: &str, member: &str, cell_type: Type, default: Value) 
         visibility: Visibility::Public,
         cell_type: cell_type.clone(),
         default_expr: Some(CompiledExpr::literal(default, cell_type)),
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     }
 }
@@ -50,6 +51,7 @@ fn eval_guard_true_includes_members() {
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: Some(x_default),
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
@@ -464,6 +466,7 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
@@ -565,6 +568,7 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
@@ -726,6 +730,7 @@ fn guard_round_trip_true_false_true_re_resolves_auto_param() {
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
@@ -852,6 +857,7 @@ fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
@@ -977,6 +983,7 @@ fn eval_guard_false_auto_param_gets_auto_determinacy() {
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
@@ -1045,6 +1052,7 @@ fn eval_guard_true_auto_param_in_else_gets_auto_determinacy() {
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
@@ -1173,6 +1181,7 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
@@ -1183,6 +1192,7 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 

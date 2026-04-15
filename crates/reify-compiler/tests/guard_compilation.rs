@@ -28,6 +28,11 @@ fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
 /// Centralises the repeated filter→assert pattern used by the silent-drop
 /// characterization tests so changes to the assertion message only need to
 /// happen in one place.
+///
+/// Kept alongside `assert_no_diagnostics` for tests that legitimately need to
+/// allow warnings while rejecting errors — e.g. a variant that emits a
+/// deprecation warning but must not error.
+#[allow(dead_code)]
 fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
     let errors: Vec<_> = diagnostics
         .iter()
@@ -37,6 +42,92 @@ fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
         errors.is_empty(),
         "{context}: expected no error diagnostics, got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Helper: assert that zero diagnostics of ANY severity are present.
+///
+/// Stricter than `assert_no_error_diagnostics` — checks that the diagnostics
+/// slice is completely empty (no Errors, Warnings, or Info). Use this for
+/// silent-drop characterization tests where the intent is "absolutely nothing
+/// is emitted".
+fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
+    assert!(
+        diagnostics.is_empty(),
+        "{context}: expected no diagnostics at all, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Characterization test: `Chain` inside a `where {}` block is silently ignored
+/// by `compile_guarded_members` — no diagnostic of any severity is emitted.
+///
+/// Top-level ports `a` and `b` are declared so the parser can resolve the port
+/// identifiers in `chain a -> b`. The chain statement lives inside the guarded
+/// block and is silently dropped.
+#[test]
+fn chain_in_block_guard_silently_ignored() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    param active : Bool = true
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    where active {
+        chain a -> b
+    }
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    assert_no_diagnostics(
+        &diagnostics,
+        "chain in block guard (should be silently dropped)",
+    );
+    // Positive assertion: the chain inside the guarded block must NOT desugar
+    // into a top-level connection — it should be silently dropped.
+    assert!(
+        template.connections.is_empty(),
+        "expected no compiled connections — chain inside a guarded block should be \
+         silently dropped, not desugared to top-level connections, got: {:?}",
+        template
+            .connections
+            .iter()
+            .map(|c| format!("{} -> {}", c.left_port, c.right_port))
+            .collect::<Vec<_>>()
+    );
+    // Verify that the surrounding structure compiled correctly: ports a and b
+    // (declared at the top level) should still appear in the compiled template.
+    // If this assertion fails, the whole template failed to compile rather than
+    // just the chain being dropped — which would make the connections.is_empty()
+    // assertion trivially true for the wrong reason.
+    assert_eq!(
+        template.ports.len(),
+        2,
+        "ports a and b should still compile — only the chain should be dropped"
+    );
+    // Verify the guarded group itself exists (the `where active {}` block should
+    // always produce a group) but contains no chain-derived members.  A chain
+    // does not lower to a value cell, so members and constraints inside the group
+    // must both be empty after the silent drop.
+    assert_eq!(
+        template.guarded_groups.len(),
+        1,
+        "expected exactly one guarded group for the `where active {{}}` block"
+    );
+    let group = &template.guarded_groups[0];
+    assert!(
+        group.members.is_empty(),
+        "chain inside guarded block should produce no compiled members in the guard, \
+         got: {:?}",
+        group.members.iter().map(|m| m.id.member.as_str()).collect::<Vec<_>>()
+    );
+    assert!(
+        group.constraints.is_empty(),
+        "chain inside guarded block should produce no compiled constraints in the guard, \
+         got: {:?}",
+        group.constraints
     );
 }
 
@@ -582,7 +673,7 @@ structure S {
     // precise characterization of "silently ignored".  This also avoids the
     // fragile substring check for "ice" which could false-positive on words like
     // "service" or "notice" in future diagnostic messages.
-    assert_no_error_diagnostics(
+    assert_no_diagnostics(
         &diagnostics,
         "constraint inst in block guard (should be silently dropped)",
     );
@@ -609,7 +700,7 @@ structure def S {
 
     let (template, diagnostics) = compile_first_template(source);
 
-    assert_no_error_diagnostics(
+    assert_no_diagnostics(
         &diagnostics,
         "port in block guard (should be silently dropped)",
     );
@@ -646,7 +737,7 @@ structure def S {
 
     let (template, diagnostics) = compile_first_template(source);
 
-    assert_no_error_diagnostics(
+    assert_no_diagnostics(
         &diagnostics,
         "connect in block guard (should be silently dropped)",
     );
@@ -664,6 +755,83 @@ structure def S {
             .iter()
             .map(|c| format!("{} -> {}", c.left_port, c.right_port))
             .collect::<Vec<_>>()
+    );
+}
+
+/// Characterization test: `AssociatedType` inside a `where {}` block is rejected at
+/// parse time — the grammar does not permit `type X = Y` inside a guarded block.
+///
+/// This means the `AssociatedType` arm in `compile_guarded_members` is unreachable
+/// via normal parsing. This test pins that parser-level boundary: the compiler never
+/// sees an `AssociatedType` in a guarded context because the grammar prevents it.
+#[test]
+fn associated_type_in_block_guard_rejected_by_parser() {
+    let source = r#"
+structure def S {
+    param active : Bool = true
+    where active {
+        type Material = Steel
+    }
+}
+"#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        !parsed.errors.is_empty(),
+        "expected a parse error — `type X = Y` is not valid inside a `where {{}}` guarded block"
+    );
+    // Pin the exact error count so a future grammar change that makes `type`
+    // valid inside guards (but introduces a different parse error) cannot
+    // silently make this test pass for the wrong reason.
+    assert_eq!(
+        parsed.errors.len(),
+        1,
+        "expected exactly one parse error for `type X = Y` inside a guarded block, \
+         got: {:?}",
+        parsed.errors
+    );
+}
+
+/// Characterization test: `MetaBlock` inside a `where {}` block is silently ignored
+/// by `compile_guarded_members` — no diagnostic of any severity is emitted and the
+/// guarded meta entry does not appear in the compiled template's meta map.
+#[test]
+fn meta_block_in_block_guard_silently_ignored() {
+    let source = r#"
+structure def S {
+    param active : Bool = true
+    meta {
+        tag = "top"
+    }
+    where active {
+        meta {
+            guarded = "yes"
+        }
+    }
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    assert_no_diagnostics(
+        &diagnostics,
+        "meta block in block guard (should be silently dropped)",
+    );
+    // Positive assertion: the meta entry from the guarded block must NOT appear
+    // in the compiled template's meta map — it should be silently dropped.
+    assert!(
+        !template.meta.contains_key("guarded"),
+        "expected 'guarded' key from the guarded meta block to be silently dropped, \
+         got meta: {:?}",
+        template.meta
+    );
+    // Positive assertion: the top-level meta block must still compile correctly.
+    // Without this, an entirely-empty meta map would trivially satisfy the
+    // negative assertion above, masking a complete compilation failure.
+    assert_eq!(
+        template.meta.get("tag").map(String::as_str),
+        Some("top"),
+        "top-level meta block should still compile — only the guarded meta block is dropped"
     );
 }
 

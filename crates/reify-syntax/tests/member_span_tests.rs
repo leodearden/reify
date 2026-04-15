@@ -179,6 +179,7 @@ fn build_nested_guarded_members(depth: usize, target: &str) -> Vec<reify_syntax:
         type_expr: None,
         default: None,
         where_clause: None,
+        annotations: Vec::new(),
         span: dummy_span,
         content_hash: dummy_hash,
     })];

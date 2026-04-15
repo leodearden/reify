@@ -115,6 +115,7 @@ pub struct ParamDecl {
     pub type_expr: Option<TypeExpr>,
     pub default: Option<Expr>,
     pub where_clause: Option<WhereClause>,
+    pub annotations: Vec<Annotation>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -128,6 +129,7 @@ pub struct LetDecl {
     pub type_expr: Option<TypeExpr>,
     pub value: Expr,
     pub where_clause: Option<WhereClause>,
+    pub annotations: Vec<Annotation>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }

@@ -91,11 +91,7 @@ pub(crate) fn validate_annotations(
                         ))
                         .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
                     );
-                } else if context == "constraint_def"
-                    && !matches!(
-                        ann.args.first(),
-                        Some(reify_types::AnnotationArg::String(_))
-                    )
+                } else if context == "constraint_def" && !is_valid_optimized(ann)
                 {
                     // @optimized without a string-literal target on a constraint_def
                     // silently routes to the language-level checker, which confuses
@@ -116,7 +112,7 @@ pub(crate) fn validate_annotations(
                 }
             }
             "solver_hint" => {
-                if !matches!(context, "structure" | "occurrence") {
+                if !matches!(context, "structure" | "occurrence" | "param" | "let") {
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "annotation @solver_hint is not valid on {context} declarations"
@@ -156,8 +152,7 @@ pub(crate) fn validate_annotations(
     if context == "constraint_def" {
         let mut seen_valid_optimized = false;
         for ann in annotations {
-            if ann.name == "optimized"
-                && matches!(ann.args.first(), Some(reify_types::AnnotationArg::String(_)))
+            if is_valid_optimized(ann)
             {
                 if seen_valid_optimized {
                     diagnostics.push(
@@ -172,6 +167,13 @@ pub(crate) fn validate_annotations(
             }
         }
     }
+}
+
+/// Return `true` if `ann` is a well-formed `@optimized("target")` annotation —
+/// i.e. its name is `"optimized"` and its first argument is a string literal.
+pub(crate) fn is_valid_optimized(ann: &reify_types::Annotation) -> bool {
+    ann.name == "optimized"
+        && matches!(ann.args.first(), Some(reify_types::AnnotationArg::String(_)))
 }
 
 /// Validate block-level pragmas on a compiled declaration, emitting warnings for unknown names.
@@ -236,6 +238,71 @@ pub(crate) fn optimized_target(annotations: &[reify_syntax::Annotation]) -> Opti
     None
 }
 
+/// Extract solver hints from compiled annotations.
+///
+/// Iterates all `@solver_hint` annotations, parsing the first arg as a hint kind
+/// string ("discrete_set" or "prefer_stock") and the second arg as an identifier
+/// naming the collection. Emits warnings for unrecognized kinds or missing args.
+pub(crate) fn extract_solver_hints(
+    annotations: &[reify_types::Annotation],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<SolverHint> {
+    let mut hints = Vec::new();
+    for ann in annotations {
+        if ann.name != "solver_hint" {
+            continue;
+        }
+        // First arg: string literal for hint kind
+        let kind = match ann.args.first() {
+            Some(reify_types::AnnotationArg::String(s)) => match s.as_str() {
+                "discrete_set" => SolverHintKind::DiscreteSet,
+                "prefer_stock" => SolverHintKind::PreferStock,
+                other => {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "unknown solver hint kind '{other}'; expected 'discrete_set' or 'prefer_stock'"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "unknown kind")),
+                    );
+                    continue;
+                }
+            },
+            _ => {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "@solver_hint requires a string literal kind as first argument, \
+                         e.g. @solver_hint(\"discrete_set\", collection)"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(ann.span, "missing kind")),
+                );
+                continue;
+            }
+        };
+        // Second arg: identifier for collection name
+        let collection = match ann.args.get(1) {
+            Some(reify_types::AnnotationArg::Ident(name)) => name.clone(),
+            _ => {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "@solver_hint requires a collection reference as second argument, \
+                         e.g. @solver_hint(\"discrete_set\", bolt_lengths)"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(ann.span, "missing collection")),
+                );
+                continue;
+            }
+        };
+        hints.push(SolverHint {
+            kind,
+            collection,
+            span: ann.span,
+        });
+    }
+    hints
+}
+
 /// Emit a deprecation warning for a use-site reference to a deprecated entity.
 ///
 /// Format: `use of deprecated <kind> '<name>': <message>` (with message)
@@ -256,5 +323,67 @@ pub(crate) fn emit_deprecation_warning(
         Diagnostic::warning(text)
             .with_label(DiagnosticLabel::new(span, "deprecated")),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ann(name: &str, args: Vec<reify_types::AnnotationArg>) -> reify_types::Annotation {
+        reify_types::Annotation {
+            name: name.to_string(),
+            args,
+            span: reify_types::SourceSpan::empty(0),
+        }
+    }
+
+    #[test]
+    fn is_valid_optimized_true_for_string_arg() {
+        let a = ann(
+            "optimized",
+            vec![reify_types::AnnotationArg::String("kernel::foo".to_string())],
+        );
+        assert!(is_valid_optimized(&a));
+    }
+
+    #[test]
+    fn is_valid_optimized_false_for_no_args() {
+        let a = ann("optimized", vec![]);
+        assert!(!is_valid_optimized(&a));
+    }
+
+    #[test]
+    fn is_valid_optimized_false_for_int_arg() {
+        let a = ann("optimized", vec![reify_types::AnnotationArg::Int(123)]);
+        assert!(!is_valid_optimized(&a));
+    }
+
+    #[test]
+    fn is_valid_optimized_false_for_wrong_name() {
+        let a = ann(
+            "other",
+            vec![reify_types::AnnotationArg::String("foo".to_string())],
+        );
+        assert!(!is_valid_optimized(&a));
+    }
+
+    /// Documents that only the *first* arg is tested — extra trailing args are ignored.
+    #[test]
+    fn is_valid_optimized_true_for_string_first_arg_with_trailing_args() {
+        let a = ann(
+            "optimized",
+            vec![
+                reify_types::AnnotationArg::String("kernel::foo".to_string()),
+                reify_types::AnnotationArg::Int(42),
+            ],
+        );
+        assert!(is_valid_optimized(&a));
+    }
+
+    #[test]
+    fn is_valid_optimized_false_for_bool_arg() {
+        let a = ann("optimized", vec![reify_types::AnnotationArg::Bool(true)]);
+        assert!(!is_valid_optimized(&a));
+    }
 }
 

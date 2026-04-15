@@ -538,6 +538,13 @@ pub(crate) fn compile_entity(
 
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
+                // Lower and validate annotations on this param
+                let lowered_annotations =
+                    lower_annotations(&param.annotations, diagnostics);
+                validate_annotations(&lowered_annotations, "param", diagnostics);
+                let solver_hints =
+                    extract_solver_hints(&lowered_annotations, diagnostics);
+
                 let decl = if let Some(free) = auto_free {
                     ValueCellDecl {
                         id,
@@ -545,6 +552,7 @@ pub(crate) fn compile_entity(
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
+                        solver_hints,
                         span: param.span,
                     }
                 } else {
@@ -567,6 +575,7 @@ pub(crate) fn compile_entity(
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr,
+                        solver_hints,
                         span: param.span,
                     }
                 };
@@ -624,12 +633,20 @@ pub(crate) fn compile_entity(
                     Visibility::Private
                 };
 
+                // Lower and validate annotations on this let
+                let lowered_annotations =
+                    lower_annotations(&let_decl.annotations, diagnostics);
+                validate_annotations(&lowered_annotations, "let", diagnostics);
+                let solver_hints =
+                    extract_solver_hints(&lowered_annotations, diagnostics);
+
                 let decl = ValueCellDecl {
                     id,
                     kind: ValueCellKind::Let,
                     visibility,
                     cell_type,
                     default_expr: Some(compiled_expr),
+                    solver_hints,
                     span: let_decl.span,
                 };
 
@@ -666,6 +683,7 @@ pub(crate) fn compile_entity(
                         visibility: Visibility::Private,
                         cell_type: Type::Int,
                         default_expr: Some(compiled_rhs),
+                        solver_hints: Vec::new(),
                         span: constraint.span,
                     });
                     structure_controlling.insert(count_id.clone());
@@ -882,6 +900,7 @@ pub(crate) fn compile_entity(
                                     visibility: Visibility::Public,
                                     cell_type,
                                     default_expr: None,
+                                    solver_hints: Vec::new(),
                                     span: param.span,
                                 }
                             } else {
@@ -895,6 +914,7 @@ pub(crate) fn compile_entity(
                                     visibility: Visibility::Public,
                                     cell_type,
                                     default_expr,
+                                    solver_hints: Vec::new(),
                                     span: param.span,
                                 }
                             };
@@ -928,6 +948,7 @@ pub(crate) fn compile_entity(
                                 visibility,
                                 cell_type,
                                 default_expr: Some(compiled_expr),
+                                solver_hints: Vec::new(),
                                 span: let_decl.span,
                             });
                         }

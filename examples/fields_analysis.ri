@@ -1,0 +1,61 @@
+// M8.4 Fields and Stress Analysis integration fixture.
+//
+// Exercises:
+//   1. Analytical field definitions with sample() and gradient() operators
+//      (temperature field: f(x) = x*x + 20.0)
+//   2. Stress analysis builtins operating on raw 3×3 tensors:
+//      von_mises(sigma) and safety_factor(sigma, yield_strength)
+//
+// Design choices:
+//   • Uses dimensionless Real values for stress tensors — keeps fixture focused
+//     on math correctness; analysis.rs tests already cover dimensioned inputs.
+//   • Sigma is built as 100.0 * outer(e1, e1): uniaxial stress along x-axis.
+//     von_mises([[100,0,0],[0,0,0],[0,0,0]]) = 100.0 exactly.
+//   • safety_factor(sigma, 250.0) = 250/100 = 2.5 (dimensionless Real).
+
+// ── Analytical field definition ───────────────────────────────────────────────
+//
+// temperature(x) = x² + 20.0
+//   sample(temperature, 5.0) = 25 + 20 = 45.0
+//   gradient(temperature)(5.0) ≈ 2*5 = 10.0  (central differences)
+
+field def temperature : Real -> Real { source = analytical { |x| x * x + 20.0 } }
+
+// ── Main structure ────────────────────────────────────────────────────────────
+
+structure def FieldsAnalysisDemo {
+    // ── Field operations ──────────────────────────────────────────────────────
+
+    // Direct sample: temperature(5.0) = 5² + 20 = 45.0
+    let temp_at_5   = sample(temperature, 5.0)
+
+    // Gradient field and its sample at x=5
+    let grad_temp   = gradient(temperature)
+    let dtemp_at_5  = sample(grad_temp, 5.0)   // ≈ 2*5 = 10.0
+
+    // ── Stress analysis on a 3×3 tensor ──────────────────────────────────────
+    //
+    // Uniaxial stress along x: sigma = 100 * e1⊗e1 = [[100,0,0],[0,0,0],[0,0,0]]
+    // von_mises(sigma) = sigma_x = 100.0   (uniaxial case)
+    // safety_factor(sigma, 250.0) = 250/100 = 2.5
+
+    let e1    = vec3(1.0, 0.0, 0.0)
+    let sigma = 100.0 * outer(e1, e1)
+
+    let vm_stress = von_mises(sigma)          // ≈ 100.0  (Value::Real)
+    let sf        = safety_factor(sigma, 250.0)  // ≈ 2.5  (Value::Real, dimensionless)
+
+    // ── @test constraints ─────────────────────────────────────────────────────
+
+    constraint temp_at_5 > 44.999
+    constraint temp_at_5 < 45.001
+
+    constraint dtemp_at_5 > 9.999
+    constraint dtemp_at_5 < 10.001
+
+    constraint vm_stress > 99.999
+    constraint vm_stress < 100.001
+
+    constraint sf > 2.499
+    constraint sf < 2.501
+}
