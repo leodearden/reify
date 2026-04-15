@@ -1868,4 +1868,67 @@ structure S {
             panic!("expected Transform, got {:?}", op);
         }
     }
+
+    // --- Bug fix tests: GeomRef::Step(0) fallback hardcoding (task-612) ---
+
+    #[test]
+    fn loft_non_geom_args_fallback_uses_step_offset() {
+        // loft() with literal-number args (not geometry expressions).
+        // When step_offset=5, the fallback GeomRef for each profile should be
+        // GeomRef::Step(5) (matching geom_ref() helper), NOT Step(0).
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "loft".to_string(),
+                args: vec![
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(2.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                ],
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            5, // step_offset = 5
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        // loft() with non-geometry args should still produce an op (with fallback refs)
+        let ops = result.expect("loft() should produce ops even with non-geometry args");
+        let loft_op = ops.last().expect("should have at least one op");
+        match loft_op {
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Loft,
+                profiles,
+                ..
+            } => {
+                assert!(!profiles.is_empty(), "loft should have profiles");
+                for profile in profiles {
+                    assert_eq!(
+                        *profile,
+                        GeomRef::Step(5),
+                        "loft fallback should be Step(step_offset=5), not {:?}",
+                        profile
+                    );
+                }
+            }
+            other => panic!("expected Sweep(Loft), got {:?}", other),
+        }
+    }
 }
