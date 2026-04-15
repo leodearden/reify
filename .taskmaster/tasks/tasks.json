@@ -37938,6 +37938,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1818,
+        "title": "MenuBar ShortcutId union type and test assertion fixes",
+        "description": "Task 1794 review follow-up: derive ShortcutId type from SHORTCUTS array, replace toBeTruthy with toBeDefined in MenuBar tests. Files: gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx, gui/src/__tests__/MenuBar.test.tsx",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37950,7 +37961,7 @@
       ],
       "created": "2026-04-15T20:32:16.782Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T20:49:44.303Z"
+      "updated": "2026-04-15T20:50:19.172Z"
     }
   }
 }
