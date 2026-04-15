@@ -560,6 +560,29 @@ fn io_export_tolerance_band() {
     }
 }
 
+// ── Helper unit tests ────────────────────────────────────────────────────────
+
+#[test]
+fn expect_real_or_int_extracts_real() {
+    let val = Value::Real(3.14);
+    let result = expect_real_or_int(&val, "test_label");
+    assert!((result - 3.14).abs() < 1e-15, "expected 3.14, got {}", result);
+}
+
+#[test]
+fn expect_real_or_int_extracts_int() {
+    let val = Value::Int(42);
+    let result = expect_real_or_int(&val, "test_label");
+    assert!((result - 42.0).abs() < 1e-15, "expected 42.0, got {}", result);
+}
+
+#[test]
+#[should_panic(expected = "should be Real or Int")]
+fn expect_real_or_int_panics_on_non_numeric() {
+    let val = Value::Bool(true);
+    expect_real_or_int(&val, "test_label");
+}
+
 // NOTE: each test independently calls eval_ri_file, re-parsing and re-compiling
 // the same .ri fixture. This matches the established m8_3 pattern; future
 // iterations may share results across same-fixture tests via
