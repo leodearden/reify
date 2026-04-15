@@ -37611,10 +37611,11 @@
         "description": "The `updateFileContent()` call in Editor.tsx fires on every keystroke, serializing the entire document via `doc.toString()` and triggering Solid.js reactivity. For large files (10k+ lines) this could cause perceptible input lag. Profile the editor with large documents to validate acceptable latency. If needed, consider a micro-debounce (e.g. requestAnimationFrame) for the store sync, or use a dirty flag that the F5 handler checks to pull from `view.state.doc` on demand.\n\nmemory_hints: search \"editorStore updateFileContent performance\", get_entity \"Editor.tsx\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T16:54:03.506Z"
       },
       {
         "id": "1798",
@@ -37630,7 +37631,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T16:54:03.280Z",
+      "lastModified": "2026-04-15T16:54:03.506Z",
       "taskCount": 1793,
       "completedCount": 1529,
       "tags": [
