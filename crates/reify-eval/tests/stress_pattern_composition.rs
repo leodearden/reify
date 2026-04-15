@@ -12,8 +12,8 @@
 use std::fs;
 
 use reify_compiler::PatternKind;
-use reify_test_support::{compile_source_named, mocks::MockConstraintChecker};
-use reify_types::{ModulePath, Severity};
+use reify_test_support::{assert_no_eval_errors, compile_source_named, errors_only, make_engine};
+use reify_types::Severity;
 
 /// Absolute path to the fixture file.
 const FIXTURE_PATH: &str = concat!(
@@ -28,39 +28,12 @@ const FIXTURE_PATH: &str = concat!(
 fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     let source = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
-    let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors in {}: {:?}",
-        path,
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "compile errors in {}: {:?}",
-        path,
-        errors
-    );
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let compiled = compile_source_named(&source, module_name);
+    let errs = errors_only(&compiled);
+    assert!(errs.is_empty(), "compile errors in {}: {:?}", path, errs);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        eval_errors.is_empty(),
-        "eval errors in {}: {:?}",
-        path,
-        eval_errors
-    );
+    assert_no_eval_errors(&result);
     result
 }
 
