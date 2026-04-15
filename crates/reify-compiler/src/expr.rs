@@ -31,6 +31,44 @@ pub(crate) fn compile_expr(
     )
 }
 
+/// Resolve a collection sub name to its `List<T>` value cell.
+///
+/// Shared by both the bare-ident arm (`bolts`) and the `self.member` arm (`self.bolts`)
+/// of the Identifier/MemberAccess branches in `compile_expr_guarded`, ensuring that
+/// `self.bolts` and `bolts` compile to identical `ValueRef`s.
+///
+/// Resolution strategy:
+/// 1. Look up `sub_name` in `scope.sub_member_types` (populated from compiled structure templates).
+/// 2. Pick the lexicographically-first key in the inner `BTreeMap` (deterministic order).
+/// 3. Return `ValueCellId(entity, "__list_{sub}__{first_member}")` with `Type::List(member_ty)`.
+///
+/// Fallback (no entry or empty inner map): returns `__list_{sub}` with
+/// `List(StructureRef(sub_name))`.  Note that this uses the **sub field name**
+/// (e.g. `"bolts"`) not the structure type name (e.g. `"Bolt"`).  This path is
+/// legitimately reached when the sub's structure template has not yet been compiled
+/// (e.g. ad-hoc structures or forward references), so it must not panic.
+/// The caller receives a coarse `List(StructureRef(field_name))` type in that case.
+fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> CompiledExpr {
+    if let Some(members) = scope.sub_member_types.get(sub_name) {
+        // sub_member_types inner map is BTreeMap — iteration order is lexicographic.
+        if let Some((first_member, member_ty)) = members.iter().next() {
+            let list_id = ValueCellId::new(
+                &scope.entity_name,
+                format!("__list_{}__{}", sub_name, first_member),
+            );
+            let list_type = Type::List(Box::new(member_ty.clone()));
+            return CompiledExpr::value_ref(list_id, list_type);
+        }
+    }
+    // Fallback: sub_member_types has no entry for this sub (structure not yet compiled,
+    // ad-hoc structure, or empty params).  Produce a coarse List(StructureRef(sub_name))
+    // using the field name — callers that need the precise member type must ensure the
+    // sub structure is compiled before resolving.
+    let list_id = ValueCellId::new(&scope.entity_name, format!("__list_{}", sub_name));
+    let list_type = Type::List(Box::new(Type::StructureRef(sub_name.to_owned())));
+    CompiledExpr::value_ref(list_id, list_type)
+}
+
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
 ///
 /// When `current_guard` is Some, references to names guarded by a different
@@ -122,26 +160,10 @@ pub(crate) fn compile_expr_guarded(
             match scope.resolve(name) {
                 Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
                 None => {
-                    // Check if this is a collection sub name — resolve to per-member __list_{name}__{member}
+                    // Check if this is a collection sub name — delegate to shared helper
+                    // that also handles `self.sub_name` in the MemberAccess arm.
                     if scope.collection_sub_names.contains(name.as_str()) {
-                        if let Some(members) = scope.sub_member_types.get(name.as_str())
-                        {
-                            // Resolve to the lexicographically-first member's per-member list.
-                            // sub_member_types inner map is BTreeMap, so iteration order is deterministic.
-                            if let Some((first_member, member_ty)) = members.iter().next() {
-                                let list_id = ValueCellId::new(
-                                    &scope.entity_name,
-                                    format!("__list_{}__{}", name, first_member),
-                                );
-                                let list_type = Type::List(Box::new(member_ty.clone()));
-                                return CompiledExpr::value_ref(list_id, list_type);
-                            }
-                        }
-                        // Fallback: no member types available
-                        let list_id =
-                            ValueCellId::new(&scope.entity_name, format!("__list_{}", name));
-                        let list_type = Type::List(Box::new(Type::StructureRef(name.clone())));
-                        return CompiledExpr::value_ref(list_id, list_type);
+                        return resolve_collection_sub_to_list(scope, name.as_str());
                     }
                     diagnostics.push(
                         Diagnostic::error(format!("unresolved name: {}", name))
@@ -654,27 +676,11 @@ pub(crate) fn compile_expr_guarded(
                             Type::StructureRef(structure_name),
                         );
                     }
-                    // Collection sub accessed through self: resolve to per-member List<T> value cell,
-                    // mirroring the bare-ident path (lines 126-144). `self.bolts` ≡ bare `bolts`.
+                    // Collection sub accessed through self: delegate to the same helper used
+                    // by the bare-ident collection-sub resolution in the Identifier arm of
+                    // compile_expr_guarded.  Guarantees `self.bolts` ≡ bare `bolts`.
                     if scope.collection_sub_names.contains(member.as_str()) {
-                        if let Some(members) = scope.sub_member_types.get(member.as_str()) {
-                            // Resolve to the lexicographically-first member's per-member list.
-                            // sub_member_types inner map is BTreeMap, so iteration order is deterministic.
-                            if let Some((first_member, member_ty)) = members.iter().next() {
-                                let list_id = ValueCellId::new(
-                                    &scope.entity_name,
-                                    format!("__list_{}__{}", member, first_member),
-                                );
-                                let list_type = Type::List(Box::new(member_ty.clone()));
-                                return CompiledExpr::value_ref(list_id, list_type);
-                            }
-                        }
-                        // Fallback: no member types available
-                        let list_id =
-                            ValueCellId::new(&scope.entity_name, format!("__list_{}", member));
-                        let list_type =
-                            Type::List(Box::new(Type::StructureRef(member.clone())));
-                        return CompiledExpr::value_ref(list_id, list_type);
+                        return resolve_collection_sub_to_list(scope, member.as_str());
                     }
                     // Resolve member from the entity scope (same as bare identifier).
                     match scope.resolve(member) {

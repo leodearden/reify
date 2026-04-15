@@ -810,3 +810,74 @@ structure S {
         bare_ty
     );
 }
+
+// ─── task-1280 amend: lexicographic first-member selection with multiple params ───
+
+#[test]
+fn self_dot_collection_sub_picks_lexicographic_first_member() {
+    // `Bolt` has two params: `diameter` and `length`.
+    // Lexicographically "diameter" < "length" (d < l), so the resolver must pick
+    // `diameter` as the representative member — both via `self.bolts` and bare `bolts`.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+    param length : Scalar = 50mm
+}
+structure S {
+    sub bolts : List<Bolt>
+    let via_self = self.bolts
+    let via_bare = bolts
+}"#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let via_self_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_self")
+        .expect("via_self value cell");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    // Must resolve to diameter (lexicographically first), not length.
+    let expected_id = ValueCellId::new("S", "__list_bolts__diameter");
+    let wrong_id = ValueCellId::new("S", "__list_bolts__length");
+
+    let self_refs = via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .collect_value_refs();
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        self_refs.contains(&expected_id),
+        "via_self should reference __list_bolts__diameter (lexicographic first), got: {:?}",
+        self_refs
+    );
+    assert!(
+        !self_refs.contains(&wrong_id),
+        "via_self must NOT reference __list_bolts__length, got: {:?}",
+        self_refs
+    );
+    assert!(
+        bare_refs.contains(&expected_id),
+        "via_bare should reference __list_bolts__diameter (lexicographic first), got: {:?}",
+        bare_refs
+    );
+    assert!(
+        !bare_refs.contains(&wrong_id),
+        "via_bare must NOT reference __list_bolts__length, got: {:?}",
+        bare_refs
+    );
+}
