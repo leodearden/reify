@@ -314,3 +314,64 @@ fn compile_without_prelude_errors_for_strong() {
          but no errors were produced"
     );
 }
+
+// ─── prelude exclusion: prelude defs must not leak into output ────────
+
+/// Prelude definitions (traits, enums, units) should NOT appear in the
+/// output CompiledModule when compiling user code via compile_with_prelude.
+/// Only user-defined content (Steel template) should be present.
+#[test]
+fn prelude_definitions_excluded_from_output_module() {
+    let source = steel_elastic_source();
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    // The output module should NOT contain any prelude trait_defs.
+    // The user source only defines a structure, not any traits.
+    assert!(
+        compiled.trait_defs.is_empty(),
+        "output module should not contain prelude trait_defs, but found: {:?}",
+        compiled
+            .trait_defs
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
+
+    // The output module should NOT contain prelude enum_defs (e.g., HardnessScale).
+    assert!(
+        compiled.enum_defs.is_empty(),
+        "output module should not contain prelude enum_defs, but found: {:?}",
+        compiled
+            .enum_defs
+            .iter()
+            .map(|e| &e.name)
+            .collect::<Vec<_>>()
+    );
+
+    // The output module should NOT contain prelude units (cm, m, kg, etc.).
+    assert!(
+        compiled.units.is_empty(),
+        "output module should not contain prelude units, but found: {:?}",
+        compiled
+            .units
+            .iter()
+            .map(|u| &u.name)
+            .collect::<Vec<_>>()
+    );
+
+    // User content (Steel template) SHOULD be present.
+    assert!(
+        !compiled.templates.is_empty(),
+        "output module should contain the user's Steel template"
+    );
+}
