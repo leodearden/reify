@@ -35742,7 +35742,7 @@
         "description": "Two FFI functions are declared in the CXX bridge (ffi.rs) and implemented in C++ (occt_wrapper.cpp/h) but never called from Rust code:\n\n1. `shape_vec_len()` at ffi.rs:42 — declared but never used; no kernel operation queries vector length\n2. `loft_two_profiles()` at ffi.rs:139 — declared but never used; the kernel uses `loft_profiles()` (vector-based variant) instead\n\nRemove these from:\n- crates/reify-kernel-occt/src/ffi.rs (CXX bridge declarations)\n- crates/reify-kernel-occt/cpp/occt_wrapper.h (C++ declarations)\n- crates/reify-kernel-occt/cpp/occt_wrapper.cpp (C++ implementations)\n\nmemory_hints: search \"OCCT FFI\", search \"loft_two_profiles\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -35756,12 +35756,13 @@
             "crates/reify-kernel-occt/src",
             "crates/reify-kernel-occt/cpp"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T05:38:58.063Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T05:38:57.675Z",
+      "lastModified": "2026-04-15T05:38:58.063Z",
       "taskCount": 1708,
       "completedCount": 1471,
       "tags": [
