@@ -1,5 +1,11 @@
 use crate::diagnostics::SourceSpan;
 
+/// Canonical lowercase spelling of the `@test` annotation name.
+///
+/// Use this constant instead of hard-coding `"test"` to keep the annotation
+/// name as a single source of truth across crates.
+pub const TEST_ANNOTATION: &str = "test";
+
 /// A compiled annotation — resolved from a parsed `@name(args...)` syntax annotation.
 ///
 /// Annotations carry compile-time metadata through to downstream consumers
@@ -9,6 +15,21 @@ pub struct Annotation {
     pub name: String,
     pub args: Vec<AnnotationArg>,
     pub span: SourceSpan,
+}
+
+impl Annotation {
+    /// Returns `true` if this annotation is the `@test` marker.
+    pub fn is_test(&self) -> bool {
+        self.name == TEST_ANNOTATION
+    }
+}
+
+/// Returns `true` if the given annotation slice contains a `@test` annotation.
+///
+/// This is the canonical predicate for checking test-tagged entities.
+/// Prefer this over manually scanning annotations.
+pub fn has_test_annotation(annotations: &[Annotation]) -> bool {
+    annotations.iter().any(Annotation::is_test)
 }
 
 /// A resolved annotation argument value.
@@ -32,7 +53,7 @@ mod tests {
         Annotation {
             name: name.to_string(),
             args: vec![],
-            span: SourceSpan::default(),
+            span: SourceSpan::empty(0),
         }
     }
 
