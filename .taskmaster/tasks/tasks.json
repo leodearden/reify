@@ -37615,6 +37615,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1798,
+        "title": "Add editor test coverage: null activeFile guard and multi-file F5",
+        "description": "Two test coverage gaps identified in the editor store sync tests from task 1765:\n\n1. **Null activeFile guard (Editor.test.tsx):** The updateListener in Editor.tsx guards on `if (path)` (line 139) but no test verifies that `updateFileContent` / `markDirty` are NOT called when `store.state.activeFile` is null. Add a test that dispatches a doc change with no active file and asserts the store is unchanged.\n\n2. **Multi-file F5 contract (App.test.tsx):** The existing re-evaluate test only covers a single open file. Add a test with multiple files open, edit a non-active file's content, press F5, and assert only the active file's content is sent to `bridge.updateSource`.\n\nmemory_hints: search \"editorStore updateFileContent test\", search \"F5 re-evaluate test\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37627,7 +37638,7 @@
       ],
       "created": "2026-04-15T16:52:55.882Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T16:52:55.991Z"
+      "updated": "2026-04-15T16:53:25.785Z"
     }
   }
 }
