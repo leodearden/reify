@@ -1,0 +1,77 @@
+// M8.4 linear algebra and complex numbers integration fixture.
+//
+// Exercises advanced linalg builtins — outer, determinant, inverse, transpose,
+// eigenvalues — and complex number builtins — complex, re, im, conjugate,
+// phase, complex_magnitude — through the full
+// parse → compile_with_stdlib → eval pipeline.
+//
+// Key design choices:
+//   • Matrices are built via outer-product sums (no matrix literal syntax in .ri).
+//     outer(a, b) with Value::Point vectors produces Value::Tensor rank-2 matrices.
+//   • Tensor + Tensor is supported componentwise; Scalar * Tensor scales each element.
+//   • R_z(90°) has exact ±1/0 components → determinant, inverse, transpose all exact.
+//   • Diagonal matrix D = diag(3,5,7) constructed via scaled outer products of basis vectors.
+//   • Complex arithmetic uses dimensionless Real components (z = complex(3.0, 4.0)).
+
+// ── Basis vectors ─────────────────────────────────────────────────────────────
+
+structure def LinalgDemo {
+    let e1 = vec3(1.0, 0.0, 0.0)
+    let e2 = vec3(0.0, 1.0, 0.0)
+    let e3 = vec3(0.0, 0.0, 1.0)
+
+    // ── Rotation matrix R_z(90°) = [[0,-1,0],[1,0,0],[0,0,1]] ────────────────
+    //
+    // Built as sum of outer products: R = Σ col_i ⊗ e_i^T
+    //   col1 = [0,1,0] = e2  (image of e1 under 90° rotation)
+    //   col2 = [-1,0,0]      (image of e2 under 90° rotation)
+    //   col3 = [0,0,1] = e3  (e3 unchanged)
+    //
+    // outer(col1, e1) = [[0,0,0],[1,0,0],[0,0,0]]
+    // outer(col2, e2) = [[0,-1,0],[0,0,0],[0,0,0]]
+    // outer(col3, e3) = [[0,0,0],[0,0,0],[0,0,1]]
+    // sum             = [[0,-1,0],[1,0,0],[0,0,1]]  ✓
+
+    let col1 = vec3(0.0, 1.0, 0.0)
+    let col2 = vec3(-1.0, 0.0, 0.0)
+    let rot = outer(col1, e1) + outer(col2, e2) + outer(e3, e3)
+
+    // ── Determinant (must be 1.0 for a rotation matrix) ──────────────────────
+    let det_rot = determinant(rot)
+
+    // ── Inverse and Transpose (R^-1 = R^T for orthogonal matrices) ───────────
+    let inv_rot   = inverse(rot)
+    let trans_rot = transpose(rot)
+
+    // ── Diagonal matrix D = diag(3, 5, 7) via scaled outer products ──────────
+    //   D = 3*outer(e1,e1) + 5*outer(e2,e2) + 7*outer(e3,e3)
+    //     = [[3,0,0],[0,5,0],[0,0,7]]
+    let diag = 3.0 * outer(e1, e1) + 5.0 * outer(e2, e2) + 7.0 * outer(e3, e3)
+
+    // ── Eigenvalues of diagonal matrix (should be [3.0, 5.0, 7.0] sorted) ────
+    let eig = eigenvalues(diag)
+
+    // ── Complex number operations ─────────────────────────────────────────────
+    //   z = 3 + 4i (dimensionless)
+    //   |z| = sqrt(9+16) = 5.0
+    //   re(z) = 3.0,  im(z) = 4.0
+    //   conjugate(z) = 3 - 4i
+    //   phase(z) = atan2(4, 3)  (ANGLE dimension, radians)
+
+    let z       = complex(3.0, 4.0)
+    let z_re    = re(z)
+    let z_im    = im(z)
+    let z_conj  = conjugate(z)
+    let z_phase = phase(z)
+    let z_mag   = complex_magnitude(z)
+
+    // ── @test assertions ──────────────────────────────────────────────────────
+    //
+    // Determinant of rotation matrix must be 1 (orthogonal matrix invariant).
+    // Bounds use a tight ε to catch floating-point regressions.
+
+    constraint det_rot > 0.999
+    constraint det_rot < 1.001
+    constraint z_mag > 4.999
+    constraint z_mag < 5.001
+}

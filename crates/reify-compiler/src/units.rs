@@ -28,6 +28,12 @@ pub(crate) fn is_geometry_function(name: &str) -> bool {
             | "rotate"
             | "scale"
             | "rotate_around"
+            | "line_segment"
+            | "arc"
+            | "helix"
+            | "interp"
+            | "bezier"
+            | "nurbs"
     )
 }
 

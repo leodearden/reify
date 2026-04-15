@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 // --- Compilation context ---
 
@@ -12,18 +13,6 @@ pub(crate) struct CompilationScope<'u> {
     pub(crate) port_names: HashSet<String>,
     /// Names of collection sub-components (sub name : List<T>), for count expression handling.
     pub(crate) collection_sub_names: HashSet<String>,
-    /// Member types for collection sub-components: collection_name → { member_name → Type }.
-    /// Populated from already-compiled child templates to resolve correct types for
-    /// indexed member access (e.g., bolts[0].diameter → Type::length()).
-    ///
-    /// This is a **subset** of `sub_member_types` restricted to subs whose type is
-    /// `List<T>` (i.e., collection subs listed in `collection_sub_names`).  It is kept
-    /// as a separate field because several collection-specific code paths — bare name
-    /// resolution (resolves to the list itself) and indexed-member access — need to
-    /// distinguish collection subs from scalar subs and look up member types in the
-    /// same step.  `sub_member_types` is the authoritative source for all other member
-    /// type resolution; use it when the collection/scalar distinction is not relevant.
-    pub(crate) collection_sub_member_types: HashMap<String, HashMap<String, Type>>,
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.
     pub(crate) trait_members: HashMap<String, HashSet<String>>,
@@ -42,8 +31,11 @@ pub(crate) struct CompilationScope<'u> {
     /// False for function scopes, where `self` must produce an "unresolved name" error.
     pub(crate) is_entity_scope: bool,
     /// Member types for all sub-components: sub_name → { member_name → Type }.
-    /// Populated for ALL subs (collection and non-collection) for self.sub.member resolution.
-    pub(crate) sub_member_types: HashMap<String, HashMap<String, Type>>,
+    /// Populated for both collection and non-collection subs to resolve self.sub.member
+    /// chains and instance qualified access.
+    /// Inner map is BTreeMap so iteration order is lexicographic — this makes bare
+    /// collection-sub identifier resolution (expr.rs: members.iter().next()) deterministic.
+    pub(crate) sub_member_types: HashMap<String, BTreeMap<String, Type>>,
     /// Whether the current structure has at least one geometry declaration (realize block).
     /// Used to gate @face/@edge selectors at compile time.
     pub(crate) has_geometry: bool,
@@ -56,7 +48,6 @@ impl<'u> CompilationScope<'u> {
             names: HashMap::new(),
             port_names: HashSet::new(),
             collection_sub_names: HashSet::new(),
-            collection_sub_member_types: HashMap::new(),
             trait_members: HashMap::new(),
             sub_component_types: HashMap::new(),
             sub_structure_traits: HashMap::new(),

@@ -47,6 +47,16 @@
 #include <Geom_Plane.hxx>
 #include <Geom_Surface.hxx>
 
+// OCCT curve construction (arc, helix, interp, bezier, nurbs)
+#include <Geom_CylindricalSurface.hxx>
+#include <Geom2d_Line.hxx>
+#include <GeomAPI_PointsToBSpline.hxx>
+#include <Geom_BezierCurve.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <TColgp_Array1OfPnt.hxx>
+#include <TColStd_Array1OfReal.hxx>
+#include <TColStd_Array1OfInteger.hxx>
+
 // OCCT shape utilities
 #include <BRepLib.hxx>
 
@@ -737,27 +747,6 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
     }
 }
 
-std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2) {
-    try {
-        BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False);
-        loft.AddWire(TopoDS::Wire(wire1.shape));
-        loft.AddWire(TopoDS::Wire(wire2.shape));
-        loft.Build();
-        if (!loft.IsDone()) {
-            throw std::runtime_error("BRepOffsetAPI_ThruSections (loft_two_profiles) failed");
-        }
-        auto result = std::make_unique<OcctShape>();
-        result->shape = loft.Shape();
-        return result;
-    } catch (Standard_Failure const& e) {
-        throw std::runtime_error(std::string("OCCT loft_two_profiles: ") + e.GetMessageString());
-    } catch (std::exception const& e) {
-        throw std::runtime_error(std::string("OCCT loft_two_profiles: unexpected: ") + e.what());
-    } catch (...) {
-        throw std::runtime_error("OCCT loft_two_profiles: unknown C++ exception");
-    }
-}
-
 // --- OcctShapeVec ---
 
 std::unique_ptr<OcctShapeVec> new_shape_vec() {
@@ -766,10 +755,6 @@ std::unique_ptr<OcctShapeVec> new_shape_vec() {
 
 void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape) {
     vec.shapes.push_back(shape.shape);
-}
-
-size_t shape_vec_len(const OcctShapeVec& vec) {
-    return vec.shapes.size();
 }
 
 // --- make_line_wire ---
@@ -801,6 +786,217 @@ std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
         throw std::runtime_error(std::string("OCCT make_line_wire: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT make_line_wire: unknown C++ exception");
+    }
+}
+
+// --- make_arc_wire ---
+
+std::unique_ptr<OcctShape> make_arc_wire(
+    double cx, double cy, double cz,
+    double radius,
+    double start_angle, double end_angle,
+    double ax, double ay, double az) {
+    try {
+        if (!(std::isfinite(radius) && radius > 0.0)) {
+            throw std::runtime_error("make_arc_wire: radius must be finite and positive");
+        }
+        gp_Dir dir(ax, ay, az);
+        gp_Ax2 axes(gp_Pnt(cx, cy, cz), dir);
+        Handle(Geom_Circle) circle = new Geom_Circle(axes, radius);
+        BRepBuilderAPI_MakeEdge edgeBuilder(circle, start_angle, end_angle);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_arc_wire: MakeEdge failed");
+        }
+        BRepBuilderAPI_MakeWire wireBuilder(edgeBuilder.Edge());
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_arc_wire: MakeWire failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = wireBuilder.Wire();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_arc_wire: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_arc_wire: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_arc_wire: unknown C++ exception");
+    }
+}
+
+// --- make_helix_wire ---
+
+std::unique_ptr<OcctShape> make_helix_wire(
+    double radius, double pitch, double height) {
+    try {
+        if (!(std::isfinite(radius) && radius > 0.0)) {
+            throw std::runtime_error("make_helix_wire: radius must be finite and positive");
+        }
+        if (!(std::isfinite(pitch) && pitch > 0.0)) {
+            throw std::runtime_error("make_helix_wire: pitch must be finite and positive");
+        }
+        if (!(std::isfinite(height) && height > 0.0)) {
+            throw std::runtime_error("make_helix_wire: height must be finite and positive");
+        }
+        // Create a cylindrical surface
+        gp_Ax2 ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+        Handle(Geom_CylindricalSurface) cylinder = new Geom_CylindricalSurface(ax2, radius);
+        // Helix as a 2D line on the cylindrical surface.
+        // In (u,v) space: u = angle, v = height along axis.
+        // A line from (0,0) with slope = pitch/(2*PI) traces a helix.
+        double n_turns = height / pitch;
+        double u_length = n_turns * 2.0 * M_PI;
+        gp_Pnt2d origin2d(0.0, 0.0);
+        gp_Dir2d dir2d(u_length, height);
+        Handle(Geom2d_Line) line2d = new Geom2d_Line(origin2d, dir2d);
+        double param_end = std::sqrt(u_length * u_length + height * height);
+        BRepBuilderAPI_MakeEdge edgeBuilder(line2d, cylinder, 0.0, param_end);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_helix_wire: MakeEdge failed");
+        }
+        BRepBuilderAPI_MakeWire wireBuilder(edgeBuilder.Edge());
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_helix_wire: MakeWire failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = wireBuilder.Wire();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_helix_wire: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_helix_wire: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_helix_wire: unknown C++ exception");
+    }
+}
+
+// --- make_interp_curve ---
+
+std::unique_ptr<OcctShape> make_interp_curve(
+    rust::Slice<const double> coords, size_t n_points) {
+    try {
+        if (n_points < 2) {
+            throw std::runtime_error("make_interp_curve: requires at least 2 points");
+        }
+        TColgp_Array1OfPnt points(1, static_cast<int>(n_points));
+        for (size_t i = 0; i < n_points; ++i) {
+            points.SetValue(static_cast<int>(i + 1),
+                gp_Pnt(coords[i * 3], coords[i * 3 + 1], coords[i * 3 + 2]));
+        }
+        GeomAPI_PointsToBSpline interp(points);
+        if (!interp.IsDone()) {
+            throw std::runtime_error("make_interp_curve: interpolation failed");
+        }
+        BRepBuilderAPI_MakeEdge edgeBuilder(interp.Curve());
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_interp_curve: MakeEdge failed");
+        }
+        BRepBuilderAPI_MakeWire wireBuilder(edgeBuilder.Edge());
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_interp_curve: MakeWire failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = wireBuilder.Wire();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_interp_curve: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_interp_curve: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_interp_curve: unknown C++ exception");
+    }
+}
+
+// --- make_bezier_curve ---
+
+std::unique_ptr<OcctShape> make_bezier_curve(
+    rust::Slice<const double> coords, size_t n_points) {
+    try {
+        if (n_points < 2) {
+            throw std::runtime_error("make_bezier_curve: requires at least 2 control points");
+        }
+        TColgp_Array1OfPnt poles(1, static_cast<int>(n_points));
+        for (size_t i = 0; i < n_points; ++i) {
+            poles.SetValue(static_cast<int>(i + 1),
+                gp_Pnt(coords[i * 3], coords[i * 3 + 1], coords[i * 3 + 2]));
+        }
+        Handle(Geom_BezierCurve) bezier = new Geom_BezierCurve(poles);
+        BRepBuilderAPI_MakeEdge edgeBuilder(bezier);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_bezier_curve: MakeEdge failed");
+        }
+        BRepBuilderAPI_MakeWire wireBuilder(edgeBuilder.Edge());
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_bezier_curve: MakeWire failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = wireBuilder.Wire();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_bezier_curve: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_bezier_curve: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_bezier_curve: unknown C++ exception");
+    }
+}
+
+// --- make_nurbs_curve ---
+
+std::unique_ptr<OcctShape> make_nurbs_curve(
+    rust::Slice<const double> pole_coords, size_t n_poles,
+    rust::Slice<const double> weights,
+    rust::Slice<const double> flat_knots,
+    int degree) {
+    try {
+        if (n_poles < 2) {
+            throw std::runtime_error("make_nurbs_curve: requires at least 2 control points");
+        }
+        if (degree < 1) {
+            throw std::runtime_error("make_nurbs_curve: degree must be >= 1");
+        }
+        // Build poles array
+        TColgp_Array1OfPnt poles(1, static_cast<int>(n_poles));
+        TColStd_Array1OfReal wts(1, static_cast<int>(n_poles));
+        for (size_t i = 0; i < n_poles; ++i) {
+            poles.SetValue(static_cast<int>(i + 1),
+                gp_Pnt(pole_coords[i * 3], pole_coords[i * 3 + 1], pole_coords[i * 3 + 2]));
+            wts.SetValue(static_cast<int>(i + 1), weights[i]);
+        }
+        // Deduplicate flat knots into unique knots + multiplicities
+        std::vector<double> unique_knots;
+        std::vector<int> mults;
+        for (size_t i = 0; i < flat_knots.size(); ) {
+            double k = flat_knots[i];
+            int m = 0;
+            while (i < flat_knots.size() && flat_knots[i] == k) { ++m; ++i; }
+            unique_knots.push_back(k);
+            mults.push_back(m);
+        }
+        TColStd_Array1OfReal knots_arr(1, static_cast<int>(unique_knots.size()));
+        TColStd_Array1OfInteger mults_arr(1, static_cast<int>(mults.size()));
+        for (size_t i = 0; i < unique_knots.size(); ++i) {
+            knots_arr.SetValue(static_cast<int>(i + 1), unique_knots[i]);
+            mults_arr.SetValue(static_cast<int>(i + 1), mults[i]);
+        }
+        Handle(Geom_BSplineCurve) bspline = new Geom_BSplineCurve(
+            poles, wts, knots_arr, mults_arr, degree);
+        BRepBuilderAPI_MakeEdge edgeBuilder(bspline);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_nurbs_curve: MakeEdge failed");
+        }
+        BRepBuilderAPI_MakeWire wireBuilder(edgeBuilder.Edge());
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_nurbs_curve: MakeWire failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = wireBuilder.Wire();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT make_nurbs_curve: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT make_nurbs_curve: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT make_nurbs_curve: unknown C++ exception");
     }
 }
 

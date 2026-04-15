@@ -10,6 +10,7 @@ reify-types.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
 reify-eval = { workspace = true, optional = true }
+reify-constraints = { workspace = true, optional = true }
 serde_json.workspace = true
 tracing.workspace = true
 
@@ -17,4 +18,4 @@ tracing.workspace = true
 tempfile.workspace = true
 
 [features]
-eval-helpers = ["dep:reify-eval"]
+eval-helpers = ["dep:reify-eval", "dep:reify-constraints"]

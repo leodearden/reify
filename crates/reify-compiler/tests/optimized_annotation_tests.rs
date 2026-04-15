@@ -9,19 +9,10 @@
 //!   - An un-annotated constraint def yields `optimized_target = None`.
 
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
-use reify_types::{Diagnostic, ModulePath, Severity};
+use reify_test_support::compile_source;
+use reify_types::{Diagnostic, Severity};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("optimized_ann_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
 
 fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
     diags
@@ -60,7 +51,7 @@ structure S {
     constraint MinWall(w: t)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -108,7 +99,7 @@ structure S {
     constraint Coincident(a: x, b: y)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -142,7 +133,7 @@ structure S {
     constraint Plain(a: x, b: y)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -163,7 +154,7 @@ structure S {
 /// where the new arm might have accidentally replaced the old list.
 #[test]
 fn optimized_on_structure_is_accepted() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized("kernel::fast")
 structure S {
@@ -190,7 +181,7 @@ structure S {
 /// validator.
 #[test]
 fn optimized_on_occurrence_is_accepted() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized("kernel::fast")
 occurrence def Outer {
@@ -218,7 +209,7 @@ occurrence def Outer {
 /// the entire context check.
 #[test]
 fn optimized_on_unsupported_context_still_warns() {
-    let module = compile_module(r#"@optimized("x") fn f(x: Real) -> Real { x }"#);
+    let module = compile_source(r#"@optimized("x") fn f(x: Real) -> Real { x }"#);
 
     let errors = error_diags(&module.diagnostics);
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
@@ -234,6 +225,63 @@ fn optimized_on_unsupported_context_still_warns() {
     );
 }
 
+// ── Missing-target warning must not fire on non-consuming contexts ───────────
+
+/// `@optimized` with no string-literal arg on a *structure* must NOT emit the
+/// missing-target warning — the target is only consumed in constraint_def context.
+/// Telling a user to add a string that nothing reads is actively harmful.
+#[test]
+fn optimized_missing_target_on_structure_does_not_warn() {
+    let module = compile_source(
+        r#"
+@optimized
+structure S {
+    param x: Real
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("requires a string literal target"))
+        .collect();
+    assert!(
+        missing_target_warnings.is_empty(),
+        "@optimized (no target) on structure must not warn about missing target; got: {:?}",
+        missing_target_warnings
+    );
+}
+
+/// `@optimized` with no string-literal arg on an *occurrence def* must NOT emit
+/// the missing-target warning — same reasoning as for structures above.
+#[test]
+fn optimized_missing_target_on_occurrence_does_not_warn() {
+    let module = compile_source(
+        r#"
+@optimized
+occurrence def O {
+    param y: Real = 1.0
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("requires a string literal target"))
+        .collect();
+    assert!(
+        missing_target_warnings.is_empty(),
+        "@optimized (no target) on occurrence must not warn about missing target; got: {:?}",
+        missing_target_warnings
+    );
+}
+
 // ── Malformed-annotation diagnostics (reviewer suggestion S4) ───────────────
 
 /// `@optimized` with no string-literal first arg silently routes to the
@@ -241,7 +289,7 @@ fn optimized_on_unsupported_context_still_warns() {
 /// wondering why their registered impl isn't being called.
 #[test]
 fn optimized_without_string_target_warns() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized()
 constraint def Plain {
@@ -269,7 +317,7 @@ constraint def Plain {
 /// `@optimized(123)` (non-string first arg) should trip the same warning.
 #[test]
 fn optimized_with_non_string_target_warns() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized(123)
 constraint def Plain {
@@ -298,7 +346,7 @@ constraint def Plain {
 /// `optimized_target`, so warn on every duplicate past the first.
 #[test]
 fn multiple_optimized_annotations_warn() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized("new_target")
 @optimized("legacy_target")
@@ -325,11 +373,233 @@ constraint def Plain {
     );
 }
 
+/// `@optimized` (malformed, no args) followed by `@optimized("kernel::foo")` on
+/// a constraint_def must resolve to `Some("kernel::foo")` — the extractor must
+/// continue scanning past the malformed first entry rather than returning None.
+///
+/// The user sees a missing-target warning on the malformed first @optimized, but
+/// NOT a duplicate-@optimized warning on the second: the malformed entry doesn't
+/// count as "first valid", so the valid second annotation is treated as the sole
+/// well-formed @optimized rather than a duplicate. This avoids the contradictory
+/// signal of "entry #1 is malformed" + "entry #2 is shadowed by entry #1".
+#[test]
+fn malformed_then_valid_optimized_resolves_to_valid_target() {
+    let source = r#"
+@optimized()
+@optimized("kernel::foo")
+constraint def PlainC {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure S {
+    param x: Real
+    param y: Real
+    constraint PlainC(a: x, b: y)
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // The valid second @optimized target must be returned by the extractor.
+    let tmpl = template_named(&module, "S");
+    assert_eq!(tmpl.constraints.len(), 1);
+    let cc: &CompiledConstraint = &tmpl.constraints[0];
+    assert_eq!(
+        cc.optimized_target,
+        Some("kernel::foo".to_string()),
+        "expected extractor to skip past malformed @optimized() and return the valid target; got: {:?}",
+        cc.optimized_target
+    );
+
+    // The missing-target warning must still fire (on the malformed first @optimized).
+    let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .collect();
+    assert!(
+        !missing_target_warnings.is_empty(),
+        "expected a missing-target warning for the malformed first @optimized, got none; all diags: {:?}",
+        module.diagnostics
+    );
+
+    // No duplicate-@optimized warning: the malformed entry doesn't count as
+    // "seen valid", so the second (valid) annotation is the first valid one,
+    // not a duplicate.
+    let duplicate_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("multiple @optimized annotations"))
+        .collect();
+    assert!(
+        duplicate_warnings.is_empty(),
+        "a malformed @optimized() before a valid one must not trigger duplicate warning; got: {:?}",
+        duplicate_warnings
+    );
+}
+
+/// `@optimized("foo")` followed by `@optimized()` (malformed) on a constraint_def
+/// must still return `Some("foo")` — the valid first entry wins and the malformed
+/// second is not a duplicate-eligible entry.
+///
+/// The malformed second `@optimized()` fires a missing-target warning (it's on a
+/// constraint_def without a string arg), but NOT a duplicate warning, because the
+/// duplicate check only counts *valid* entries.
+#[test]
+fn valid_then_malformed_optimized_keeps_valid_target() {
+    let source = r#"
+@optimized("kernel::foo")
+@optimized()
+constraint def PlainC {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure S {
+    param x: Real
+    param y: Real
+    constraint PlainC(a: x, b: y)
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // The valid first @optimized target must be preserved.
+    let tmpl = template_named(&module, "S");
+    assert_eq!(tmpl.constraints.len(), 1);
+    let cc: &CompiledConstraint = &tmpl.constraints[0];
+    assert_eq!(
+        cc.optimized_target,
+        Some("kernel::foo".to_string()),
+        "expected valid first @optimized target to be preserved; got: {:?}",
+        cc.optimized_target
+    );
+
+    // The malformed second @optimized() must fire a missing-target warning.
+    let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .collect();
+    assert!(
+        !missing_target_warnings.is_empty(),
+        "expected a missing-target warning for the malformed second @optimized(), got none; all diags: {:?}",
+        module.diagnostics
+    );
+
+    // The malformed second @optimized() does NOT count as a valid duplicate,
+    // so no duplicate warning should fire.
+    let duplicate_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("multiple @optimized annotations"))
+        .collect();
+    assert!(
+        duplicate_warnings.is_empty(),
+        "a malformed @optimized() after a valid one must not trigger duplicate warning; got: {:?}",
+        duplicate_warnings
+    );
+}
+
+/// `@optimized(123)` (non-string first arg) followed by `@optimized("kernel::foo")`
+/// on a constraint_def must resolve to `Some("kernel::foo")`. This exercises the
+/// non-string-arg branch of the StringLiteral match in `optimized_target` — distinct
+/// from the no-args case tested in `malformed_then_valid_optimized_resolves_to_valid_target`.
+///
+/// Same duplicate-warning contract: the non-string first entry is not counted as a
+/// valid @optimized, so the valid second one is the sole well-formed annotation.
+#[test]
+fn nonstring_then_valid_optimized_resolves_to_valid_target() {
+    let source = r#"
+@optimized(123)
+@optimized("kernel::foo")
+constraint def PlainC {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure S {
+    param x: Real
+    param y: Real
+    constraint PlainC(a: x, b: y)
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // The valid second @optimized target must be returned.
+    let tmpl = template_named(&module, "S");
+    assert_eq!(tmpl.constraints.len(), 1);
+    let cc: &CompiledConstraint = &tmpl.constraints[0];
+    assert_eq!(
+        cc.optimized_target,
+        Some("kernel::foo".to_string()),
+        "expected extractor to skip non-string @optimized(123) and return the valid target; got: {:?}",
+        cc.optimized_target
+    );
+
+    // The missing-target warning must still fire (on the non-string first @optimized).
+    let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .collect();
+    assert!(
+        !missing_target_warnings.is_empty(),
+        "expected a missing-target warning for the non-string first @optimized(123), got none; all diags: {:?}",
+        module.diagnostics
+    );
+
+    // No duplicate warning: the non-string first annotation is not a valid
+    // @optimized entry, so the valid second one is not a duplicate.
+    let duplicate_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("multiple @optimized annotations"))
+        .collect();
+    assert!(
+        duplicate_warnings.is_empty(),
+        "a non-string @optimized before a valid one must not trigger duplicate warning; got: {:?}",
+        duplicate_warnings
+    );
+}
+
+/// Multiple valid `@optimized` annotations on a *structure* must NOT emit the
+/// duplicate-@optimized warning — the target string is not consumed on
+/// structure contexts (`optimized_target` is only called by entity.rs when
+/// lowering constraint defs), so there is nothing being "shadowed".
+#[test]
+fn multiple_valid_optimized_on_structure_does_not_warn() {
+    let module = compile_source(
+        r#"
+@optimized("kernel::fast")
+@optimized("kernel::slow")
+structure S {
+    param x: Real
+}
+"#,
+    );
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let duplicate_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("multiple @optimized annotations"))
+        .collect();
+    assert!(
+        duplicate_warnings.is_empty(),
+        "multiple @optimized on structure must not warn about duplicates (target not consumed); got: {:?}",
+        duplicate_warnings
+    );
+}
+
 /// A valid single `@optimized("target")` must NOT trip any of the new
 /// malformed-annotation warnings.
 #[test]
 fn well_formed_optimized_has_no_malformed_warnings() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
 @optimized("kernel::foo")
 constraint def Plain {

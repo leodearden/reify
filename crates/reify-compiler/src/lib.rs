@@ -70,9 +70,34 @@ pub fn compile_with_stdlib(parsed: &reify_syntax::ParsedModule) -> CompiledModul
 /// that are visible to the user module during compilation. The output
 /// `CompiledModule` contains only the user's own definitions — prelude
 /// definitions are used as context but not duplicated in the output.
+///
+/// This is a thin wrapper around [`compile_with_prelude_refs`] that accepts
+/// owned `CompiledModule` slices for external callers. Internal code should
+/// prefer `compile_with_prelude_refs` to avoid cloning.
+///
+/// **Performance note:** this wrapper allocates a `Vec<&CompiledModule>` on
+/// every call. For the typical call site with a small prelude this is
+/// negligible, but callers in a hot loop should use `compile_with_prelude_refs`
+/// (currently `pub(crate)`) directly to avoid repeated allocation.
 pub fn compile_with_prelude(
     parsed: &reify_syntax::ParsedModule,
     prelude: &[CompiledModule],
+) -> CompiledModule {
+    let refs: Vec<&CompiledModule> = prelude.iter().collect();
+    compile_with_prelude_refs(parsed, &refs)
+}
+
+/// Compile a parsed module with prelude definitions provided as references.
+///
+/// This is the inner implementation used by the module DAG to avoid cloning
+/// already-compiled modules. The `prelude` slice contains references to
+/// compiled modules whose exported definitions (units, traits, enums,
+/// constraint defs) are visible during compilation.
+///
+/// External callers should use [`compile_with_prelude`] instead.
+pub(crate) fn compile_with_prelude_refs(
+    parsed: &reify_syntax::ParsedModule,
+    prelude: &[&CompiledModule],
 ) -> CompiledModule {
     let mut imports = Vec::new();
     let mut functions = Vec::new();
@@ -103,7 +128,7 @@ pub fn compile_with_prelude(
     // the prelude parameter with an empty slice. This affects unit seeding,
     // trait/enum/function resolution, and constraint def imports.
     let has_no_prelude = parsed.pragmas.iter().any(|p| p.name == "no_prelude");
-    let prelude: &[CompiledModule] = if has_no_prelude { &[] } else { prelude };
+    let prelude: &[&CompiledModule] = if has_no_prelude { &[] } else { prelude };
 
     // Consolidated pre-pass: iterate declarations once, collecting references
     // for deferred compilation. This replaces 4 separate loops (enum, function,
@@ -1697,8 +1722,17 @@ mod tests {
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let result =
-            compile_geometry_call(&expr, &scope, &enum_defs, &functions, &mut diagnostics, 0);
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
 
         assert!(
             result.is_none(),
@@ -2021,6 +2055,130 @@ structure S {
             );
         } else {
             panic!("expected Transform, got {:?}", op);
+        }
+    }
+
+    // --- Bug fix tests: GeomRef::Step(0) fallback hardcoding (task-612) ---
+
+    #[test]
+    fn sweep_non_geom_profile_fallback_uses_step_offset() {
+        // sweep() where the profile arg is a literal number (not a geometry expression).
+        // When step_offset=3, the profile GeomRef fallback should be Step(3), not Step(0).
+        // The path arg is also a literal, so it falls back to Step(step_offset + 1) = Step(4).
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "sweep".to_string(),
+                args: vec![
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(2.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                ],
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            3, // step_offset = 3
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("sweep() should produce ops even with non-geometry args");
+        let sweep_op = ops.last().expect("should have at least one op");
+        match sweep_op {
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Sweep,
+                profiles,
+                ..
+            } => {
+                assert_eq!(profiles.len(), 2, "sweep should have 2 profiles (profile, path)");
+                assert_eq!(
+                    profiles[0],
+                    GeomRef::Step(3),
+                    "sweep profile fallback should be Step(step_offset=3), not {:?}",
+                    profiles[0]
+                );
+            }
+            other => panic!("expected Sweep(Sweep), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn loft_non_geom_args_fallback_uses_step_offset() {
+        // loft() with literal-number args (not geometry expressions).
+        // When step_offset=5, the fallback GeomRef for profile i should be
+        // GeomRef::Step(5 + i) — each profile gets a unique step, matching
+        // sweep()'s convention (profile=step_offset, path=step_offset+1).
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "loft".to_string(),
+                args: vec![
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(2.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                ],
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            5, // step_offset = 5
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        // loft() with non-geometry args should still produce an op (with fallback refs)
+        let ops = result.expect("loft() should produce ops even with non-geometry args");
+        let loft_op = ops.last().expect("should have at least one op");
+        match loft_op {
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Loft,
+                profiles,
+                ..
+            } => {
+                assert_eq!(profiles.len(), 2, "loft should have 2 profiles");
+                for (i, profile) in profiles.iter().enumerate() {
+                    assert_eq!(
+                        *profile,
+                        GeomRef::Step(5 + i),
+                        "loft fallback for profile {} should be Step(step_offset + {0} = {}), not {:?}",
+                        i,
+                        5 + i,
+                        profile
+                    );
+                }
+            }
+            other => panic!("expected Sweep(Loft), got {:?}", other),
         }
     }
 }

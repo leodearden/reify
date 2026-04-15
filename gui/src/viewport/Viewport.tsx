@@ -1,5 +1,5 @@
 import { onMount, onCleanup, createEffect, createSignal, Show } from 'solid-js';
-import type { MeshData, EvaluationStatus } from '../types';
+import type { MeshData, EvaluationStatus, VisibilityState } from '../types';
 import { Box3 } from 'three';
 import { createScene } from './scene';
 import { createControls } from './controls';
@@ -16,6 +16,7 @@ export interface ViewportProps {
   onFitToView?: () => void;
   flyToEntityRef?: (fn: (entityPath: string) => void) => void;
   fitToViewRef?: (fn: () => void) => void;
+  entityVisibility?: Record<string, VisibilityState>;
 }
 
 export function Viewport(props: ViewportProps) {
@@ -49,6 +50,19 @@ export function Viewport(props: ViewportProps) {
     props.flyToEntityRef?.((entityPath: string) => selection.flyToEntity(entityPath));
     props.fitToViewRef?.(() => selection.fitToView());
 
+    // Expose viewport internals for the debug bridge (REIFY_DEBUG=1)
+    if (window.__REIFY_DEBUG__) {
+      window.__REIFY_DEBUG__.viewport = {
+        scene,
+        camera,
+        renderer,
+        getMeshes: () => meshManager.getSceneMeshes(),
+        getGhostMeshes: () => meshManager.getGhostMeshes(),
+        fitToView: () => selection.fitToView(),
+        flyToEntity: (entityPath: string) => selection.flyToEntity(entityPath),
+      };
+    }
+
     // Render-on-demand: keep rAF loop alive (for OrbitControls damping)
     // but only call renderer.render when something has changed.
     let needsRender = true;
@@ -74,12 +88,36 @@ export function Viewport(props: ViewportProps) {
       // Refresh selection wireframe to reflect updated geometry
       selection.refreshSelected();
 
-      // Adjust camera clipping planes based on scene bounds
+      // Adjust camera clipping planes based on scene bounds (include ghost meshes for correct framing)
       const bounds = new Box3();
       for (const mesh of meshManager.getSceneMeshes().values()) {
         bounds.expandByObject(mesh);
       }
+      for (const mesh of meshManager.getGhostMeshes().values()) {
+        bounds.expandByObject(mesh);
+      }
       adjustClipping(bounds);
+      requestRender();
+    });
+
+    // Sync entity visibility reactively, resetting removed entities to 'show'.
+    // prevVisKeys is intentionally non-reactive (plain Set, not a signal) — it tracks
+    // previously-seen keys purely for diff logic. SolidJS does not track it, which is correct:
+    // the effect is re-triggered by props.entityVisibility changes, and prevVisKeys is updated
+    // synchronously as a side effect. No other code path touches prevVisKeys.
+    let prevVisKeys = new Set<string>();
+    createEffect(() => {
+      const visibility = props.entityVisibility ?? {};
+      const currentKeys = new Set(Object.keys(visibility));
+      for (const [entityPath, state] of Object.entries(visibility)) {
+        meshManager.setVisibility(entityPath, state);
+      }
+      for (const key of prevVisKeys) {
+        if (!currentKeys.has(key)) {
+          meshManager.setVisibility(key, 'show');
+        }
+      }
+      prevVisKeys = currentKeys;
       requestRender();
     });
 
@@ -132,6 +170,9 @@ export function Viewport(props: ViewportProps) {
       controls.dispose();
       meshManager.dispose();
       renderer.dispose();
+      if (window.__REIFY_DEBUG__) {
+        delete window.__REIFY_DEBUG__.viewport;
+      }
     });
   });
 

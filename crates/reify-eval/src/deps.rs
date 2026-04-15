@@ -4,9 +4,10 @@
 //! the compiled expression tree. This is a safe over-approximation for Reify
 //! expressions: because they are pure, the set of cells an expression *can*
 //! read is a superset of (or equal to) the set it *will* read on any given
-//! evaluation — conditional branches and match arms may short-circuit at runtime, but the
-//! statically collected reads cover every reachable ValueRef. There is no
-//! benefit to runtime (Adapton-style) tracing in a pure language.
+//! evaluation — conditional branches and match arms include every reachable ValueRef
+//! across all arms, even though only one arm is taken at runtime, so the static set
+//! is a superset of the runtime-read set. There is no benefit to runtime
+//! (Adapton-style) tracing in a pure language.
 
 use reify_types::{CompiledExpr, ValueCellId};
 
@@ -176,7 +177,8 @@ pub fn extract_realization_dependencies(
             | reify_compiler::CompiledGeometryOp::Modify { args, .. }
             | reify_compiler::CompiledGeometryOp::Transform { args, .. }
             | reify_compiler::CompiledGeometryOp::Pattern { args, .. }
-            | reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
+            | reify_compiler::CompiledGeometryOp::Sweep { args, .. }
+            | reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
             reify_compiler::CompiledGeometryOp::Boolean { .. } => continue,
         };
         for (_, expr) in args {
@@ -439,7 +441,7 @@ mod tests {
     /// `extract_dependency_trace` is a thin wrapper over
     /// `CompiledExpr::collect_value_refs`, which *preserves duplicates* (it pushes
     /// each `ValueRef` without deduping). The sibling helper [`extract_value_deps`]
-    /// (defined later in this file) is the deduplicating variant; `extract_dependency_trace`
+    /// (defined later in this file) is the deduplicating-and-sorting variant; `extract_dependency_trace`
     /// intentionally keeps raw duplicates. This test pins that split so callers
     /// know whether they need to dedupe downstream.
     #[test]
@@ -464,6 +466,54 @@ mod tests {
             "both reads should refer to x, got: {:?}",
             trace.reads
         );
+    }
+
+    /// Step 1c: Documents the duplicate-preservation contract of `extract_dependency_trace`
+    /// for a Conditional whose then- and else-branches reference the same `ValueCellId`
+    /// (e.g. `if flag { x } else { x }`).
+    ///
+    /// This combines the all-branches static extraction property (Step 2 below) with the
+    /// duplicate-preservation property (Step 1b above): even when both arms refer to the
+    /// same cell, `extract_dependency_trace` preserves all occurrences without deduping.
+    /// That gives `reads.len() == 3` (flag + x + x), pinning the exact multiplicity so
+    /// callers know whether downstream deduplication is needed.
+    #[test]
+    fn extract_dependency_trace_preserves_duplicate_reads_for_same_cell_in_conditional() {
+        let flag = ValueCellId::new("A", "flag");
+        let x = ValueCellId::new("A", "x");
+        let condition = CompiledExpr::value_ref(flag.clone(), Type::Bool);
+        let then_branch = CompiledExpr::value_ref(x.clone(), Type::Real);
+        let else_branch = CompiledExpr::value_ref(x.clone(), Type::Real);
+        let expr = reify_test_support::builders::expr::conditional_expr(
+            condition,
+            then_branch,
+            else_branch,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert_eq!(
+            trace.reads.len(),
+            3,
+            "extract_dependency_trace preserves duplicates: conditional(flag, x, x) \
+             should yield 3 reads (flag + x + x), got {:?}",
+            trace.reads
+        );
+        assert_eq!(
+            trace.reads.iter().filter(|id| *id == &flag).count(),
+            1,
+            "reads should contain flag exactly once, got: {:?}",
+            trace.reads
+        );
+        assert_eq!(
+            trace.reads.iter().filter(|id| *id == &x).count(),
+            2,
+            "reads should contain x exactly twice (once per branch), got: {:?}",
+            trace.reads
+        );
+        // Pin traversal order: condition → then_branch → else_branch
+        // (matches collect_value_refs_inner's Conditional arm in reify-types/src/expr.rs)
+        assert_eq!(trace.reads[0], flag, "reads[0] should be the condition (flag)");
+        assert_eq!(trace.reads[1], x, "reads[1] should be the then-branch (x)");
+        assert_eq!(trace.reads[2], x, "reads[2] should be the else-branch (x)");
     }
 
     /// Step 2: Verify extract_dependency_trace handles nested Conditional expressions —

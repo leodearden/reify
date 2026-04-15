@@ -1924,6 +1924,7 @@ impl Engine {
                             reify_expr::eval_expr(
                                 expr,
                                 &reify_expr::EvalContext::new(&values, &functions)
+                                    .with_determinacy(&new_snapshot.values)
                                     .with_meta(&self.meta_map),
                             )
                         } else {
@@ -2319,11 +2320,30 @@ impl Engine {
                     continue;
                 }
 
-                // Remove old instances from graph and snapshot
-                let old_count = match &old_count_val {
-                    Value::Int(n) => *n,
-                    _ => 0,
+                // Helper closure: resolve a collection count value to an integer.
+                // Returns (count, optional warning diagnostic).
+                // Value::Undef is treated as 0 without warning — it represents an undetermined
+                // count for which no instances were created. Any other non-integer type emits a
+                // warning (potential upstream type bug) and also returns 0.
+                let resolve_count = |val: &Value, label: &str| -> (i64, Option<Diagnostic>) {
+                    match val {
+                        Value::Int(n) => (*n, None),
+                        Value::Undef => (0, None),
+                        other => (
+                            0,
+                            Some(Diagnostic::warning(format!(
+                                "Collection count cell {} has non-integer {} value {:?}; treating as 0",
+                                col_sub.count_cell, label, other
+                            ))),
+                        ),
+                    }
                 };
+
+                // Remove old instances from graph and snapshot
+                let (old_count, old_warn) = resolve_count(&old_count_val, "old");
+                if let Some(w) = old_warn {
+                    diagnostics.push(w);
+                }
                 for i in 0..old_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
@@ -2336,10 +2356,10 @@ impl Engine {
                 }
 
                 // Create new instances based on new count
-                let new_count = match &new_count_val {
-                    Value::Int(n) => *n,
-                    _ => 0,
-                };
+                let (new_count, new_warn) = resolve_count(&new_count_val, "new");
+                if let Some(w) = new_warn {
+                    diagnostics.push(w);
+                }
                 for i in 0..new_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
@@ -3068,6 +3088,7 @@ impl Engine {
             for template in &module.templates {
                 for realization in &template.realizations {
                     let handle_start = step_handles.len();
+                    let mut had_failure = false;
                     for op in &realization.operations {
                         total_ops += 1;
                         let geom_op = compile_geometry_op(
@@ -3083,6 +3104,11 @@ impl Engine {
                                 Ok(handle) => {
                                     step_handles.push(handle.id);
                                 }
+                                // Kernel errors break immediately: a geometry engine failure
+                                // is often unrecoverable (e.g. corrupt state), and subsequent
+                                // ops that depend on the failed handle would fail too. Compile
+                                // errors (None branch below) are cheaper to continue past because
+                                // we can push a sentinel and still attempt independent ops.
                                 Err(e) => {
                                     diagnostics
                                         .push(Diagnostic::error(format!("geometry error: {}", e)));
@@ -3093,12 +3119,13 @@ impl Engine {
                                 diagnostics.push(Diagnostic::error(
                                     "failed to compile geometry operation",
                                 ));
-                                break;
+                                step_handles.push(GeometryHandleId::INVALID);
+                                had_failure = true;
                             }
                         }
                     }
                     // Discard intermediate handles from partially-failed realizations
-                    if step_handles.len() - handle_start < realization.operations.len() {
+                    if had_failure || step_handles.len() - handle_start < realization.operations.len() {
                         step_handles.truncate(handle_start);
                     }
                 }
@@ -3148,6 +3175,7 @@ impl Engine {
             for template in &module.templates {
                 for realization in &template.realizations {
                     let handle_start = step_handles.len();
+                    let mut had_failure = false;
                     for op in &realization.operations {
                         total_ops += 1;
                         let geom_op = compile_geometry_op(
@@ -3163,6 +3191,11 @@ impl Engine {
                                 Ok(handle) => {
                                     step_handles.push(handle.id);
                                 }
+                                // Kernel errors break immediately: a geometry engine failure
+                                // is often unrecoverable (e.g. corrupt state), and subsequent
+                                // ops that depend on the failed handle would fail too. Compile
+                                // errors (None branch below) are cheaper to continue past because
+                                // we can push a sentinel and still attempt independent ops.
                                 Err(e) => {
                                     diagnostics
                                         .push(Diagnostic::error(format!("geometry error: {}", e)));
@@ -3173,12 +3206,13 @@ impl Engine {
                                 diagnostics.push(Diagnostic::error(
                                     "failed to compile geometry operation",
                                 ));
-                                break;
+                                step_handles.push(GeometryHandleId::INVALID);
+                                had_failure = true;
                             }
                         }
                     }
                     // Discard intermediate handles from partially-failed realizations
-                    if step_handles.len() - handle_start < realization.operations.len() {
+                    if had_failure || step_handles.len() - handle_start < realization.operations.len() {
                         step_handles.truncate(handle_start);
                     }
                 }
@@ -3269,6 +3303,7 @@ impl Engine {
         for template in &module.templates {
             for realization in &template.realizations {
                 let handle_start = step_handles.len();
+                let mut had_failure = false;
 
                 for op in &realization.operations {
                     let geom_op = compile_geometry_op(
@@ -3284,6 +3319,11 @@ impl Engine {
                             Ok(handle) => {
                                 step_handles.push(handle.id);
                             }
+                            // Kernel errors break immediately: a geometry engine failure
+                            // is often unrecoverable (e.g. corrupt state), and subsequent
+                            // ops that depend on the failed handle would fail too. Compile
+                            // errors (None branch below) are cheaper to continue past because
+                            // we can push a sentinel and still attempt independent ops.
                             Err(e) => {
                                 diagnostics
                                     .push(Diagnostic::error(format!("geometry error: {}", e)));
@@ -3293,13 +3333,14 @@ impl Engine {
                         None => {
                             diagnostics
                                 .push(Diagnostic::error("failed to compile geometry operation"));
-                            break;
+                            step_handles.push(GeometryHandleId::INVALID);
+                            had_failure = true;
                         }
                     }
                 }
 
                 // Discard intermediate handles from partially-failed realizations
-                if step_handles.len() - handle_start < realization.operations.len() {
+                if had_failure || step_handles.len() - handle_start < realization.operations.len() {
                     step_handles.truncate(handle_start);
                 }
 
@@ -3555,6 +3596,39 @@ fn eval_named_arg_f64(
     }
 }
 
+/// Evaluate all args in a variadic curve constructor to f64 values.
+///
+/// Returns `None` if any arg evaluates to a non-finite value, pushing a
+/// warning diagnostic for each bad arg.  Used by InterpCurve, BezierCurve,
+/// and NurbsCurve to avoid duplicating the same eval-and-collect loop.
+fn eval_all_args_to_f64(
+    label: &str,
+    args: &[(String, reify_types::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<f64>> {
+    args.iter()
+        .map(|(name, expr)| {
+            let v = reify_expr::eval_expr(
+                expr,
+                &reify_expr::EvalContext::new(values, functions)
+                    .with_meta(meta_map),
+            );
+            match v.as_f64() {
+                Some(f) if f.is_finite() => Some(f),
+                _ => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{} arg '{}' is non-finite", label, name
+                    )));
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 /// Compile a CompiledGeometryOp into a GeometryOp by evaluating expressions.
 /// Translate a compiled geometry operation into a runtime `GeometryOp`.
 ///
@@ -3606,8 +3680,8 @@ fn compile_geometry_op(
         CompiledGeometryOp::Boolean { op, left, right } => {
             let resolve_ref = |r: &GeomRef| -> Option<GeometryHandleId> {
                 match r {
-                    GeomRef::Step(idx) => step_handles.get(*idx).copied(),
-                    GeomRef::Sub(_name) => step_handles.last().copied(),
+                    GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID),
+                    GeomRef::Sub(_name) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID),
                 }
             };
             let left_id = resolve_ref(left)?;
@@ -3629,8 +3703,8 @@ fn compile_geometry_op(
         }
         CompiledGeometryOp::Modify { kind, target, args } => {
             let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                GeomRef::Sub(_) => step_handles.last().copied()?,
+                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
             };
             let mut eval_arg = |name: &str| -> Option<reify_types::Value> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
@@ -3671,7 +3745,9 @@ fn compile_geometry_op(
                     // plane is passed as an expression that evaluates to a value;
                     // at this level we don't have the geometry handle yet, so we
                     // use step_handles.last() as a placeholder for the plane reference.
-                    let plane_id = step_handles.last().copied();
+                    // Filter INVALID so a preceding compile failure (sentinel) propagates
+                    // as None here rather than forwarding INVALID to the kernel.
+                    let plane_id = step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID);
                     Some(reify_types::GeometryOp::Draft {
                         target: target_id,
                         angle,
@@ -3689,8 +3765,8 @@ fn compile_geometry_op(
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
             let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                GeomRef::Sub(_) => step_handles.last().copied()?,
+                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
             };
             let mut f64_arg = |name: &str| {
                 eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
@@ -3750,8 +3826,8 @@ fn compile_geometry_op(
         CompiledGeometryOp::Pattern { kind, target, args } => {
             // Pattern operations resolve target via step index
             let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                GeomRef::Sub(_) => step_handles.last().copied()?,
+                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
             };
             match kind {
                 reify_compiler::PatternKind::Linear => {
@@ -3857,8 +3933,8 @@ fn compile_geometry_op(
                     let resolved: Option<Vec<GeometryHandleId>> = profiles
                         .iter()
                         .map(|r| match r {
-                            GeomRef::Step(idx) => step_handles.get(*idx).copied(),
-                            GeomRef::Sub(_) => step_handles.last().copied(),
+                            GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID),
+                            GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID),
                         })
                         .collect();
                     Some(reify_types::GeometryOp::Loft {
@@ -3867,8 +3943,8 @@ fn compile_geometry_op(
                 }
                 reify_compiler::SweepKind::Extrude => {
                     let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     let distance = eval_named_arg(
                         "distance",
@@ -3903,8 +3979,8 @@ fn compile_geometry_op(
                 }
                 reify_compiler::SweepKind::Revolve => {
                     let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     let mut f64_arg = |name: &str| {
                         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
@@ -3946,17 +4022,143 @@ fn compile_geometry_op(
                 reify_compiler::SweepKind::Sweep => {
                     // Resolve profile GeomRef (first entry in profiles) to a handle
                     let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     // Resolve path GeomRef (second entry in profiles) to a handle
                     let path_handle = match profiles.get(1)? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     Some(reify_types::GeometryOp::Sweep {
                         profile: profile_handle,
                         path: path_handle,
+                    })
+                }
+            }
+        }
+        CompiledGeometryOp::Curve { kind, args } => {
+            use reify_compiler::CurveKind;
+            match kind {
+                CurveKind::LineSegment => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    Some(reify_types::GeometryOp::LineSegment {
+                        x1: f64_arg("x1")?,
+                        y1: f64_arg("y1")?,
+                        z1: f64_arg("z1")?,
+                        x2: f64_arg("x2")?,
+                        y2: f64_arg("y2")?,
+                        z2: f64_arg("z2")?,
+                    })
+                }
+                CurveKind::Arc => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    Some(reify_types::GeometryOp::Arc {
+                        center: [f64_arg("cx")?, f64_arg("cy")?, f64_arg("cz")?],
+                        radius: f64_arg("radius")?,
+                        start_angle: f64_arg("start_angle")?,
+                        end_angle: f64_arg("end_angle")?,
+                        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
+                    })
+                }
+                CurveKind::Helix => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    Some(reify_types::GeometryOp::Helix {
+                        radius: f64_arg("radius")?,
+                        pitch: f64_arg("pitch")?,
+                        height: f64_arg("height")?,
+                    })
+                }
+                CurveKind::InterpCurve => {
+                    let coords = eval_all_args_to_f64("interp", args, values, functions, meta_map, diagnostics)?;
+                    let points: Vec<[f64; 3]> = coords
+                        .chunks_exact(3)
+                        .map(|c| [c[0], c[1], c[2]])
+                        .collect();
+                    Some(reify_types::GeometryOp::InterpCurve { points })
+                }
+                CurveKind::BezierCurve => {
+                    let coords = eval_all_args_to_f64("bezier", args, values, functions, meta_map, diagnostics)?;
+                    let control_points: Vec<[f64; 3]> = coords
+                        .chunks_exact(3)
+                        .map(|c| [c[0], c[1], c[2]])
+                        .collect();
+                    Some(reify_types::GeometryOp::BezierCurve { control_points })
+                }
+                CurveKind::NurbsCurve => {
+                    // For NURBS, all args are passed positionally as c0,c1,...
+                    // Format: first arg = degree, second = n_points, then
+                    // n_points*3 pole coords, n_points weights, remaining knots.
+                    let vals = eval_all_args_to_f64("nurbs", args, values, functions, meta_map, diagnostics)?;
+                    if vals.len() < 2 {
+                        diagnostics.push(Diagnostic::error(
+                            "nurbs() requires at least degree and n_points arguments".to_string(),
+                        ));
+                        return None;
+                    }
+                    // Validate degree is a positive integer
+                    if vals[0] < 1.0 || vals[0] != vals[0].trunc() || vals[0] > 25.0 {
+                        diagnostics.push(Diagnostic::error(
+                            format!("nurbs() degree must be a positive integer (1..25), got {}", vals[0]),
+                        ));
+                        return None;
+                    }
+                    let degree = vals[0] as usize;
+                    // Remaining: need to know n_points to split.
+                    // Convention: second val is n_points.
+                    // Validate n_points is a positive integer within a sensible range
+                    if vals[1] < 2.0 || vals[1] != vals[1].trunc() || vals[1] > (vals.len() as f64) {
+                        diagnostics.push(Diagnostic::error(
+                            format!(
+                                "nurbs() n_points must be a positive integer >= 2 and consistent with argument count, got {}",
+                                vals[1]
+                            ),
+                        ));
+                        return None;
+                    }
+                    let n_points = vals[1] as usize;
+                    let expected_min = 2 + n_points * 3 + n_points; // degree + n + poles + weights
+                    if vals.len() < expected_min {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "nurbs() got fewer arguments than expected for {} control points",
+                            n_points,
+                        )));
+                        return None;
+                    }
+                    let pole_start = 2;
+                    let pole_end = pole_start + n_points * 3;
+                    let weight_end = pole_end + n_points;
+                    let control_points: Vec<[f64; 3]> = vals[pole_start..pole_end]
+                        .chunks_exact(3)
+                        .map(|c| [c[0], c[1], c[2]])
+                        .collect();
+                    let weights: Vec<f64> = vals[pole_end..weight_end].to_vec();
+                    let knots: Vec<f64> = vals[weight_end..].to_vec();
+                    if knots.is_empty() {
+                        diagnostics.push(Diagnostic::error(
+                            "nurbs() requires at least 1 knot value".to_string(),
+                        ));
+                        return None;
+                    }
+                    let expected_knots = n_points + degree + 1;
+                    if knots.len() != expected_knots {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "nurbs() expected {} knots (n_points + degree + 1 = {} + {} + 1), got {}",
+                            expected_knots, n_points, degree, knots.len(),
+                        )));
+                        return None;
+                    }
+                    Some(reify_types::GeometryOp::NurbsCurve {
+                        control_points,
+                        weights,
+                        knots,
+                        degree,
                     })
                 }
             }
@@ -6151,6 +6353,91 @@ mod tests {
         assert_ne!(
             fp_ab, fp_ba,
             "cell ordering must affect the fingerprint (cell identity contributes to the hash)"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests: INVALID sentinel preserves step index alignment (task-612, step-9)
+    // ---------------------------------------------------------------------------
+
+    /// Verifies that an INVALID sentinel at step index 1 does not shift subsequent
+    /// valid handles. With step_handles = [42, INVALID, 100]:
+    /// - Boolean(Step(0), Step(2)) → Some(Union { left: 42, right: 100 })
+    ///   Step(0) resolves to 42 and Step(2) resolves to 100, both correct.
+    ///   The INVALID at index 1 is skipped; indices ≥ 2 are unaffected.
+    /// - Boolean(Step(0), Step(1)) → None
+    ///   Step(1) is INVALID, filtered out by the sentinel check, so the op fails.
+    ///
+    /// Together these two assertions confirm that:
+    /// (a) the sentinel at index 1 maintains index alignment for subsequent handles,
+    /// (b) the INVALID value correctly blocks resolution of its own index.
+    #[test]
+    fn compile_geometry_op_invalid_sentinel_preserves_index_alignment() {
+        use reify_compiler::BooleanOp;
+        let values = ValueMap::new();
+
+        // step_handles[0] = 42 (valid sphere handle)
+        // step_handles[1] = INVALID (sentinel for a failed op)
+        // step_handles[2] = 100 (valid handle — must remain at index 2)
+        let step_handles = vec![
+            GeometryHandleId(42),
+            GeometryHandleId::INVALID,
+            GeometryHandleId(100),
+        ];
+
+        // (a) Union(Step(0), Step(2)): both resolve correctly despite sentinel at index 1
+        let op_ok = CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(2),
+        };
+        let result_ok = compile_geometry_op(
+            &op_ok,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut Vec::new(),
+        );
+        let result_ok = result_ok.expect(
+            "Boolean(Step(0), Step(2)) should succeed: both indices hold valid handles",
+        );
+        match result_ok {
+            reify_types::GeometryOp::Union { left, right } => {
+                assert_eq!(
+                    left,
+                    GeometryHandleId(42),
+                    "Step(0) should resolve to handle 42 (not shifted by sentinel at index 1)"
+                );
+                assert_eq!(
+                    right,
+                    GeometryHandleId(100),
+                    "Step(2) should resolve to handle 100 (aligned correctly despite sentinel at 1)"
+                );
+            }
+            other => panic!(
+                "expected GeometryOp::Union from Boolean(Step(0), Step(2)), got {:?}",
+                other
+            ),
+        }
+
+        // (b) Union(Step(0), Step(1)): Step(1) is INVALID → filtered out → returns None
+        let op_fail = CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(1),
+        };
+        let result_fail = compile_geometry_op(
+            &op_fail,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut Vec::new(),
+        );
+        assert!(
+            result_fail.is_none(),
+            "Boolean(Step(0), Step(1)) should return None: Step(1) is INVALID and filtered out"
         );
     }
 }

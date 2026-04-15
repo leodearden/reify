@@ -12,7 +12,7 @@
 //! Uses `examples/m9_integration.ri` as the capstone source file and inline source
 //! strings for focused per-scenario assertions.
 
-use reify_constraints::SimpleConstraintChecker;
+use reify_test_support::{check_source, make_simple_engine, parse_and_compile};
 use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the integration example file, resolved at compile time from crate root.
@@ -23,42 +23,14 @@ const EXAMPLE_PATH: &str = concat!(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Parse source, assert no parse errors, compile, assert no compile errors.
-/// Returns the compiled module ready for eval or check.
-fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-    compiled
-}
-
 /// Parse, compile, eval with SimpleConstraintChecker, return EvalResult.
 /// Use when asserting on values (SI scalars, strings, booleans).
 fn eval_source(source: &str) -> reify_eval::EvalResult {
     let compiled = parse_and_compile(source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     engine.eval(&compiled)
 }
 
-/// Parse, compile, check with SimpleConstraintChecker, return CheckResult.
-/// Use when asserting on constraint satisfaction, labels, and counts.
-fn check_source(source: &str) -> reify_eval::CheckResult {
-    let compiled = parse_and_compile(source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    engine.check(&compiled)
-}
 
 // ── Step 1: .ri file parses and compiles ─────────────────────────────────────
 
@@ -602,8 +574,7 @@ fn full_pipeline_all_constraints_satisfied() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_integration.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let result = engine.check(&compiled);
 
     // All constraints must be Satisfied
@@ -640,8 +611,7 @@ fn full_pipeline_cross_feature_values() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_integration.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     let check_result = engine.check(&compiled);
 
     // 1. Widget.size = 30mm = 0.03 SI (default from structure, implements Measurable)

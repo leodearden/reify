@@ -42,6 +42,57 @@ fn make_value_lambda(
     }
 }
 
+/// Helper that builds a 3-param `|x, y, z| → (x + y) + z` analytical field and
+/// its corresponding `Type::Field`, parameterised only on `domain_type`.
+///
+/// The four `sample_multi_param_lambda_*` tests share this construction — the only
+/// variation between them is whether the domain is `point3(Real)` or `vec3(Real)`.
+/// Codomain is always `Type::Real` and the source is always `Analytical`.
+///
+/// Returns `(Value::Field { .. }, Type::Field { .. })` ready for use in a
+/// `make_function_call("sample", …)` expression.
+fn make_xyz_sum_field(domain_type: Type) -> (Value, Type) {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda body: (x + y) + z  (left-associative; BinOp is binary)
+    let xy = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        xy,
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
+    (field, field_type)
+}
+
 /// Build the unevaluated `gradient(field)` expression shared by the three
 /// String-codomain gradient tests:
 /// - `gradient_of_field_with_non_numeric_lambda`
@@ -187,10 +238,17 @@ fn sample_temperature_over_length_field() {
 ///
 /// # Contract pinned
 ///
-/// sample()'s analytical path forwards the entire input as a **single** element
-/// to apply_lambda (`&evaluated_args[1..]` is a 1-element slice). For a 1-param
-/// lambda the arity check **passes** (1 arg == 1 param), and the body executes
-/// with `x` bound to the full `Value::Point(...)`.
+/// sample()'s analytical path binds the **entire** `Value::Point` to a 1-param
+/// lambda (no unpacking). The `params.len() > 1` guard in sample() ensures that
+/// 1-param lambdas NEVER unpack Point inputs, even if the Point has multiple
+/// elements. For a 1-param lambda the arity check **passes** (1 arg == 1 param),
+/// and the body executes with `x` bound to the full `Value::Point(...)`.
+///
+/// Multi-param lambdas whose arity matches the Point's length **do** unpack —
+/// see `sample_multi_param_lambda_binds_unpacked_point_components`.
+/// Multi-param lambdas with mismatched arity or scalar (non-Point) inputs still
+/// hit the apply_lambda arity check and return Undef —
+/// see `sample_multi_param_lambda_with_scalar_input_returns_undef`.
 ///
 /// Uses an identity body (`|x| x`) rather than `-x` because `-x` on a Point
 /// also returns Undef (via affine negate rules), which would mask a
@@ -202,7 +260,7 @@ fn sample_temperature_over_length_field() {
 /// the declared `domain_type: Type::point3(Type::length())`.
 ///
 /// Note: the apply_lambda arity check does NOT fire in this test (1 arg == 1
-/// param). See `sample_multi_param_lambda_returns_undef_due_to_no_unpacking`
+/// param). See `sample_multi_param_lambda_with_scalar_input_returns_undef`
 /// for the test that directly pins the arity-check path.
 #[test]
 fn sample_one_param_lambda_binds_entire_point_as_single_value() {
@@ -266,16 +324,18 @@ fn sample_one_param_lambda_binds_entire_point_as_single_value() {
     );
 }
 
-/// Sampling any multi-param lambda returns Undef because sample() never unpacks
-/// the input value into multiple lambda arguments.
+/// Sampling a multi-param lambda with a **scalar** (non-Point) input returns Undef
+/// because sample() only unpacks `Value::Point` inputs; scalar inputs are always
+/// forwarded as a single argument.
 ///
 /// # Contract pinned
 ///
-/// sample()'s analytical path always forwards the entire input as a **single**
-/// element to apply_lambda (`&evaluated_args[1..]` is a 1-element slice),
-/// regardless of whether the input is a scalar, Point2, or Point3. Any lambda
-/// with more than one parameter hits the arity check in apply_lambda at
-/// `crates/reify-expr/src/lib.rs:586`:
+/// sample()'s unpacking path only fires when the second argument is `Value::Point`
+/// **and** `params.len() > 1` **and** `params.len() == items.len()`. When the input
+/// is a scalar (`Value::Real`, `Value::Int`, `Value::Scalar`, etc.) it is always
+/// forwarded as a single-element slice to apply_lambda
+/// (`&evaluated_args[1..]` has length 1). A lambda with more than one parameter
+/// then hits the arity check in apply_lambda at `crates/reify-expr/src/lib.rs`:
 ///
 /// ```rust
 /// if args.len() != params.len() {
@@ -289,17 +349,19 @@ fn sample_one_param_lambda_binds_entire_point_as_single_value() {
 /// and matches the idiomatic 3-param pattern from
 /// `sample_gradient_of_constant_field_near_zero`.
 ///
-/// This test uses a scalar input with a 3-param lambda, but the same Undef
-/// would result for any input (scalar or Point) paired with any lambda having
-/// more than one parameter.
-///
 /// # Cross-reference
 ///
 /// `gradient_wrong_size_tensor_point_returns_undef` in `gradient_tests.rs`
-/// pins the same `apply_lambda` arity contract via the gradient
-/// path: it passes a 2-component `Value::Tensor` as a single arg to a 3-param
-/// lambda, also triggering `lib.rs:586`. Both tests enforce the same no-unpack
-/// invariant from different entry points.
+/// pins the same `apply_lambda` arity contract via the gradient path.
+///
+/// For the case where a matching-arity `Value::Point` **is** provided and the
+/// lambda has `params.len() > 1`, see
+/// `sample_multi_param_lambda_binds_unpacked_point_components` — that test pins
+/// the successful unpacking path.
+///
+/// For the case where a 1-param lambda receives a `Value::Point`, see
+/// `sample_one_param_lambda_binds_entire_point_as_single_value` — the whole
+/// Point is bound to the single parameter (no unpacking).
 ///
 /// # Intentional type-incoherence
 ///
@@ -309,7 +371,7 @@ fn sample_one_param_lambda_binds_entire_point_as_single_value() {
 /// requiring a Point input. `sample()`'s analytical dispatch does not consult
 /// the type metadata; the arity check fires on argument count alone.
 #[test]
-fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
+fn sample_multi_param_lambda_with_scalar_input_returns_undef() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -338,7 +400,8 @@ fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
     };
 
     // sample(field, Real(1.0)) -> Undef
-    // apply_lambda sees 1 arg vs 3 params -> arity check fires -> Undef.
+    // Scalar input is forwarded as a single arg; apply_lambda sees 1 arg vs
+    // 3 params -> arity check fires -> Undef (unpacking only fires for Point).
     let sample_expr = make_function_call(
         "sample",
         vec![
@@ -353,8 +416,9 @@ fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
     assert_eq!(
         sample_result,
         Value::Undef,
-        "sample() never unpacks input; multi-param lambda always hits \
-         apply_lambda arity check (1 forwarded arg vs 3 params)"
+        "sample() forwards scalar (non-Point) inputs as a single arg; \
+         multi-param lambda with scalar input must hit the apply_lambda \
+         arity check (1 forwarded arg vs 3 params) and return Undef"
     );
     // Positive control: the identical constant body IS reachable via a 1-param
     // lambda (arity matches).  This proves that Undef above is caused solely by
@@ -386,6 +450,275 @@ fn sample_multi_param_lambda_returns_undef_due_to_no_unpacking() {
         Value::Real(42.0),
         "1-param lambda body IS reachable (arity matches); proves Undef \
          above comes from the arity check, not the body content"
+    );
+}
+
+/// Sampling a 3D analytical field with a matching-arity multi-param lambda unpacks
+/// the input `Point` into individual lambda arguments.
+///
+/// # Contract pinned
+///
+/// When sample() is called with a `Value::Point` second argument and the lambda has
+/// `params.len() > 1` **and** `params.len() == items.len()`, sample()'s analytical
+/// path must unpack the Point components and forward them as individual scalar
+/// arguments to apply_lambda.  The arity then matches (3 args == 3 params) and
+/// the body executes with x, y, z bound to the three Real components.
+///
+/// This mirrors the calculus convention established in
+/// `calculus::detect_single_point_param` (crates/reify-expr/src/calculus.rs:526):
+/// a lambda with `params.len() == n > 1` receives `n` individual scalar arguments
+/// when passed a matching-length Point.
+///
+/// Contrast with:
+/// - `sample_one_param_lambda_binds_entire_point_as_single_value` — a 1-param
+///   lambda always receives the **whole** Point (no unpacking) because
+///   `params.len() > 1` is FALSE.
+/// - `sample_multi_param_lambda_with_scalar_input_returns_undef` — a scalar (non-Point)
+///   input with a 3-param lambda still returns Undef via the arity check, because
+///   the unpacking path only fires for `Value::Point` inputs.
+///
+/// # Type choice
+///
+/// Uses `Type::point3(Type::Real)` domain and `Value::Real` Point components so
+/// that the body `x + y + z` evaluates via the `Real + Real = Real` arm in eval_add
+/// and returns exactly `Value::Real(6.0)` (not `Value::Scalar { .. }`).
+#[test]
+fn sample_multi_param_lambda_binds_unpacked_point_components() {
+    let domain_type = Type::point3(Type::Real);
+    let (field, field_type) = make_xyz_sum_field(domain_type.clone());
+
+    // sample(field, Point([1.0, 2.0, 3.0])) -> Real(6.0)
+    // sample() unpacks Point([1.0, 2.0, 3.0]) into [x=1.0, y=2.0, z=3.0].
+    // apply_lambda sees 3 args == 3 params -> arity passes.
+    // Body (x + y) + z = (1.0 + 2.0) + 3.0 = 6.0.
+    let point_val = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(point_val, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        sample_result,
+        Value::Real(6.0),
+        "sample() of 3D Point field with matching-arity multi-param lambda must unpack \
+         Point components into x, y, z arguments; expected Real(6.0) from (1+2)+3 body"
+    );
+}
+
+/// Sampling a multi-param lambda field with a Point whose length does NOT match
+/// `params.len()` must fall through the unpacking guard and return `Undef` via
+/// the apply_lambda arity check.
+///
+/// # Contract pinned
+///
+/// The unpacking guard in sample() fires only when **all three** conditions hold:
+/// 1. `evaluated_args[1]` is `Value::Point` or `Value::Vector`,
+/// 2. `params.len() > 1`, and
+/// 3. `params.len() == items.len()` (arity matches).
+///
+/// When condition (3) fails — here a 3-param lambda receives a 2-element Point —
+/// the guard does NOT fire.  The fallback `apply_lambda(lambda, &evaluated_args[1..],
+/// ctx)` call forwards the whole Point as a single argument (arity 1 vs 3 params)
+/// and apply_lambda returns `Undef` due to the arity mismatch.
+///
+/// Contrast with:
+/// - `sample_multi_param_lambda_binds_unpacked_point_components` — matching arity
+///   (3-param + Point(3)) → unpacking fires → `Real(6.0)`.
+/// - `sample_multi_param_lambda_with_scalar_input_returns_undef` — scalar input
+///   (non-Point) + 3-param lambda → `Undef` because the Point-guard never fires.
+#[test]
+fn sample_multi_param_lambda_with_mismatched_point_returns_undef() {
+    let domain_type = Type::point3(Type::Real);
+    let (field, field_type) = make_xyz_sum_field(domain_type.clone());
+
+    // Point has 2 elements but lambda expects 3 params → guard condition (3) fails.
+    // Fallback: apply_lambda sees 1 forwarded arg (the whole Point) vs 3 params → Undef.
+    let mismatched_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(mismatched_point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "sample() with 3-param lambda and a mismatched-length Point(2) must not unpack \
+         (params.len() != items.len()); the arity check in apply_lambda must return Undef"
+    );
+}
+
+/// Sampling a multi-param lambda field with a `Value::Vector` input unpacks the
+/// vector components as individual scalar arguments, identical to the
+/// `Value::Point` case.
+///
+/// # Contract pinned
+///
+/// `sample()` must accept both `Value::Point` and `Value::Vector` for multi-param
+/// lambdas — they share structural representation (both wrap `Vec<Value>`), and
+/// the calculus paths (`extract_point_coords`, `compute_numerical_divergence_at_point`,
+/// `compute_numerical_curl_at_point`) already establish this convention with the
+/// comment "Accept both Point and Vector — they share structural representation."
+///
+/// Keeping sample() Point-only creates a user-facing asymmetry where a
+/// `Value::Vector([1.0, 2.0, 3.0])` passed to a 3-param lambda silently returns
+/// `Undef` instead of `Real(6.0)`.
+///
+/// # Test specifics
+///
+/// - Field lambda: 3-param `|x, y, z| → (x + y) + z`
+/// - Domain type: `Type::vec3(Type::Real)` (Vector3<Real>)
+/// - Input: `Value::Vector([Real(1.0), Real(2.0), Real(3.0)])`
+/// - Expected: `Real(6.0)` — vector unpacked into x=1.0, y=2.0, z=3.0; (1+2)+3=6
+#[test]
+fn sample_multi_param_lambda_with_vector_input() {
+    let domain_type = Type::vec3(Type::Real);
+    let (field, field_type) = make_xyz_sum_field(domain_type.clone());
+
+    // sample(field, Vector([1.0, 2.0, 3.0])) -> Real(6.0)
+    // sample() must unpack Vector([1.0, 2.0, 3.0]) into [x=1.0, y=2.0, z=3.0].
+    // apply_lambda sees 3 args == 3 params -> arity passes.
+    // Body (x + y) + z = (1.0 + 2.0) + 3.0 = 6.0.
+    let vector_val = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(vector_val, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(6.0),
+        "sample() of a 3-param lambda with a matching-length Vector must unpack \
+         Vector components into x, y, z arguments; expected Real(6.0) from (1+2)+3 body"
+    );
+}
+
+/// Sampling a **1-param** lambda field with a `Value::Vector` input binds the
+/// *entire* Vector as the single argument — no unpacking occurs.
+///
+/// # Contract pinned
+///
+/// The `params.len() > 1` guard in `sample()` is FALSE for a 1-param lambda, so
+/// the Vector is forwarded to `apply_lambda` unchanged (as a single argument).
+/// This mirrors `sample_one_param_lambda_binds_entire_point_as_single_value` and
+/// guards against a future regression where someone inadvertently unpacks Vectors
+/// but not Points (or vice-versa) in the 1-param path.
+///
+/// # Test specifics
+///
+/// - Field lambda: 1-param identity `|x| → x`
+/// - Domain type: `Type::vec3(Type::Real)`
+/// - Input: `Value::Vector([Real(1.0), Real(2.0), Real(3.0)])`
+/// - Expected: `Value::Vector([Real(1.0), Real(2.0), Real(3.0)])` — the whole
+///   Vector returned unchanged
+#[test]
+fn sample_one_param_lambda_binds_entire_vector_as_single_value() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    let domain_type = Type::vec3(Type::Real);
+
+    // Lambda: |x| -> x  (identity body — returns whatever x is bound to)
+    let body = CompiledExpr::value_ref(x_id.clone(), domain_type.clone());
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let codomain_type = domain_type.clone();
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // sample(field, Vector([1.0, 2.0, 3.0])) -> Vector([1.0, 2.0, 3.0])
+    // params.len() == 1, so the guard `params.len() > 1` is FALSE.
+    // apply_lambda sees 1 arg (the whole Vector) vs 1 param -> arity passes.
+    // Identity body returns x = the whole Vector directly.
+    let vector_val = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(vector_val.clone(), domain_type),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        vector_val,
+        "sample() of a 1-param field with a Vector must bind the entire Vector to x \
+         and return it unchanged (no unpacking); Undef would indicate incorrect decomposition"
+    );
+}
+
+/// Sampling a multi-param lambda field with a **mismatched-length** `Value::Vector`
+/// input returns `Value::Undef` — the guard condition rejects it.
+///
+/// # Contract pinned
+///
+/// The guard in `sample()` fires when `params.len() != items.len()`. With a
+/// 3-param lambda and a 2-element Vector the counts differ, so `sample()` falls
+/// through to the single-arg path. `apply_lambda` then sees 1 arg (the whole
+/// Vector) vs 3 params and returns `Value::Undef`. This mirrors
+/// `sample_multi_param_lambda_with_mismatched_point_returns_undef` and pins that
+/// the guard works symmetrically for Vector inputs.
+///
+/// # Test specifics
+///
+/// - Field lambda: 3-param `|x, y, z| → (x + y) + z`
+/// - Domain type: `Type::vec3(Type::Real)` (3-element Vector)
+/// - Input: `Value::Vector([Real(1.0), Real(2.0)])` — only 2 elements
+/// - Expected: `Value::Undef` — length mismatch causes fallback to 1-arg path,
+///   which then fails the arity check in `apply_lambda`
+#[test]
+fn sample_multi_param_lambda_with_mismatched_vector_returns_undef() {
+    let domain_type = Type::vec3(Type::Real);
+    let (field, field_type) = make_xyz_sum_field(domain_type.clone());
+
+    // Vector has 2 elements but lambda expects 3 params → guard condition (3) fails.
+    // Fallback: apply_lambda sees 1 forwarded arg (the whole Vector) vs 3 params → Undef.
+    let mismatched_vector = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(mismatched_vector, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "sample() with 3-param lambda and a mismatched-length Vector(2) must not unpack \
+         (params.len() != items.len()); the arity check in apply_lambda must return Undef"
     );
 }
 
@@ -800,4 +1133,102 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug() {
     );
     // In debug mode the result_dim debug_assert fires before any numeric work.
     let _sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+}
+
+/// Characterization test: `make_xyz_sum_field` returns a correctly-structured
+/// `(Value, Type)` pair for the given domain type.
+///
+/// Verifies that:
+/// - The returned `Value` is a `Value::Field` with `source=Analytical` and
+///   `codomain_type=Type::Real`.
+/// - The returned `Type` is a `Type::Field` with `domain=Type::point3(Type::Real)`
+///   and `codomain=Type::Real`.
+#[test]
+fn xyz_sum_field_helper_returns_expected_structure() {
+    let domain_type = Type::point3(Type::Real);
+    let (field_val, field_type) = make_xyz_sum_field(domain_type);
+
+    // Check the Value side
+    match &field_val {
+        Value::Field {
+            domain_type: d,
+            codomain_type: c,
+            source,
+            ..
+        } => {
+            assert_eq!(d, &Type::point3(Type::Real), "domain_type must be point3(Real)");
+            assert_eq!(c, &Type::Real, "codomain_type must be Real");
+            assert_eq!(
+                source,
+                &FieldSourceKind::Analytical,
+                "source must be Analytical"
+            );
+        }
+        other => panic!("expected Value::Field, got {:?}", other),
+    }
+
+    // Check the Type side
+    match &field_type {
+        Type::Field { domain, codomain } => {
+            assert_eq!(
+                domain.as_ref(),
+                &Type::point3(Type::Real),
+                "field_type domain must be point3(Real)"
+            );
+            assert_eq!(
+                codomain.as_ref(),
+                &Type::Real,
+                "field_type codomain must be Real"
+            );
+        }
+        other => panic!("expected Type::Field, got {:?}", other),
+    }
+}
+
+/// Verifies that `make_xyz_sum_field` produces the correct structure when
+/// called with `Type::vec3(Type::Real)` as the domain type.
+///
+/// This guards against a regression where the helper might accidentally
+/// hardcode a domain type (e.g., always returning `point3`) regardless of
+/// the argument passed.
+#[test]
+fn xyz_sum_field_helper_with_vec3_domain() {
+    let domain_type = Type::vec3(Type::Real);
+    let (field_val, field_type) = make_xyz_sum_field(domain_type);
+
+    // Check the Value side
+    match &field_val {
+        Value::Field {
+            domain_type: d,
+            codomain_type: c,
+            source,
+            ..
+        } => {
+            assert_eq!(d, &Type::vec3(Type::Real), "domain_type must be vec3(Real)");
+            assert_eq!(c, &Type::Real, "codomain_type must be Real");
+            assert_eq!(
+                source,
+                &FieldSourceKind::Analytical,
+                "source must be Analytical"
+            );
+        }
+        other => panic!("expected Value::Field, got {:?}", other),
+    }
+
+    // Check the Type side
+    match &field_type {
+        Type::Field { domain, codomain } => {
+            assert_eq!(
+                domain.as_ref(),
+                &Type::vec3(Type::Real),
+                "field_type domain must be vec3(Real)"
+            );
+            assert_eq!(
+                codomain.as_ref(),
+                &Type::Real,
+                "field_type codomain must be Real"
+            );
+        }
+        other => panic!("expected Type::Field, got {:?}", other),
+    }
 }

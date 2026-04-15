@@ -7,7 +7,7 @@
 use reify_eval::Engine;
 use reify_test_support::builders::{binop, conditional_expr, gt, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::{assert_eval_clean, CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_types::*;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -1447,6 +1447,22 @@ fn cyclic_let_bindings_emit_diagnostic() {
          naming 'count_x' and 'count_y', got: {:?}",
         result.diagnostics
     );
+
+    // The cycle diagnostic should also include the template name "S" in the format
+    // 'in template S (entity ...)' — not just the entity path.
+    // Accept any of "circular"/"cycle"/"cyclic" for consistency with has_cycle_error above.
+    let has_template_in_diagnostic = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && (d.message.contains("circular")
+                || d.message.contains("cycle")
+                || d.message.contains("cyclic"))
+            && d.message.contains("template S")
+    });
+    assert!(
+        has_template_in_diagnostic,
+        "Expected cycle diagnostic to include 'template S' in message, got: {:?}",
+        result.diagnostics
+    );
 }
 
 // ─── BFS traversal gate tests ───────────────────────────────────────────────
@@ -1524,6 +1540,11 @@ fn bfs_traverses_through_wrapper_with_zero_value_cells() {
     let mut engine = Engine::new(Box::new(checker), None);
     let result = engine.eval(&module);
 
+    // BFS traversal through zero-value-cell wrappers should produce no diagnostics at all —
+    // not even warnings. This stricter check (assert_eval_clean vs assert_no_eval_errors) is
+    // intentional: a clean structural traversal should emit nothing.
+    assert_eval_clean(&result);
+
     // Sanity: child entity exists with n=1
     assert_eq!(
         result.values.get(&ValueCellId::new("S.child", "n")),
@@ -1589,89 +1610,20 @@ fn missing_template_ref_emits_error_diagnostic() {
 
     let result = eval_single_template(template);
 
-    // Should have an Error-severity diagnostic about the unknown structure.
-    let has_error = result
+    // Should have exactly one Error-severity diagnostic about the unknown structure.
+    // count==1 is strictly stronger: it verifies the error exists, there is exactly
+    // one such error, and there is no warning-only fallback.
+    let error_count = result
         .diagnostics
         .iter()
-        .any(|d| d.severity == Severity::Error && d.message.contains("unknown structure"));
-    assert!(
-        has_error,
-        "Expected Error-severity diagnostic about unknown structure 'Nonexistent', \
-         got: {:?}",
-        result.diagnostics
-    );
-
-    // Should NOT have only warnings about it — the severity must be Error.
-    let has_only_warning = result
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Warning && d.message.contains("unknown structure"));
-    assert!(
-        !has_only_warning,
-        "Unknown structure reference should be Error, not Warning: {:?}",
-        result.diagnostics
-    );
-}
-
-// ─── Cycle diagnostic UX: template name in message ──────────────────────────
-
-/// The cyclic let-binding diagnostic should include the template name, not just
-/// the entity path. Format: 'in template S (entity S.child): [count_x, count_y]'
-/// to match the termination-check diagnostic style.
-///
-/// This is a separate test from `cyclic_let_bindings_emit_diagnostic` which checks
-/// for 'circular'/'cycle' and names 'count_x'/'count_y'. This test specifically
-/// verifies the template name appears in the message.
-///
-/// Binding names updated to count_x/count_y for consistency with the companion
-/// test (task 553 improvement #3).
-#[test]
-fn cyclic_let_binding_diagnostic_includes_template_name() {
-    // let count_x = count_y + 1 (depends on S.count_y)
-    let count_x_expr = binop(
-        BinOp::Add,
-        value_ref_typed("S", "count_y", Type::Int),
-        literal(Value::Int(1)),
-    );
-    // let count_y = count_x + 1 (depends on S.count_x)
-    let count_y_expr = binop(
-        BinOp::Add,
-        value_ref_typed("S", "count_x", Type::Int),
-        literal(Value::Int(1)),
-    );
-
-    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
-    let n_minus_1 = binop(
-        BinOp::Sub,
-        value_ref_typed("S", "n", Type::Int),
-        literal(Value::Int(1)),
-    );
-
-    let template = TopologyTemplateBuilder::new("S")
-        .param(
-            "S",
-            "n",
-            Type::Int,
-            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
-        )
-        .let_binding("S", "count_x", Type::Int, count_x_expr)
-        .let_binding("S", "count_y", Type::Int, count_y_expr)
-        .is_recursive(true)
-        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
-        .build();
-
-    let result = eval_single_template(template);
-
-    // The cycle diagnostic should include the template name "S" in the format
-    // 'in template S (entity ...)' — not just the entity path.
-    let has_template_in_diagnostic = result.diagnostics.iter().any(|d| {
-        d.severity == Severity::Error
-            && d.message.contains("circular")
-            && d.message.contains("template S")
-    });
-    assert!(
-        has_template_in_diagnostic,
-        "Expected cycle diagnostic to include 'template S' in message, got: {:?}",
+        .filter(|d| d.severity == Severity::Error && d.message.contains("unknown structure"))
+        .count();
+    assert_eq!(
+        error_count,
+        1,
+        "Expected exactly 1 Error-severity diagnostic about unknown structure 'Nonexistent', \
+         got {}: {:?}",
+        error_count,
         result.diagnostics
     );
 }
@@ -2078,6 +2030,192 @@ fn budget_not_consumed_when_depth_limit_hit() {
         !has_budget_error,
         "Should not have budget-exhausted errors when depth limit prevents node creation. \
          Depth-limited returns should not consume budget. Got: {:?}",
+        result.diagnostics
+    );
+}
+
+// ─── Budget exhaustion: budget==0 emits Error diagnostic and stops unfolding ──
+
+/// When the node budget reaches zero, `unfold_recursive_sub` emits a
+/// `Severity::Error` diagnostic containing "total node budget exhausted" and
+/// stops creating nodes.
+///
+/// Setup:
+///   Template S: is_recursive=true, param n: Int = 10
+///     sub left  = S(n: n-1) where n > 0
+///     sub right = S(n: n-1) where n > 0
+///   max_unfold_nodes = 3
+///
+/// Depth-first trace for the top-level "left" sub (fresh budget=3):
+///   unfold(S,         "left",  depth=0, budget=3): guard true (n=10>0), budget 3→2, create S.left(n=9)
+///   unfold(S.left,    "left",  depth=1, budget=2): guard true (n=9>0),  budget 2→1, create S.left.left(n=8)
+///   unfold(S.left.left, "left", depth=2, budget=1): guard true (n=8>0), budget 1→0, create S.left.left.left(n=7)
+///   unfold(S.left.left.left, "left",  depth=3, budget=0): budget==0 → ERROR
+///   unfold(S.left.left.left, "right", depth=3, budget=0): budget==0 → ERROR
+///   unfold(S.left.left,      "right", depth=2, budget=0): budget==0 → ERROR
+///   unfold(S.left,           "right", depth=1, budget=0): budget==0 → ERROR ← S.left.right NOT created
+///
+/// n=10 ensures all exhaustion points occur where the guard would still be true
+/// (minimum n at an exhaustion call is n=7 for S.left.left.left's children),
+/// confirming budget is the sole reason for termination.
+///
+/// Assertions:
+///   (1) At least one Error diagnostic with "total node budget exhausted"
+///   (2) S.left.n == 9        (created when budget was 3→2)
+///   (3) S.left.left.n == 8   (created when budget was 2→1)
+///   (4) S.left.left.left.n == 7 (created when budget was 1→0)
+///   (5) S.left.right does NOT exist  (budget==0 when it would be created)
+///   (6) S.left.left.right does NOT exist  (budget==0 at that point too)
+#[test]
+fn unfold_recursive_node_budget_exhaustion() {
+    // guard: n > 0
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    // arg: n = n - 1
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template_s = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(10), Type::Int)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "left",
+            "S",
+            vec![("n".to_string(), n_minus_1.clone())],
+            guard.clone(),
+        )
+        .sub_component_with_guard("right", "S", vec![("n".to_string(), n_minus_1)], guard)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_s)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    engine.set_max_unfold_nodes(3);
+    let result = engine.eval(&module);
+
+    // (1) At least one Error diagnostic with "total node budget exhausted"
+    let has_budget_exhausted_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains("total node budget exhausted"));
+    assert!(
+        has_budget_exhausted_error,
+        "Expected at least one Error diagnostic containing 'total node budget exhausted', \
+         got: {:?}",
+        result.diagnostics
+    );
+
+    // (2) S.left should exist with n=9 (first node created, when budget was 3→2)
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left", "n")),
+        Some(&Value::Int(9)),
+        "S.left.n should be 9 (created when budget was 3→2)"
+    );
+
+    // (3) S.left.left should exist with n=8 (second node created, when budget was 2→1)
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left.left", "n")),
+        Some(&Value::Int(8)),
+        "S.left.left.n should be 8 (created when budget was 2→1)"
+    );
+
+    // (4) S.left.left.left should exist with n=7 (third node created, when budget was 1→0)
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left.left.left", "n")),
+        Some(&Value::Int(7)),
+        "S.left.left.left.n should be 7 (created when budget was 1→0)"
+    );
+
+    // (5) S.left.right must NOT exist: when unfolding S.left's "right" sub, budget==0
+    assert!(
+        !result
+            .values
+            .contains(&ValueCellId::new("S.left.right", "n")),
+        "S.left.right should not exist: budget==0 after the left-chain consumed it all. \
+         If present, budget was not properly exhausted depth-first."
+    );
+
+    // (6) S.left.left.right must NOT exist: budget==0 when processing S.left.left's "right" sub
+    assert!(
+        !result
+            .values
+            .contains(&ValueCellId::new("S.left.left.right", "n")),
+        "S.left.left.right should not exist: budget==0 after S.left.left.left was created. \
+         If present, budget accounting for sibling branches is broken."
+    );
+}
+
+// ─── guard non-Bool type emits Error diagnostic ───────────────────────────────
+
+/// When a recursive sub's guard expression evaluates to a non-Bool value
+/// (e.g. Value::Int(1)), the evaluator must:
+///   (1) emit an Error-severity diagnostic containing "expected Bool", and
+///   (2) treat the result as termination (no child entity created).
+///
+/// This tests the `other =>` arm in `unfold_recursive_sub`'s guard-value match.
+#[test]
+fn unfold_recursive_guard_non_bool_type_emits_error() {
+    // Guard expression that evaluates to Int(1), NOT a Bool.
+    let guard = literal(Value::Int(1));
+    // arg: n = n - 1  (standard decrement, same as build_recursive_s)
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+        .build();
+
+    let result = eval_single_template(template);
+
+    // (1) No child entity should exist — guard type mismatch causes early termination.
+    assert!(
+        !result.values.contains(&ValueCellId::new("S.child", "n")),
+        "S.child.n should not exist when guard returns a non-Bool value, \
+         but got {:?}",
+        result.values.get(&ValueCellId::new("S.child", "n"))
+    );
+
+    // (2) Must have exactly one Error-severity diagnostic containing "expected Bool".
+    let has_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains("expected Bool"));
+    assert!(
+        has_error,
+        "Expected an Error-severity diagnostic containing 'expected Bool', \
+         got: {:?}",
+        result.diagnostics
+    );
+    let error_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    assert_eq!(
+        error_count,
+        1,
+        "Expected exactly one Error-severity diagnostic, but got {}: {:?}",
+        error_count,
         result.diagnostics
     );
 }

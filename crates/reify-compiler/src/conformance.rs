@@ -289,6 +289,7 @@ pub(crate) fn check_trait_conformance(
                         visibility: Visibility::Private,
                         cell_type: cell_type.clone(),
                         default_expr,
+                        solver_hints: Vec::new(),
                         span: default.span,
                     });
                 }
@@ -313,6 +314,7 @@ pub(crate) fn check_trait_conformance(
                         visibility: Visibility::Private,
                         cell_type: compiled_expr.result_type.clone(),
                         default_expr: Some(compiled_expr),
+                        solver_hints: Vec::new(),
                         span: default.span,
                     });
                 }

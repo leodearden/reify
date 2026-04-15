@@ -21,7 +21,6 @@ use reify_gui::types::EvaluationStatus;
 use reify_gui::watcher::FileWatcher;
 use reify_kernel_occt::OcctKernelHandle;
 use reify_lsp::server::NotificationSink;
-use reify_mcp;
 use tower_lsp::lsp_types::{Diagnostic, Url};
 
 // --- Event emission helpers ---
@@ -299,6 +298,25 @@ async fn lsp_request(
     Ok(result)
 }
 
+// --- Debug commands ---
+
+/// Wrapper for REIFY_DEBUG=1 state, managed by Tauri.
+struct DebugEnabled(bool);
+
+#[tauri::command]
+fn is_debug_enabled(state: tauri::State<'_, DebugEnabled>) -> bool {
+    state.0
+}
+
+#[tauri::command]
+fn debug_response(
+    bridge: tauri::State<'_, Arc<reify_gui::debug::DebugBridge>>,
+    id: u64,
+    result: String,
+) -> Result<(), String> {
+    bridge.resolve(id, result)
+}
+
 /// Lazy-spawn the Claude sidecar (if not already running) and send a user message.
 /// Returns the generated message ID for correlating response events.
 ///
@@ -395,18 +413,24 @@ fn main() {
         }
     }
 
+    let debug_enabled = std::env::var("REIFY_DEBUG").is_ok_and(|v| v == "1");
+
+    let engine_arc = Arc::new(Mutex::new(session));
+    let selection_arc = Arc::new(RwLock::new(reify_mcp::SelectionInfo::default()));
+
     let app_state = AppState {
-        engine: Arc::new(Mutex::new(session)),
+        engine: Arc::clone(&engine_arc),
         last_state: std::sync::Mutex::new(None),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
-        selection: Arc::new(RwLock::new(reify_mcp::SelectionInfo::default())),
+        selection: Arc::clone(&selection_arc),
     };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .manage(app_state)
+        .manage(DebugEnabled(debug_enabled))
         .setup(move |app| {
             // Create LspBridge with TauriNotificationSink now that AppHandle is available
             let sink = Arc::new(TauriNotificationSink {
@@ -414,6 +438,30 @@ fn main() {
             });
             let lsp_bridge = LspBridge::with_sink(sink);
             app.manage(lsp_bridge);
+
+            // Always create DebugBridge (inert when debug disabled — no JS listener, no HTTP server)
+            let debug_bridge = Arc::new(reify_gui::debug::DebugBridge::new(
+                app.handle().clone(),
+            ));
+            app.manage(debug_bridge.clone());
+
+            // Spawn the debug HTTP/MCP server when REIFY_DEBUG=1
+            if debug_enabled {
+                let engine_for_debug = Arc::clone(&engine_arc);
+                let selection_for_debug = Arc::clone(&selection_arc);
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = reify_gui::debug_server::spawn_debug_server(
+                        engine_for_debug,
+                        selection_for_debug,
+                        debug_bridge,
+                    )
+                    .await
+                    {
+                        eprintln!("Debug server failed: {e}");
+                    }
+                });
+                eprintln!("REIFY_DEBUG=1: debug server starting on http://127.0.0.1:3939");
+            }
 
             // If an initial file was loaded, start watching its parent directory
             if let Some(ref file_path) = initial_file {
@@ -441,6 +489,8 @@ fn main() {
             claude_send_message,
             claude_abort,
             claude_clear_session,
+            is_debug_enabled,
+            debug_response,
         ])
         .on_window_event(|window, event| {
             // Gracefully shut down the sidecar when the window closes.

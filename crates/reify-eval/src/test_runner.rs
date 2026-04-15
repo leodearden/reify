@@ -41,13 +41,14 @@ fn compute_status(results: &[ConstraintCheckEntry]) -> TestStatus {
 ///   resolve, but their constraints and objectives are stripped so only the
 ///   target test's constraints fire during `Engine::check`.
 /// - Shared infrastructure (functions, fields, types, units, traits, enum
-///   defs, constraint defs, imports, pragmas, module path) is preserved.
+///   defs, constraint defs, imports, pragmas, module path, compiled
+///   purposes) is preserved.
 fn build_isolated_module(module: &CompiledModule, target: &TopologyTemplate) -> CompiledModule {
     let mut isolated = module.clone();
     isolated.templates = module
         .templates
         .iter()
-        .filter(|t| !t.is_test || t.name == target.name)
+        .filter(|t| !t.is_test() || t.name == target.name)
         .map(|t| {
             let mut t = t.clone();
             if t.name != target.name {
@@ -83,9 +84,48 @@ pub struct TestResult {
 /// Each test is evaluated in an isolated `Engine` instance (no state leaks
 /// between tests) against a `CompiledModule` that contains the target test
 /// template plus non-test templates (with their constraints stripped so only
-/// the test's own constraints fire). `make_checker` is called once per test
-/// to produce a fresh `Box<dyn ConstraintChecker>`; stateless checkers like
-/// `SimpleConstraintChecker` can return `Box::new(SimpleConstraintChecker)`.
+/// the test's own constraints fire).
+///
+/// # Checker lifecycle
+///
+/// `make_checker` is called **once per test** to produce a fresh
+/// `Box<dyn ConstraintChecker>`.  A stateful checker (one that accumulates
+/// diagnostics or caches solver state) **must not** be shared across tests;
+/// the closure form ensures each `Engine` starts with a clean instance.
+///
+/// # Examples
+///
+/// Stateless checker — the common case:
+///
+/// ```ignore
+/// let results = reify_eval::run_tests(&compiled, || Box::new(SimpleConstraintChecker));
+/// ```
+///
+/// Stateful checker — when the checker must vary per-test:
+///
+/// ```ignore
+/// let results = reify_eval::run_tests(&compiled, || {
+///     Box::new(MockConstraintChecker::new().with_default(Satisfaction::Indeterminate))
+/// });
+/// ```
+///
+/// # No pre-baked wrapper
+///
+/// `reify-eval` is intentionally decoupled from any concrete `ConstraintChecker`
+/// implementation — the trait lives in `reify-types`, not `reify-constraints`.
+/// A `run_tests_simple` shortcut would promote `reify-constraints` (and its
+/// `argmin` / `ndarray` transitive deps) from a dev-dependency to a runtime
+/// dependency, forcing all consumers to pay that cost.  Callers can define a
+/// local helper instead:
+///
+/// ```ignore
+/// fn simple() -> Box<dyn ConstraintChecker> { Box::new(SimpleConstraintChecker) }
+/// ```
+///
+/// # See also
+///
+/// - `reify_types::ConstraintChecker` — the trait all checkers implement
+/// - `reify_constraints::SimpleConstraintChecker` — the canonical stateless implementation
 pub fn run_tests<F>(module: &CompiledModule, mut make_checker: F) -> Vec<TestResult>
 where
     F: FnMut() -> Box<dyn ConstraintChecker>,
@@ -193,8 +233,7 @@ mod tests {
         use super::build_isolated_module;
         let source = "@test structure TestA { param x : Real\n constraint x > 0 }\nstructure def B { param y : Real\n constraint y > 0 }\n@test structure TestC { param z : Real }";
         let module = parse_and_compile_inline(source);
-        let test_templates = module.test_templates();
-        let target = test_templates.iter().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
         let names: Vec<&str> = isolated.templates.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names.len(), 2, "expected TestA + B, got {:?}", names);
@@ -208,8 +247,7 @@ mod tests {
         use super::build_isolated_module;
         let source = "@test structure TestA { param x : Real\n constraint x > 0 }\nstructure def B { param y : Real\n constraint y > 0\n constraint y < 100 }";
         let module = parse_and_compile_inline(source);
-        let test_templates = module.test_templates();
-        let target = test_templates.iter().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
         let b = isolated.templates.iter().find(|t| t.name == "B").expect("B not found");
         assert!(b.constraints.is_empty(), "B.constraints should be stripped, got {} constraints", b.constraints.len());
@@ -225,8 +263,7 @@ mod tests {
         use super::build_isolated_module;
         let source = "@test structure TestA { param x : Real\n constraint x > 0 }\nstructure def B { param y : Real\n constraint y > 0 }";
         let module = parse_and_compile_inline(source);
-        let test_templates = module.test_templates();
-        let target = test_templates.iter().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
         let testa = isolated.templates.iter().find(|t| t.name == "TestA").expect("TestA not in isolated");
         assert!(!testa.constraints.is_empty(), "TestA constraints should be preserved");
@@ -235,9 +272,13 @@ mod tests {
     #[test]
     fn build_isolated_module_preserves_shared_infrastructure() {
         use super::build_isolated_module;
-        // Rich source that populates every shared-infrastructure collection so
-        // equality assertions cannot trivially pass as 0==0.
+        // Rich source that populates every shared-infrastructure collection
+        // (functions, fields, type_aliases, units, trait_defs, enum_defs,
+        // constraint_defs, imports, pragmas, module path, compiled_purposes)
+        // so equality assertions cannot trivially pass as 0==0.
         let source = r#"
+#precision(value=64)
+
 fn double(x: Real) -> Real { x * 2 }
 
 enum Quality { Standard, Premium }
@@ -247,6 +288,14 @@ trait Measurable {
 }
 
 type Alias = Real
+
+unit myunit : Length = 0.001
+
+import some.module
+
+purpose my_purpose(s : Structure) {
+    constraint 1 > 0
+}
 
 field def temp : Point3 -> Scalar { source = analytical { |p| p } }
 
@@ -261,9 +310,9 @@ constraint def Positive {
 }
 "#;
         let module = parse_and_compile_inline(source);
-        let test_templates = module.test_templates();
-        let target = test_templates.iter().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
+        assert!(!module.constraint_defs.is_empty(), "constraint_defs must be non-empty in source module");
         assert_eq!(isolated.constraint_defs.len(), module.constraint_defs.len(),
             "constraint_defs must be preserved");
         assert!(!module.functions.is_empty(), "functions must be non-empty in source module");
@@ -281,6 +330,18 @@ constraint def Positive {
         assert!(!module.trait_defs.is_empty(), "trait_defs must be non-empty in source module");
         assert_eq!(isolated.trait_defs.len(), module.trait_defs.len(),
             "trait_defs must be preserved");
+        assert_eq!(module.path, reify_types::ModulePath::single("test_inline"),
+            "module path must be non-trivially set in source module");
+        assert_eq!(isolated.path, module.path, "module path must be preserved");
+        assert!(!module.units.is_empty(), "units must be non-empty in source module");
+        assert_eq!(isolated.units.len(), module.units.len(), "units must be preserved");
+        assert!(!module.imports.is_empty(), "imports must be non-empty in source module");
+        assert_eq!(isolated.imports.len(), module.imports.len(), "imports must be preserved");
+        assert!(!module.pragmas.is_empty(), "pragmas must be non-empty in source module");
+        assert_eq!(isolated.pragmas.len(), module.pragmas.len(), "pragmas must be preserved");
+        assert!(!module.compiled_purposes.is_empty(), "compiled_purposes must be non-empty in source module");
+        assert_eq!(isolated.compiled_purposes.len(), module.compiled_purposes.len(),
+            "compiled_purposes must be preserved");
     }
 
     #[test]

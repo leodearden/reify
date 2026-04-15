@@ -3,15 +3,16 @@
 //! Tests for evaluating collection sub-components (`sub bolts : List<Bolt>`),
 //! count-based elaboration, and count re-elaboration.
 
-use reify_eval::Engine;
+use reify_compiler::TopologyTemplate;
+use reify_eval::{Engine, EvalResult};
 use reify_eval::graph::EvaluationGraph;
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_types::*;
 
-/// Build the canonical Bolt + Parent (collection sub) fixture used by most
-/// tests in this file and return a ready-to-eval `(CompiledModule, Engine)`.
+/// Build the canonical Bolt + Parent (collection sub) templates and return
+/// `(TopologyTemplate, TopologyTemplate)` in `(parent, bolt)` order.
 ///
 /// - Bolt has a single `diameter: Scalar = 10mm` param.
 /// - Parent has `param n : Int` (default controlled by `n_default`), a
@@ -19,7 +20,11 @@ use reify_types::*;
 ///   cell, and a collection sub-component `bolts : List<Bolt>` whose count
 ///   tracks `__count_bolts`.
 /// - `n_default = Some(n)` gives `n` an Int default; `None` leaves it Undef.
-fn make_bolt_parent_engine(n_default: Option<i64>) -> (reify_compiler::CompiledModule, Engine) {
+///
+/// The return order `(parent, bolt)` matches the argument order expected by
+/// `EvaluationGraph::from_templates(&[parent, bolt])` and
+/// `CompiledModuleBuilder::template(parent).template(bolt)`.
+fn make_bolt_parent_templates(n_default: Option<i64>) -> (TopologyTemplate, TopologyTemplate) {
     let bolt = TopologyTemplateBuilder::new("Bolt")
         .param(
             "Bolt",
@@ -37,6 +42,15 @@ fn make_bolt_parent_engine(n_default: Option<i64>) -> (reify_compiler::CompiledM
         .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
         .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
         .build();
+
+    (parent, bolt)
+}
+
+/// Build the canonical Bolt + Parent fixture and return a ready-to-eval
+/// `(CompiledModule, Engine)`.  Template construction is delegated to
+/// [`make_bolt_parent_templates`].
+fn make_bolt_parent_engine(n_default: Option<i64>) -> (reify_compiler::CompiledModule, Engine) {
+    let (parent, bolt) = make_bolt_parent_templates(n_default);
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(parent)
@@ -64,30 +78,7 @@ fn count_bolt_diameter_instances(values: &ValueMap) -> usize {
 
 #[test]
 fn from_templates_creates_collection_instances() {
-    // Bolt template: param diameter : Scalar = 10mm
-    let bolt = TopologyTemplateBuilder::new("Bolt")
-        .param(
-            "Bolt",
-            "diameter",
-            Type::length(),
-            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
-        )
-        .build();
-
-    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
-    let count_expr = value_ref_typed("Parent", "n", Type::Int);
-    let parent = TopologyTemplateBuilder::new("Parent")
-        .param(
-            "Parent",
-            "n",
-            Type::Int,
-            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
-        )
-        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
-        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
-        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
-        .build();
-
+    let (parent, bolt) = make_bolt_parent_templates(Some(4));
     let graph = EvaluationGraph::from_templates(&[parent, bolt]);
 
     // Verify 4 scoped instances exist: Parent.bolts[0].diameter through Parent.bolts[3].diameter
@@ -489,22 +480,42 @@ fn edit_param_count_int_undef_undef_int_transition() {
     let _initial = engine.eval(&module);
 
     // Transition sequence: Int(4) → Undef → Undef → Int(2)
-    // Step 1: Int(4) → Undef removes all 4 instances (new_count=0 via `_ => 0`)
-    engine
+    let assert_no_bolts = |result: &EvalResult, label: &str| {
+        for i in 0..4 {
+            let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+            assert!(
+                result.values.get(&scoped_id).is_none(),
+                "bolts[{}].diameter must be absent after {}",
+                i,
+                label
+            );
+        }
+        assert_eq!(
+            count_bolt_diameter_instances(&result.values),
+            0,
+            "no bolt diameter instances should exist after {}",
+            label
+        );
+    };
+
+    // Int(4) → Undef must clear all bolt instances
+    let r1 = engine
         .edit_param(n_id.clone(), Value::Undef)
         .expect("first edit to Undef should succeed");
+    assert_no_bolts(&r1, "Int(4)->Undef");
 
-    // Step 2: Undef → Undef short-circuits via equality check (no-op)
-    engine
+    // Undef → Undef must be a no-op
+    let r2 = engine
         .edit_param(n_id.clone(), Value::Undef)
         .expect("second edit to Undef should succeed");
+    assert_no_bolts(&r2, "Undef->Undef");
 
-    // Step 3: Undef → Int(2): old_count=0 (via `_ => 0`) → creates bolts[0..2)
+    // Undef → Int(2) must elaborate exactly bolts[0..2)
     let result = engine
         .edit_param(n_id, Value::Int(2))
         .expect("edit to Int(2) should succeed");
 
-    // After Int(4)->Undef->Undef->Int(2): bolts[0..2) must exist with diameter = 10mm
+    // bolts[0..2) must exist with diameter = 10mm
     for i in 0..2 {
         let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         assert_eq!(
@@ -515,7 +526,7 @@ fn edit_param_count_int_undef_undef_int_transition() {
         );
     }
 
-    // bolts[2..4) must be absent — no stale leak from the original Int(4) eval
+    // bolts[2..4) must be absent
     for i in 2..4 {
         let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         assert!(
@@ -524,6 +535,190 @@ fn edit_param_count_int_undef_undef_int_transition() {
             i
         );
     }
+
+    assert_eq!(
+        count_bolt_diameter_instances(&result.values),
+        2,
+        "exactly 2 bolt diameter instances after Int(2)"
+    );
+}
+
+// ─── task-1588 step-1: non-Int old_count emits Warning diagnostic ───
+
+#[test]
+fn edit_param_non_int_old_count_emits_warning() {
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
+    let n_id = ValueCellId::new("Parent", "n");
+
+    // Establish baseline: 4 bolt instances in snapshot
+    let _initial = engine.eval(&module);
+
+    // Edit n to Real(2.0) — sets snapshot count_cell = Real(2.0)
+    // old_count_val = Int(4) → Int arm (no warning from old_count)
+    // new_count_val = Real(2.0) → other arm (warning with "new value")
+    let r1 = engine
+        .edit_param(n_id.clone(), Value::Real(2.0))
+        .expect("edit to Real should succeed");
+
+    // r1 must have exactly one warning (from the new_count path only, not old_count)
+    let r1_warnings: Vec<_> = r1
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert_eq!(
+        r1_warnings.len(),
+        1,
+        "expected exactly 1 warning in r1 (new_count path), got: {:?}",
+        r1_warnings
+    );
+    assert!(
+        r1_warnings[0].message.contains("new value"),
+        "r1 warning should mention 'new value', got: {:?}",
+        r1_warnings[0].message
+    );
+
+    // Edit n to Int(3) — old_count_val = Real(2.0), new_count_val = Int(3)
+    // old_count_val = Real(2.0) should emit a Warning diagnostic about "old value"
+    let r2 = engine
+        .edit_param(n_id, Value::Int(3))
+        .expect("edit to Int(3) should succeed");
+
+    // (a) diagnostics must contain a Warning about non-integer old count, specifically "old value"
+    let has_warning = r2.diagnostics.iter().any(|d| {
+        d.severity == Severity::Warning
+            && d.message.contains("non-integer")
+            && d.message.contains("Parent.__count_bolts")
+            && d.message.contains("old value")
+    });
+    assert!(
+        has_warning,
+        "expected a Warning diagnostic about non-integer old count cell with 'old value', got: {:?}",
+        r2.diagnostics
+    );
+
+    // (b) exactly 3 bolt instances exist (new_count = Int(3))
+    let bolt_count = count_bolt_diameter_instances(&r2.values);
+    assert_eq!(
+        bolt_count, 3,
+        "exactly 3 bolt instances should exist after editing to Int(3), got {}",
+        bolt_count
+    );
+
+    // (c) no stale instances beyond the 3 expected (no Real(2.0)-era artifacts)
+    for i in 3..6 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            r2.values.get(&scoped_id).is_none(),
+            "bolts[{}] should not exist (no stale instances expected)",
+            i
+        );
+    }
+}
+
+// ─── task-1588 step-3: non-Int new_count emits Warning diagnostic ───
+
+#[test]
+fn edit_param_non_int_new_count_emits_warning() {
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
+    let n_id = ValueCellId::new("Parent", "n");
+
+    // Establish baseline: 4 bolt instances in snapshot
+    let _initial = engine.eval(&module);
+
+    // Edit n to Real(2.0) — new_count_val = Real(2.0) should emit a Warning
+    // old_count_val = Int(4) → Int arm (no warning from old_count match)
+    let r1 = engine
+        .edit_param(n_id, Value::Real(2.0))
+        .expect("edit to Real should succeed");
+
+    // (a) diagnostics must contain a Warning about non-integer new count, specifically "new value"
+    let has_warning = r1.diagnostics.iter().any(|d| {
+        d.severity == Severity::Warning
+            && d.message.contains("non-integer")
+            && d.message.contains("Parent.__count_bolts")
+            && d.message.contains("new value")
+    });
+    assert!(
+        has_warning,
+        "expected a Warning diagnostic about non-integer new count cell with 'new value', got: {:?}",
+        r1.diagnostics
+    );
+
+    // (b) all 4 old bolt instances were removed (old_count = 4 from Int arm)
+    for i in 0..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            r1.values.get(&scoped_id).is_none(),
+            "bolts[{}] should be removed when switching away from Int count",
+            i
+        );
+    }
+
+    // (c) 0 new instances created (new_count = 0 because Real(2.0) → _ => 0)
+    let bolt_count = count_bolt_diameter_instances(&r1.values);
+    assert_eq!(
+        bolt_count, 0,
+        "zero bolt instances should be created when new count is Real(2.0), got {}",
+        bolt_count
+    );
+}
+
+// ─── task-1588 step-5: Undef count transitions do NOT emit spurious warnings ───
+
+#[test]
+fn edit_param_undef_count_transition_no_spurious_warning() {
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
+    let n_id = ValueCellId::new("Parent", "n");
+
+    // Establish baseline: 4 bolt instances in snapshot
+    let _initial = engine.eval(&module);
+
+    // Edit n to Undef — old_count_val=Int(4) (Int arm), new_count_val=Undef (Undef arm)
+    // Neither arm should emit a warning.
+    let r1 = engine
+        .edit_param(n_id.clone(), Value::Undef)
+        .expect("edit to Undef should succeed");
+
+    let warnings: Vec<_> = r1
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "expected no Warning diagnostics for Int→Undef count transition, got: {:?}",
+        warnings
+    );
+    // After Int→Undef: all instances must be removed (0 instances)
+    assert_eq!(
+        count_bolt_diameter_instances(&r1.values),
+        0,
+        "expected 0 bolt instances after Int→Undef count transition"
+    );
+
+    // Edit n to Int(2) — old_count_val=Undef (Undef arm), new_count_val=Int(2) (Int arm)
+    // Neither arm should emit a warning.
+    let r2 = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit to Int(2) should succeed");
+
+    let warnings: Vec<_> = r2
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "expected no Warning diagnostics for Undef→Int count transition, got: {:?}",
+        warnings
+    );
+    // After Undef→Int(2): exactly 2 instances must exist
+    assert_eq!(
+        count_bolt_diameter_instances(&r2.values),
+        2,
+        "expected 2 bolt instances after Undef→Int(2) count transition"
+    );
 }
 
 // ─── step-30: count Int→Undef removes all instances (regression for unreachable!() bug) ───

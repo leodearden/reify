@@ -19,6 +19,9 @@ const MATERIALS_MECHANICAL_SRC: &str = include_str!("../stdlib/materials_mechani
 /// Embedded source for stdlib/structural_physical.ri.
 const STRUCTURAL_PHYSICAL_SRC: &str = include_str!("../stdlib/structural_physical.ri");
 
+/// Embedded source for stdlib/analysis.ri.
+const ANALYSIS_SRC: &str = include_str!("../stdlib/analysis.ri");
+
 /// Embedded source for stdlib/tolerancing.ri.
 const TOLERANCING_SRC: &str = include_str!("../stdlib/tolerancing.ri");
 
@@ -53,6 +56,7 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             ("std.si_units", si_units_source.as_str()),
             ("std.materials.mechanical", MATERIALS_MECHANICAL_SRC),
             ("std.structural.physical", STRUCTURAL_PHYSICAL_SRC),
+            ("std.analysis", ANALYSIS_SRC),
             ("std.tolerancing", TOLERANCING_SRC),
         ];
 
@@ -78,16 +82,19 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             // Fail fast: Error-severity diagnostics in embedded stdlib are always
             // programming errors. Without this check, a broken module gets permanently
             // cached in OnceLock, producing confusing downstream errors.
-            let error_diagnostics: Vec<_> = compiled
+            let has_errors = compiled
                 .diagnostics
                 .iter()
-                .filter(|d| d.severity == Severity::Error)
-                .collect();
+                .any(|d| d.severity == Severity::Error);
             assert!(
-                error_diagnostics.is_empty(),
+                !has_errors,
                 "stdlib module '{}' has Error-severity diagnostics: {:?}",
                 module_name,
-                error_diagnostics
+                compiled
+                    .diagnostics
+                    .iter()
+                    .filter(|d| d.severity == Severity::Error)
+                    .collect::<Vec<_>>()
             );
 
             modules.push(compiled);

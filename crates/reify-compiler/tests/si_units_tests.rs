@@ -1,41 +1,16 @@
 //! Tests for SI prefix and derived-unit stdlib expansion (task 334).
 
-use reify_compiler::{CompiledModule, CompiledUnit, compile, compile_with_stdlib, si_units};
-use reify_types::{DimensionVector, ModulePath, Severity};
+mod common;
+
+use reify_compiler::{CompiledUnit, compile, si_units};
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
+use reify_types::{DimensionVector, ModulePath};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-fn parse_and_compile(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("si_units_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile(&parsed)
-}
-
-fn compile_with_stdlib_helper(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("si_units_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile_with_stdlib(&parsed)
-}
-
-fn errors_only(module: &CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
-}
-
 /// Compile a unit declaration and look up its `dimension` field.
 fn unit_dim(source: &str, unit_name: &str) -> DimensionVector {
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(errs.is_empty(), "unexpected errors: {:?}", errs);
     let u = module
@@ -271,7 +246,7 @@ fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVect
         "structure def S {{ param x : {} = {} }}",
         param_type, literal
     );
-    let module = compile_with_stdlib_helper(&source);
+    let module = compile_source_with_stdlib(&source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -290,16 +265,7 @@ fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVect
         .find(|c| c.id.member == "x")
         .expect("x cell not found");
     let expr = cell.default_expr.as_ref().expect("x has no default_expr");
-    if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-        si_value,
-        dimension,
-        ..
-    }) = &expr.kind
-    {
-        (*si_value, *dimension)
-    } else {
-        panic!("unexpected expression kind: {:?}", expr.kind);
-    }
+    common::expect_scalar(expr)
 }
 
 #[test]
@@ -377,6 +343,7 @@ fn si_derived_units_table_defines_newtons_pascals_joules() {
         ("rpm", "AngularVelocity", std::f64::consts::PI / 30.0),
         ("rad_per_s", "AngularVelocity", 1.0),
         ("Pa_s", "DynamicViscosity", 1.0),
+        ("sr", "SolidAngle", 1.0),
     ];
 
     assert_eq!(
@@ -477,6 +444,12 @@ fn task_test_derived_units_and_prefixed_resolve_via_stdlib() {
         ),
         // Dynamic viscosity.
         ("DynamicViscosity", "1Pa_s", 1.0, DimensionVector::DYNAMIC_VISCOSITY),
+        // Solid angle.
+        ("SolidAngle", "1sr", 1.0, DimensionVector::SOLID_ANGLE),
+        // RF/IC engineering: femtofarad, pico/femtosiemens.
+        ("Capacitance", "1fF", 1e-15, DimensionVector::CAPACITANCE),
+        ("Conductance", "1pS", 1e-12, DimensionVector::CONDUCTANCE),
+        ("Conductance", "1fS", 1e-15, DimensionVector::CONDUCTANCE),
     ];
 
     for (ptype, literal, expected, expected_dim) in cases {
@@ -533,6 +506,7 @@ fn all_derived_units_have_correct_dimension_vectors() {
         ("Pressure", "1bar", DimensionVector::PRESSURE),
         ("Pressure", "1mbar", DimensionVector::PRESSURE),
         ("Charge", "1C", DimensionVector::CHARGE),
+        ("SolidAngle", "1sr", DimensionVector::SOLID_ANGLE),
     ];
 
     for (ptype, literal, expected_dim) in cases {
@@ -553,7 +527,7 @@ fn unknown_unit_still_produces_parse_error() {
     // arbitrary identifiers. An unknown unit after a number literal should
     // yield an Error-severity diagnostic mentioning the unit name.
     let source = "structure def S { param x : Length = 5xyz123 }";
-    let module = compile_with_stdlib_helper(source);
+    let module = compile_source_with_stdlib(source);
     let errs = errors_only(&module);
     assert!(
         !errs.is_empty(),
@@ -656,4 +630,206 @@ fn existing_units_ri_still_has_m_kg_s_rad_deg_degC_degF_imperial() {
     // units.ri carries it.
     let (v, _) = stdlib_param_si_value("Mass", "1g");
     assert!((v - 0.001).abs() < 1e-12, "1g wrong: {}", v);
+}
+
+// ── PrefixSet enum semantics ─────────────────────────────────────────────────
+
+#[test]
+fn prefix_set_all_includes_any_symbol() {
+    // PrefixSet::All must return true for every known SI prefix symbol.
+    assert!(si_units::PrefixSet::All.includes("k"));
+    assert!(si_units::PrefixSet::All.includes("M"));
+    assert!(si_units::PrefixSet::All.includes("n"));
+    assert!(si_units::PrefixSet::All.includes("q"));
+    assert!(si_units::PrefixSet::All.includes("Q"));
+}
+
+#[test]
+fn prefix_set_only_includes_listed_symbol() {
+    let ps = si_units::PrefixSet::Only(&["k", "M"]);
+    assert!(ps.includes("k"));
+    assert!(ps.includes("M"));
+}
+
+#[test]
+fn prefix_set_only_excludes_unlisted_symbol() {
+    let ps = si_units::PrefixSet::Only(&["k", "M"]);
+    assert!(!ps.includes("G"));
+    assert!(!ps.includes("n"));
+}
+
+#[test]
+fn prefix_set_only_empty_excludes_all() {
+    let ps = si_units::PrefixSet::Only(&[]);
+    assert!(!ps.includes("k"));
+    assert!(!ps.includes("m"));
+    assert!(!ps.includes("n"));
+}
+
+// ── PrefixSet field on SiPrefixBase ──────────────────────────────────────────
+
+#[test]
+fn si_prefix_bases_use_prefix_set_enum() {
+    let find_base = |name: &str| -> &si_units::SiPrefixBase {
+        si_units::SI_PREFIX_BASES
+            .iter()
+            .find(|b| b.name == name)
+            .unwrap_or_else(|| panic!("base `{}` missing from SI_PREFIX_BASES", name))
+    };
+
+    // Unrestricted bases use PrefixSet::All.
+    for name in &["m", "g", "s", "A", "mol"] {
+        let base = find_base(name);
+        assert_eq!(
+            base.prefix_combos,
+            si_units::PrefixSet::All,
+            "base `{}` should have PrefixSet::All, got {:?}",
+            name,
+            base.prefix_combos
+        );
+    }
+
+    // Restricted bases use PrefixSet::Only with correct prefix lists.
+    let k = find_base("K");
+    assert_eq!(
+        k.prefix_combos,
+        si_units::PrefixSet::Only(&["n", "u", "m"]),
+        "K should have PrefixSet::Only(&[\"n\", \"u\", \"m\"]), got {:?}",
+        k.prefix_combos
+    );
+
+    let cd = find_base("cd");
+    assert_eq!(
+        cd.prefix_combos,
+        si_units::PrefixSet::Only(&["m", "u"]),
+        "cd should have PrefixSet::Only(&[\"m\", \"u\"]), got {:?}",
+        cd.prefix_combos
+    );
+
+    let rad = find_base("rad");
+    assert_eq!(
+        rad.prefix_combos,
+        si_units::PrefixSet::Only(&["m", "u", "n"]),
+        "rad should have PrefixSet::Only(&[\"m\", \"u\", \"n\"]), got {:?}",
+        rad.prefix_combos
+    );
+}
+
+// ─── S4: SI_PREFIX_BASES restricted prefix filtering ─────────────────────────
+
+/// Once SI_PREFIX_BASES supports per-base prefix_combos filtering, the generator
+/// must only emit the allowed prefixes for restricted bases (K, cd, rad) while
+/// still emitting all 20 prefixes for unrestricted bases (m, g, s, A, mol).
+#[test]
+fn si_prefix_bases_restricted_entries_only_generate_specified_prefixes() {
+    let src = si_units::build_si_units_source();
+
+    // Nonsensical combinations must be ABSENT after filtering.
+    for absent in &[
+        "pub unit QK",
+        "pub unit qK",
+        "pub unit qcd",
+        "pub unit Qcd",
+        "pub unit Qrad",
+        "pub unit qrad",
+    ] {
+        assert!(
+            !src.contains(absent),
+            "generated source must NOT contain `{}` (nonsensical prefix combo)\n\nfull source:\n{}",
+            absent,
+            src
+        );
+    }
+
+    // Restricted bases must still emit their allowed prefixes.
+    for present in &[
+        "pub unit mK : Temperature",
+        "pub unit uK : Temperature",
+        "pub unit nK : Temperature",
+        "pub unit mcd : LuminousIntensity",
+        "pub unit ucd : LuminousIntensity",
+        "pub unit mrad : Angle",
+        "pub unit urad : Angle",
+        "pub unit nrad : Angle",
+    ] {
+        assert!(
+            src.contains(present),
+            "generated source missing expected restricted-prefix line: `{}`\n\nfull source:\n{}",
+            present,
+            src
+        );
+    }
+
+    // Unrestricted bases must still get all 20 prefixes.
+    for present in &["pub unit Qm : Length", "pub unit qm : Length"] {
+        assert!(
+            src.contains(present),
+            "generated source missing unrestricted-base line: `{}`\n\nfull source:\n{}",
+            present,
+            src
+        );
+    }
+
+    // Exact-count assertions: restricted bases must emit ONLY their allowed
+    // prefixes — a stale or over-inclusive filter would still pass the
+    // presence checks above but fail these.
+    let k_count = si_units::SI_PREFIXES
+        .iter()
+        .filter(|(p, _)| src.contains(&format!("pub unit {}K ", p)))
+        .count();
+    assert_eq!(k_count, 3, "K must emit exactly 3 prefixed units (n, u, m); got {}", k_count);
+
+    let cd_count = si_units::SI_PREFIXES
+        .iter()
+        .filter(|(p, _)| src.contains(&format!("pub unit {}cd ", p)))
+        .count();
+    assert_eq!(cd_count, 2, "cd must emit exactly 2 prefixed units (m, u); got {}", cd_count);
+
+    let rad_count = si_units::SI_PREFIXES
+        .iter()
+        .filter(|(p, _)| src.contains(&format!("pub unit {}rad ", p)))
+        .count();
+    assert_eq!(rad_count, 3, "rad must emit exactly 3 prefixed units (m, u, n); got {}", rad_count);
+}
+
+// ── PrefixSet field on SiDerivedUnit ─────────────────────────────────────────
+
+#[test]
+fn si_derived_units_use_prefix_set_only() {
+    // (1) Every entry in SI_DERIVED_UNITS must use PrefixSet::Only (never All).
+    for unit in si_units::SI_DERIVED_UNITS {
+        assert!(
+            matches!(unit.prefix_combos, si_units::PrefixSet::Only(_)),
+            "derived unit `{}` must use PrefixSet::Only, got {:?}",
+            unit.name,
+            unit.prefix_combos
+        );
+    }
+
+    // (2) Units with no prefixed variants must have PrefixSet::Only(&[]).
+    for name in &["lm", "lx", "Bq", "bar", "mbar", "rpm", "rad_per_s", "Pa_s", "sr"] {
+        let unit = si_units::SI_DERIVED_UNITS
+            .iter()
+            .find(|u| u.name == *name)
+            .unwrap_or_else(|| panic!("derived unit `{}` missing", name));
+        assert_eq!(
+            unit.prefix_combos,
+            si_units::PrefixSet::Only(&[]),
+            "unit `{}` should have PrefixSet::Only(&[]), got {:?}",
+            name,
+            unit.prefix_combos
+        );
+    }
+
+    // (3) Spot-check: N has PrefixSet::Only(&["k", "M", "G"]).
+    let n = si_units::SI_DERIVED_UNITS
+        .iter()
+        .find(|u| u.name == "N")
+        .expect("N missing from SI_DERIVED_UNITS");
+    assert_eq!(
+        n.prefix_combos,
+        si_units::PrefixSet::Only(&["k", "M", "G"]),
+        "N should have PrefixSet::Only(&[\"k\", \"M\", \"G\"]), got {:?}",
+        n.prefix_combos
+    );
 }

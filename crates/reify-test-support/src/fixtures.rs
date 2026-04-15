@@ -1,6 +1,9 @@
 use reify_compiler::{CompiledModule, RequirementKind};
 use reify_syntax::ParsedModule;
-use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
+use reify_types::{
+    BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value,
+    DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
+};
 
 use crate::builders::{
     CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
@@ -99,6 +102,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(38, 42),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(24, 42),
                 content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
             }),
@@ -118,6 +122,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(69, 74),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(47, 74),
                 content_hash: ContentHash::of_str("param height: Scalar = 100mm"),
             }),
@@ -137,6 +142,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(104, 107),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(79, 107),
                 content_hash: ContentHash::of_str("param thickness: Scalar = 5mm"),
             }),
@@ -156,6 +162,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(141, 144),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(112, 144),
                 content_hash: ContentHash::of_str("param fillet_radius: Scalar = 3mm"),
             }),
@@ -175,6 +182,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(178, 181),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(149, 181),
                 content_hash: ContentHash::of_str("param hole_diameter: Scalar = 6mm"),
             }),
@@ -208,6 +216,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(200, 226),
                 },
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(187, 226),
                 content_hash: ContentHash::of_str("let volume = width * height * thickness"),
             }),
@@ -321,6 +330,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(356, 385),
                 },
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(346, 385),
                 content_hash: ContentHash::of_str("let body = box(width, height, thickness)"),
             }),
@@ -865,21 +875,24 @@ pub fn mutual_recursion_module() -> CompiledModule {
 /// - Purpose `"mfg_ready"` with `@solver_hint` annotation
 pub fn annotated_module() -> CompiledModule {
     let rigid_trait = CompiledTraitBuilder::new("Rigid")
-        .annotation(annotation_with_args("deprecated", vec![ann_str("use Rigid2")]))
+        .annotation(annotation_with_args(
+            DEPRECATED_ANNOTATION,
+            vec![ann_str("use Rigid2")],
+        ))
         .build();
 
     let bolt_template = TopologyTemplateBuilder::new("Bolt")
-        .annotation(annotation("test"))
-        .annotation(annotation("optimized"))
+        .annotation(annotation(TEST_ANNOTATION))
+        .annotation(annotation(OPTIMIZED_ANNOTATION))
         .build();
 
     let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
         .imported()
-        .annotation(annotation("deprecated"))
+        .annotation(annotation(DEPRECATED_ANNOTATION))
         .build();
 
     let purpose = CompiledPurposeBuilder::new("mfg_ready")
-        .annotation(annotation("solver_hint"))
+        .annotation(annotation(SOLVER_HINT_ANNOTATION))
         .build();
 
     CompiledModuleBuilder::new(ModulePath::single("annotated_module"))
@@ -888,6 +901,56 @@ pub fn annotated_module() -> CompiledModule {
         .field(temp_field)
         .compiled_purpose(purpose)
         .build()
+}
+
+// ─── shared stdlib test constants ──────────────────────────────────────
+
+/// Material traits defined in `materials_mechanical.ri`.
+pub const EXPECTED_MATERIAL_TRAITS: &[&str] = &[
+    "Material",
+    "Elastic",
+    "Strong",
+    "Hard",
+    "FatigueRated",
+    "FractureTough",
+    "Ductile",
+    "ImpactResistant",
+    "Damping",
+];
+
+/// Steel:Elastic conformance source — 3 params for the Elastic trait.
+pub fn steel_elastic_source() -> &'static str {
+    r#"
+structure def Steel : Elastic {
+    param youngs_modulus : Real = 200.0
+    param poissons_ratio : Real = 0.3
+    param shear_modulus : Real = 77.0
+}
+"#
+}
+
+/// Steel:Strong conformance source — 3 params for the Strong trait.
+pub fn steel_strong_source() -> &'static str {
+    r#"
+structure def Steel : Strong {
+    param yield_strength : Real = 250.0
+    param uts : Real = 400.0
+    param compressive_strength : Real = 250.0
+}
+"#
+}
+
+/// Steel:Material+Elastic conformance source — 5 params for both traits.
+pub fn steel_material_elastic_source() -> &'static str {
+    r#"
+structure def Steel : Material + Elastic {
+    param density : Real = 7800.0
+    param name : String = "A36"
+    param youngs_modulus : Real = 200.0
+    param poissons_ratio : Real = 0.3
+    param shear_modulus : Real = 77.0
+}
+"#
 }
 
 #[cfg(test)]
@@ -1065,7 +1128,7 @@ mod tests {
         let rigid = &module.trait_defs[0];
         assert_eq!(rigid.name, "Rigid");
         assert_eq!(rigid.annotations.len(), 1);
-        assert_eq!(rigid.annotations[0].name, "deprecated");
+        assert_eq!(rigid.annotations[0].name, DEPRECATED_ANNOTATION);
         assert_eq!(rigid.annotations[0].args.len(), 1);
         assert!(matches!(
             &rigid.annotations[0].args[0],
@@ -1078,22 +1141,25 @@ mod tests {
         assert_eq!(bolt.name, "Bolt");
         assert_eq!(bolt.annotations.len(), 2);
         let ann_names: Vec<&str> = bolt.annotations.iter().map(|a| a.name.as_str()).collect();
-        assert!(ann_names.contains(&"test"), "expected @test annotation");
-        assert!(ann_names.contains(&"optimized"), "expected @optimized annotation");
+        assert!(ann_names.contains(&TEST_ANNOTATION), "expected @test annotation");
+        assert!(
+            ann_names.contains(&OPTIMIZED_ANNOTATION),
+            "expected @optimized annotation"
+        );
 
         // (c) one field with @deprecated annotation
         assert_eq!(module.fields.len(), 1);
         let temp_field = &module.fields[0];
         assert_eq!(temp_field.name, "temp");
         assert_eq!(temp_field.annotations.len(), 1);
-        assert_eq!(temp_field.annotations[0].name, "deprecated");
+        assert_eq!(temp_field.annotations[0].name, DEPRECATED_ANNOTATION);
 
         // (d) one purpose with @solver_hint annotation
         assert_eq!(module.compiled_purposes.len(), 1);
         let purpose = &module.compiled_purposes[0];
         assert_eq!(purpose.name, "mfg_ready");
         assert_eq!(purpose.annotations.len(), 1);
-        assert_eq!(purpose.annotations[0].name, "solver_hint");
+        assert_eq!(purpose.annotations[0].name, SOLVER_HINT_ANNOTATION);
     }
 
     #[test]
@@ -1249,9 +1315,7 @@ mod tests {
     /// Helper: parse and compile `source`, assert no errors and exactly one
     /// `Severity::Warning` mentioning both "unknown port type" and
     /// "NonExistentTrait". Returns the `CompiledModule` for further assertions.
-    fn assert_warning_source_compiles_with_unknown_port_warning(
-        source: &str,
-    ) -> CompiledModule {
+    fn assert_warning_source_compiles_with_unknown_port_warning(source: &str) -> CompiledModule {
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(
             parsed.errors.is_empty(),
@@ -1288,7 +1352,9 @@ mod tests {
 
     #[test]
     fn warn_source_with_unknown_port_type_produces_unknown_port_warning_no_errors() {
-        assert_warning_source_compiles_with_unknown_port_warning(warn_source_with_unknown_port_type());
+        assert_warning_source_compiles_with_unknown_port_warning(
+            warn_source_with_unknown_port_type(),
+        );
     }
 
     #[test]
@@ -1306,10 +1372,10 @@ mod tests {
     }
 
     #[test]
-    fn warn_source_with_unknown_port_type_with_width_param_cell_has_length_type_span_kind_and_default() {
+    fn warn_source_with_unknown_port_type_with_width_param_cell_has_length_type_span_kind_and_default()
+     {
         let source = warn_source_with_unknown_port_type_with_width();
-        let compiled =
-            assert_warning_source_compiles_with_unknown_port_warning(source);
+        let compiled = assert_warning_source_compiles_with_unknown_port_warning(source);
         let s_template = compiled
             .templates
             .iter()
@@ -1344,12 +1410,10 @@ mod tests {
             )
         });
         assert_eq!(
-            span_text,
-            "param width : Length = 80mm",
+            span_text, "param width : Length = 80mm",
             "expected width cell span to cover the full `param width : Length = 80mm` \
              declaration, got span {:?} covering {:?}",
-            width_cell.span,
-            span_text,
+            width_cell.span, span_text,
         );
         assert!(
             matches!(width_cell.kind, ValueCellKind::Param),

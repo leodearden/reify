@@ -36,6 +36,7 @@ tauri = { workspace = true, optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 tauri-plugin-shell = { version = "2", optional = true }
 tokio = { workspace = true, features = ["process", "time"] }
+axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true

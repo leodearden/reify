@@ -115,6 +115,7 @@ pub struct ParamDecl {
     pub type_expr: Option<TypeExpr>,
     pub default: Option<Expr>,
     pub where_clause: Option<WhereClause>,
+    pub annotations: Vec<Annotation>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -128,6 +129,7 @@ pub struct LetDecl {
     pub type_expr: Option<TypeExpr>,
     pub value: Expr,
     pub where_clause: Option<WhereClause>,
+    pub annotations: Vec<Annotation>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -460,9 +462,12 @@ impl ConstraintDef {
     /// Returns `true` if this constraint def is tagged with the `@test` annotation.
     ///
     /// Callers can use this instead of scanning `annotations` manually.
-    /// Mirrors the `is_test` field on `TopologyTemplate` for symmetry.
+    /// Symmetric with `TopologyTemplate::is_test()`.
+    // TODO: Once constraint-def lowering lands, this moves to CompiledConstraintDef::is_test.
     pub fn is_test(&self) -> bool {
-        self.annotations.iter().any(|a| a.name == "test")
+        self.annotations
+            .iter()
+            .any(|a| a.name == reify_types::annotation::TEST_ANNOTATION)
     }
 }
 

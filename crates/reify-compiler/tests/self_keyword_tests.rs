@@ -14,43 +14,64 @@
 //! There is no gap between step-8 and step-11 in this file — the apparent gap
 //! is a cross-file artifact of the original task-153 plan.
 
+use reify_test_support::{compile_source, parse_and_compile};
 use reify_types::{Severity, ValueCellId};
 
-/// Helper: parse + compile source, assert no errors, return compiled output.
-fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no error diagnostics, got: {:?}",
-        errors
-    );
-    compiled
+/// Returns `true` if any string in `messages` contains `word` as a whole token.
+///
+/// Token boundaries are any character that is neither ASCII alphanumeric nor `_`.
+/// Extracted from duplicated closure logic that previously appeared at four call
+/// sites in this file.
+fn mentions_word<'a>(mut messages: impl Iterator<Item = &'a str>, word: &str) -> bool {
+    messages.any(|msg| {
+        msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|tok| tok == word)
+    })
 }
 
-/// Helper: parse + compile source, return compiled output (may have errors).
-#[allow(dead_code)]
-fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
+/// Convenience wrapper: returns `true` if any lowercased message in `msgs` contains
+/// the word `"self"` as a whole token (i.e. not as part of `myself` or `self_param`).
+fn msgs_mention_self(msgs: &[String]) -> bool {
+    mentions_word(msgs.iter().map(String::as_str), "self")
 }
+
+#[test]
+fn test_mentions_word() {
+    // (1) exact match: the word 'self' appears as its own token
+    assert!(mentions_word(
+        ["unknown identifier `self`"].iter().copied(),
+        "self"
+    ));
+
+    // (2) substring-only: 'self' is embedded inside 'myself' — not a whole word
+    assert!(!mentions_word(["myself"].iter().copied(), "self"));
+
+    // (3) underscore-adjacent: 'self_param' is a single token, does not match 'self'
+    assert!(!mentions_word(["self_param"].iter().copied(), "self"));
+
+    // (4) callers pre-lowercase their messages, so pass lowercased strings;
+    //     'self' at start of message
+    assert!(mentions_word(["self is invalid here"].iter().copied(), "self"));
+
+    // (5) empty iterator → false
+    assert!(!mentions_word(std::iter::empty(), "self"));
+
+    // (6) word at end of message
+    assert!(mentions_word(["cannot use self"].iter().copied(), "self"));
+
+    // (7) multiple messages — only the second mentions the word
+    assert!(mentions_word(
+        ["unrelated error", "invalid use of self"].iter().copied(),
+        "self"
+    ));
+
+    // (8) none of the messages mention the word
+    assert!(!mentions_word(
+        ["unrelated error", "something else entirely"].iter().copied(),
+        "self"
+    ));
+}
+
 
 // ─── step-1: self.param resolves to correct ValueRef ───
 
@@ -61,7 +82,7 @@ fn self_dot_param_resolves_to_value_ref() {
     param x : Scalar = 5mm
     let y = self.x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // `y` should be a value cell
@@ -103,7 +124,7 @@ structure S {
     sub bolt = Bolt()
     let val = self.bolt.d
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
 
     // Find the S template
     let template = compiled
@@ -148,7 +169,7 @@ fn self_in_let_binding_compiles() {
     param a : Scalar = 3mm
     let b = self.a + 1mm
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Both value cells should exist
@@ -171,7 +192,7 @@ fn self_in_constraint_compiles() {
     param x : Scalar = 5mm
     constraint self.x > 2mm
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Should have at least one constraint
@@ -204,7 +225,7 @@ fn bare_self_as_entity_reference() {
     param x : Scalar = 5mm
     let me = self
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -245,7 +266,7 @@ fn self_in_guarded_block() {
         let child_width = self.width / 2
     }
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Should have a guarded group
@@ -321,11 +342,22 @@ fn self_error_in_fn_body() {
             !errors.is_empty(),
             "expected error diagnostic for `self` in fn body"
         );
-    } else {
-        // Parser correctly rejects `self` in fn body — at least one error produced
+        let msgs: Vec<String> = errors.iter().map(|d| d.message.to_lowercase()).collect();
         assert!(
-            !parsed.errors.is_empty(),
-            "expected at least one parse error for `self` in fn body"
+            msgs_mention_self(&msgs),
+            "expected a compile error mentioning `self` for `self` in fn body, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    } else {
+        // Parser rejected the source — at least one parse error produced.
+        // The parse error message embeds the source snippet, which includes `self`;
+        // verify the error references `self` as a whole word to guard against
+        // unrelated syntax regressions being mistaken for a self-rejection.
+        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.to_lowercase()).collect();
+        assert!(
+            msgs_mention_self(&msgs),
+            "expected a parse error mentioning `self` for `self` in fn body, got: {:?}",
+            parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
     }
 }
@@ -374,7 +406,7 @@ structure S {
     sub items : List<Bolt>
     let x = self.items
 }"#;
-    let compiled = compile_with_diagnostics(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -411,7 +443,7 @@ structure S {
     sub items : List<Bolt>
     let d = self.items.diameter
 }"#;
-    let compiled = compile_with_diagnostics(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -448,7 +480,7 @@ structure S {
     sub bolt = Bolt()
     let b = self.bolt
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -478,7 +510,7 @@ fn self_param_equivalence_with_bare_param() {
     let via_self = self.x
     let via_bare = x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     let via_self_cell = template
@@ -530,7 +562,7 @@ fn self_dot_param_inside_lambda_captures_entity_param() {
     param x : Scalar = 5mm
     let f = |y: Scalar| y + self.x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -577,7 +609,7 @@ fn bare_self_inside_lambda_captures_entity_ref() {
     param x : Scalar = 5mm
     let f = |_unused| self
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -635,11 +667,22 @@ fn self_inside_lambda_in_fn_body_errors() {
             !errors.is_empty(),
             "expected error diagnostic for `self` inside lambda in fn body"
         );
-    } else {
-        // Parser correctly rejects `self` in fn body — at least one error produced.
+        let msgs: Vec<String> = errors.iter().map(|d| d.message.to_lowercase()).collect();
         assert!(
-            !parsed.errors.is_empty(),
-            "expected at least one parse error for `self` inside lambda in fn body"
+            msgs_mention_self(&msgs),
+            "expected a compile error mentioning `self` for `self` inside lambda in fn body, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    } else {
+        // Parser rejected the source — at least one parse error produced.
+        // The parse error message embeds the source snippet, which includes `self`;
+        // verify the error references `self` as a whole word to guard against
+        // unrelated syntax regressions being mistaken for a self-rejection.
+        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.to_lowercase()).collect();
+        assert!(
+            msgs_mention_self(&msgs),
+            "expected a parse error mentioning `self` for `self` inside lambda in fn body, got: {:?}",
+            parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
     }
 }

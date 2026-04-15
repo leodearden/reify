@@ -85,24 +85,32 @@ pub fn find_stale_plan_pointers_in_source(source: &str) -> Vec<String> {
 ///    catch stale wordings *appended inside* an otherwise-compliant prefix
 ///    (e.g. `"known bug: see plan.md step-3"` would pass guard 2 and would
 ///    only trip guard 3 if it happened to contain the specific sentinel).
-/// 3. **Negative sentinel** — the specific historical stale-pointer substring
-///    is also checked as belt-and-suspenders.  Guard 3 now scans
-///    line-by-line so it agrees with guards 1+2 on which lines are
-///    doc-comment prose to skip.  **Limitation:** because the check is
-///    line-local, a stale needle that straddles a `\` + newline
-///    string-literal continuation *across* a line boundary would be missed.
-///    Guards 1+2 still catch that case via `after_marker`'s cross-line scan.
-///    This asymmetry is not a realistic risk for current test files, but is
-///    documented here so future callers are aware.
+/// 3. **Negative sentinel** — guard 3 delegates to
+///    `find_stale_plan_pointers_in_source` so stale-needle detection —
+///    including multi-line reason support and `///`/`//!` doc-comment
+///    skipping — has a single source of truth across both public scanners.
+///    Any future scanner improvement (e.g. skipping `/* */` block comments)
+///    benefits both call sites automatically.
+///
+///    Note: guard 3 only catches stale needles that appear *inside* an
+///    `#[ignore = "..."]` reason string.  Occurrences in bare prose outside
+///    any attribute are no longer caught here; guards 1+2 cover every
+///    real-world case because the needle's space-dash boundary cannot appear
+///    in a Rust identifier (underscores are the convention), and grep of the
+///    current workspace confirms zero bare-prose occurrences.
 ///
 /// Lines where `is_doc_comment_line` returns true (`///` or `//!`, after
-/// `trim_start`) are skipped — prose mentions of `#[ignore]` in doc comments
-/// do not generate false positives.  This predicate is shared with
-/// `find_stale_plan_pointers_in_source` so doc-comment skipping cannot drift
-/// between the two scanners (lock-step guarantee).
+/// `trim_start`) are skipped by guards 1+2 directly, and by guard 3
+/// transitively through `find_stale_plan_pointers_in_source` — prose
+/// mentions of `#[ignore]` in doc comments do not generate false positives.
 ///
 /// All scanner constants are assembled at runtime via `.concat()` so the
 /// source file does not contain the guarded sequences as adjacent characters.
+///
+/// **Rustfmt assumption:** the scanner recognises only the canonical
+/// `#[ignore = "..."]` form (space-equals-space-quote).  Non-canonical
+/// forms such as `#[ignore="..."]` are silently ignored; rustfmt
+/// enforces the canonical form in practice.
 pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
     // DO NOT inline — split at boundary ["#[", "ignore"] keeps the guarded
     // 8-char sequence from appearing adjacent in this source file; inlining
@@ -149,22 +157,20 @@ pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
         }
     }
 
-    // Belt-and-suspenders negative check for the specific original stale-pointer pattern.
-    // Doc-comment lines are skipped here too so this guard agrees with guard 1+2 and
-    // with find_stale_plan_pointers_in_source (lock-step guarantee).
-    // DO NOT inline — split at boundary ["plan", " step-"] keeps the guarded
-    // sequence from appearing adjacent in this source file.
-    let stale_needle = ["plan", " step-"].concat();
-    let has_stale_in_non_doc_line = source
-        .lines()
-        .filter(|line| !is_doc_comment_line(line))
-        .any(|line| line.contains(&stale_needle));
-    if has_stale_in_non_doc_line {
+    // Guard 3: delegate stale-pointer detection to find_stale_plan_pointers_in_source.
+    // This gives guard 3 the same byte-level marker walk, multi-line-reason support,
+    // and `///`/`//!` doc-comment skipping as the standalone scanner — a single source
+    // of truth for stale-needle detection.  Note: guard 3 now only catches stale
+    // needles that appear *inside* an `#[ignore = "..."]` reason string; bare-prose
+    // occurrences outside any attribute are no longer caught here (guards 1+2 handle
+    // every real-world case).
+    let stale_violations = find_stale_plan_pointers_in_source(source);
+    if !stale_violations.is_empty() {
+        let violation_list = stale_violations.join("\n  ");
         return Err(format!(
-            "Found stale-pointer substring in source. \
-             Update any affected {} reason string to a self-contained inline summary \
-             (e.g. \"known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
-             losing the 1/Length result dimension; expected Value::Scalar{{1/Length}}\").",
+            "Found stale-pointer substring in {} reason string(s). \
+             Update affected reason strings to self-contained inline summaries \
+             (Task 1622 convention):\n  {violation_list}",
             ["#[", "ignore]"].concat(),
         ));
     }
@@ -173,9 +179,16 @@ pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
 }
 
 /// Recursively walk `workspace_root` collecting every `.rs` file whose path
-/// contains a directory component named `tests`. Skips `target` and any
-/// directory whose name starts with `.` (which covers `.git`, `.worktrees`,
-/// etc.).
+/// contains a directory component named `tests`. Skips the following directories:
+///
+/// - `target` — Cargo build artifacts
+/// - Dot-dirs (any name starting with `.`) — VCS internals (`.git`), worktrees
+///   (`.worktrees`), and similar tooling directories
+/// - `node_modules` — JS/Node tooling output; `tree-sitter-reify/` can acquire
+///   this directory from JS build steps, and `.rs` files inside it would produce
+///   false matches
+/// - `vendor` — Cargo vendored dependency trees; vendored crate source is not
+///   project-owned test code and scanning it wastes time
 ///
 /// Uses `std::fs::read_dir` with an explicit stack (no recursion, no external
 /// `walkdir` dep) — matching the existing convention in `reify-kernel-occt/build.rs`.
@@ -198,8 +211,12 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
             // infinite loops on symlink cycles in the workspace.
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                // Skip build artifacts, git internals, worktrees, and all dot-dirs.
-                if name == "target" || name.starts_with('.') {
+                // Skip build artifacts, VCS/worktree noise, JS tooling, and vendored deps.
+                if name == "target"
+                    || name.starts_with('.')
+                    || name == "node_modules"
+                    || name == "vendor"
+                {
                     continue;
                 }
                 stack.push(path);
@@ -214,6 +231,39 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
     }
 
     result
+}
+
+/// Walk `workspace_root` for test `.rs` files and collect every stale
+/// transient-plan-doc pointer found in `#[ignore]` reason strings.
+///
+/// Combines `walk_test_rs_files` + `find_stale_plan_pointers_in_source` into a
+/// single reusable helper so callers (integration tests, CI scripts) don't need
+/// to inline the walk-read-detect loop.
+///
+/// Each returned `String` has the form `"<relative/path>: <violation>"`, where
+/// the relative path is stripped of `workspace_root` as a prefix and the
+/// violation is produced by `find_stale_plan_pointers_in_source` (e.g.
+/// `"line 12: \"known bug: see plan step-3\""`).
+///
+/// I/O errors on individual files are silently skipped — the same policy as
+/// the integration test — so a file deleted mid-walk during a concurrent build
+/// does not produce a spurious violation.
+pub fn collect_workspace_stale_pointers(workspace_root: &Path) -> Vec<String> {
+    walk_test_rs_files(workspace_root)
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok().map(|s| (path, s)))
+        .flat_map(|(path, source)| {
+            let rel = path
+                .strip_prefix(workspace_root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            find_stale_plan_pointers_in_source(&source)
+                .into_iter()
+                .map(move |v| format!("{rel}: {v}"))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Returns true when `path` (relative to `workspace_root`) contains at least
@@ -340,6 +390,11 @@ mod tests {
             "violation {:?} should contain the needle fragment {:?}",
             violations[0],
             expected_fragment
+        );
+        assert!(
+            violations[0].starts_with("line 1:"),
+            "expected violation to report the attribute line (line 1), not the needle line (line 2): {:?}",
+            violations[0]
         );
     }
 
@@ -473,29 +528,34 @@ mod tests {
     #[test]
     fn check_ignore_reasons_rejects_non_known_bug_reason() {
         // A reason string that does NOT begin with "known bug:" must be rejected
-        // by the positive-invariant guard.  The reason deliberately does not
-        // contain the stale-pointer needle so only the positive guard fires.
-        // The error must mention "known bug:" so we can tell the positive-invariant
-        // guard fired (not the bare-ignore guard or the stale-pointer sentinel).
+        // by the positive-invariant guard (guard 2).  The reason deliberately does
+        // not contain the stale-pointer needle so only the positive guard fires.
+        // The error must mention "does not begin with" — a substring unique to
+        // guard 2's error format — to confirm the positive-invariant guard fired
+        // (not the bare-ignore guard or the stale-pointer sentinel).
         // Source assembled at runtime.
         let src = ["#[", "ignore = \"some other prefix here\"]"].concat();
         let err = check_ignore_reasons(&src)
             .expect_err("expected a non-\"known bug:\" reason string to be rejected");
         assert!(
-            err.contains("known bug:"),
-            "expected error message to identify the positive-invariant guard: {err:?}",
+            err.contains("does not begin with"),
+            "expected error to identify the positive-invariant guard via 'does not begin with': {err:?}",
         );
     }
 
     #[test]
     fn check_ignore_reasons_rejects_stale_plan_step_needle() {
-        // A source containing the stale-pointer needle (assembled at runtime)
-        // must be rejected by the belt-and-suspenders negative sentinel.
-        // The error must mention "stale-pointer" so we can tell the negative
-        // sentinel fired (not the bare-ignore guard or the positive-invariant
-        // guard).  Needle and source assembled at runtime so this file does not
-        // contain the literal sequence as adjacent characters.
-        let src = ["# source containing the needle: ", "plan", " step-", "5\n"].concat();
+        // An `#[ignore]` reason string containing the stale-pointer needle
+        // (assembled at runtime) must be rejected by the negative sentinel.
+        // The input uses a proper `#[ignore = "known bug: ..."]` attribute so
+        // find_stale_plan_pointers_in_source (now powering guard 3) detects it.
+        // The error must mention "stale-pointer" so we can tell guard 3 fired
+        // (not the bare-ignore guard or the positive-invariant guard).
+        // Marker, needle, and source assembled at runtime so this file does not
+        // contain the literal adjacent sequences.
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let src = format!("{marker}known bug: see {needle}5 reference\"]");
         let err = check_ignore_reasons(&src)
             .expect_err("expected source containing the stale-pointer needle to be rejected");
         assert!(
@@ -523,12 +583,16 @@ mod tests {
         // Regular `//` line comments are NOT skipped — only `///` and `//!` are.
         // This pins the documented limitation so a future refactor that
         // accidentally starts skipping `//` is caught immediately.
+        // The error must mention "bare" to confirm guard 1 (bare-ignore rejection)
+        // fired — not a different guard — pinning which guard rejects the `//` line.
         // Source assembled at runtime to avoid self-triggering.
         let src = ["// regular comment: ", "#[", "ignore]\n"].concat();
+        let err = check_ignore_reasons(&src)
+            .expect_err("expected bare-ignore inside a regular // comment to be rejected \
+                         (// comments are not skipped; only /// and //! are)");
         assert!(
-            check_ignore_reasons(&src).is_err(),
-            "expected bare-ignore inside a regular // comment to be rejected \
-             (// comments are not skipped; only /// and //! are)",
+            err.contains("bare"),
+            "expected the bare-ignore guard (guard 1) to fire, not a different guard: {err:?}",
         );
     }
 
@@ -544,21 +608,190 @@ mod tests {
         );
     }
 
-    /// Guard 3 (negative sentinel) isolation: a `///` doc-comment line that
-    /// contains ONLY the stale needle — without any `#[ignore]` marker — must
-    /// be accepted.  This pins guard 3's doc-skip filter independently of
-    /// guards 1+2, which would have already returned early on a marker.
-    /// If a future refactor drops the `filter(|l| !is_doc_comment_line(l))`
-    /// clause from guard 3 while keeping it on guards 1+2, this test fails.
+    #[test]
+    fn check_ignore_reasons_non_canonical_form_is_silently_ignored() {
+        // The scanner recognises only the canonical rustfmt form (space-equals-space-quote:
+        // ` = "`).  Non-canonical attribute forms — no spaces around `=`, space only
+        // before `=`, or space only after `=` — do not match any guard branch and are
+        // silently passed over.  This test pins all three whitespace variants so any
+        // future tightening (e.g. stripping whitespace before matching) must first
+        // update this test.
+        //
+        // The reason string deliberately does NOT start with `known bug:`.  If a future
+        // refactor starts matching non-canonical forms, guard 2 would reject this reason
+        // and the test would fail loudly, providing a clear regression signal.
+        //
+        // Sources assembled at runtime so this file does not contain the guarded adjacent
+        // sequences and does not self-trigger the meta-test scanner.
+        let non_canonical_forms = [
+            ["#[", "ignore=\"not a known bug: test\"]"].concat(),   // no spaces around =
+            ["#[", "ignore =\"not a known bug: test\"]"].concat(),  // space before = only
+            ["#[", "ignore= \"not a known bug: test\"]"].concat(),  // space after = only
+        ];
+        for src in &non_canonical_forms {
+            assert!(
+                check_ignore_reasons(src).is_ok(),
+                "expected non-canonical #[ignore...] form to be silently ignored: {src:?}",
+            );
+        }
+    }
+
+    /// Guard 3 "no-marker" path: a `///` doc-comment line that contains the
+    /// stale needle but no `#[ignore]` marker must be accepted.  After the
+    /// delegation refactor, guard 3 calls `find_stale_plan_pointers_in_source`,
+    /// which only walks `#[ignore = "..."]` reason strings — so a bare doc-comment
+    /// line without a marker is not flagged because there is simply no marker to
+    /// scan, not because of guard-3-specific doc-comment filtering.
+    ///
+    /// Doc-comment skipping with a marker present is covered by the lock-step
+    /// test `lock_step_doc_comment_skipping_in_both_scanners` (see above).
     #[test]
     fn check_ignore_reasons_guard3_skips_doc_comment_lines() {
         let needle = ["plan", " step-"].concat();
         // Source has no #[ignore] marker — only a doc-comment line with the needle.
-        // Guards 1+2 will not fire; only guard 3 can reject or accept.
+        // find_stale_plan_pointers_in_source finds no markers, so guard 3 passes.
         let src = format!("/// contains needle: {needle}3\n");
         assert!(
             check_ignore_reasons(&src).is_ok(),
-            "guard 3 should skip a stale needle that lives on a /// doc-comment line",
+            "guard 3 should accept a source with no #[ignore] markers (needle only in a doc-comment)",
+        );
+    }
+
+    // ── check_ignore_reasons guard-3 delegation pinning tests ────────────────
+
+    /// Pins that guard 3 cites the line number of the offending `#[ignore]`
+    /// attribute in its error message.  Written RED before the delegation to
+    /// `find_stale_plan_pointers_in_source` (which carries line-number
+    /// information), now green and kept as a regression pin.
+    ///
+    /// Source: a compliant `known bug:` prefix that also contains the stale
+    /// needle, placed on line 3 (after two blank lines).
+    #[test]
+    fn check_ignore_reasons_guard3_error_cites_line_number() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        // Two blank lines place the attribute on line 3.
+        let src = format!("\n\n{marker}known bug: see {needle}3 reference\"]");
+        let err = check_ignore_reasons(&src)
+            .expect_err("expected stale-pointer in #[ignore] reason to be rejected");
+        assert!(
+            err.contains("line 3"),
+            "expected error to cite the offending line number (\"line 3\"): {err:?}"
+        );
+    }
+
+    /// Pins that guard 3 error messages include the same violation preview
+    /// produced by `find_stale_plan_pointers_in_source`, confirming the two
+    /// are sourced from the same scanner.  Written RED when guard 3 used a
+    /// line-level scan whose static error contained no preview; now green and
+    /// kept as a regression pin against future divergence.
+    ///
+    /// Uses the test-(g) fixture: `\` + newline continuation with the stale
+    /// needle on the second line — a cross-line case the old scan missed.
+    #[test]
+    fn check_ignore_reasons_delegates_guard3_to_find_stale_plan_pointers() {
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        // `\` + newline continuation; stale needle appears on the second line.
+        let src = format!("{marker}known bug: see \\\n{needle}3 reference\"]");
+
+        // (a) find_stale_plan_pointers_in_source must detect exactly one violation.
+        let violations = find_stale_plan_pointers_in_source(&src);
+        assert_eq!(
+            violations.len(),
+            1,
+            "find_stale_plan_pointers_in_source should detect one violation: {violations:?}"
+        );
+
+        // (b) check_ignore_reasons must reject the source AND its error message
+        // must contain the violation preview produced by
+        // find_stale_plan_pointers_in_source.  This pins that guard 3 is
+        // sourced from the same scanner.
+        let err = check_ignore_reasons(&src)
+            .expect_err("expected stale-pointer in #[ignore] reason to be rejected");
+        assert!(
+            err.contains(&violations[0]),
+            "expected check_ignore_reasons error to contain the violation preview {:?}: {err:?}",
+            violations[0]
+        );
+    }
+
+    // ── collect_workspace_stale_pointers ─────────────────────────────────────
+
+    /// (a) Synthetic workspace with stale plan pointers in two different crate
+    /// test dirs → collect_workspace_stale_pointers returns violations that cite
+    /// both files.  Marker and needle assembled at runtime so this source file
+    /// does not contain the literal guarded sequences.
+    #[test]
+    fn cwsp_synthetic_workspace_with_two_stale_files_returns_both_violations() {
+        use tempfile::TempDir;
+
+        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path();
+
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let stale_source = format!("{marker}known bug: see {needle}3 reference\"]");
+        let good_source = format!("{marker}known bug: a clean summary\"]");
+
+        // Two test files with stale pointers in different crates
+        let stale_a = root.join("crates/alpha/tests/foo.rs");
+        let stale_b = root.join("crates/beta/tests/bar.rs");
+        // A clean file that should produce zero violations
+        let clean = root.join("crates/gamma/tests/baz.rs");
+
+        for (path, content) in [
+            (&stale_a, stale_source.as_str()),
+            (&stale_b, stale_source.as_str()),
+            (&clean, good_source.as_str()),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).expect("create parent dirs");
+            std::fs::write(path, content.as_bytes()).expect("write file");
+        }
+
+        let violations = collect_workspace_stale_pointers(root);
+
+        assert_eq!(
+            violations.len(),
+            2,
+            "expected exactly 2 violations (one per stale file), got: {violations:?}"
+        );
+        // Each violation must include a relative path fragment for its file.
+        let combined = violations.join("\n");
+        assert!(
+            combined.contains("crates/alpha/tests/foo.rs")
+                || combined.contains("alpha/tests/foo.rs"),
+            "expected violation to mention the alpha test file: {violations:?}"
+        );
+        assert!(
+            combined.contains("crates/beta/tests/bar.rs")
+                || combined.contains("beta/tests/bar.rs"),
+            "expected violation to mention the beta test file: {violations:?}"
+        );
+    }
+
+    /// (b) Synthetic workspace with only compliant `#[ignore]` reasons →
+    /// collect_workspace_stale_pointers returns an empty Vec.  Marker assembled
+    /// at runtime so this source file does not self-trigger.
+    #[test]
+    fn cwsp_clean_synthetic_workspace_returns_empty_vec() {
+        use tempfile::TempDir;
+
+        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path();
+
+        let marker = ["#[ignore", " = \""].concat();
+        let clean_source = format!("{marker}known bug: a clean self-contained summary\"]");
+
+        let test_file = root.join("crates/foo/tests/clean.rs");
+        std::fs::create_dir_all(test_file.parent().unwrap()).expect("create parent dirs");
+        std::fs::write(&test_file, clean_source.as_bytes()).expect("write file");
+
+        let violations = collect_workspace_stale_pointers(root);
+
+        assert!(
+            violations.is_empty(),
+            "expected no violations for a clean workspace, got: {violations:?}"
         );
     }
 
@@ -582,10 +815,12 @@ mod tests {
         ];
         // Files that should NOT be returned
         let excluded = [
-            "crates/foo/src/lib.rs",                  // no "tests" component
-            "target/tests/skipme.rs",                 // root-level "target" dir excluded
-            "crates/foo/target/tests/skip_nested.rs", // nested "target" dir also excluded
-            ".git/tests/skip.rs",                     // dot-dir excluded
+            "crates/foo/src/lib.rs",                       // no "tests" component
+            "target/tests/skipme.rs",                      // root-level "target" dir excluded
+            "crates/foo/target/tests/skip_nested.rs",      // nested "target" dir also excluded
+            ".git/tests/skip.rs",                          // dot-dir excluded
+            "node_modules/tests/skip_nm.rs",               // node_modules dir excluded
+            "vendor/tests/skip_vendor.rs",                 // vendor dir excluded
         ];
 
         for rel in included.iter().chain(excluded.iter()) {

@@ -5,8 +5,7 @@
 //! recursive structures, custom unit declarations, meta block access, and doc comments.
 //! Uses examples/m9_combined.ri as the source file.
 
-use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::parse_and_compile;
+use reify_test_support::{check_source, make_simple_engine, parse_and_compile};
 use reify_types::{ModulePath, Satisfaction, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -33,19 +32,10 @@ fn source() -> &'static str {
 /// Use when asserting on values (SI scalars, strings, booleans).
 fn eval_source(src: &str) -> reify_eval::EvalResult {
     let compiled = parse_and_compile(src);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_simple_engine();
     engine.eval(&compiled)
 }
 
-/// Parse, compile, check with SimpleConstraintChecker, return CheckResult.
-/// Use when asserting on constraint satisfaction, labels, and counts.
-fn check_source(src: &str) -> reify_eval::CheckResult {
-    let compiled = parse_and_compile(src);
-    let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    engine.check(&compiled)
-}
 
 // ── Test 1: file parses without errors ──────────────────────────────────────
 

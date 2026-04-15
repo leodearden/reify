@@ -23,9 +23,6 @@ std::unique_ptr<OcctShapeVec> new_shape_vec();
 /// Push a shape into the vector (mutable borrow via Pin).
 void shape_vec_push(OcctShapeVec& vec, const OcctShape& shape);
 
-/// Return the number of shapes in the vector.
-size_t shape_vec_len(const OcctShapeVec& vec);
-
 // Shared types — defined by cxx bridge. Forward-declared here for function signatures.
 struct Point3;
 struct BBox;
@@ -103,15 +100,37 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 /// Create a flat circular face (disk) at a given Z height (for extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
 
-/// Loft through two wire profiles to create a solid.
-std::unique_ptr<OcctShape> loft_two_profiles(const OcctShape& wire1, const OcctShape& wire2);
-
-/// Create a flat circular face (disk) at a given Z height (for sweep/extrude profiles).
-std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
-
 /// Create a straight line wire between two 3D points (for sweep paths).
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
     double x2, double y2, double z2);
+
+// --- Curve constructors ---
+
+/// Create a circular arc wire.
+std::unique_ptr<OcctShape> make_arc_wire(
+    double cx, double cy, double cz,
+    double radius,
+    double start_angle, double end_angle,
+    double ax, double ay, double az);
+
+/// Create a helix wire on a cylindrical surface.
+std::unique_ptr<OcctShape> make_helix_wire(
+    double radius, double pitch, double height);
+
+/// Create an interpolated B-spline curve through points (flat coords, n_points triples).
+std::unique_ptr<OcctShape> make_interp_curve(
+    rust::Slice<const double> coords, size_t n_points);
+
+/// Create a Bézier curve from control points (flat coords, n_points triples).
+std::unique_ptr<OcctShape> make_bezier_curve(
+    rust::Slice<const double> coords, size_t n_points);
+
+/// Create a NURBS (B-spline) curve from poles, weights, flat knots, and degree.
+std::unique_ptr<OcctShape> make_nurbs_curve(
+    rust::Slice<const double> pole_coords, size_t n_poles,
+    rust::Slice<const double> weights,
+    rust::Slice<const double> flat_knots,
+    int degree);
 
 /// Loft through N wire profiles (N >= 2) to create a solid.
 std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles);

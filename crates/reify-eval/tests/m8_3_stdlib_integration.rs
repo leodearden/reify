@@ -12,9 +12,7 @@
 //! Mirrors the m10_combined.rs / m11_field_calculus.rs eval pattern.
 
 use reify_compiler::CompiledModule;
-use reify_constraints::SimpleConstraintChecker;
-use reify_eval::Engine;
-use reify_test_support::parse_and_compile_with_stdlib;
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 use reify_types::{CompiledExprKind, DimensionVector, ModulePath, Severity, Value, ValueCellId};
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
@@ -74,7 +72,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
         compile_errors
     );
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
     let eval_errors: Vec<_> = result

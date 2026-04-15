@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use reify_compiler::{
     CompiledConstraint, CompiledGeometryOp, CompiledGuardedGroup, EntityKind, RealizationDecl,
-    SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    SolverHint, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
 use reify_syntax;
 use reify_types::{
@@ -100,6 +100,7 @@ impl TopologyTemplateBuilder {
             visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: default,
+            solver_hints: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -112,6 +113,7 @@ impl TopologyTemplateBuilder {
             visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: None,
+            solver_hints: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -124,6 +126,27 @@ impl TopologyTemplateBuilder {
             visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: None,
+            solver_hints: Vec::new(),
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn param_with_solver_hints(
+        mut self,
+        entity: &str,
+        member: &str,
+        cell_type: Type,
+        default: Option<CompiledExpr>,
+        solver_hints: Vec<SolverHint>,
+    ) -> Self {
+        self.value_cells.push(ValueCellDecl {
+            id: ValueCellId::new(entity, member),
+            kind: ValueCellKind::Param,
+            visibility: reify_compiler::Visibility::Public,
+            cell_type,
+            default_expr: default,
+            solver_hints,
             span: SourceSpan::new(0, 0),
         });
         self
@@ -142,6 +165,7 @@ impl TopologyTemplateBuilder {
             visibility: reify_compiler::Visibility::Private,
             cell_type,
             default_expr: Some(expr),
+            solver_hints: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -354,7 +378,6 @@ impl TopologyTemplateBuilder {
             meta: self.meta,
             content_hash,
             is_recursive: self.is_recursive,
-            is_test: self.annotations.iter().any(|a| a.name == "test"),
             annotations: self.annotations,
             pragmas: self.pragmas,
         }
@@ -364,21 +387,22 @@ impl TopologyTemplateBuilder {
 #[cfg(test)]
 mod annotation_tests {
     use super::*;
-    use crate::builders::{annotation, annotation_with_args, ann_str};
+    use crate::builders::{ann_str, annotation, annotation_with_args};
+    use reify_types::{DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION};
 
     #[test]
     fn topology_builder_single_annotation() {
         let t = TopologyTemplateBuilder::new("T")
-            .annotation(annotation("optimized"))
+            .annotation(annotation(OPTIMIZED_ANNOTATION))
             .build();
         assert_eq!(t.annotations.len(), 1);
-        assert_eq!(t.annotations[0].name, "optimized");
+        assert_eq!(t.annotations[0].name, OPTIMIZED_ANNOTATION);
     }
 
     #[test]
     fn topology_builder_annotation_with_args() {
         let t = TopologyTemplateBuilder::new("T")
-            .annotation(annotation_with_args("deprecated", vec![ann_str("use Q")]))
+            .annotation(annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use Q")]))
             .build();
         assert_eq!(t.annotations.len(), 1);
         assert_eq!(t.annotations[0].args.len(), 1);
@@ -396,7 +420,7 @@ mod annotation_tests {
     fn topology_builder_annotation_does_not_affect_content_hash() {
         let t1 = TopologyTemplateBuilder::new("T").build();
         let t2 = TopologyTemplateBuilder::new("T")
-            .annotation(annotation("optimized"))
+            .annotation(annotation(OPTIMIZED_ANNOTATION))
             .build();
         assert_eq!(t1.content_hash, t2.content_hash);
     }

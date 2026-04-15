@@ -195,6 +195,13 @@ pub struct CompiledFunction {
     pub annotations: Vec<crate::annotation::Annotation>,
 }
 
+impl CompiledFunction {
+    /// Returns `true` if this function is tagged with `@test`.
+    pub fn is_test(&self) -> bool {
+        crate::annotation::has_test_annotation(&self.annotations)
+    }
+}
+
 /// A compiled function body: let bindings followed by a result expression.
 #[derive(Debug, Clone)]
 pub struct CompiledFnBody {

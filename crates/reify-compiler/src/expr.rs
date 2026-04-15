@@ -124,9 +124,10 @@ pub(crate) fn compile_expr_guarded(
                 None => {
                     // Check if this is a collection sub name — resolve to per-member __list_{name}__{member}
                     if scope.collection_sub_names.contains(name.as_str()) {
-                        if let Some(members) = scope.collection_sub_member_types.get(name.as_str())
+                        if let Some(members) = scope.sub_member_types.get(name.as_str())
                         {
-                            // Resolve to the first member's per-member list
+                            // Resolve to the lexicographically-first member's per-member list.
+                            // sub_member_types inner map is BTreeMap, so iteration order is deterministic.
                             if let Some((first_member, member_ty)) = members.iter().next() {
                                 let list_id = ValueCellId::new(
                                     &scope.entity_name,
@@ -776,9 +777,9 @@ pub(crate) fn compile_expr_guarded(
                 && let reify_syntax::ExprKind::Ident(name) = &idx_obj.kind
                 && scope.collection_sub_names.contains(name.as_str())
             {
-                // Resolve member type from pre-populated collection_sub_member_types
+                // Resolve member type from pre-populated sub_member_types
                 let member_type = match scope
-                    .collection_sub_member_types
+                    .sub_member_types
                     .get(name.as_str())
                     .and_then(|m| m.get(member.as_str()))
                     .cloned()
@@ -1549,10 +1550,22 @@ pub(crate) fn compile_expr_guarded(
             match scope.resolve(member) {
                 Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
                 None => {
-                    // Fallback: create a ValueCellId directly (trait conformance will catch
-                    // missing members separately).
-                    let id = ValueCellId::new(&scope.entity_name, member);
-                    CompiledExpr::value_ref(id, Type::Real)
+                    // Member not found in scope.  Conformance checking will report the
+                    // missing member as a separate error.  Emit an info diagnostic here
+                    // so this path is visible if conformance checking is ever bypassed
+                    // or reordered in the future.
+                    diagnostics.push(
+                        Diagnostic::info(format!(
+                            "qualified access '{}::{}': member not found in scope; \
+                             conformance checking should report the missing member separately",
+                            trait_name, member,
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "member not found in scope",
+                        )),
+                    );
+                    CompiledExpr::literal(Value::Undef, Type::Real)
                 }
             }
         }

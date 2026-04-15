@@ -8,7 +8,9 @@ use reify_types::{
 /// Create a literal expression from a value, inferring the type.
 ///
 /// Supports most Value variants including M5 types (Enum, List, Set, Map, Option,
-/// Lambda, Field). For empty collections, element type defaults to Int/Bool.
+/// Lambda, Field). For empty collections, element/value type defaults to `Real`;
+/// `Option(None)` defaults to `Bool`. Use [`try_infer_type()`] on the value if
+/// you need to detect genuinely ambiguous cases before constructing an expression.
 ///
 /// **Panics** for Frame, Transform, Tensor, and Matrix — their types cannot be
 /// inferred from the value alone. Use [`literal_frame`], [`literal_transform`],
@@ -278,7 +280,12 @@ pub fn field_literal_expr(
 
 /// Create a field `laplacian` call: `std::field::laplacian(field) -> result_type`.
 pub fn laplacian_call(field: CompiledExpr, result_type: Type) -> CompiledExpr {
-    fn_call("laplacian", "std::field::laplacian", vec![field], result_type)
+    fn_call(
+        "laplacian",
+        "std::field::laplacian",
+        vec![field],
+        result_type,
+    )
 }
 
 /// Create a lambda expression with named parameters.
@@ -400,9 +407,29 @@ mod tests {
     }
 
     #[test]
-    fn literal_empty_list_uses_int_fallback() {
+    fn literal_empty_list_uses_real_fallback() {
         let expr = literal(Value::List(vec![]));
-        assert_eq!(expr.result_type, Type::List(Box::new(Type::Int)));
+        assert_eq!(expr.result_type, Type::List(Box::new(Type::Real)));
+    }
+
+    #[test]
+    fn literal_empty_set_uses_real_fallback() {
+        let expr = literal(Value::Set(BTreeSet::new()));
+        assert_eq!(
+            expr.result_type,
+            Type::Set(Box::new(Type::Real)),
+            "empty Set should produce Set(Real)"
+        );
+    }
+
+    #[test]
+    fn literal_empty_map_uses_string_real_fallback() {
+        let expr = literal(Value::Map(BTreeMap::new()));
+        assert_eq!(
+            expr.result_type,
+            Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+            "empty Map should produce Map(String, Real)"
+        );
     }
 
     // --- Collection expression builder tests ---
@@ -592,7 +619,12 @@ mod tests {
         let domain = Type::Geometry;
         let codomain = Type::Real;
         let lambda = Value::Undef;
-        let expr = field_literal_expr(domain.clone(), codomain.clone(), FieldSourceKind::Analytical, lambda);
+        let expr = field_literal_expr(
+            domain.clone(),
+            codomain.clone(),
+            FieldSourceKind::Analytical,
+            lambda,
+        );
         assert_eq!(
             expr.result_type,
             Type::Field {
@@ -612,8 +644,18 @@ mod tests {
         let domain = Type::Geometry;
         let codomain = Type::Real;
         let lambda = Value::Int(42);
-        let expr = field_literal_expr(domain.clone(), codomain.clone(), FieldSourceKind::Sampled, lambda.clone());
-        if let CompiledExprKind::Literal(Value::Field { source, lambda: lam, .. }) = &expr.kind {
+        let expr = field_literal_expr(
+            domain.clone(),
+            codomain.clone(),
+            FieldSourceKind::Sampled,
+            lambda.clone(),
+        );
+        if let CompiledExprKind::Literal(Value::Field {
+            source,
+            lambda: lam,
+            ..
+        }) = &expr.kind
+        {
             assert_eq!(*source, FieldSourceKind::Sampled);
             assert_eq!(**lam, lambda);
         } else {

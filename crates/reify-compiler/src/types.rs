@@ -169,27 +169,43 @@ impl CompiledModule {
     /// This is the canonical filter for test entities — consumers should prefer
     /// this over scanning `template.annotations` manually. Per Task 267, test
     /// entities are excluded from the normal evaluation graph.
-    pub fn test_templates(&self) -> Vec<&TopologyTemplate> {
-        self.templates.iter().filter(|t| t.is_test).collect()
+    pub fn test_templates(&self) -> impl Iterator<Item = &TopologyTemplate> {
+        self.templates.iter().filter(|t| t.is_test())
     }
 
     /// Returns all templates NOT tagged with `@test`.
     ///
     /// These are the templates that participate in the normal evaluation graph.
-    pub fn non_test_templates(&self) -> Vec<&TopologyTemplate> {
-        self.templates.iter().filter(|t| !t.is_test).collect()
+    pub fn non_test_templates(&self) -> impl Iterator<Item = &TopologyTemplate> {
+        self.templates.iter().filter(|t| !t.is_test())
     }
 
     /// Returns all constraint defs tagged with `@test`.
     ///
     /// Uses `ConstraintDef::is_test()` as the canonical predicate.
-    pub fn test_constraint_defs(&self) -> Vec<&reify_syntax::ConstraintDef> {
-        self.constraint_defs.iter().filter(|d| d.is_test()).collect()
+    // TODO(constraint-def-lowering): migrate to CompiledConstraintDef::is_test field
+    // once constraint-def lowering lands.
+    pub fn test_constraint_defs(&self) -> impl Iterator<Item = &reify_syntax::ConstraintDef> {
+        self.constraint_defs.iter().filter(|d| d.is_test())
     }
 
     /// Returns all constraint defs NOT tagged with `@test`.
-    pub fn non_test_constraint_defs(&self) -> Vec<&reify_syntax::ConstraintDef> {
-        self.constraint_defs.iter().filter(|d| !d.is_test()).collect()
+    // TODO(constraint-def-lowering): migrate to CompiledConstraintDef::is_test field
+    // once constraint-def lowering lands.
+    pub fn non_test_constraint_defs(&self) -> impl Iterator<Item = &reify_syntax::ConstraintDef> {
+        self.constraint_defs.iter().filter(|d| !d.is_test())
+    }
+
+    /// Returns all functions tagged with `@test`.
+    ///
+    /// Uses `CompiledFunction::is_test()` as the canonical predicate.
+    pub fn test_functions(&self) -> impl Iterator<Item = &CompiledFunction> {
+        self.functions.iter().filter(|f| f.is_test())
+    }
+
+    /// Returns all functions NOT tagged with `@test`.
+    pub fn non_test_functions(&self) -> impl Iterator<Item = &CompiledFunction> {
+        self.functions.iter().filter(|f| !f.is_test())
     }
 }
 
@@ -236,14 +252,22 @@ pub struct TopologyTemplate {
     /// True if this template participates in a recursive sub-component cycle.
     /// Set by the post-compilation recursive structure detection pass.
     pub is_recursive: bool,
-    /// True if this template is tagged with the `@test` annotation.
-    /// Derived at compile time from `annotations`; consumers should prefer this
-    /// flag over scanning `annotations` themselves.
-    pub is_test: bool,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<reify_types::Annotation>,
     /// Block-level pragmas from the parsed declaration (e.g., `#solver(backend="ipopt")`).
     pub pragmas: Vec<reify_syntax::Pragma>,
+}
+
+impl TopologyTemplate {
+    /// Returns `true` if this template is tagged with the `@test` annotation.
+    ///
+    /// Derived from `annotations` on each call (linear scan) — symmetric with
+    /// `ConstraintDef::is_test()`. Annotation lists are typically 0–2 items,
+    /// so the per-call cost is negligible; if profiling ever flags this,
+    /// a cached `bool` field can be reintroduced.
+    pub fn is_test(&self) -> bool {
+        reify_types::annotation::has_test_annotation(&self.annotations)
+    }
 }
 
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
@@ -319,7 +343,25 @@ pub struct ValueCellDecl {
     pub visibility: Visibility,
     pub cell_type: Type,
     pub default_expr: Option<CompiledExpr>,
+    pub solver_hints: Vec<SolverHint>,
     pub span: SourceSpan,
+}
+
+/// A solver hint extracted from a `@solver_hint` annotation on a value cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolverHint {
+    pub kind: SolverHintKind,
+    pub collection: String,
+    pub span: SourceSpan,
+}
+
+/// The kind of solver hint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SolverHintKind {
+    /// Restrict the value to a discrete set of values from the named collection.
+    DiscreteSet,
+    /// Prefer values from the named stock/standard collection.
+    PreferStock,
 }
 
 /// Whether a value cell is a parameter (externally settable), a let (computed),
@@ -427,6 +469,11 @@ pub enum CompiledGeometryOp {
         profiles: Vec<GeomRef>,
         args: Vec<(String, CompiledExpr)>,
     },
+    /// Curve construction (line_segment, arc, helix, interp, bezier, nurbs).
+    Curve {
+        kind: CurveKind,
+        args: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Primitive geometry kinds.
@@ -481,6 +528,17 @@ pub enum SweepKind {
     Extrude,
     Revolve,
     Sweep,
+}
+
+/// Curve construction operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CurveKind {
+    LineSegment,
+    Arc,
+    Helix,
+    InterpCurve,
+    BezierCurve,
+    NurbsCurve,
 }
 
 /// Reference to a geometry result within a realization.

@@ -39,7 +39,6 @@ pub mod ffi {
         // --- OcctShapeVec builder ---
         fn new_shape_vec() -> UniquePtr<OcctShapeVec>;
         fn shape_vec_push(vec: Pin<&mut OcctShapeVec>, shape: &OcctShape);
-        fn shape_vec_len(vec: &OcctShapeVec) -> usize;
 
         // --- Primitive construction ---
         fn make_box(width: f64, height: f64, depth: f64) -> Result<UniquePtr<OcctShape>>;
@@ -156,7 +155,6 @@ pub mod ffi {
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
-        fn loft_two_profiles(wire1: &OcctShape, wire2: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn make_line_wire(
             x1: f64,
             y1: f64,
@@ -165,6 +163,30 @@ pub mod ffi {
             y2: f64,
             z2: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+
+        // --- Curve constructors ---
+        fn make_arc_wire(
+            cx: f64, cy: f64, cz: f64,
+            radius: f64,
+            start_angle: f64, end_angle: f64,
+            ax: f64, ay: f64, az: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_helix_wire(
+            radius: f64, pitch: f64, height: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_interp_curve(
+            coords: &[f64], n_points: usize,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_bezier_curve(
+            coords: &[f64], n_points: usize,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_nurbs_curve(
+            pole_coords: &[f64], n_poles: usize,
+            weights: &[f64],
+            flat_knots: &[f64],
+            degree: i32,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         fn loft_profiles(profiles: &OcctShapeVec) -> Result<UniquePtr<OcctShape>>;
 
         // --- Sweep ---

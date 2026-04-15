@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 use reify_types::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId,
     ConstraintResult, ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError,
-    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl,
-    OptimizedImplInput, OptimizedImplOutput, QueryError, ReprKind, ResolutionProblem, Satisfaction,
-    SolveResult, TessError, Type, Value, ValueCellId, ValueMap,
+    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh,
+    OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ReprKind,
+    ResolutionProblem, Satisfaction, SolveResult, TessError, Type, Value, ValueCellId, ValueMap,
 };
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
@@ -471,10 +471,17 @@ impl GeometryKernel for MockGeometryKernel {
             result_handle: id,
         });
 
-        Ok(GeometryHandle {
-            id,
-            repr: ReprKind::Solid,
-        })
+        let repr = match op {
+            GeometryOp::LineSegment { .. }
+            | GeometryOp::Arc { .. }
+            | GeometryOp::Helix { .. }
+            | GeometryOp::InterpCurve { .. }
+            | GeometryOp::BezierCurve { .. }
+            | GeometryOp::NurbsCurve { .. } => ReprKind::Wire,
+            _ => ReprKind::Solid,
+        };
+
+        Ok(GeometryHandle { id, repr })
     }
 
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {

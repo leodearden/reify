@@ -145,26 +145,56 @@ fn make_hover_markdown(value: String) -> Hover {
     }
 }
 
+/// Exhaustive table of every Reify keyword that has a hover description.
+///
+/// Exposed as `pub(crate)` so the test module can enumerate it for the reverse
+/// coverage check (every described keyword must also appear in a completion list).
+pub(crate) const KEYWORD_DESCRIPTIONS: &[(&str, &str)] = &[
+    ("structure", "Declares a parametric structure."),
+    (
+        "param",
+        "Declares an externally settable parameter with a type and default value.",
+    ),
+    ("let", "Declares a computed binding derived from other values."),
+    (
+        "constraint",
+        "Declares a boolean constraint that must be satisfied.",
+    ),
+    ("sub", "Declares a sub-structure instantiation."),
+    ("import", "Imports declarations from another module."),
+    ("if", "Conditional expression."),
+    ("then", "Then branch of a conditional."),
+    ("else", "Else branch of a conditional."),
+    ("and", "Logical AND operator."),
+    ("or", "Logical OR operator."),
+    ("not", "Logical NOT operator."),
+    ("true", "Boolean literal true."),
+    ("false", "Boolean literal false."),
+    (
+        "auto",
+        "Marks a parameter for automatic resolution by the constraint solver.",
+    ),
+    ("occurrence", "Declares a concrete occurrence of a structure."),
+    ("fn", "Declares a function."),
+    ("trait", "Declares a trait."),
+    ("enum", "Declares an enumeration type."),
+    (
+        "purpose",
+        "Declares the optimization objective of the structure.",
+    ),
+    ("minimize", "Declares a quantity to minimize."),
+    ("maximize", "Declares a quantity to maximize."),
+    ("port", "Declares an interface port for connections."),
+    ("connect", "Declares a connection between ports."),
+    ("where", "Introduces additional type or value constraints."),
+];
+
 /// Return a brief description for Reify keywords.
 fn keyword_description(word: &str) -> Option<&'static str> {
-    match word {
-        "structure" => Some("Declares a parametric structure."),
-        "param" => Some("Declares an externally settable parameter with a type and default value."),
-        "let" => Some("Declares a computed binding derived from other values."),
-        "constraint" => Some("Declares a boolean constraint that must be satisfied."),
-        "sub" => Some("Declares a sub-structure instantiation."),
-        "import" => Some("Imports declarations from another module."),
-        "if" => Some("Conditional expression."),
-        "then" => Some("Then branch of a conditional."),
-        "else" => Some("Else branch of a conditional."),
-        "and" => Some("Logical AND operator."),
-        "or" => Some("Logical OR operator."),
-        "not" => Some("Logical NOT operator."),
-        "true" => Some("Boolean literal true."),
-        "false" => Some("Boolean literal false."),
-        "auto" => Some("Marks a parameter for automatic resolution by the constraint solver."),
-        _ => None,
-    }
+    KEYWORD_DESCRIPTIONS
+        .iter()
+        .find(|(kw, _)| *kw == word)
+        .map(|(_, desc)| *desc)
 }
 
 #[cfg(test)]
@@ -734,6 +764,57 @@ structure B {
         assert!(
             md.contains("auto(free) x:"),
             "should contain 'auto(free) x:', got: {md}"
+        );
+    }
+
+    // --- keyword completeness coverage ---
+
+    /// Verify that every keyword exposed by the completion engine also has a hover
+    /// description, AND that every described keyword is still in a completion list.
+    ///
+    /// Forward check (completion → hover): adding a keyword to any completion list
+    /// without a hover entry fails here.
+    ///
+    /// Reverse check (hover → completion): removing a keyword from every completion
+    /// list while leaving its description in KEYWORD_DESCRIPTIONS fails here,
+    /// preventing stale descriptions from silently accumulating.
+    #[test]
+    fn all_completion_keywords_have_hover_descriptions() {
+        use std::collections::HashSet;
+
+        use crate::completion::{BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS};
+
+        let completion_union: HashSet<&str> = TOP_LEVEL_KEYWORDS
+            .iter()
+            .chain(BODY_KEYWORDS.iter())
+            .chain(EXPR_KEYWORDS.iter())
+            .copied()
+            .collect();
+
+        // Forward: every completion keyword must have a description.
+        let mut missing_desc: Vec<&str> = completion_union
+            .iter()
+            .copied()
+            .filter(|kw| keyword_description(kw).is_none())
+            .collect();
+        missing_desc.sort_unstable();
+        assert!(
+            missing_desc.is_empty(),
+            "keywords in completion lists but missing a hover description: {:?}",
+            missing_desc
+        );
+
+        // Reverse: every described keyword must appear in at least one completion list.
+        let mut stale: Vec<&str> = KEYWORD_DESCRIPTIONS
+            .iter()
+            .map(|(kw, _)| *kw)
+            .filter(|kw| !completion_union.contains(kw))
+            .collect();
+        stale.sort_unstable();
+        assert!(
+            stale.is_empty(),
+            "keywords in KEYWORD_DESCRIPTIONS but absent from all completion lists (stale): {:?}",
+            stale
         );
     }
 }

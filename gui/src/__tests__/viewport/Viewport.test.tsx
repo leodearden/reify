@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
-import type { MeshData } from '../../types';
+import type { MeshData, VisibilityState } from '../../types';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
 globalThis.ResizeObserver = class ResizeObserver {
@@ -43,6 +43,8 @@ const mockControlsDispose = vi.fn();
 const mockMeshSync = vi.fn();
 const mockMeshDispose = vi.fn();
 const mockMeshGetSceneMeshes = vi.fn(() => new Map());
+const mockMeshGetGhostMeshes = vi.fn(() => new Map());
+const mockMeshSetVisibility = vi.fn();
 
 const mockGrid = { type: 'GridHelper', visible: true };
 const mockAxes = { type: 'AxesHelper', visible: true };
@@ -86,6 +88,8 @@ vi.mock('../../viewport/meshManager', () => ({
     sync: mockMeshSync,
     dispose: mockMeshDispose,
     getSceneMeshes: mockMeshGetSceneMeshes,
+    getGhostMeshes: mockMeshGetGhostMeshes,
+    setVisibility: mockMeshSetVisibility,
   })),
 }));
 
@@ -440,5 +444,46 @@ describe('Viewport accessibility', () => {
     render(() => <Viewport meshes={{}} />);
     const canvas = screen.getByTestId('viewport-canvas');
     expect(canvas.getAttribute('aria-label')).toBe('3D viewport');
+  });
+});
+
+// Note: these tests assert on mock call counts synchronously after calling the signal setter.
+// SolidJS createSignal setters synchronously flush effects in the default owner context used
+// by @solidjs/testing-library's render(), so the assertions are reliable. If that ever changes
+// (e.g. under batch() or Suspense), wrap assertions in a waitFor() from the testing library.
+describe('Viewport entityVisibility reset', () => {
+  it('resets removed entities to show when entityVisibility prop drops keys', () => {
+    const [entityVisibility, setEntityVisibility] = createSignal<Record<string, VisibilityState> | undefined>(
+      { 'bracket/plate': 'ghost', 'bracket/hole': 'hidden' }
+    );
+
+    render(() => <Viewport meshes={{}} entityVisibility={entityVisibility()} />);
+
+    // After initial render, setVisibility should be called for both entities
+    expect(mockMeshSetVisibility).toHaveBeenCalledWith('bracket/plate', 'ghost');
+    expect(mockMeshSetVisibility).toHaveBeenCalledWith('bracket/hole', 'hidden');
+
+    // Clear mock, then drop 'bracket/hole' from the visibility prop
+    mockMeshSetVisibility.mockClear();
+    setEntityVisibility({ 'bracket/plate': 'ghost' });
+
+    // The removed 'bracket/hole' should be reset to 'show'
+    expect(mockMeshSetVisibility).toHaveBeenCalledWith('bracket/hole', 'show');
+  });
+
+  it('resets all entities to show when entityVisibility prop is cleared to undefined', () => {
+    const [entityVisibility, setEntityVisibility] = createSignal<Record<string, VisibilityState> | undefined>(
+      { 'bracket/plate': 'ghost', 'bracket/hole': 'hidden' }
+    );
+
+    render(() => <Viewport meshes={{}} entityVisibility={entityVisibility()} />);
+
+    // Clear mock, then clear entityVisibility entirely
+    mockMeshSetVisibility.mockClear();
+    setEntityVisibility(undefined);
+
+    // Both entities should be reset to 'show'
+    expect(mockMeshSetVisibility).toHaveBeenCalledWith('bracket/plate', 'show');
+    expect(mockMeshSetVisibility).toHaveBeenCalledWith('bracket/hole', 'show');
   });
 });

@@ -1,7 +1,28 @@
 //! Tests for stdlib_loader — embedded .ri stdlib loading, compilation, and caching.
 
 use reify_compiler::stdlib_loader;
-use reify_types::{ModulePath, Severity};
+use reify_test_support::{
+    CompiledModuleBuilder, EXPECTED_MATERIAL_TRAITS, collect_errors, steel_elastic_source,
+    steel_strong_source,
+};
+use reify_types::{
+    BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash,
+    ModulePath, Type,
+};
+
+/// Recursively collect ValueRef member names from a compiled expression tree.
+fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let mut refs = collect_value_ref_members(left);
+            refs.extend(collect_value_ref_members(right));
+            refs
+        }
+        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
+        _ => vec![],
+    }
+}
 
 // ─── step-1: basic loading ──────────────────────────────────────────────
 
@@ -20,11 +41,7 @@ fn load_stdlib_returns_non_empty_slice() {
 fn all_stdlib_modules_have_no_errors() {
     let modules = stdlib_loader::load_stdlib();
     for module in modules {
-        let errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
+        let errors = collect_errors(&module.diagnostics);
         assert!(
             errors.is_empty(),
             "stdlib module '{}' has error diagnostics: {:?}",
@@ -46,19 +63,7 @@ fn materials_mechanical_traits_present() {
         .flat_map(|m| m.trait_defs.iter().map(|t| t.name.as_str()))
         .collect();
 
-    let expected = [
-        "Material",
-        "Elastic",
-        "Strong",
-        "Hard",
-        "FatigueRated",
-        "FractureTough",
-        "Ductile",
-        "ImpactResistant",
-        "Damping",
-    ];
-
-    for name in &expected {
+    for name in EXPECTED_MATERIAL_TRAITS {
         assert!(
             all_traits.contains(name),
             "expected trait '{}' in stdlib, found: {:?}",
@@ -116,11 +121,7 @@ fn std_units_module_has_expected_units() {
         .expect("std.units module not found in stdlib");
 
     // No error diagnostics
-    let errors: Vec<_> = units_module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = collect_errors(&units_module.diagnostics);
     assert!(
         errors.is_empty(),
         "std.units should have zero error diagnostics, got: {:?}",
@@ -177,13 +178,7 @@ fn std_units_module_has_expected_units() {
 /// errors and has 'Elastic' in trait_bounds.
 #[test]
 fn compile_with_prelude_makes_traits_visible() {
-    let source = r#"
-structure def Steel : Elastic {
-    param youngs_modulus : Real = 200.0
-    param poissons_ratio : Real = 0.3
-    param shear_modulus : Real = 77.0
-}
-"#;
+    let source = steel_elastic_source();
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
@@ -194,11 +189,7 @@ structure def Steel : Elastic {
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(
         errors.is_empty(),
         "compile_with_prelude should produce no errors for Elastic-conforming Steel, got: {:?}",
@@ -220,16 +211,11 @@ structure def Steel : Elastic {
 
 /// compile_with_prelude injects trait constraint defaults from the prelude.
 /// A structure conforming to the prelude's Strong trait gets the
-/// `uts >= yield_strength` constraint injected.
+/// `uts >= yield_strength` constraint injected. Verifies both presence
+/// and content of the injected constraint.
 #[test]
 fn compile_with_prelude_injects_trait_constraints() {
-    let source = r#"
-structure def Steel : Strong {
-    param yield_strength : Real = 250.0
-    param uts : Real = 400.0
-    param compressive_strength : Real = 250.0
-}
-"#;
+    let source = steel_strong_source();
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
@@ -240,11 +226,7 @@ structure def Steel : Strong {
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(
         errors.is_empty(),
         "compile_with_prelude should produce no errors for Strong-conforming Steel, got: {:?}",
@@ -258,5 +240,274 @@ structure def Steel : Strong {
     assert!(
         !template.constraints.is_empty(),
         "expected constraint from Strong trait (uts >= yield_strength) injected into Steel, but constraints is empty"
+    );
+
+    // Structurally verify the constraint encodes uts >= yield_strength.
+    // Pattern-match on CompiledExprKind variants rather than relying on Debug formatting.
+    let ge_constraint = template.constraints.iter().find(|c| {
+        matches!(&c.expr.kind, CompiledExprKind::BinOp { op: BinOp::Ge, .. })
+    });
+    assert!(
+        ge_constraint.is_some(),
+        "expected a >= constraint from Strong trait, got constraint kinds: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| format!("{:?}", c.expr.kind))
+            .collect::<Vec<_>>()
+    );
+    let ge_expr = &ge_constraint.unwrap().expr;
+    let refs = collect_value_ref_members(ge_expr);
+    assert!(
+        refs.contains(&"uts"),
+        "expected 'uts' ValueRef in >= constraint, got refs: {:?}",
+        refs
+    );
+    assert!(
+        refs.contains(&"yield_strength"),
+        "expected 'yield_strength' ValueRef in >= constraint, got refs: {:?}",
+        refs
+    );
+}
+
+// ─── negative tests: compiling without prelude must produce errors ────
+
+/// Compiling Steel:Elastic source WITHOUT the prelude should produce ≥1
+/// error diagnostic, proving the prelude is required for trait resolution.
+#[test]
+fn compile_without_prelude_errors_for_elastic() {
+    let source = steel_elastic_source();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        !errors.is_empty(),
+        "expected at least one compile error when compiling Steel:Elastic without prelude, \
+         but no errors were produced"
+    );
+}
+
+/// Compiling Steel:Strong source WITHOUT the prelude should produce ≥1
+/// error diagnostic, proving the prelude is required for trait resolution.
+#[test]
+fn compile_without_prelude_errors_for_strong() {
+    let source = steel_strong_source();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        !errors.is_empty(),
+        "expected at least one compile error when compiling Steel:Strong without prelude, \
+         but no errors were produced"
+    );
+}
+
+// ─── prelude exclusion: prelude defs must not leak into output ────────
+
+/// Prelude definitions (traits, enums, units) should NOT appear in the
+/// output CompiledModule when compiling user code via compile_with_prelude.
+/// Only user-defined content (Steel template) should be present.
+#[test]
+fn prelude_definitions_excluded_from_output_module() {
+    let source = steel_elastic_source();
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    // The output module should NOT contain any prelude trait_defs.
+    // The user source only defines a structure, not any traits.
+    assert!(
+        compiled.trait_defs.is_empty(),
+        "output module should not contain prelude trait_defs, but found: {:?}",
+        compiled
+            .trait_defs
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
+    );
+
+    // The output module should NOT contain prelude enum_defs (e.g., HardnessScale).
+    assert!(
+        compiled.enum_defs.is_empty(),
+        "output module should not contain prelude enum_defs, but found: {:?}",
+        compiled
+            .enum_defs
+            .iter()
+            .map(|e| &e.name)
+            .collect::<Vec<_>>()
+    );
+
+    // The output module should NOT contain prelude units (cm, m, kg, etc.).
+    assert!(
+        compiled.units.is_empty(),
+        "output module should not contain prelude units, but found: {:?}",
+        compiled
+            .units
+            .iter()
+            .map(|u| &u.name)
+            .collect::<Vec<_>>()
+    );
+
+    // User content (Steel template) SHOULD be present.
+    assert!(
+        !compiled.templates.is_empty(),
+        "output module should contain the user's Steel template"
+    );
+}
+
+// ─── enum coverage: HardnessScale ────────────────────────────────────
+
+/// HardnessScale enum from materials_mechanical.ri should be present in
+/// the stdlib with exactly 7 variants.
+#[test]
+fn hardness_scale_enum_present_in_stdlib() {
+    let modules = stdlib_loader::load_stdlib();
+
+    // Collect all enum_defs across all stdlib modules.
+    let all_enums: Vec<_> = modules
+        .iter()
+        .flat_map(|m| m.enum_defs.iter())
+        .collect();
+
+    let hardness = all_enums
+        .iter()
+        .find(|e| e.name == "HardnessScale")
+        .expect("HardnessScale enum should exist in stdlib");
+
+    let expected_variants = [
+        "Rockwell_A",
+        "Rockwell_B",
+        "Rockwell_C",
+        "Brinell",
+        "Vickers",
+        "Shore_A",
+        "Shore_D",
+    ];
+
+    assert_eq!(
+        hardness.variants.len(),
+        expected_variants.len(),
+        "HardnessScale should have {} variants, got {}: {:?}",
+        expected_variants.len(),
+        hardness.variants.len(),
+        hardness.variants
+    );
+
+    for variant in &expected_variants {
+        assert!(
+            hardness.variants.contains(&variant.to_string()),
+            "HardnessScale should contain variant '{}', found: {:?}",
+            variant,
+            hardness.variants
+        );
+    }
+}
+
+// ─── function-merging path ───────────────────────────────────────────
+
+/// Prelude functions are resolved during compilation: user code that calls
+/// a function defined in a prelude module compiles without errors.
+/// This test exercises the function-merging path using a synthetic prelude
+/// module (no stdlib modules currently define functions).
+#[test]
+fn prelude_function_merging_path() {
+    // Build a synthetic prelude module containing a single function: double(x: Real) -> Real
+    let double_fn = CompiledFunction {
+        name: "double".to_string(),
+        is_pub: true,
+        params: vec![("x".to_string(), Type::Real)],
+        return_type: Type::Real,
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr {
+                kind: CompiledExprKind::Literal(reify_types::Value::Real(0.0)),
+                result_type: Type::Real,
+                content_hash: ContentHash::of_str("double_stub"),
+            },
+        },
+        content_hash: ContentHash::of_str("fn_double"),
+        annotations: vec![],
+    };
+
+    let synthetic_prelude = CompiledModuleBuilder::new(ModulePath::single("synthetic"))
+        .function(double_fn)
+        .build();
+
+    // User code that calls the prelude function.
+    let source = r#"
+structure def S {
+    param x : Real = double(21.0)
+}
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, &[synthetic_prelude]);
+    let errors = collect_errors(&compiled.diagnostics);
+
+    // Prelude functions are resolved during compilation — no errors expected.
+    assert!(
+        errors.is_empty(),
+        "compile_with_prelude should resolve prelude function 'double', got errors: {:?}",
+        errors
+    );
+
+    // The output module should contain the user's template.
+    let template = compiled
+        .templates
+        .first()
+        .expect("output module should contain the user's S template");
+
+    // Verify param 'x' has a default expression that is a call to 'double'.
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("template S should have param 'x'");
+    let default_expr = x_cell
+        .default_expr
+        .as_ref()
+        .expect("param 'x' should have a default expression");
+    match &default_expr.kind {
+        CompiledExprKind::FunctionCall { function, .. } => {
+            assert_eq!(function.name, "double", "expected resolved call to 'double'");
+        }
+        other => {
+            panic!(
+                "param 'x' default should be a function call to 'double', got: {:?}",
+                other
+            );
+        }
+    }
+
+    // Prelude functions should NOT be duplicated in the output module.
+    assert!(
+        compiled.functions.is_empty(),
+        "output module should not contain prelude function 'double', but found: {:?}",
+        compiled.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
     );
 }

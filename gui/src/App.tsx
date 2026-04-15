@@ -36,6 +36,7 @@ import {
   claudeSendMessage,
   claudeAbort,
   subscribeToClaudeEvents,
+  isDebugEnabled,
 } from './bridge';
 import {
   navigateToSource,
@@ -202,6 +203,7 @@ const App: Component = () => {
   let fileChangedUnsub: (() => void) | undefined;
   let serializationErrorUnsub: (() => void) | undefined;
   let claudeEventUnsub: (() => void) | undefined;
+  let debugBridgeUnsub: (() => void) | undefined;
 
   async function initApp() {
     // Clean up existing subscriptions before proceeding (defensive against
@@ -290,6 +292,26 @@ const App: Component = () => {
       showToast('Claude assistant unavailable — chat features may not work', 'error');
     }
 
+    // Initialize debug bridge if REIFY_DEBUG=1 (dynamic import for tree-shaking)
+    try {
+      if (await isDebugEnabled()) {
+        const { initDebugBridge } = await import('./debug');
+        const unsub = await initDebugBridge({
+          engine: engineStore,
+          editor: editorStore,
+          selection: selectionStore,
+          claude: claudeStore,
+        });
+        if (!alive) {
+          unsub();
+          return;
+        }
+        debugBridgeUnsub = unsub;
+      }
+    } catch (err) {
+      console.error('[debug-bridge] init failed:', err);
+    }
+
     if (!alive) return;
     setInitPhase('ready');
   }
@@ -306,6 +328,8 @@ const App: Component = () => {
     serializationErrorUnsub?.();
     serializationErrorCoalescer.cleanup();
     claudeEventUnsub?.();
+    debugBridgeUnsub?.();
+    delete window.__REIFY_DEBUG__;
   });
 
   function handleSetParameter(cellId: string, value: string) {

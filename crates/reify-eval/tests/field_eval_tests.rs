@@ -3,28 +3,46 @@
 //! Tests for evaluating `field def` declarations into Value::Field values
 //! and applying field operations (sample, gradient, etc.).
 
-use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{FIELD_ENTITY_PREFIX, ModulePath, Severity, Value, ValueCellId};
+use reify_expr::{EvalContext, eval_expr};
+use reify_test_support::{eval_source, make_engine, parse_and_compile};
+use reify_types::{
+    BinOp, CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type,
+    ValueMap, FIELD_ENTITY_PREFIX, Value, ValueCellId,
+};
 
-/// Helper: parse, compile, and eval source, return eval result.
-fn eval_source(source: &str) -> reify_eval::EvalResult {
-    let parsed = reify_syntax::parse(source, ModulePath::single("field_eval_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+/// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
+///
+/// Panics with a descriptive message if any item is not `Value::Real`.
+/// Panics if `items` does not contain exactly 3 elements.
+/// Used by the three principal-stress tests to avoid duplicating the
+/// extraction loop.
+fn extract_eigenvalues(items: &[Value]) -> [f64; 3] {
+    assert_eq!(items.len(), 3, "expected 3 eigenvalues, got {}", items.len());
+    let mut eigenvalues = [0.0_f64; 3];
+    for (i, item) in items.iter().enumerate() {
+        match item {
+            Value::Real(v) => eigenvalues[i] = *v,
+            _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
+        }
+    }
+    eigenvalues
+}
 
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    engine.eval(&compiled)
+#[test]
+#[should_panic(expected = "expected 3 eigenvalues")]
+fn extract_eigenvalues_panics_on_too_few_items() {
+    extract_eigenvalues(&[Value::Real(1.0), Value::Real(2.0)]);
+}
+
+#[test]
+#[should_panic(expected = "expected 3 eigenvalues")]
+fn extract_eigenvalues_panics_on_too_many_items() {
+    extract_eigenvalues(&[
+        Value::Real(1.0),
+        Value::Real(2.0),
+        Value::Real(3.0),
+        Value::Real(4.0),
+    ]);
 }
 
 // ── Step 21: eval analytical field at point ────────────────────────────
@@ -122,22 +140,8 @@ fn eval_field_snapshot_consistency() {
     // This ensures incremental re-evaluation via edit_param/warm-starting
     // can see field values.
     let source = "field def temp : Point3 -> Scalar { source = analytical { |p| p } }";
-    let parsed = reify_syntax::parse(source, ModulePath::single("field_snapshot_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
     let _result = engine.eval(&compiled);
 
     // The field should be in the snapshot values
@@ -164,4 +168,705 @@ fn eval_field_snapshot_consistency() {
         reify_types::DeterminacyState::Determined,
         "field snapshot value should be Determined"
     );
+}
+
+// ── Analysis sampling dispatch tests (eval-level) ────────────────────────────
+//
+// These tests exercise the full sampling dispatch path:
+//   sample(analysis_op(tensor_field), point)
+//   → the FieldSourceKind dispatch match in eval_expr's "sample" arm (crates/reify-expr/src/lib.rs)
+//   → sample_*_at_point → inner lambda eval → stdlib analysis builtin
+//
+// Unlike field_analysis_tests.rs in reify-expr (which uses Pressure-dimensioned
+// Scalars), these use dimensionless Real tensor elements to focus on dispatch
+// correctness without unit concerns.
+//
+// The tensor field is constructed programmatically because the .ri type system
+// cannot express tensor codomain types in field definitions.
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Build a dimensionless 3×3 tensor from row data (Value::Real elements).
+///
+/// Sister helper: `make_stress_tensor` in `crates/reify-expr/tests/field_analysis_tests.rs`
+/// uses `Value::Scalar { si_value, dimension }` elements (Pressure-dimensioned); keep
+/// the two in sync if the `Value::Tensor` nesting structure ever changes.
+fn make_stress_tensor(rows: &[&[f64]]) -> Value {
+    Value::Tensor(
+        rows.iter()
+            .map(|row| Value::Tensor(row.iter().map(|&v| Value::Real(v)).collect()))
+            .collect(),
+    )
+}
+
+/// Type: Matrix3x3<Real> (dimensionless).
+fn real_matrix_type() -> Type {
+    Type::Matrix {
+        m: 3,
+        n: 3,
+        quantity: Box::new(Type::Real),
+    }
+}
+
+/// Build an analytical field `Real → Matrix3x3(Real)` with a constant-tensor lambda.
+///
+/// # Domain choice
+/// A single-parameter `(p: Real)` domain is intentional. The sampling dispatch
+/// calls `apply_lambda_with_point_unpacking`, which unpacks a `Point3` into
+/// `(x, y, z)` for real fields. Using `Real` avoids that complexity and keeps
+/// the focus on dispatch correctness. The Point3 unpacking path is covered by
+/// `make_constant_stress_field` and its tests in
+/// `crates/reify-expr/tests/field_analysis_tests.rs`.
+///
+/// # Sister helper
+/// `make_constant_stress_field` in `crates/reify-expr/tests/field_analysis_tests.rs`
+/// uses Pressure-dimensioned Scalars and a 3-parameter Point3 lambda; keep the
+/// structural shape consistent if refactoring either.
+///
+/// The lambda takes a single parameter `p` and ignores it, always returning
+/// `tensor`. This satisfies `validate_tensor_field` (Analytical source +
+/// callable Lambda + 3×3 matrix codomain).
+fn make_constant_tensor_field(tensor: Value) -> (Value, Type) {
+    let p_id = ValueCellId::new("$lambda0", "p");
+    let body = CompiledExpr::literal(tensor, real_matrix_type());
+    let lambda = Value::Lambda {
+        params: vec![("p".to_string(), p_id)],
+        body: Box::new(body),
+        captures: ValueMap::new(),
+    };
+    let domain = Type::Real;
+    let codomain = real_matrix_type();
+    let field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+    (field, field_type)
+}
+
+/// Build a CompiledExpr::FunctionCall for a stdlib function.
+fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
+    let hash = ContentHash::of(name.as_bytes());
+    CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: name.to_string(),
+                qualified_name: format!("std::{}", name),
+            },
+            args,
+        },
+        result_type,
+        content_hash: hash,
+    }
+}
+
+/// Build a `sample(field_expr, point)` CompiledExpr.
+///
+/// Delegates to `make_function_call("sample", ...)`, fixing the function name to
+/// `"sample"` and constructing the point literal from a bare `f64`.
+fn make_sample_at(field_expr: CompiledExpr, point: f64, result_type: Type) -> CompiledExpr {
+    make_function_call(
+        "sample",
+        vec![field_expr, CompiledExpr::literal(Value::Real(point), Type::Real)],
+        result_type,
+    )
+}
+
+/// Tolerance for floating-point equality assertions in Real-value tests.
+const REAL_TOLERANCE: f64 = 1e-10;
+
+/// Assert that `val` is a `Value::Real` whose value is within [`REAL_TOLERANCE`] of `expected`.
+///
+/// Panics with a descriptive message if `val` is not `Value::Real` or if the
+/// absolute difference exceeds [`REAL_TOLERANCE`].
+fn assert_real_approx(val: &Value, expected: f64, label: &str) {
+    match val {
+        Value::Real(v) => {
+            assert!(
+                (v - expected).abs() < REAL_TOLERANCE,
+                "{label}: expected {expected}, got {v} (diff = {})",
+                (v - expected).abs()
+            );
+        }
+        other => panic!("{label}: expected Value::Real({expected}), got {:?}", other),
+    }
+}
+
+/// Eval `sample(fn_name(constant_tensor_field, …extra_args), 0.5)` and return the result.
+///
+/// Encapsulates the recurring setup pattern in edge-case dispatch tests:
+///   1. Wrap `tensor` in an analytical `Real → Matrix3x3(Real)` field.
+///   2. Build `fn_name(field_lit, …extra_args)` with field-type codomain `codomain`.
+///   3. Wrap in `sample(…, 0.5)`.
+///   4. Evaluate and return the `Value`.
+///
+/// `codomain` is the scalar/list return type of `fn_name`, e.g. `Type::Real` for
+/// von_mises / max_shear, `Type::List(Box::new(Type::Real))` for principal_stresses.
+/// `extra_args` carries any additional literal arguments (e.g. yield stress for
+/// safety_factor) as `(Value, Type)` pairs.
+fn eval_sampled_analysis(
+    fn_name: &str,
+    tensor: Value,
+    extra_args: Vec<(Value, Type)>,
+    codomain: Type,
+) -> Value {
+    let (field, field_type) = make_constant_tensor_field(tensor);
+    let mut args = vec![CompiledExpr::literal(field, field_type)];
+    args.extend(extra_args.into_iter().map(|(v, t)| CompiledExpr::literal(v, t)));
+    let ft = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(codomain.clone()),
+    };
+    let inner = make_function_call(fn_name, args, ft);
+    let sample = make_sample_at(inner, 0.5, codomain);
+    eval_expr(&sample, &EvalContext::simple(&ValueMap::new()))
+}
+
+// ── Helper test: make_sample_at shape ─────────────────────────────────────────
+
+#[test]
+fn test_make_sample_at_produces_sample_call() {
+    let field_expr = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+    let result = make_sample_at(field_expr.clone(), 0.5, Type::Real);
+
+    // Verify kind is FunctionCall with name "sample"
+    match &result.kind {
+        CompiledExprKind::FunctionCall { function, args } => {
+            assert_eq!(function.name, "sample", "function name should be \"sample\"");
+            assert_eq!(args.len(), 2, "should have exactly 2 args");
+            // First arg should be the original field_expr (same content hash)
+            assert_eq!(
+                args[0].content_hash, field_expr.content_hash,
+                "first arg should be the field_expr"
+            );
+            // Second arg should be a Real literal 0.5
+            match &args[1].kind {
+                CompiledExprKind::Literal(Value::Real(v)) => {
+                    assert!(
+                        (v - 0.5).abs() < 1e-12,
+                        "second arg should be Real(0.5), got {v}"
+                    );
+                }
+                other => panic!("second arg should be Literal(Real(0.5)), got {:?}", other),
+            }
+        }
+        other => panic!("expected FunctionCall kind, got {:?}", other),
+    }
+    assert_eq!(result.result_type, Type::Real, "result_type should be Real");
+}
+
+// ── Helper test: assert_real_approx behavior ─────────────────────────────────
+
+#[test]
+fn test_assert_real_approx_passes_within_tolerance() {
+    // Should not panic: value matches expected within REAL_TOLERANCE
+    assert_real_approx(&Value::Real(3.14), 3.14, "pi");
+    // Should not panic: difference is exactly at zero
+    assert_real_approx(&Value::Real(0.0), 0.0, "zero");
+    // Should not panic: value is just inside tolerance (90% of REAL_TOLERANCE)
+    assert_real_approx(&Value::Real(3.14 + REAL_TOLERANCE * 0.9), 3.14, "near-boundary");
+    // Verify REAL_TOLERANCE constant exists and has the expected magnitude
+    assert!(REAL_TOLERANCE > 0.0, "REAL_TOLERANCE must be positive");
+    assert!(REAL_TOLERANCE <= 1e-10, "REAL_TOLERANCE should be small (≤1e-10)");
+}
+
+#[test]
+#[should_panic(expected = "diff =")]
+fn test_assert_real_approx_panics_outside_tolerance() {
+    // Difference of 1.0 is far beyond REAL_TOLERANCE — must panic
+    assert_real_approx(&Value::Real(1.0), 2.0, "should fail");
+}
+
+#[test]
+#[should_panic(expected = "diff =")]
+fn test_assert_real_approx_panics_at_exact_boundary() {
+    // Difference of exactly REAL_TOLERANCE is NOT strictly less-than, so must panic
+    assert_real_approx(&Value::Real(3.14 + REAL_TOLERANCE), 3.14, "boundary");
+}
+
+#[test]
+#[should_panic(expected = "diff =")]
+fn test_assert_real_approx_panics_at_exact_boundary_negative() {
+    // Negative-direction: subtracting REAL_TOLERANCE also yields a difference of exactly
+    // REAL_TOLERANCE (via .abs()), which is NOT strictly less-than, so must panic.
+    // Guards against a regression where .abs() is removed from assert_real_approx.
+    assert_real_approx(&Value::Real(3.14 - REAL_TOLERANCE), 3.14, "boundary-neg");
+}
+
+#[test]
+#[should_panic(expected = "expected Value::Real")]
+fn test_assert_real_approx_panics_for_non_real_variant() {
+    // Bool is not a Real — must panic with a descriptive message
+    assert_real_approx(&Value::Bool(true), 0.0, "should fail");
+}
+
+// ── step-1: von_mises dispatch ────────────────────────────────────────────────
+// (step-2 in the plan was "run test to verify it passes" — a verification step,
+// not a distinct test; there is no step-2 test to write here.
+// step-3 through step-5 correspond to the three remaining dispatch tests below.
+// The wrapping-only check — that von_mises(field) returns a VonMises-sourced Field —
+// lives in `von_mises_field_returns_field_with_von_mises_source` in
+// crates/reify-expr/tests/field_analysis_tests.rs.)
+
+#[test]
+fn eval_sample_von_mises_field_dispatch() {
+    // Uniaxial stress [[σ,0,0],[0,0,0],[0,0,0]]: von Mises = σ (dimensionless)
+    let sigma = 100.0_f64;
+    let tensor = make_stress_tensor(
+        &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+    );
+    let (field, field_type) = make_constant_tensor_field(tensor);
+
+    // Build nested expr: sample(von_mises(field_literal), 0.5)
+    // von_mises(Field) wraps via analysis::compute_von_mises in eval_expr's "von_mises" arm.
+    // sample(VonMisesField, point) dispatches via the FieldSourceKind::VonMises match arm in eval_expr's "sample" arm.
+    let vm_field_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::Real),
+    };
+    let vm_expr = make_function_call(
+        "von_mises",
+        vec![CompiledExpr::literal(field, field_type)],
+        vm_field_type.clone(),
+    );
+    let sample_expr = make_sample_at(vm_expr, 0.5, Type::Real);
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // von Mises of uniaxial stress = σ
+    assert_real_approx(&result, sigma, "von Mises");
+}
+
+// ── step-3: principal_stresses dispatch ───────────────────────────────────────
+
+#[test]
+fn eval_sample_principal_stresses_field_dispatch() {
+    // Uniaxial [[100,0,0],[0,0,0],[0,0,0]]: eigenvalues [0.0, 0.0, 100.0] sorted ascending
+    let sigma = 100.0_f64;
+    let tensor = make_stress_tensor(
+        &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+    );
+    let (field, field_type) = make_constant_tensor_field(tensor);
+
+    // Build nested expr: sample(principal_stresses(field_literal), 0.5)
+    let ps_field_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::List(Box::new(Type::Real))),
+    };
+    let ps_expr = make_function_call(
+        "principal_stresses",
+        vec![CompiledExpr::literal(field, field_type)],
+        ps_field_type.clone(),
+    );
+    let sample_expr = make_sample_at(ps_expr, 0.5, Type::List(Box::new(Type::Real)));
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Uniaxial stress eigenvalues: 0, 0, σ → sorted ascending [0.0, 0.0, 100.0]
+    let Value::List(items) = &result else {
+        panic!(
+            "sample(principal_stresses(field), pt) should return List, got {:?}",
+            result
+        );
+    };
+    assert_eq!(items.len(), 3, "should have 3 principal stresses");
+
+    let eigenvalues = extract_eigenvalues(items);
+
+    // Eigenvalues should be sorted ascending
+    assert!(
+        eigenvalues[0] <= eigenvalues[1] && eigenvalues[1] <= eigenvalues[2],
+        "eigenvalues should be sorted ascending, got {:?}",
+        eigenvalues
+    );
+
+    // Check known values: uniaxial stress eigenvalues = [0.0, 0.0, σ]
+    let expected = [0.0_f64, 0.0, sigma];
+    for (i, (item, &exp)) in items.iter().zip(expected.iter()).enumerate() {
+        assert_real_approx(item, exp, &format!("principal stress[{i}]"));
+    }
+}
+
+// ── step-4: max_shear dispatch ────────────────────────────────────────────────
+
+#[test]
+fn eval_sample_max_shear_field_dispatch() {
+    // Pure shear [[0,τ,0],[τ,0,0],[0,0,0]]: eigenvalues [-τ, 0, τ]
+    // max_shear = (τ - (-τ)) / 2 = τ
+    let tau = 50.0_f64;
+    let tensor = make_stress_tensor(
+        &[&[0.0, tau, 0.0], &[tau, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+    );
+    let (field, field_type) = make_constant_tensor_field(tensor);
+
+    // Build nested expr: sample(max_shear(field_literal), 0.5)
+    let ms_field_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::Real),
+    };
+    let ms_expr = make_function_call(
+        "max_shear",
+        vec![CompiledExpr::literal(field, field_type)],
+        ms_field_type.clone(),
+    );
+    let sample_expr = make_sample_at(ms_expr, 0.5, Type::Real);
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // max_shear of pure shear [[0,τ,0],[τ,0,0],[0,0,0]] = τ
+    assert_real_approx(&result, tau, "max_shear");
+}
+
+// ── step-5: safety_factor dispatch ────────────────────────────────────────────
+
+#[test]
+fn eval_sample_safety_factor_field_dispatch() {
+    // Uniaxial stress σ=100: von_mises = 100; yield=250 → safety_factor = 2.5
+    let sigma = 100.0_f64;
+    let yield_val = 250.0_f64;
+    let tensor = make_stress_tensor(
+        &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+    );
+    let (field, field_type) = make_constant_tensor_field(tensor);
+
+    // Build nested expr: sample(safety_factor(field_literal, 250.0), 0.5)
+    // safety_factor(Field, yield) intercepts via analysis::compute_safety_factor in eval_expr's "safety_factor" arm.
+    // sample dispatches via the (_, FieldSourceKind::SafetyFactor) match arm in eval_expr's "sample" arm.
+    let sf_field_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::Real),
+    };
+    let sf_expr = make_function_call(
+        "safety_factor",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(Value::Real(yield_val), Type::Real),
+        ],
+        sf_field_type.clone(),
+    );
+    let sample_expr = make_sample_at(sf_expr, 0.5, Type::Real);
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // safety_factor = yield / von_mises = 250 / 100 = 2.5
+    assert_real_approx(&result, yield_val / sigma, "safety_factor");
+}
+
+// ── Edge-case dispatch tests: zero tensor and hydrostatic tensor ──────────────
+//
+// These tests exercise the same eval-dispatch path as the 'happy path' tests
+// above, but with degenerate stress states (zero and hydrostatic) that trigger
+// boundary conditions in the analysis functions:
+//   - von_mises = 0  →  safety_factor = yield/0 → infinity → sanitize_value → Undef
+//   - hydrostatic eigenvalues all equal  →  max_shear = 0
+
+// ── Edge case: von_mises of zero tensor through dispatch ──────────────────────
+
+#[test]
+fn eval_sample_von_mises_zero_tensor_dispatch() {
+    // Zero tensor: all entries 0 → von Mises = 0
+    let tensor = make_stress_tensor(
+        &[&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+    );
+    let result = eval_sampled_analysis("von_mises", tensor, vec![], Type::Real);
+
+    match &result {
+        Value::Real(v) => assert!(
+            v.abs() < 1e-10,
+            "expected von Mises ≈ 0.0 for zero tensor, got {v}"
+        ),
+        _ => panic!(
+            "sample(von_mises(zero_field), point) should return Real(0.0), got {:?}",
+            result
+        ),
+    }
+}
+
+// ── Edge case: safety_factor of zero tensor → Undef (divide by zero) ─────────
+
+#[test]
+fn eval_sample_safety_factor_zero_tensor_dispatch() {
+    // Zero tensor with yield=250.0: von_mises=0 → yield/0 → infinity → sanitize_value → Undef
+    let yield_val = 250.0_f64;
+    let tensor = make_stress_tensor(
+        &[&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+    );
+    let result = eval_sampled_analysis(
+        "safety_factor",
+        tensor,
+        vec![(Value::Real(yield_val), Type::Real)],
+        Type::Real,
+    );
+
+    assert!(
+        result.is_undef(),
+        "sample(safety_factor(zero_field, 250.0), point) should return Undef (divide by zero), got {:?}",
+        result
+    );
+}
+
+// ── Edge case: von_mises of hydrostatic tensor through dispatch ───────────────
+
+#[test]
+fn eval_sample_von_mises_hydrostatic_dispatch() {
+    // Hydrostatic tensor diag(p, p, p): all deviatoric differences are zero → von Mises = 0
+    let p = 100.0_f64;
+    let tensor = make_stress_tensor(
+        &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
+    );
+    let result = eval_sampled_analysis("von_mises", tensor, vec![], Type::Real);
+
+    match &result {
+        Value::Real(v) => assert!(
+            v.abs() < 1e-10,
+            "expected von Mises ≈ 0.0 for hydrostatic p={p}, got {v}"
+        ),
+        _ => panic!(
+            "sample(von_mises(hydrostatic_field), point) should return Real(0.0), got {:?}",
+            result
+        ),
+    }
+}
+
+// ── Edge case: principal_stresses of hydrostatic tensor ───────────────────────
+
+#[test]
+fn eval_sample_principal_stresses_hydrostatic_dispatch() {
+    // Hydrostatic tensor diag(p, p, p): all eigenvalues equal p.
+    // Exercises the diagonal fast-path in compute_eigenvalues_3x3 (off-diagonal sum ≤ 1e-30).
+    let p = 100.0_f64;
+    let tensor = make_stress_tensor(
+        &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
+    );
+    let result = eval_sampled_analysis(
+        "principal_stresses",
+        tensor,
+        vec![],
+        Type::List(Box::new(Type::Real)),
+    );
+
+    // Eigenvalues of diag(p, p, p) = [p, p, p] sorted ascending
+    let Value::List(items) = &result else {
+        panic!(
+            "sample(principal_stresses(hydrostatic_field), pt) should return List, got {:?}",
+            result
+        );
+    };
+    assert_eq!(items.len(), 3, "should have 3 principal stresses");
+
+    let eigenvalues = extract_eigenvalues(items);
+
+    // Each eigenvalue should equal p
+    for (i, &v) in eigenvalues.iter().enumerate() {
+        assert!(
+            (v - p).abs() < 1e-10,
+            "principal stress[{i}]: expected {p}, got {v}"
+        );
+    }
+
+    // Eigenvalues should be sorted ascending
+    // Degenerate: all equal, so trivially sorted — guards against regression if tensor changes
+    assert!(
+        eigenvalues[0] <= eigenvalues[1] && eigenvalues[1] <= eigenvalues[2],
+        "eigenvalues should be sorted ascending, got {:?}",
+        eigenvalues
+    );
+}
+
+// ── Edge case: max_shear of hydrostatic tensor ────────────────────────────────
+
+#[test]
+fn eval_sample_max_shear_hydrostatic_dispatch() {
+    // Hydrostatic tensor diag(p, p, p): eigenvalues all equal → max_shear = (p−p)/2 = 0
+    let p = 100.0_f64;
+    let tensor = make_stress_tensor(
+        &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
+    );
+    let result = eval_sampled_analysis("max_shear", tensor, vec![], Type::Real);
+
+    match &result {
+        Value::Real(v) => assert!(
+            v.abs() < 1e-10,
+            "expected max_shear ≈ 0.0 for hydrostatic p={p}, got {v}"
+        ),
+        _ => panic!(
+            "sample(max_shear(hydrostatic_field), point) should return Real(0.0), got {:?}",
+            result
+        ),
+    }
+}
+
+// ── Edge case: safety_factor of hydrostatic tensor → Undef ───────────────────
+
+#[test]
+fn eval_sample_safety_factor_hydrostatic_dispatch() {
+    // Hydrostatic tensor diag(p, p, p) with yield=250: von_mises=0 → Undef.
+    // Confirms dispatch doesn't special-case tensor shape; same divide-by-zero path.
+    let p = 100.0_f64;
+    let yield_val = 250.0_f64;
+    let tensor = make_stress_tensor(
+        &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
+    );
+    let result = eval_sampled_analysis(
+        "safety_factor",
+        tensor,
+        vec![(Value::Real(yield_val), Type::Real)],
+        Type::Real,
+    );
+
+    assert!(
+        result.is_undef(),
+        "sample(safety_factor(hydrostatic_field, 250.0), point) should return Undef, got {:?}",
+        result
+    );
+}
+
+// ── Edge case: principal_stresses of fully populated symmetric tensor ──────────
+//
+// Uses [[2,1,1],[1,3,1],[1,1,4]], which exercises the trigonometric eigenvalue
+// branch in compute_eigenvalues_3x3 (non-zero off-diagonals). Trace=9 acts as
+// a checksum; expected eigenvalues ≈ [1.3249, 2.4608, 5.2143].
+
+#[test]
+fn eval_sample_principal_stresses_full_symmetric_dispatch() {
+    // Fully populated symmetric tensor with non-zero off-diagonal entries:
+    // [[2,1,1],[1,3,1],[1,1,4]] — trace=9, exercises trigonometric eigenvalue branch
+    let tensor = make_stress_tensor(
+        &[&[2.0, 1.0, 1.0], &[1.0, 3.0, 1.0], &[1.0, 1.0, 4.0]],
+    );
+    let result = eval_sampled_analysis(
+        "principal_stresses",
+        tensor,
+        vec![],
+        Type::List(Box::new(Type::Real)),
+    );
+
+    let Value::List(items) = &result else {
+        panic!(
+            "sample(principal_stresses(full_sym_field), pt) should return List, got {:?}",
+            result
+        );
+    };
+    assert_eq!(items.len(), 3, "should have 3 principal stresses");
+
+    let eigenvalues = extract_eigenvalues(items);
+
+    // Checksum: sum of eigenvalues = trace = 2 + 3 + 4 = 9
+    let trace_sum = eigenvalues.iter().sum::<f64>();
+    assert!(
+        (trace_sum - 9.0).abs() < 1e-8,
+        "sum of eigenvalues should equal trace=9, got {trace_sum}"
+    );
+
+    // Eigenvalues should be sorted ascending
+    assert!(
+        eigenvalues[0] <= eigenvalues[1] && eigenvalues[1] <= eigenvalues[2],
+        "eigenvalues should be sorted ascending, got {:?}",
+        eigenvalues
+    );
+
+    // Known eigenvalues (trigonometric closed-form result): characteristic polynomial
+    // λ³ - 9λ² + 23λ - 17 = 0, depressed form t³ - 4t - 2 = 0 (t = λ - 3).
+    // The closed-form trig computation is accurate to ~1e-12; tolerance 1e-8 gives
+    // comfortable margin while catching regressions much earlier than 1e-3.
+    let expected = [1.3248691294_f64, 2.4608111272, 5.2143197434];
+    for (i, (&got, &exp)) in eigenvalues.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - exp).abs() < 1e-8,
+            "eigenvalue[{i}]: expected ≈ {exp}, got {got}"
+        );
+    }
+}
+
+// ── step-6: spatially-varying lambda — point propagation ─────────────────────
+//
+// Addresses the concern that constant-tensor tests could accidentally pass even
+// if the dispatch short-circuits before evaluating the inner lambda. This test
+// uses a conditional body:  |p| if p > 50.0 { tensor_a } else { tensor_b }
+// sampling at two distinct points verifies that `p` is actually threaded through.
+
+#[test]
+fn eval_sample_von_mises_spatially_varying_field() {
+    // tensor_a: uniaxial σ=100 → von Mises = 100
+    let sigma_a = 100.0_f64;
+    let tensor_a = make_stress_tensor(
+        &[&[sigma_a, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+    );
+    // tensor_b: uniaxial σ=200 → von Mises = 200
+    let sigma_b = 200.0_f64;
+    let tensor_b = make_stress_tensor(
+        &[&[sigma_b, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+    );
+
+    // Build lambda body:  if p > 50.0 { tensor_a } else { tensor_b }
+    let p_id = ValueCellId::new("$lambda0", "p");
+    let p_ref = CompiledExpr::value_ref(p_id.clone(), Type::Real);
+    let threshold = CompiledExpr::literal(Value::Real(50.0), Type::Real);
+    let cond_expr = CompiledExpr::binop(BinOp::Gt, p_ref, threshold, Type::Bool);
+    let then_branch = CompiledExpr::literal(tensor_a, real_matrix_type());
+    let else_branch = CompiledExpr::literal(tensor_b, real_matrix_type());
+    let body = CompiledExpr {
+        content_hash: ContentHash::of(&[3])
+            .combine(cond_expr.content_hash)
+            .combine(then_branch.content_hash)
+            .combine(else_branch.content_hash),
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(cond_expr),
+            then_branch: Box::new(then_branch),
+            else_branch: Box::new(else_branch),
+        },
+        result_type: real_matrix_type(),
+    };
+    let lambda = Value::Lambda {
+        params: vec![("p".to_string(), p_id)],
+        body: Box::new(body),
+        captures: ValueMap::new(),
+    };
+    let domain = Type::Real;
+    let codomain = real_matrix_type();
+    let field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+
+    let vm_field_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::Real),
+    };
+
+    // Sample at 75.0 → condition true → tensor_a → von Mises ≈ 100
+    let vm_expr_high = make_function_call(
+        "von_mises",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        vm_field_type.clone(),
+    );
+    let sample_high = make_sample_at(vm_expr_high, 75.0, Type::Real);
+    let values = ValueMap::new();
+    let result_high = eval_expr(&sample_high, &EvalContext::simple(&values));
+    assert_real_approx(&result_high, sigma_a, "point=75 (>50): von Mises");
+
+    // Sample at 25.0 → condition false → tensor_b → von Mises ≈ 200
+    let vm_expr_low = make_function_call(
+        "von_mises",
+        vec![CompiledExpr::literal(field, field_type)],
+        vm_field_type,
+    );
+    let sample_low = make_sample_at(vm_expr_low, 25.0, Type::Real);
+    let result_low = eval_expr(&sample_low, &EvalContext::simple(&values));
+    assert_real_approx(&result_low, sigma_b, "point=25 (<50): von Mises");
 }

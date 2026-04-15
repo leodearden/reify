@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 /// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
 pub(crate) struct EntityDefRef<'a> {
@@ -339,8 +340,8 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                register_guarded_names(&g.members, &mut scope, functions, diagnostics);
-                register_guarded_names(&g.else_members, &mut scope, functions, diagnostics);
+                register_guarded_names(&g.members, &mut scope, functions, diagnostics, &type_param_names, alias_registry);
+                register_guarded_names(&g.else_members, &mut scope, functions, diagnostics, &type_param_names, alias_registry);
             }
             reify_syntax::MemberDecl::Port(port_decl) => {
                 if let Some(first_span) = port_names.get(&port_decl.name) {
@@ -364,7 +365,7 @@ pub(crate) fn compile_entity(
                         reify_syntax::MemberDecl::Param(param) => {
                             let composite_name = format!("{}.{}", port_decl.name, param.name);
                             let ty = if let Some(type_expr) = &param.type_expr {
-                                resolve_type_name(&type_expr.name).unwrap_or_else(|| {
+                                resolve_type_expr_with_aliases(type_expr, &type_param_names, alias_registry, diagnostics).unwrap_or_else(|| {
                                     diagnostics.push(
                                         Diagnostic::error(format!(
                                             "unresolved type name '{}' in port parameter",
@@ -397,6 +398,8 @@ pub(crate) fn compile_entity(
                 scope
                     .sub_component_types
                     .insert(sub.name.clone(), sub.structure_name.clone());
+                // Single lookup: handle deprecation, sub_structure_traits, and
+                // sub_member_types in one pass over compiled_templates.
                 if let Some(child_tmpl) = compiled_templates
                     .iter()
                     .find(|t| t.name == sub.structure_name)
@@ -414,13 +417,8 @@ pub(crate) fn compile_entity(
                     scope
                         .sub_structure_traits
                         .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
-                }
-                // Populate sub_member_types for ALL subs (for self.sub.member resolution).
-                if let Some(child_tmpl) = compiled_templates
-                    .iter()
-                    .find(|t| t.name == sub.structure_name)
-                {
-                    let member_types: HashMap<String, Type> = child_tmpl
+                    // Populate sub_member_types for self.sub.member resolution.
+                    let member_types: BTreeMap<String, Type> = child_tmpl
                         .value_cells
                         .iter()
                         .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
@@ -431,20 +429,6 @@ pub(crate) fn compile_entity(
                 }
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
-                    // Populate member types from already-compiled child template
-                    if let Some(child_tmpl) = compiled_templates
-                        .iter()
-                        .find(|t| t.name == sub.structure_name)
-                    {
-                        let member_types: HashMap<String, Type> = child_tmpl
-                            .value_cells
-                            .iter()
-                            .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
-                            .collect();
-                        scope
-                            .collection_sub_member_types
-                            .insert(sub.name.clone(), member_types);
-                    }
                 }
             }
             reify_syntax::MemberDecl::MetaBlock(meta) => {
@@ -551,6 +535,13 @@ pub(crate) fn compile_entity(
 
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
+                // Lower and validate annotations on this param
+                let lowered_annotations =
+                    lower_annotations(&param.annotations, diagnostics);
+                validate_annotations(&lowered_annotations, "param", diagnostics);
+                let solver_hints =
+                    extract_solver_hints(&lowered_annotations, diagnostics);
+
                 let decl = if let Some(free) = auto_free {
                     ValueCellDecl {
                         id,
@@ -558,19 +549,14 @@ pub(crate) fn compile_entity(
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
+                        solver_hints,
                         span: param.span,
                     }
                 } else {
                     let default_expr = param.default.as_ref().map(|expr| {
                         let mut compiled =
                             compile_expr(expr, &scope, enum_defs, functions, diagnostics);
-                        // If the default is OptionNone and the param type is Option<T>,
-                        // override the OptionNone's result_type to match the declared type.
-                        if matches!(&compiled.kind, CompiledExprKind::OptionNone)
-                            && matches!(&cell_type, Type::Option(_))
-                        {
-                            compiled = CompiledExpr::option_none(cell_type.clone());
-                        }
+                        fixup_option_none_for_param(&mut compiled, &cell_type);
                         compiled
                     });
 
@@ -580,6 +566,7 @@ pub(crate) fn compile_entity(
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr,
+                        solver_hints,
                         span: param.span,
                     }
                 };
@@ -609,22 +596,13 @@ pub(crate) fn compile_entity(
 
                 let mut compiled_expr =
                     compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
-                // If the value is `none` and the let has a typed annotation like
-                // `Option<Length>`, override the OptionNone's result_type to match
-                // the declared type — mirroring the param-default fixup at lines
-                // 5179-5185.
-                if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
-                    && let Some(type_expr) = &let_decl.type_expr
-                    && let Some(resolved) = resolve_type_expr_with_aliases(
-                        type_expr,
-                        &type_param_names,
-                        alias_registry,
-                        diagnostics,
-                    )
-                    && matches!(&resolved, Type::Option(_))
-                {
-                    compiled_expr = CompiledExpr::option_none(resolved);
-                }
+                fixup_option_none_for_let(
+                    &mut compiled_expr,
+                    let_decl.type_expr.as_ref(),
+                    &type_param_names,
+                    alias_registry,
+                    diagnostics,
+                );
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
@@ -637,12 +615,20 @@ pub(crate) fn compile_entity(
                     Visibility::Private
                 };
 
+                // Lower and validate annotations on this let
+                let lowered_annotations =
+                    lower_annotations(&let_decl.annotations, diagnostics);
+                validate_annotations(&lowered_annotations, "let", diagnostics);
+                let solver_hints =
+                    extract_solver_hints(&lowered_annotations, diagnostics);
+
                 let decl = ValueCellDecl {
                     id,
                     kind: ValueCellKind::Let,
                     visibility,
                     cell_type,
                     default_expr: Some(compiled_expr),
+                    solver_hints,
                     span: let_decl.span,
                 };
 
@@ -679,6 +665,7 @@ pub(crate) fn compile_entity(
                         visibility: Visibility::Private,
                         cell_type: Type::Int,
                         default_expr: Some(compiled_rhs),
+                        solver_hints: Vec::new(),
                         span: constraint.span,
                     });
                     structure_controlling.insert(count_id.clone());
@@ -828,6 +815,8 @@ pub(crate) fn compile_entity(
                     &mut structure_controlling,
                     &mut guard_index,
                     &mut constraint_index,
+                    &type_param_names,
+                    alias_registry,
                 );
             }
             reify_syntax::MemberDecl::AssociatedType(_) => {
@@ -895,11 +884,15 @@ pub(crate) fn compile_entity(
                                     visibility: Visibility::Public,
                                     cell_type,
                                     default_expr: None,
+                                    solver_hints: Vec::new(),
                                     span: param.span,
                                 }
                             } else {
                                 let default_expr = param.default.as_ref().map(|expr| {
-                                    compile_expr(expr, &scope, enum_defs, functions, diagnostics)
+                                    let mut compiled =
+                                        compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+                                    fixup_option_none_for_param(&mut compiled, &cell_type);
+                                    compiled
                                 });
 
                                 ValueCellDecl {
@@ -908,6 +901,7 @@ pub(crate) fn compile_entity(
                                     visibility: Visibility::Public,
                                     cell_type,
                                     default_expr,
+                                    solver_hints: Vec::new(),
                                     span: param.span,
                                 }
                             };
@@ -915,11 +909,18 @@ pub(crate) fn compile_entity(
                         }
                         reify_syntax::MemberDecl::Let(let_decl) => {
                             let composite_name = format!("{}.{}", port_decl.name, let_decl.name);
-                            let compiled_expr = compile_expr(
+                            let mut compiled_expr = compile_expr(
                                 &let_decl.value,
                                 &scope,
                                 enum_defs,
                                 functions,
+                                diagnostics,
+                            );
+                            fixup_option_none_for_let(
+                                &mut compiled_expr,
+                                let_decl.type_expr.as_ref(),
+                                &type_param_names,
+                                alias_registry,
                                 diagnostics,
                             );
                             let cell_type = compiled_expr.result_type.clone();
@@ -941,6 +942,7 @@ pub(crate) fn compile_entity(
                                 visibility,
                                 cell_type,
                                 default_expr: Some(compiled_expr),
+                                solver_hints: Vec::new(),
                                 span: let_decl.span,
                             });
                         }
@@ -1163,6 +1165,22 @@ pub(crate) fn compile_entity(
     }
 
     // Third pass: compile geometry let bindings into realizations.
+    // Build a lookup table mapping geometry let names to their initializer AST
+    // expressions. This allows compile_geometry_call to resolve Ident references
+    // (let-bound geometry variables) used as arguments to boolean ops.
+    let geometry_lets: HashMap<&str, &reify_syntax::Expr> = structure
+        .members
+        .iter()
+        .filter_map(|m| {
+            if let reify_syntax::MemberDecl::Let(let_decl) = m
+                && is_geometry_let(&let_decl.value, functions)
+            {
+                return Some((let_decl.name.as_str(), &let_decl.value));
+            }
+            None
+        })
+        .collect();
+
     let mut realizations = Vec::new();
     let mut realization_index: u32 = 0;
 
@@ -1176,6 +1194,8 @@ pub(crate) fn compile_entity(
                 functions,
                 diagnostics,
                 0,
+                &geometry_lets,
+                &mut HashSet::new(),
             )
         {
             realizations.push(RealizationDecl {
@@ -1489,7 +1509,6 @@ pub(crate) fn compile_entity(
     let annotations = lower_annotations(structure.annotations, diagnostics);
     validate_annotations(&annotations, context, diagnostics);
     validate_pragmas(structure.pragmas, context, diagnostics);
-    let is_test = annotations.iter().any(|a| a.name == "test");
 
     TopologyTemplate {
         name: entity_name.to_string(),
@@ -1509,7 +1528,6 @@ pub(crate) fn compile_entity(
         meta: scope.meta_entries.clone(),
         content_hash,
         is_recursive: false,
-        is_test,
         annotations,
         pragmas: structure.pragmas.to_vec(),
     }
@@ -1679,5 +1697,51 @@ pub(crate) fn trait_satisfies(
         }
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// OptionNone fixup helpers (shared with guards.rs via `pub(crate) use entity::*`)
+// ---------------------------------------------------------------------------
+
+/// Fix up a compiled default expression for a param member.
+///
+/// When the expression is `none` and the declared param type is `Option<T>`,
+/// the parser produces a fallback `Option<Real>` type. This helper overrides
+/// that type with the correct `Option<T>` declared by the annotation.
+///
+/// Used in three places: top-level entity params (entity.rs), port member
+/// params (entity.rs), and guarded member params (guards.rs).
+pub(crate) fn fixup_option_none_for_param(compiled: &mut CompiledExpr, cell_type: &Type) {
+    if matches!(&compiled.kind, CompiledExprKind::OptionNone)
+        && matches!(cell_type, Type::Option(_))
+    {
+        *compiled = CompiledExpr::option_none(cell_type.clone());
+    }
+}
+
+/// Fix up a compiled value expression for a let member.
+///
+/// When the expression is `none` and the let has a typed annotation like
+/// `Option<T>`, the parser produces a fallback `Option<Real>` type. This
+/// helper resolves the annotation and overrides the type with the correct
+/// `Option<T>`.
+///
+/// Used in three places: top-level entity lets (entity.rs), port member
+/// lets (entity.rs), and guarded member lets (guards.rs).
+pub(crate) fn fixup_option_none_for_let(
+    compiled_expr: &mut CompiledExpr,
+    type_expr: Option<&reify_syntax::TypeExpr>,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
+        && let Some(te) = type_expr
+        && let Some(resolved) =
+            resolve_type_expr_with_aliases(te, type_param_names, alias_registry, diagnostics)
+        && matches!(&resolved, Type::Option(_))
+    {
+        *compiled_expr = CompiledExpr::option_none(resolved);
+    }
 }
 

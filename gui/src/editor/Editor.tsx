@@ -165,6 +165,11 @@ export function Editor(props: EditorProps) {
 
     view = new EditorView({ state, parent: containerRef });
 
+    // Expose editor view for the debug bridge (REIFY_DEBUG=1)
+    if (window.__REIFY_DEBUG__) {
+      window.__REIFY_DEBUG__.editorView = view;
+    }
+
     // Initialize LSP, send 'initialized' notification, then open the document
     lspClient
       .initialize()
@@ -295,6 +300,9 @@ export function Editor(props: EditorProps) {
     fileOpsPromise = fileOpsPromise
       .then(() => lspClient.didClose(uriToClose))
       .catch(() => {});
+    if (window.__REIFY_DEBUG__) {
+      delete window.__REIFY_DEBUG__.editorView;
+    }
     view?.destroy();
   });
 

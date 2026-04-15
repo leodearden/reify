@@ -78,6 +78,14 @@ pub fn newton(v: f64) -> Value {
     }
 }
 
+/// Create a Scalar with MASS dimension from kilograms (SI base unit).
+pub fn kg(v: f64) -> Value {
+    Value::Scalar {
+        si_value: v,
+        dimension: DimensionVector::MASS,
+    }
+}
+
 /// Create a Scalar with LENGTH dimension from meters.
 pub fn meters(v: f64) -> Value {
     Value::Scalar {
@@ -795,6 +803,22 @@ mod tests {
         }
     }
 
+    // step-1: failing test for kg() constructor (task 1718)
+    #[test]
+    fn kg_creates_mass_scalar() {
+        let v = kg(2.5);
+        match v {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!((si_value - 2.5).abs() < 1e-9, "si_value should be 2.5");
+                assert_eq!(dimension, DimensionVector::MASS);
+            }
+            _ => panic!("expected Value::Scalar"),
+        }
+    }
+
     // step-19: failing tests for SnapshotValuesBuilder
     #[test]
     fn snapshot_values_builder_determined() {
@@ -1394,7 +1418,10 @@ mod tests {
                 assert_eq!(items.len(), 2);
                 for (i, expected) in [1.0, 2.0].iter().enumerate() {
                     match &items[i] {
-                        Value::Scalar { si_value, dimension } => {
+                        Value::Scalar {
+                            si_value,
+                            dimension,
+                        } => {
                             assert!((si_value - expected).abs() < 1e-12);
                             assert_eq!(*dimension, DimensionVector::LENGTH);
                         }
@@ -1414,7 +1441,10 @@ mod tests {
                 assert_eq!(items.len(), 2);
                 for (i, expected) in [5.0, -3.0].iter().enumerate() {
                     match &items[i] {
-                        Value::Scalar { si_value, dimension } => {
+                        Value::Scalar {
+                            si_value,
+                            dimension,
+                        } => {
                             assert!((si_value - expected).abs() < 1e-12);
                             assert_eq!(*dimension, DimensionVector::LENGTH);
                         }
@@ -1500,7 +1530,10 @@ mod tests {
         let basis = orientation_val(1.0, 0.0, 0.0, 0.0);
         let v = frame_val(origin.clone(), basis.clone());
         match v {
-            Value::Frame { origin: o, basis: b } => {
+            Value::Frame {
+                origin: o,
+                basis: b,
+            } => {
                 assert!(matches!(*o, Value::Point(_)));
                 assert!(matches!(*b, Value::Orientation { .. }));
             }
@@ -1514,7 +1547,10 @@ mod tests {
         let translation = vec3(1.0, 2.0, 3.0);
         let v = transform_val(rotation, translation);
         match v {
-            Value::Transform { rotation: r, translation: t } => {
+            Value::Transform {
+                rotation: r,
+                translation: t,
+            } => {
                 assert!(matches!(*r, Value::Orientation { .. }));
                 assert!(matches!(*t, Value::Vector(_)));
             }

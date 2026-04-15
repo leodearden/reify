@@ -48,6 +48,19 @@ pub enum FieldSourceKind {
     /// A field produced by `laplacian()` — its lambda slot stores the original
     /// scalar field and the sample handler dispatches to numerical-laplacian evaluation.
     Laplacian,
+    /// A field produced by `von_mises()` — lambda slot stores the original tensor
+    /// field; sample handler applies pointwise von Mises stress computation.
+    VonMises,
+    /// A field produced by `principal_stresses()` — lambda slot stores the original
+    /// tensor field; sample handler applies pointwise eigenvalue computation.
+    PrincipalStresses,
+    /// A field produced by `max_shear()` — lambda slot stores the original tensor
+    /// field; sample handler applies pointwise max shear computation.
+    MaxShear,
+    /// A field produced by `safety_factor()` — lambda slot stores a
+    /// `Value::List([original_field, yield_val])`; sample handler unpacks both
+    /// and applies pointwise safety-factor computation.
+    SafetyFactor,
 }
 
 /// Runtime values in Reify (M1 subset).
@@ -324,6 +337,9 @@ impl Value {
     /// and every element is itself a `Tensor`.  Returns `None` otherwise.
     pub fn try_into_matrix(self) -> Option<Self> {
         match self {
+            // NB: Only Value::Tensor elements qualify as matrix rows. Point and Vector
+            // are geometrically-typed Vec<Value> wrappers and are intentionally excluded —
+            // a Tensor-of-Points is a point collection, not a matrix.
             Value::Tensor(rows)
                 if !rows.is_empty() && rows.iter().all(|r| matches!(r, Value::Tensor(_))) =>
             {
@@ -664,116 +680,187 @@ impl Value {
     /// Infer the [`Type`] of a runtime [`Value`].
     ///
     /// Used by test builders to derive a type from a literal value.
-    /// For variants whose type cannot be fully inferred (Tensor, Matrix),
+    /// For variants whose type cannot be fully inferred (Tensor, Matrix, Frame, Transform),
     /// this method panics — use `CompiledExpr::literal(value, type)` directly.
+    ///
+    /// For empty collections the following defaults apply (matching the compiler):
+    /// - empty `List` / `Set` → element type defaults to `Real`
+    /// - empty `Map` → key defaults to `String`, value defaults to `Real`
+    /// - `Option(None)` → inner type defaults to `Bool`
+    ///
+    /// Use [`try_infer_type()`] when you need to distinguish "genuinely ambiguous"
+    /// from "has a known fallback".
     pub fn infer_type(&self) -> crate::ty::Type {
         use crate::ty::Type;
-        match self {
-            Value::Bool(_) => Type::Bool,
-            Value::Int(_) => Type::Int,
-            Value::Real(_) => Type::Real,
-            Value::String(_) => Type::String,
-            Value::Scalar { dimension, .. } => Type::Scalar {
-                dimension: *dimension,
+        match self.try_infer_type() {
+            Some(ty) => ty,
+            None => match self {
+                Value::List(items) => {
+                    let elem_ty = items.first().map(|v| v.infer_type()).unwrap_or(Type::Real);
+                    Type::List(Box::new(elem_ty))
+                }
+                Value::Set(items) => {
+                    let elem_ty =
+                        items.iter().next().map(|v| v.infer_type()).unwrap_or(Type::Real);
+                    Type::Set(Box::new(elem_ty))
+                }
+                Value::Map(m) => {
+                    let (k_ty, v_ty) = m
+                        .iter()
+                        .next()
+                        .map(|(k, v)| (k.infer_type(), v.infer_type()))
+                        .unwrap_or((Type::String, Type::Real));
+                    Type::Map(Box::new(k_ty), Box::new(v_ty))
+                }
+                Value::Option(Some(inner)) => Type::Option(Box::new(inner.infer_type())),
+                Value::Option(None) => Type::Option(Box::new(Type::Bool)),
+                Value::Point(components) => {
+                    let q = components
+                        .first()
+                        .map(|v| v.infer_type())
+                        .unwrap_or(Type::Real);
+                    Type::Point {
+                        n: components.len(),
+                        quantity: Box::new(q),
+                    }
+                }
+                Value::Vector(components) => {
+                    let q = components
+                        .first()
+                        .map(|v| v.infer_type())
+                        .unwrap_or(Type::Real);
+                    Type::Vector {
+                        n: components.len(),
+                        quantity: Box::new(q),
+                    }
+                }
+                Value::Range { lower, upper, .. } => {
+                    let elem_ty = lower
+                        .as_ref()
+                        .or(upper.as_ref())
+                        .map(|v| v.infer_type())
+                        .unwrap_or(Type::Real);
+                    Type::Range(Box::new(elem_ty))
+                }
+                Value::Tensor(_) => panic!(
+                    "infer_type() cannot infer Tensor type (rank/n/quantity). \
+                     Use CompiledExpr::literal(value, type) directly."
+                ),
+                Value::Matrix(_) => panic!(
+                    "infer_type() cannot infer Matrix type. \
+                     Use CompiledExpr::literal(value, type) directly."
+                ),
+                Value::Frame { .. } => panic!(
+                    "infer_type() cannot infer Frame dimensionality. \
+                     Use CompiledExpr::literal(value, type) directly."
+                ),
+                Value::Transform { .. } => panic!(
+                    "infer_type() cannot infer Transform dimensionality. \
+                     Use CompiledExpr::literal(value, type) directly."
+                ),
+                // try_infer_type() only returns None for the variants above
+                // (List, Set, Map, Option(None), Option(Some(ambiguous_inner)),
+                // Point(empty/ambiguous), Vector(empty/ambiguous),
+                // Range(unbounded/ambiguous), Tensor, Matrix, Frame, Transform);
+                // all other variants return Some, so this arm is unreachable.
+                _ => unreachable!("try_infer_type returned None for an unexpected variant"),
             },
-            Value::Enum { type_name, .. } => Type::Enum(type_name.clone()),
+        }
+    }
+
+    /// Returns the type of this value if it can be unambiguously inferred,
+    /// or `None` for genuinely ambiguous cases.
+    ///
+    /// Returns `None` for:
+    /// - Empty `List`, `Set`, `Map` — element/key/value types unknown
+    /// - `Option(None)` — inner type unknown
+    /// - Empty `Point`, `Vector` — quantity type unknown
+    /// - Fully-unbounded `Range` (both bounds `None`) — element type unknown
+    /// - `Tensor`, `Matrix`, `Frame`, `Transform` — structurally uninferrable
+    ///
+    /// Ambiguity propagates recursively through container variants: if a
+    /// non-empty `List` contains an element that is itself ambiguous (e.g.,
+    /// `List([Option(None)])`), this method returns `None` rather than guessing
+    /// a default. Use [`infer_type()`] if you want compiler-aligned defaults
+    /// applied.
+    pub fn try_infer_type(&self) -> Option<crate::ty::Type> {
+        use crate::ty::Type;
+        match self {
+            Value::Bool(_) => Some(Type::Bool),
+            Value::Int(_) => Some(Type::Int),
+            Value::Real(_) => Some(Type::Real),
+            Value::String(_) => Some(Type::String),
+            Value::Scalar { dimension, .. } => Some(Type::Scalar {
+                dimension: *dimension,
+            }),
+            Value::Enum { type_name, .. } => Some(Type::Enum(type_name.clone())),
             Value::List(items) => {
-                let elem_ty = items.first().map(Value::infer_type).unwrap_or(Type::Int);
-                Type::List(Box::new(elem_ty))
+                let first = items.first()?;
+                let elem_ty = first.try_infer_type()?;
+                Some(Type::List(Box::new(elem_ty)))
             }
             Value::Set(items) => {
-                let elem_ty = items
-                    .iter()
-                    .next()
-                    .map(Value::infer_type)
-                    .unwrap_or(Type::Int);
-                Type::Set(Box::new(elem_ty))
+                let first = items.iter().next()?;
+                let elem_ty = first.try_infer_type()?;
+                Some(Type::Set(Box::new(elem_ty)))
             }
             Value::Map(m) => {
-                let (k_ty, v_ty) = m
-                    .iter()
-                    .next()
-                    .map(|(k, v)| (k.infer_type(), v.infer_type()))
-                    .unwrap_or((Type::String, Type::Int));
-                Type::Map(Box::new(k_ty), Box::new(v_ty))
+                let (k, v) = m.iter().next()?;
+                let k_ty = k.try_infer_type()?;
+                let v_ty = v.try_infer_type()?;
+                Some(Type::Map(Box::new(k_ty), Box::new(v_ty)))
             }
-            Value::Option(Some(inner)) => Type::Option(Box::new(inner.infer_type())),
-            Value::Option(None) => Type::Option(Box::new(Type::Bool)),
+            Value::Option(Some(inner)) => {
+                let inner_ty = inner.try_infer_type()?;
+                Some(Type::Option(Box::new(inner_ty)))
+            }
+            Value::Option(None) => None,
             Value::Lambda { params, body, .. } => {
                 let param_types = params.iter().map(|_| Type::Real).collect();
-                Type::Function {
+                Some(Type::Function {
                     params: param_types,
                     return_type: Box::new(body.result_type.clone()),
-                }
+                })
             }
             Value::Field {
                 domain_type,
                 codomain_type,
                 ..
-            } => Type::Field {
+            } => Some(Type::Field {
                 domain: Box::new(domain_type.clone()),
                 codomain: Box::new(codomain_type.clone()),
-            },
-            Value::Tensor(_) => {
-                panic!(
-                    "infer_type() cannot infer Tensor type (rank/n/quantity). \
-                     Use CompiledExpr::literal(value, type) directly."
-                )
-            }
-            Value::Complex { dimension, .. } => Type::complex(Type::Scalar {
-                dimension: *dimension,
             }),
-            Value::Matrix(_) => {
-                panic!(
-                    "infer_type() cannot infer Matrix type. \
-                     Use CompiledExpr::literal(value, type) directly."
-                )
-            }
+            Value::Tensor(_) => None,
+            Value::Complex { dimension, .. } => Some(Type::complex(Type::Scalar {
+                dimension: *dimension,
+            })),
+            Value::Matrix(_) => None,
             Value::Point(components) => {
-                let q = components
-                    .first()
-                    .map(Value::infer_type)
-                    .unwrap_or(Type::Real);
-                Type::Point {
+                let q = components.first()?.try_infer_type()?;
+                Some(Type::Point {
                     n: components.len(),
                     quantity: Box::new(q),
-                }
+                })
             }
             Value::Vector(components) => {
-                let q = components
-                    .first()
-                    .map(Value::infer_type)
-                    .unwrap_or(Type::Real);
-                Type::Vector {
+                let q = components.first()?.try_infer_type()?;
+                Some(Type::Vector {
                     n: components.len(),
                     quantity: Box::new(q),
-                }
+                })
             }
-            Value::Orientation { .. } => Type::Orientation(3),
-            Value::Frame { .. } => {
-                panic!(
-                    "infer_type() cannot infer Frame dimensionality. \
-                     Use CompiledExpr::literal(value, type) directly."
-                )
-            }
-            Value::Transform { .. } => {
-                panic!(
-                    "infer_type() cannot infer Transform dimensionality. \
-                     Use CompiledExpr::literal(value, type) directly."
-                )
-            }
-            Value::Plane { .. } => Type::Plane,
-            Value::Axis { .. } => Type::Axis,
-            Value::BoundingBox { .. } => Type::BoundingBox,
+            Value::Orientation { .. } => Some(Type::Orientation(3)),
+            Value::Frame { .. } => None,
+            Value::Transform { .. } => None,
+            Value::Plane { .. } => Some(Type::Plane),
+            Value::Axis { .. } => Some(Type::Axis),
+            Value::BoundingBox { .. } => Some(Type::BoundingBox),
             Value::Range { lower, upper, .. } => {
-                let elem_ty = lower
-                    .as_ref()
-                    .or(upper.as_ref())
-                    .map(|v| v.infer_type())
-                    .unwrap_or(Type::Real);
-                Type::Range(Box::new(elem_ty))
+                let bound = lower.as_ref().or(upper.as_ref())?;
+                let elem_ty = bound.try_infer_type()?;
+                Some(Type::Range(Box::new(elem_ty)))
             }
-            Value::Undef => Type::Bool,
+            Value::Undef => Some(Type::Bool),
         }
     }
 
@@ -5416,6 +5503,43 @@ mod tests {
         assert_eq!(round_tripped, Some(matrix));
     }
 
+    // ── try_into_matrix Point/Vector exclusion tests ─────────────────────────
+    // These document that Point and Vector elements inside a Tensor are
+    // intentionally NOT treated as matrix rows (see exclusion comment on guard).
+
+    #[test]
+    fn try_into_matrix_tensor_of_points_returns_none() {
+        // Tensor([Point([1,2,3]), Point([4,5,6])]) → None
+        // A Tensor-of-Points is a point collection, not a matrix.
+        let tensor = Value::Tensor(vec![
+            Value::Point(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::Point(vec![Value::Int(4), Value::Int(5), Value::Int(6)]),
+        ]);
+        assert_eq!(tensor.try_into_matrix(), None);
+    }
+
+    #[test]
+    fn try_into_matrix_tensor_of_vectors_returns_none() {
+        // Tensor([Vector([1,2]), Vector([3,4])]) → None
+        // A Tensor-of-Vectors is a vector collection, not a matrix.
+        let tensor = Value::Tensor(vec![
+            Value::Vector(vec![Value::Int(1), Value::Int(2)]),
+            Value::Vector(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_eq!(tensor.try_into_matrix(), None);
+    }
+
+    #[test]
+    fn try_into_matrix_mixed_tensor_point_returns_none() {
+        // Tensor([Tensor([1,2]), Point([3,4])]) → None
+        // The guard requires ALL elements to be Tensor; any non-Tensor element rejects.
+        let tensor = Value::Tensor(vec![
+            Value::Tensor(vec![Value::Int(1), Value::Int(2)]),
+            Value::Point(vec![Value::Int(3), Value::Int(4)]),
+        ]);
+        assert_eq!(tensor.try_into_matrix(), None);
+    }
+
     // ── Value::Frame tests (step-3) ──────────────────────────────────────────
 
     fn make_point3_length() -> Value {
@@ -6490,5 +6614,251 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── try_infer_type() tests: None for genuinely ambiguous cases ─────────
+
+    #[test]
+    fn try_infer_type_empty_list_returns_none() {
+        let v = Value::List(vec![]);
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "empty List has no inferable element type"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_empty_set_returns_none() {
+        let v = Value::Set(BTreeSet::new());
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "empty Set has no inferable element type"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_empty_map_returns_none() {
+        let v = Value::Map(BTreeMap::new());
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "empty Map has no inferable key/value types"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_option_none_returns_none() {
+        let v = Value::Option(None);
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "Option(None) has no inferable inner type"
+        );
+    }
+
+    // ── try_infer_type() tests: Some(correct_type) for populated values ────
+
+    #[test]
+    fn try_infer_type_nonempty_list_returns_some_list_int() {
+        let v = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(
+            v.try_infer_type(),
+            Some(crate::ty::Type::List(Box::new(crate::ty::Type::Int))),
+            "non-empty List(Int) should return Some(List(Int))"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_nonempty_set_returns_some_set_int() {
+        let mut s = BTreeSet::new();
+        s.insert(Value::Int(42));
+        let v = Value::Set(s);
+        assert_eq!(
+            v.try_infer_type(),
+            Some(crate::ty::Type::Set(Box::new(crate::ty::Type::Int))),
+            "non-empty Set(Int) should return Some(Set(Int))"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_nonempty_map_returns_some_map_string_int() {
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("key".into()), Value::Int(1));
+        let v = Value::Map(m);
+        assert_eq!(
+            v.try_infer_type(),
+            Some(crate::ty::Type::Map(
+                Box::new(crate::ty::Type::String),
+                Box::new(crate::ty::Type::Int),
+            )),
+            "non-empty Map(String,Int) should return Some(Map(String,Int))"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_option_some_int_returns_some_option_int() {
+        let v = Value::Option(Some(Box::new(Value::Int(7))));
+        assert_eq!(
+            v.try_infer_type(),
+            Some(crate::ty::Type::Option(Box::new(crate::ty::Type::Int))),
+            "Option(Some(Int)) should return Some(Option(Int))"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_scalar_values_return_some() {
+        assert_eq!(Value::Bool(true).try_infer_type(), Some(crate::ty::Type::Bool));
+        assert_eq!(Value::Int(0).try_infer_type(), Some(crate::ty::Type::Int));
+        assert_eq!(Value::Real(0.0).try_infer_type(), Some(crate::ty::Type::Real));
+        assert_eq!(
+            Value::String("".into()).try_infer_type(),
+            Some(crate::ty::Type::String)
+        );
+    }
+
+    // ── infer_type() defaults: compiler-aligned Real fallbacks ────────────
+
+    #[test]
+    fn infer_type_empty_list_uses_real_fallback() {
+        use crate::ty::Type;
+        let v = Value::List(vec![]);
+        assert_eq!(
+            v.infer_type(),
+            Type::List(Box::new(Type::Real)),
+            "empty List should default element type to Real (matching compiler)"
+        );
+    }
+
+    #[test]
+    fn infer_type_empty_set_uses_real_fallback() {
+        use crate::ty::Type;
+        let v = Value::Set(BTreeSet::new());
+        assert_eq!(
+            v.infer_type(),
+            Type::Set(Box::new(Type::Real)),
+            "empty Set should default element type to Real (matching compiler)"
+        );
+    }
+
+    #[test]
+    fn infer_type_empty_map_uses_string_real_fallback() {
+        use crate::ty::Type;
+        let v = Value::Map(BTreeMap::new());
+        assert_eq!(
+            v.infer_type(),
+            Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+            "empty Map should default value type to Real (key stays String, matching compiler)"
+        );
+    }
+
+    #[test]
+    fn infer_type_option_none_uses_bool_fallback() {
+        assert_eq!(
+            Value::Option(None).infer_type(),
+            crate::ty::Type::Option(Box::new(crate::ty::Type::Bool)),
+            "Option(None).infer_type() should default inner type to Bool"
+        );
+    }
+
+    // ── infer_type() on Option(Some(ambiguous_inner)): regression tests ──────
+
+    #[test]
+    fn infer_type_option_some_empty_list() {
+        use crate::ty::Type;
+        // Option(Some([])) — inner is an empty list, so try_infer_type returns
+        // None for the inner value and then None for the whole Option.
+        // infer_type() must NOT panic; it should recurse into infer_type() on
+        // the inner value (applying the Real fallback) to produce Option(List(Real)).
+        let v = Value::Option(Some(Box::new(Value::List(vec![]))));
+        assert_eq!(
+            v.infer_type(),
+            Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+            "Option(Some(empty List)) should produce Option(List(Real)) via inner infer_type()"
+        );
+    }
+
+    #[test]
+    fn infer_type_option_some_option_none() {
+        use crate::ty::Type;
+        // Option(Some(Option(None))) — the inner Option(None) is ambiguous.
+        // infer_type() on the inner value yields Option(Bool) via the Bool fallback,
+        // so the outer result is Option(Option(Bool)).
+        let v = Value::Option(Some(Box::new(Value::Option(None))));
+        assert_eq!(
+            v.infer_type(),
+            Type::Option(Box::new(Type::Option(Box::new(Type::Bool)))),
+            "Option(Some(Option(None))) should produce Option(Option(Bool)) via inner infer_type()"
+        );
+    }
+
+    #[test]
+    fn infer_type_option_some_empty_set() {
+        use crate::ty::Type;
+        // Option(Some(Set{})) — inner is an empty set, try_infer_type returns None.
+        // infer_type() on the inner applies the Real fallback → Set(Real),
+        // so outer result is Option(Set(Real)).
+        let v = Value::Option(Some(Box::new(Value::Set(BTreeSet::new()))));
+        assert_eq!(
+            v.infer_type(),
+            Type::Option(Box::new(Type::Set(Box::new(Type::Real)))),
+            "Option(Some(empty Set)) should produce Option(Set(Real)) via inner infer_type()"
+        );
+    }
+
+    #[test]
+    fn infer_type_nested_empty_list_preserves_structure() {
+        use crate::ty::Type;
+        // List(vec![List(vec![])]) — the inner list is empty so try_infer_type
+        // returns None for both inner and outer. infer_type() should recurse
+        // into the first element, producing List(List(Real)) not List(Real).
+        let v = Value::List(vec![Value::List(vec![])]);
+        assert_eq!(
+            v.infer_type(),
+            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+            "List([List([])]) should produce List(List(Real)), not List(Real)"
+        );
+    }
+
+    #[test]
+    fn infer_type_nested_empty_set_preserves_structure() {
+        use crate::ty::Type;
+        let v = Value::Set([Value::Set(BTreeSet::new())].into_iter().collect());
+        assert_eq!(
+            v.infer_type(),
+            Type::Set(Box::new(Type::Set(Box::new(Type::Real)))),
+            "Set({{Set({{}})}}) should produce Set(Set(Real)), not Set(Real)"
+        );
+    }
+
+    #[test]
+    fn infer_type_map_with_ambiguous_values_preserves_structure() {
+        use crate::ty::Type;
+        // Map with a string key and an empty list value — the value is ambiguous.
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(Value::String("k".into()), Value::List(vec![]));
+        let v = Value::Map(m);
+        assert_eq!(
+            v.infer_type(),
+            Type::Map(
+                Box::new(Type::String),
+                Box::new(Type::List(Box::new(Type::Real)))
+            ),
+            "Map with empty-list value should produce Map(String, List(Real))"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_option_some_ambiguous_returns_none() {
+        // try_infer_type() propagates None upward for nested ambiguous cases.
+        // Option(Some(empty List)) — the inner try_infer_type() returns None
+        // (empty list is ambiguous), and the ? propagates that None outward.
+        let v = Value::Option(Some(Box::new(Value::List(vec![]))));
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "try_infer_type() on Option(Some(empty List)) should return None (inner is ambiguous)"
+        );
     }
 }
