@@ -32,6 +32,8 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     assert!(errs.is_empty(), "compile errors in {}: {:?}", path, errs);
     let mut engine = make_engine();
     let result = engine.eval(&compiled);
+    // Note: assert_no_eval_errors omits the file path from the panic message;
+    // the path is visible via `path` in the backtrace when this assertion fails.
     assert_no_eval_errors(&result);
     result
 }
