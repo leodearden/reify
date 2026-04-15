@@ -35657,6 +35657,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1707,
+        "title": "Add missing m8_4 test assertions: linalg complex ops + io_export sub-components",
+        "description": "Two test coverage gaps in crates/reify-eval/tests/m8_4_stdlib_integration.rs from task 344 review:\n\n1. **linalg complex conjugate and phase** — linalg.ri defines z_conj = conjugate(z) and z_phase = phase(z) (lines 64-65 of examples/linalg.ri) but no Rust tests assert on them. Add:\n   - `linalg_complex_conjugate`: Assert LinalgDemo.z_conj has re=3.0, im=-4.0 (conjugate of 3+4i)\n   - `linalg_complex_phase`: Assert LinalgDemo.z_phase ≈ atan2(4,3) ≈ 0.9273 rad (may be Value::Scalar with ANGLE dimension)\n\n2. **io_export sub-component assertions** — io_export.ri declares sub-components `flat` (Flatness) and `finish` (SurfaceFinish) but no Rust tests verify their values. Add at least:\n   - `io_export_flatness_tolerance`: Assert ExportPart.flat.tolerance_value ≈ 0.00002m (0.02mm)\n   - `io_export_surface_finish`: Assert ExportPart.finish.value ≈ 0.0000008m (0.8μm Ra)\n\nmemory_hints: search \"linalg.ri z_conj z_phase conjugate phase\" search \"io_export.ri flat finish sub-component\" entity \"LinalgDemo\" entity \"ExportPart\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35669,7 +35680,7 @@
       ],
       "created": "2026-04-15T02:03:27.618Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T02:03:27.639Z"
+      "updated": "2026-04-15T02:04:02.040Z"
     }
   }
 }
