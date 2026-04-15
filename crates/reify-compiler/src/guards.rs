@@ -120,12 +120,14 @@ pub(crate) fn register_guarded_names(
     scope: &mut CompilationScope,
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
 ) {
     for member in members {
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    resolve_type_name(&type_expr.name).unwrap_or_else(|| {
+                    resolve_type_expr_with_aliases(type_expr, type_param_names, alias_registry, diagnostics).unwrap_or_else(|| {
                         diagnostics.push(
                             Diagnostic::error(format!("unresolved type: {}", type_expr.name))
                                 .with_label(DiagnosticLabel::new(
@@ -148,8 +150,8 @@ pub(crate) fn register_guarded_names(
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                register_guarded_names(&g.members, scope, functions, diagnostics);
-                register_guarded_names(&g.else_members, scope, functions, diagnostics);
+                register_guarded_names(&g.members, scope, functions, diagnostics, type_param_names, alias_registry);
+                register_guarded_names(&g.else_members, scope, functions, diagnostics, type_param_names, alias_registry);
             }
             _ => {}
         }
@@ -173,6 +175,8 @@ pub(crate) fn compile_block_guard(
     structure_controlling: &mut HashSet<ValueCellId>,
     guard_index: &mut u32,
     constraint_index: &mut u32,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
 ) {
     let inner_condition = compile_expr(&g.condition, scope, enum_defs, functions, diagnostics);
 
@@ -206,6 +210,8 @@ pub(crate) fn compile_block_guard(
         structure_controlling,
         guard_index,
         constraint_index,
+        type_param_names,
+        alias_registry,
     );
 
     let mut else_members = Vec::new();
@@ -227,6 +233,8 @@ pub(crate) fn compile_block_guard(
             structure_controlling,
             guard_index,
             constraint_index,
+            type_param_names,
+            alias_registry,
         );
     }
 
@@ -266,6 +274,8 @@ pub(crate) fn compile_guarded_members(
     structure_controlling: &mut HashSet<ValueCellId>,
     guard_index: &mut u32,
     constraint_index: &mut u32,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
 ) {
     let guard_ctx = Some(current_guard);
     for member in ast_members {
@@ -422,6 +432,8 @@ pub(crate) fn compile_guarded_members(
                     structure_controlling,
                     guard_index,
                     constraint_index,
+                    type_param_names,
+                    alias_registry,
                 );
             }
             reify_syntax::MemberDecl::Sub(s) => {

@@ -340,8 +340,8 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                register_guarded_names(&g.members, &mut scope, functions, diagnostics);
-                register_guarded_names(&g.else_members, &mut scope, functions, diagnostics);
+                register_guarded_names(&g.members, &mut scope, functions, diagnostics, &type_param_names, alias_registry);
+                register_guarded_names(&g.else_members, &mut scope, functions, diagnostics, &type_param_names, alias_registry);
             }
             reify_syntax::MemberDecl::Port(port_decl) => {
                 if let Some(first_span) = port_names.get(&port_decl.name) {
@@ -365,7 +365,7 @@ pub(crate) fn compile_entity(
                         reify_syntax::MemberDecl::Param(param) => {
                             let composite_name = format!("{}.{}", port_decl.name, param.name);
                             let ty = if let Some(type_expr) = &param.type_expr {
-                                resolve_type_name(&type_expr.name).unwrap_or_else(|| {
+                                resolve_type_expr_with_aliases(type_expr, &type_param_names, alias_registry, diagnostics).unwrap_or_else(|| {
                                     diagnostics.push(
                                         Diagnostic::error(format!(
                                             "unresolved type name '{}' in port parameter",
@@ -833,6 +833,8 @@ pub(crate) fn compile_entity(
                     &mut structure_controlling,
                     &mut guard_index,
                     &mut constraint_index,
+                    &type_param_names,
+                    alias_registry,
                 );
             }
             reify_syntax::MemberDecl::AssociatedType(_) => {
