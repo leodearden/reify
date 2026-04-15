@@ -6,8 +6,8 @@
 use reify_expr::{EvalContext, eval_expr};
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_types::{
-    CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type, ValueMap,
-    FIELD_ENTITY_PREFIX, ModulePath, Severity, Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type,
+    ValueMap, FIELD_ENTITY_PREFIX, ModulePath, Severity, Value, ValueCellId,
 };
 
 /// Helper: parse, compile, and eval source, return eval result.
@@ -187,6 +187,10 @@ fn eval_field_snapshot_consistency() {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Build a dimensionless 3×3 tensor from row data (Value::Real elements).
+///
+/// Sister helper: `make_stress_tensor` in `crates/reify-expr/tests/field_analysis_tests.rs`
+/// uses `Value::Scalar { si_value, dimension }` elements (Pressure-dimensioned); keep
+/// the two in sync if the `Value::Tensor` nesting structure ever changes.
 fn make_stress_tensor(rows: &[&[f64]]) -> Value {
     Value::Tensor(
         rows.iter()
@@ -205,6 +209,19 @@ fn real_matrix_type() -> Type {
 }
 
 /// Build an analytical field `Real → Matrix3x3(Real)` with a constant-tensor lambda.
+///
+/// # Domain choice
+/// A single-parameter `(p: Real)` domain is intentional. The sampling dispatch
+/// calls `apply_lambda_with_point_unpacking`, which unpacks a `Point3` into
+/// `(x, y, z)` for real fields. Using `Real` avoids that complexity and keeps
+/// the focus on dispatch correctness. The Point3 unpacking path is covered by
+/// `make_constant_stress_field` and its tests in
+/// `crates/reify-expr/tests/field_analysis_tests.rs`.
+///
+/// # Sister helper
+/// `make_constant_stress_field` in `crates/reify-expr/tests/field_analysis_tests.rs`
+/// uses Pressure-dimensioned Scalars and a 3-parameter Point3 lambda; keep the
+/// structural shape consistent if refactoring either.
 ///
 /// The lambda takes a single parameter `p` and ignores it, always returning
 /// `tensor`. This satisfies `validate_tensor_field` (Analytical source +
@@ -249,6 +266,12 @@ fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) ->
 }
 
 // ── step-1: von_mises dispatch ────────────────────────────────────────────────
+// (step-2 in the plan was "run test to verify it passes" — a verification step,
+// not a distinct test; there is no step-2 test to write here.
+// step-3 through step-5 correspond to the three remaining dispatch tests below.
+// The wrapping-only check — that von_mises(field) returns a VonMises-sourced Field —
+// lives in `von_mises_field_returns_field_with_von_mises_source` in
+// crates/reify-expr/tests/field_analysis_tests.rs.)
 
 #[test]
 fn eval_sample_von_mises_field_dispatch() {
@@ -454,5 +477,115 @@ fn eval_sample_safety_factor_field_dispatch() {
             "sample(safety_factor(field, yield), point) should return Real(2.5), got {:?}",
             result
         ),
+    }
+}
+
+// ── step-6: spatially-varying lambda — point propagation ─────────────────────
+//
+// Addresses the concern that constant-tensor tests could accidentally pass even
+// if the dispatch short-circuits before evaluating the inner lambda. This test
+// uses a conditional body:  |p| if p > 50.0 { tensor_a } else { tensor_b }
+// sampling at two distinct points verifies that `p` is actually threaded through.
+
+#[test]
+fn eval_sample_von_mises_spatially_varying_field() {
+    // tensor_a: uniaxial σ=100 → von Mises = 100
+    let sigma_a = 100.0_f64;
+    let tensor_a = make_stress_tensor(
+        &[&[sigma_a, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+    );
+    // tensor_b: uniaxial σ=200 → von Mises = 200
+    let sigma_b = 200.0_f64;
+    let tensor_b = make_stress_tensor(
+        &[&[sigma_b, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+    );
+
+    // Build lambda body:  if p > 50.0 { tensor_a } else { tensor_b }
+    let p_id = ValueCellId::new("$lambda0", "p");
+    let p_ref = CompiledExpr::value_ref(p_id.clone(), Type::Real);
+    let threshold = CompiledExpr::literal(Value::Real(50.0), Type::Real);
+    let cond_expr = CompiledExpr::binop(BinOp::Gt, p_ref, threshold, Type::Bool);
+    let then_branch = CompiledExpr::literal(tensor_a, real_matrix_type());
+    let else_branch = CompiledExpr::literal(tensor_b, real_matrix_type());
+    let body = CompiledExpr {
+        content_hash: ContentHash::of(&[3])
+            .combine(cond_expr.content_hash)
+            .combine(then_branch.content_hash)
+            .combine(else_branch.content_hash),
+        kind: CompiledExprKind::Conditional {
+            condition: Box::new(cond_expr),
+            then_branch: Box::new(then_branch),
+            else_branch: Box::new(else_branch),
+        },
+        result_type: real_matrix_type(),
+    };
+    let lambda = Value::Lambda {
+        params: vec![("p".to_string(), p_id)],
+        body: Box::new(body),
+        captures: ValueMap::new(),
+    };
+    let domain = Type::Real;
+    let codomain = real_matrix_type();
+    let field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+
+    let vm_field_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::Real),
+    };
+
+    // Sample at 75.0 → condition true → tensor_a → von Mises ≈ 100
+    let vm_expr_high = make_function_call(
+        "von_mises",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        vm_field_type.clone(),
+    );
+    let sample_high = make_function_call(
+        "sample",
+        vec![
+            vm_expr_high,
+            CompiledExpr::literal(Value::Real(75.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result_high = eval_expr(&sample_high, &EvalContext::simple(&values));
+    match &result_high {
+        Value::Real(v) => assert!(
+            (v - sigma_a).abs() < 1e-10,
+            "point=75 (>50): expected von Mises ≈ {sigma_a}, got {v}"
+        ),
+        _ => panic!("expected Real for point=75, got {:?}", result_high),
+    }
+
+    // Sample at 25.0 → condition false → tensor_b → von Mises ≈ 200
+    let vm_expr_low = make_function_call(
+        "von_mises",
+        vec![CompiledExpr::literal(field, field_type)],
+        vm_field_type,
+    );
+    let sample_low = make_function_call(
+        "sample",
+        vec![
+            vm_expr_low,
+            CompiledExpr::literal(Value::Real(25.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let result_low = eval_expr(&sample_low, &EvalContext::simple(&values));
+    match &result_low {
+        Value::Real(v) => assert!(
+            (v - sigma_b).abs() < 1e-10,
+            "point=25 (<50): expected von Mises ≈ {sigma_b}, got {v}"
+        ),
+        _ => panic!("expected Real for point=25, got {:?}", result_low),
     }
 }
