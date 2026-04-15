@@ -82,6 +82,10 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
   ghostGroup.name = 'ghostGroup';
   scene.add(ghostGroup);
 
+  // Cache for getSceneMeshes() — invalidated on any visibility or sync change.
+  // This avoids a new Map allocation on every pointer-move raycast call.
+  let sceneMeshCache: Map<string, Mesh> | null = null;
+
   function createMeshFromData(entityPath: string, data: MeshData): Mesh | null {
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(data.vertices, 3));
@@ -166,6 +170,10 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
   }
 
   function addGhostClone(entityPath: string, originalMesh: Mesh): void {
+    // Ghost clone shares the original's BufferGeometry (no vertex duplication).
+    // Position/rotation/scale are assumed to be identity — createMeshFromData never
+    // applies transforms, so ghost clones always overlap their opaque counterparts.
+    // If the transform model changes in the future, copy originalMesh.position/rotation/scale here.
     const ghostClone = new Mesh(originalMesh.geometry, ghostMaterial);
     ghostClone.name = `ghost:${entityPath}`;
     ghostMeshMap.set(entityPath, ghostClone);
@@ -200,6 +208,15 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     visibilityMap.delete(entityPath);
   }
 
+  /**
+   * Set the visibility state for an entity.
+   *
+   * This may be called before the mesh has arrived (e.g. before sync() is first called for this
+   * entity). In that case the state is stored in visibilityMap and will be applied when sync()
+   * creates the mesh. If the entity is later removed via sync({}), removeMesh() deletes its key
+   * from visibilityMap, so a subsequent setVisibility call will treat the state as if it were
+   * starting fresh from 'show'.
+   */
   function setVisibility(entityPath: string, state: VisibilityState): void {
     const prevState = visibilityMap.get(entityPath) ?? 'show';
     visibilityMap.set(entityPath, state);
@@ -211,6 +228,8 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     }
 
     if (prevState === state) return; // no change
+
+    sceneMeshCache = null; // invalidate cache — scene mesh set is changing
 
     if (prevState === 'show') {
       if (state === 'ghost') {
@@ -236,6 +255,8 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
   }
 
   function sync(meshes: Record<string, MeshData>): void {
+    sceneMeshCache = null; // invalidate cache — mesh set is changing
+
     // Remove meshes no longer present
     for (const key of [...meshMap.keys()]) {
       if (!(key in meshes)) {
@@ -268,10 +289,18 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     for (const key of [...meshMap.keys()]) {
       removeMesh(key);
     }
+    // ghostGroup was added to the scene on construction; remove it explicitly
+    // so it doesn't linger as an empty Group in scene.children after dispose.
+    scene.remove(ghostGroup);
     ghostMaterial.dispose();
+    sceneMeshCache = null;
   }
 
   function getSceneMeshes(): Map<string, Mesh> {
+    // Use cached result when available. The cache is invalidated by setVisibility and sync,
+    // so this is always consistent with the current scene state. This avoids an O(n) allocation
+    // on every pointer-move raycast call (previously this was O(1) — a direct meshMap reference).
+    if (sceneMeshCache !== null) return sceneMeshCache;
     const result = new Map<string, Mesh>();
     for (const [key, mesh] of meshMap) {
       const state = visibilityMap.get(key) ?? 'show';
@@ -279,6 +308,7 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
         result.set(key, mesh);
       }
     }
+    sceneMeshCache = result;
     return result;
   }
 
