@@ -7,7 +7,7 @@
 use reify_eval::Engine;
 use reify_test_support::builders::{binop, conditional_expr, gt, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::{assert_eval_clean, CompiledModuleBuilder, TopologyTemplateBuilder};
 use reify_types::*;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -1450,9 +1450,12 @@ fn cyclic_let_bindings_emit_diagnostic() {
 
     // The cycle diagnostic should also include the template name "S" in the format
     // 'in template S (entity ...)' — not just the entity path.
+    // Accept any of "circular"/"cycle"/"cyclic" for consistency with has_cycle_error above.
     let has_template_in_diagnostic = result.diagnostics.iter().any(|d| {
         d.severity == Severity::Error
-            && d.message.contains("circular")
+            && (d.message.contains("circular")
+                || d.message.contains("cycle")
+                || d.message.contains("cyclic"))
             && d.message.contains("template S")
     });
     assert!(
@@ -1537,12 +1540,10 @@ fn bfs_traverses_through_wrapper_with_zero_value_cells() {
     let mut engine = Engine::new(Box::new(checker), None);
     let result = engine.eval(&module);
 
-    // No spurious diagnostics should be emitted during BFS traversal through zero-value-cell wrappers
-    assert!(
-        result.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        result.diagnostics
-    );
+    // BFS traversal through zero-value-cell wrappers should produce no diagnostics at all —
+    // not even warnings. This stricter check (assert_eval_clean vs assert_no_eval_errors) is
+    // intentional: a clean structural traversal should emit nothing.
+    assert_eval_clean(&result);
 
     // Sanity: child entity exists with n=1
     assert_eq!(
