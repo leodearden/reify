@@ -807,7 +807,12 @@ fn build_preview_gui_state(
 ///
 /// `entity_path` is the dot-separated path used as the root of this node's
 /// children (e.g. `"Bracket"` → children are `"Bracket.width"`, etc.).
-fn build_template_node(
+///
+/// When a sub-component's child template has `is_recursive = true` (set by the
+/// compiler's Tarjan SCC pass), this function emits an empty `children` vec for
+/// that sub node rather than recursing — preventing infinite recursion for
+/// self-referential and mutually-recursive structure definitions.
+pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
     compiled: &reify_compiler::CompiledModule,

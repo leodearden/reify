@@ -11,7 +11,7 @@ use reify_types::{DiagnosticInfo, SourceLocationInfo};
 
 use reify_test_support::{TopologyTemplateBuilder, CompiledModuleBuilder, bracket_compiled_module};
 
-use crate::engine::{EngineSession, module_key, parse_value_string};
+use crate::engine::{EngineSession, build_template_node, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
 
 #[test]
@@ -2913,6 +2913,167 @@ fn entity_tree_and_identity_map_entity_paths_are_consistent() {
     assert!(
         map.contains_key("Bracket"),
         "identity map should contain 'Bracket' root"
+    );
+}
+
+// ---- Step 15: recursive cycle-protection tests for build_template_node ----
+//
+// These tests verify that build_template_node does NOT stack-overflow when a
+// template (or its sub-component) is marked is_recursive=true by the compiler's
+// Tarjan SCC pass.
+//
+// Failure mode BEFORE step-16 fix: the tests below will stack-overflow
+// (infinite recursion in build_template_node), crashing the test process.
+// Failure mode AFTER step-16 fix: each test passes, asserting that recursive
+// sub nodes have empty children.
+
+/// A self-referencing template (A sub x = A, is_recursive=true) does not
+/// stack-overflow; the recursive sub node has empty children.
+#[test]
+fn build_template_node_self_reference_does_not_stack_overflow() {
+    use reify_types::ModulePath;
+
+    // Build template A: is_recursive=true, one sub x pointing back to "A"
+    let template_a = TopologyTemplateBuilder::new("A")
+        .is_recursive(true)
+        .sub_component("x", "A", vec![])
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .build();
+
+    let a_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "A")
+        .expect("template A must be in the module");
+
+    // BEFORE step-16 fix: this call recurses infinitely → stack overflow.
+    // AFTER step-16 fix: the is_recursive check stops recursion and returns
+    // a sub node with empty children.
+    let node = build_template_node(a_template, "A", &compiled);
+
+    let sub_x = node
+        .children
+        .iter()
+        .find(|c| c.entity_path == "A.x" && c.kind == "sub")
+        .expect("A should have sub node A.x");
+
+    assert!(
+        sub_x.children.is_empty(),
+        "recursive sub node A.x should have empty children; got {:?}",
+        sub_x.children
+    );
+}
+
+/// Mutual recursion (A sub b = B, B sub a = A; both is_recursive=true) does
+/// not stack-overflow; both sub nodes are leaf nodes (empty children).
+#[test]
+fn build_template_node_mutual_recursion_does_not_stack_overflow() {
+    use reify_types::ModulePath;
+
+    // A → sub b = B (B is recursive)
+    let template_a = TopologyTemplateBuilder::new("A")
+        .is_recursive(true)
+        .sub_component("b", "B", vec![])
+        .build();
+
+    // B → sub a = A (A is recursive)
+    let template_b = TopologyTemplateBuilder::new("B")
+        .is_recursive(true)
+        .sub_component("a", "A", vec![])
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .template(template_b)
+        .build();
+
+    let a_template = compiled.templates.iter().find(|t| t.name == "A").unwrap();
+    let b_template = compiled.templates.iter().find(|t| t.name == "B").unwrap();
+
+    // BEFORE step-16 fix: A → B → A → … stack overflow.
+    // AFTER step-16 fix: A.b has empty children (B is_recursive), B.a has
+    // empty children (A is_recursive).
+    let node_a = build_template_node(a_template, "A", &compiled);
+    let node_b = build_template_node(b_template, "B", &compiled);
+
+    let sub_b = node_a
+        .children
+        .iter()
+        .find(|c| c.kind == "sub" && c.entity_path == "A.b")
+        .expect("A should have sub node A.b");
+    assert!(
+        sub_b.children.is_empty(),
+        "A.b sub node should be a leaf (B is recursive); got {:?}",
+        sub_b.children
+    );
+
+    let sub_a = node_b
+        .children
+        .iter()
+        .find(|c| c.kind == "sub" && c.entity_path == "B.a")
+        .expect("B should have sub node B.a");
+    assert!(
+        sub_a.children.is_empty(),
+        "B.a sub node should be a leaf (A is recursive); got {:?}",
+        sub_a.children
+    );
+}
+
+/// A non-recursive template (Container) that has a sub pointing to a recursive
+/// template (A) expands Container normally but stops at the recursive child.
+/// Container.a's children are empty; Container itself has the A.x children
+/// available as non-recursive (Container is not the recursive root).
+#[test]
+fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
+    use reify_types::{ModulePath, Type};
+
+    // A is recursive (self-reference via sub x = A)
+    let template_a = TopologyTemplateBuilder::new("A")
+        .is_recursive(true)
+        .param("A", "n", Type::Int, None)
+        .sub_component("x", "A", vec![])
+        .build();
+
+    // Container is NOT recursive; it has a sub a = A
+    let template_container = TopologyTemplateBuilder::new("Container")
+        .sub_component("a", "A", vec![])
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_container)
+        .template(template_a)
+        .build();
+
+    let container_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Container")
+        .unwrap();
+
+    // BEFORE step-16 fix: Container → A → A → … stack overflow.
+    // AFTER step-16 fix: Container expands normally, Container.a (pointing to
+    // recursive A) has empty children instead of expanding A.
+    let node = build_template_node(container_template, "Container", &compiled);
+
+    // Container should have exactly one sub child
+    let sub_a = node
+        .children
+        .iter()
+        .find(|c| c.entity_path == "Container.a" && c.kind == "sub")
+        .expect("Container should have sub node Container.a");
+
+    assert_eq!(
+        sub_a.type_name.as_deref(),
+        Some("A"),
+        "Container.a type_name should be 'A'"
+    );
+    assert!(
+        sub_a.children.is_empty(),
+        "Container.a should have empty children because A is recursive; got {:?}",
+        sub_a.children
     );
 }
 
