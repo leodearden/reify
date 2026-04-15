@@ -518,7 +518,7 @@ fn sample_multi_param_lambda_binds_unpacked_point_components() {
 /// # Contract pinned
 ///
 /// The unpacking guard in sample() fires only when **all three** conditions hold:
-/// 1. `evaluated_args[1]` is `Value::Point`,
+/// 1. `evaluated_args[1]` is `Value::Point` or `Value::Vector`,
 /// 2. `params.len() > 1`, and
 /// 3. `params.len() == items.len()` (arity matches).
 ///
