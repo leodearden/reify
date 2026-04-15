@@ -68,6 +68,30 @@ fn check_source(src: &str) -> reify_eval::CheckResult {
     engine.check(&compiled)
 }
 
+/// Assert that `$parsed` (a `ParsedModule`) has at least `$min` declarations
+/// matching `$pat`.  Panics with an actionable message that includes `$label`
+/// and the actual count.
+///
+/// A `macro_rules!` macro is required here because closures cannot accept
+/// match patterns as arguments — `matches!(d, $pat)` requires a `$pat:pat`
+/// macro fragment.
+macro_rules! assert_min_count {
+    ($parsed:expr, $pat:pat, $label:expr, $min:expr) => {{
+        let count = $parsed
+            .declarations
+            .iter()
+            .filter(|d| matches!(d, $pat))
+            .count();
+        assert!(
+            count >= $min,
+            "expected >={} {} declarations, got {}",
+            $min,
+            $label,
+            count
+        );
+    }};
+}
+
 // ── Compile-time Send+Sync guards ─────────────────────────────────────────────
 
 /// Asserts at compile time that `EvalResult` and `CheckResult` satisfy `Send + Sync`.
@@ -100,88 +124,15 @@ fn integration_full_v01_ri_parses() {
 
     use reify_syntax::Declaration;
 
-    let trait_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Trait(_)))
-        .count();
-    let structure_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Structure(_)))
-        .count();
-    let purpose_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Purpose(_)))
-        .count();
-    let constraint_def_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Constraint(_)))
-        .count();
-    let enum_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Enum(_)))
-        .count();
-    let function_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Function(_)))
-        .count();
-    let field_def_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Field(_)))
-        .count();
-    let unit_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::Unit(_)))
-        .count();
-    let type_alias_count = parsed
-        .declarations
-        .iter()
-        .filter(|d| matches!(d, Declaration::TypeAlias(_)))
-        .count();
-
-    assert!(
-        trait_count >= 2,
-        "expected >=2 Trait declarations, got {trait_count}"
-    );
-    assert!(
-        structure_count >= 2,
-        "expected >=2 Structure declarations, got {structure_count}"
-    );
-    assert!(
-        purpose_count >= 1,
-        "expected >=1 Purpose declaration, got {purpose_count}"
-    );
-    assert!(
-        constraint_def_count >= 2,
-        "expected >=2 ConstraintDef declarations, got {constraint_def_count}"
-    );
-    assert!(
-        enum_count >= 1,
-        "expected >=1 Enum declaration, got {enum_count}"
-    );
-    assert!(
-        function_count >= 2,
-        "expected >=2 Function declarations (safety_factor overloads), got {function_count}"
-    );
-    assert!(
-        field_def_count >= 1,
-        "expected >=1 FieldDef declaration, got {field_def_count}"
-    );
-    assert!(
-        unit_count >= 1,
-        "expected >=1 Unit declaration, got {unit_count}"
-    );
-    assert!(
-        type_alias_count >= 1,
-        "expected >=1 TypeAlias declaration, got {type_alias_count}"
-    );
+    assert_min_count!(parsed, Declaration::Trait(_), "Trait", 2);
+    assert_min_count!(parsed, Declaration::Structure(_), "Structure", 2);
+    assert_min_count!(parsed, Declaration::Purpose(_), "Purpose", 1);
+    assert_min_count!(parsed, Declaration::Constraint(_), "Constraint", 2);
+    assert_min_count!(parsed, Declaration::Enum(_), "Enum", 1);
+    assert_min_count!(parsed, Declaration::Function(_), "Function", 2);
+    assert_min_count!(parsed, Declaration::Field(_), "Field", 1);
+    assert_min_count!(parsed, Declaration::Unit(_), "Unit", 1);
+    assert_min_count!(parsed, Declaration::TypeAlias(_), "TypeAlias", 1);
 }
 
 // ── Test 2: file compiles with expected templates ─────────────────────────────
@@ -703,6 +654,11 @@ fn purpose_compiled_and_activatable() {
     // (See examples/integration_full_v01.ri: mfg_ready uses literal placeholder constraints;
     // adding subject-referencing constraints is tracked as a follow-up task.)
     let expected_extra = mfg_ready.constraints.len();
+    assert!(
+        expected_extra > 0,
+        "mfg_ready should have at least 1 constraint \
+         — a zero count makes the delta assertion tautological"
+    );
     assert_eq!(
         constraint_count_from_engine(&engine),
         before + expected_extra,
@@ -886,6 +842,31 @@ fn constraint_def_labels() {
             entry.id
         );
     }
+}
+
+// ── Macro test: assert_min_count! catches unmet threshold ────────────────────
+
+/// Verify that `assert_min_count!` panics with an actionable message when the
+/// threshold is not met.  Parses an empty source (0 declarations) and asserts
+/// >=1 Trait — the macro must panic with "expected >=1 Trait" in the message.
+#[test]
+#[should_panic(expected = "expected >=1 Trait")]
+fn assert_min_count_macro_catches_unmet_threshold() {
+    use reify_syntax::Declaration;
+    let parsed = reify_syntax::parse("", ModulePath::single("empty"));
+    assert_min_count!(parsed, Declaration::Trait(_), "Trait", 1);
+}
+
+/// Verify that `assert_min_count!` does NOT panic when the threshold IS met.
+/// Parses a source with one trait declaration and asserts >=1 Trait — the macro
+/// must succeed silently.  This is the symmetric success-path counterpart to
+/// `assert_min_count_macro_catches_unmet_threshold`.
+#[test]
+fn assert_min_count_macro_passes_when_met() {
+    use reify_syntax::Declaration;
+    let src = "trait Foo {}";
+    let parsed = reify_syntax::parse(src, ModulePath::single("one_trait"));
+    assert_min_count!(parsed, Declaration::Trait(_), "Trait", 1);
 }
 
 // ── Test 20: violation regression guard ──────────────────────────────────────
