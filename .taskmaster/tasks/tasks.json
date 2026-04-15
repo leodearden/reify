@@ -37786,15 +37786,16 @@
         "description": "The `get_cell_expr` helper (navigates `compiled.templates[0].value_cells` to find a member's default expression) is duplicated across 3 compiler test files: `constant_compile_tests.rs`, `meta_compile_tests.rs`, and `collection_compile_tests.rs`. Extract it into `reify-test-support` (likely `helpers.rs`) and update the three files to import it.\n\nmemory_hints: search \"get_cell_expr helper reify-test-support\", search \"reify-test-support helpers.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T17:19:11.135Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:19:07.131Z",
+      "lastModified": "2026-04-15T17:19:11.139Z",
       "taskCount": 1802,
       "completedCount": 1538,
       "tags": [
