@@ -692,9 +692,23 @@ impl Value {
         match self.try_infer_type() {
             Some(ty) => ty,
             None => match self {
-                Value::List(_) => Type::List(Box::new(Type::Real)),
-                Value::Set(_) => Type::Set(Box::new(Type::Real)),
-                Value::Map(_) => Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+                Value::List(items) => {
+                    let elem_ty = items.first().map(|v| v.infer_type()).unwrap_or(Type::Real);
+                    Type::List(Box::new(elem_ty))
+                }
+                Value::Set(items) => {
+                    let elem_ty =
+                        items.iter().next().map(|v| v.infer_type()).unwrap_or(Type::Real);
+                    Type::Set(Box::new(elem_ty))
+                }
+                Value::Map(m) => {
+                    let (k_ty, v_ty) = m
+                        .iter()
+                        .next()
+                        .map(|(k, v)| (k.infer_type(), v.infer_type()))
+                        .unwrap_or((Type::String, Type::Real));
+                    Type::Map(Box::new(k_ty), Box::new(v_ty))
+                }
                 Value::Option(Some(inner)) => Type::Option(Box::new(inner.infer_type())),
                 Value::Option(None) => Type::Option(Box::new(Type::Bool)),
                 Value::Tensor(_) => panic!(
@@ -6720,6 +6734,48 @@ mod tests {
             v.infer_type(),
             Type::Option(Box::new(Type::Set(Box::new(Type::Real)))),
             "Option(Some(empty Set)) should produce Option(Set(Real)) via inner infer_type()"
+        );
+    }
+
+    #[test]
+    fn infer_type_nested_empty_list_preserves_structure() {
+        use crate::ty::Type;
+        // List(vec![List(vec![])]) — the inner list is empty so try_infer_type
+        // returns None for both inner and outer. infer_type() should recurse
+        // into the first element, producing List(List(Real)) not List(Real).
+        let v = Value::List(vec![Value::List(vec![])]);
+        assert_eq!(
+            v.infer_type(),
+            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+            "List([List([])]) should produce List(List(Real)), not List(Real)"
+        );
+    }
+
+    #[test]
+    fn infer_type_nested_empty_set_preserves_structure() {
+        use crate::ty::Type;
+        let v = Value::Set([Value::Set(BTreeSet::new())].into_iter().collect());
+        assert_eq!(
+            v.infer_type(),
+            Type::Set(Box::new(Type::Set(Box::new(Type::Real)))),
+            "Set({{Set({{}})}}) should produce Set(Set(Real)), not Set(Real)"
+        );
+    }
+
+    #[test]
+    fn infer_type_map_with_ambiguous_values_preserves_structure() {
+        use crate::ty::Type;
+        // Map with a string key and an empty list value — the value is ambiguous.
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(Value::String("k".into()), Value::List(vec![]));
+        let v = Value::Map(m);
+        assert_eq!(
+            v.infer_type(),
+            Type::Map(
+                Box::new(Type::String),
+                Box::new(Type::List(Box::new(Type::Real)))
+            ),
+            "Map with empty-list value should produce Map(String, List(Real))"
         );
     }
 
