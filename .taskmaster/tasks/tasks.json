@@ -35678,6 +35678,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1709,
+        "title": "Add op-level assertions to geometry let-binding tests",
+        "description": "The tests in `crates/reify-compiler/tests/let_scope_tests.rs:66-293` (added by task 1609) only assert `template.realizations.len()`. This confirms geometry compilation succeeds but does not verify the actual `CompiledGeometryOp` values—e.g., that a `Difference` op correctly references the inlined cylinder ops via the right `GeomRef::Step` indices. A subtle bug in step_offset handling or op construction could pass these tests undetected.\n\nAdd at least one test that inspects the actual `CompiledGeometryOp` values in a realization's `operations` Vec, verifying the BooleanOp variant and GeomRef::Step indices are correct.\n\n## memory_hints\n- search: \"CompiledGeometryOp BooleanOp GeomRef\"\n- search: \"compile_geometry_call step_offset\"\n- entity: \"CompiledGeometryOp\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35690,7 +35701,7 @@
       ],
       "created": "2026-04-15T05:33:59.241Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T05:33:59.264Z"
+      "updated": "2026-04-15T05:34:28.419Z"
     }
   }
 }
