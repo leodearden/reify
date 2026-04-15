@@ -36760,7 +36760,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T11:57:01.073Z"
+        "updatedAt": "2026-04-15T11:57:01.073Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/viewport",
+            "gui/src/viewport/meshManager.ts",
+            "gui/src/viewport/selection.ts"
+          ]
+        }
       },
       {
         "id": 1761,
