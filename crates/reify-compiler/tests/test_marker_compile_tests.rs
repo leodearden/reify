@@ -342,3 +342,21 @@ fn topology_template_is_test_method_matches_annotation() {
     assert!(test_tmpl.is_test(), "expected is_test() == true for @test structure");
     assert!(!normal_tmpl.is_test(), "expected is_test() == false for normal structure");
 }
+
+// ── CompiledFunction::is_test() ─────────────────────────────────────────────
+
+#[test]
+fn compiled_function_is_test_returns_correct_values() {
+    let source = r#"
+        @test fn tested() -> Real { 1.0 }
+        fn normal() -> Real { 2.0 }
+    "#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let tested_fn = module.functions.iter().find(|f| f.name == "tested").unwrap();
+    let normal_fn = module.functions.iter().find(|f| f.name == "normal").unwrap();
+
+    assert!(tested_fn.is_test(), "expected is_test() == true for @test fn");
+    assert!(!normal_fn.is_test(), "expected is_test() == false for normal fn");
+}
