@@ -36583,7 +36583,23 @@
             "crates/reify-compiler/src/type_resolution.rs",
             "crates/reify-eval/tests/m5_integration.rs",
             "examples/m5_geometry_flange.ri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "BoltFlange",
+              "Physical trait",
+              "Rigid trait",
+              "circular_pattern"
+            ],
+            "searches": [
+              "Physical trait geometry Solid param designated result",
+              "Rigid Physical trait material param conformance",
+              "circular_pattern signature Point3 Vec3 Angle reify stdlib",
+              "m5_geometry example BoltFlange CSG operations",
+              "geometry-producing param declaration entity compiler"
+            ],
+            "_causation_id": "9255cb58-9827-4ba9-a1de-71532f4fe900"
+          }
         }
       },
       {
