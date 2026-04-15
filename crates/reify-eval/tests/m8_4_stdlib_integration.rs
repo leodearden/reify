@@ -164,14 +164,7 @@ fn linalg_eigenvalues_of_diagonal() {
             let mut actuals: Vec<f64> = items
                 .iter()
                 .enumerate()
-                .map(|(i, item)| match item {
-                    Value::Real(v) => *v,
-                    Value::Int(n) => *n as f64,
-                    other => panic!(
-                        "eigenvalue[{}] should be Real or Int, got {:?}",
-                        i, other
-                    ),
-                })
+                .map(|(i, item)| expect_real_or_int(item, &format!("eigenvalue[{i}]")))
                 .collect();
             actuals.sort_by(|a, b| a.partial_cmp(b).unwrap());
             for (i, (&actual, &exp)) in actuals.iter().zip(expected.iter()).enumerate() {
@@ -352,14 +345,7 @@ fn fields_temperature_sample() {
         .get(&id)
         .unwrap_or_else(|| panic!("FieldsAnalysisDemo.temp_at_5 not found"));
 
-    let v = match val {
-        Value::Real(v) => *v,
-        Value::Int(i) => *i as f64,
-        other => panic!(
-            "FieldsAnalysisDemo.temp_at_5 should be Real or Int, got {:?}",
-            other
-        ),
-    };
+    let v = expect_real_or_int(val, "FieldsAnalysisDemo.temp_at_5");
     assert!(
         (v - 45.0).abs() < 1e-9,
         "temp_at_5 should be ≈45.0 (= 5²+20), got {}",
@@ -381,14 +367,7 @@ fn fields_temperature_gradient() {
         .get(&id)
         .unwrap_or_else(|| panic!("FieldsAnalysisDemo.dtemp_at_5 not found"));
 
-    let v = match val {
-        Value::Real(v) => *v,
-        Value::Int(i) => *i as f64,
-        other => panic!(
-            "FieldsAnalysisDemo.dtemp_at_5 should be Real or Int, got {:?}",
-            other
-        ),
-    };
+    let v = expect_real_or_int(val, "FieldsAnalysisDemo.dtemp_at_5");
     assert!(
         (v - 10.0).abs() < 1e-4,
         "dtemp_at_5 should be ≈10.0 (= 2*5, central differences), got {}",
@@ -410,14 +389,7 @@ fn fields_von_mises_uniaxial() {
         .get(&id)
         .unwrap_or_else(|| panic!("FieldsAnalysisDemo.vm_stress not found"));
 
-    let v = match val {
-        Value::Real(v) => *v,
-        Value::Int(i) => *i as f64,
-        other => panic!(
-            "FieldsAnalysisDemo.vm_stress should be Real or Int, got {:?}",
-            other
-        ),
-    };
+    let v = expect_real_or_int(val, "FieldsAnalysisDemo.vm_stress");
     assert!(
         (v - 100.0).abs() < 1e-9,
         "vm_stress should be ≈100.0 (uniaxial von Mises = σ), got {}",
@@ -439,14 +411,7 @@ fn fields_safety_factor() {
         .get(&id)
         .unwrap_or_else(|| panic!("FieldsAnalysisDemo.sf not found"));
 
-    let v = match val {
-        Value::Real(v) => *v,
-        Value::Int(i) => *i as f64,
-        other => panic!(
-            "FieldsAnalysisDemo.sf should be Real (dimensionless), got {:?}",
-            other
-        ),
-    };
+    let v = expect_real_or_int(val, "FieldsAnalysisDemo.sf");
     assert!(
         (v - 2.5).abs() < 1e-9,
         "sf should be ≈2.5 (= 250/100), got {}",
