@@ -36042,15 +36042,21 @@
         "description": "Two test-quality improvements in crates/reify-eval/tests/field_eval_tests.rs:\n\n1. **Tighten eigenvalue tolerance in `eval_sample_principal_stresses_full_symmetric_dispatch`** (lines 732-738): The expected eigenvalues are hardcoded to 4 decimal places ([1.3256, 2.4601, 5.2143]) with tolerance 1e-3, but the comment notes the closed-form trig computation is accurate to ~1e-12. Use higher-precision expected values (e.g., [1.32554567, 2.46013747, 5.21431686]) and tighten tolerance to 1e-6 or 1e-8 to catch numerical regressions earlier.\n\n2. **Add ordering assertion to `eval_sample_principal_stresses_hydrostatic_dispatch`** (lines 618-626): The full-symmetric test checks `eigenvalues[0] <= eigenvalues[1] <= eigenvalues[2]` but the hydrostatic test does not. Add the same ascending-order invariant check for consistency, even though all eigenvalues are equal.\n\nmemory_hints: search \"field_eval_tests eigenvalue\", search \"principal_stresses dispatch test\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T07:29:47.269Z",
+        "updatedAt": "2026-04-15T07:31:22.322Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/field_eval_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Tighten eigenvalue precision and add ordering assertion in field_eval edge-case tests"
+            ]
+          }
         }
       },
       {
@@ -36184,7 +36190,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T07:29:47.269Z",
+      "lastModified": "2026-04-15T07:31:22.322Z",
       "taskCount": 1731,
       "completedCount": 1493,
       "tags": [
