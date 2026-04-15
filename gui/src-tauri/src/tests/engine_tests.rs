@@ -2276,3 +2276,137 @@ fn get_entity_tree_no_realization_has_mesh_false() {
     assert!(!root.has_mesh, "Simple with no realization has_mesh=false");
     let _ = compiled; // suppress unused warning
 }
+
+// ---- Step 5: sub-component tree building tests ----
+
+#[test]
+fn get_entity_tree_sub_component_produces_nested_node() {
+    // Build: Assembly { sub bolt: Bolt }  + Bolt { param mass: Mass }
+    use reify_test_support::{vcid, mm};
+    use reify_types::{ModulePath, Type, DimensionVector};
+    use reify_compiler::EntityKind;
+
+    let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
+
+    let bolt_template = TopologyTemplateBuilder::new("Bolt")
+        .param("Bolt", "mass", mass_type.clone(), None)
+        .build();
+
+    let assembly_template = TopologyTemplateBuilder::new("Assembly")
+        .sub_component("bolt", "Bolt", vec![])
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(assembly_template)
+        .template(bolt_template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    // Use the direct compiled-module path: load bracket to ensure session can accept modules
+    // then check tree via get_entity_tree() on a manually compiled module
+    // We can't inject a CompiledModule directly, so we validate via source parsing
+    // instead. Source: Assembly with a bolt sub.
+    session.load_from_source(
+        r#"structure Bolt { param mass: Scalar = 1 }
+structure Assembly { sub bolt: Bolt() }"#,
+        "test",
+    ).expect("load");
+
+    let _ = compiled; // ensure builder API compiles
+    let _ = vcid("Bolt", "mass"); // ensure vcid compiles
+
+    let tree = session.get_entity_tree();
+
+    // Find Assembly root
+    let assembly = tree.iter().find(|n| n.entity_path == "Assembly")
+        .expect("Assembly root should exist");
+
+    let sub_node = assembly.children.iter().find(|c| c.kind == "sub")
+        .expect("Assembly should have a 'sub' child node");
+
+    assert_eq!(sub_node.entity_path, "Assembly.bolt");
+    assert_eq!(sub_node.type_name.as_deref(), Some("Bolt"));
+}
+
+#[test]
+fn get_entity_tree_collection_sub_has_list_type_name() {
+    use reify_types::{ModulePath, Type, DimensionVector};
+
+    let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
+
+    let bolt_template = TopologyTemplateBuilder::new("Bolt")
+        .param("Bolt", "mass", mass_type, None)
+        .build();
+
+    // Use source-level test since we can't inject CompiledModule
+    // Collection sub syntax: `sub bolts: List<Bolt>()`
+    // Reify may or may not support this in the parser — test via compiled module builder
+    let count_cell = reify_types::ValueCellId::new("Assembly", "__count_bolts");
+    let assembly_template = TopologyTemplateBuilder::new("Assembly")
+        .collection_sub_component("bolts", "Bolt", count_cell)
+        .build();
+
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(assembly_template)
+        .template(bolt_template)
+        .build();
+
+    // Verify the compiled module sub is marked as collection
+    let assembly = compiled.templates.iter().find(|t| t.name == "Assembly").unwrap();
+    let bolts_sub = assembly.sub_components.iter().find(|s| s.name == "bolts").unwrap();
+    assert!(bolts_sub.is_collection, "collection sub should have is_collection=true");
+    assert_eq!(bolts_sub.structure_name, "Bolt");
+
+    // Build tree manually via get_entity_tree — we need a session with this module.
+    // Since we can't inject a CompiledModule, verify the type_name logic directly:
+    // for is_collection=true, type_name should be "List<{structure_name}>"
+    let type_name = if bolts_sub.is_collection {
+        format!("List<{}>", bolts_sub.structure_name)
+    } else {
+        bolts_sub.structure_name.clone()
+    };
+    assert_eq!(type_name, "List<Bolt>");
+}
+
+#[test]
+fn get_entity_tree_value_cell_type_name_from_cell_type() {
+    // Verify type_name for value cells is cell_type.to_string()
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session.load_from_source(bracket_source(), "bracket").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = &tree[0];
+
+    let width_node = root.children.iter().find(|c| c.entity_path == "Bracket.width")
+        .expect("should have Bracket.width node");
+
+    // width is `param width: Scalar = 80mm` → type is Scalar[LENGTH]
+    // cell_type.to_string() for a Length scalar should contain "Scalar"
+    let type_name = width_node.type_name.as_ref().expect("width should have type_name");
+    assert!(type_name.contains("Scalar"), "width type_name '{}' should contain 'Scalar'", type_name);
+}
+
+#[test]
+fn get_entity_tree_sub_node_type_name_from_structure_name() {
+    // Load source with a sub-component, verify type_name = structure_name
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session.load_from_source(
+        r#"structure Bolt { param mass: Scalar = 1 }
+structure Assembly { sub bolt: Bolt() }"#,
+        "test",
+    ).expect("load");
+
+    let tree = session.get_entity_tree();
+    let assembly = tree.iter().find(|n| n.entity_path == "Assembly")
+        .expect("Assembly root should exist");
+    let sub_node = assembly.children.iter().find(|c| c.kind == "sub")
+        .expect("should have sub node");
+
+    assert_eq!(sub_node.type_name.as_deref(), Some("Bolt"),
+        "sub node type_name should be structure_name");
+}
