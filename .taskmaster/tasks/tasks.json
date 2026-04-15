@@ -8570,11 +8570,11 @@
         "description": "Consolidates creation/hardening of reify-test-support helpers (compile_source, eval_source, parse_and_compile, collect_errors, compile_with_stdlib, constraint-def helpers, parse_or_panic DRY) and migration of reify-compiler tests, reify-eval tests, reify-runtime tests, and tests/common/mod.rs to use the shared helpers.",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 401 plus 10 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 401: Consolidate test helpers (compile_source, eval_source) into reify-test-support\n\n\nThe parse→compile and parse→compile→eval helper patterns are duplicated across 15+ test files in reify-compiler and reify-eval (e.g. meta_e2e.rs, meta_compile_tests.rs, connect_compile_tests.rs, field_compile_tests.rs, field_eval_tests.rs, purpose_eval.rs, m5_integration.rs, occurrence_eval.rs). Each file independently defines compile_source/compile_module and parse_compile_eval/eval_source.\n\nAdd shared helpers to crates/reify-test-support:\n1. `pub fn compile_source(source: &str) -> CompiledModule` — parse + compile\n2. `pub fn eval_source(source: &str) -> (CompiledModule, EvalResult)` — parse + compile + eval with MockConstraintChecker\n\nThe eval helper should also assert no eval-phase diagnostics (result.diagnostics) to prevent silent error swallowing.\n\nThen update all existing test files to import from reify-test-support instead of defining local copies.\n\nmemory_hints: search \"compile_source test helper\" and \"parse_compile_eval\" in crates/reify-compiler/tests and crates/reify-eval/tests\n\n### Absorbed from task 371: Test support: deduplicate compile_module/parse_decls helpers across 10+ files\ncompile_module helper is copy-pasted across 10+ test files in reify-compiler/tests/. parse_decls helper is similarly duplicated across 10+ test files in reify-syntax/tests/. Create shared test helpers — either tests/common.rs modules or add to reify-test-support crate — and update all test files to use the shared versions.\n\nMemory hints: search \"compile_module parse_decls test helper\", entities: reify-test-support, reify-compiler tests\n\n### Absorbed from task 402: Migrate remaining test files to common test helpers\nMigrate guard_compilation.rs and collection_sub_tests.rs to use `mod common;` shared helpers, eliminating duplicate inline helper functions.\n\n1. guard_compilation.rs: Add `mod common; use common::compile_first_template;` and remove the inline `compile_first_template` definition (identical to common/mod.rs version).\n\n2. collection_sub_tests.rs: Add `mod common;` and refactor the inline `compile_no_errors` to wrap `common::compile_module` with an error assertion (same pattern as purpose_compile_tests.rs).\n\n3. Consider adding a `compile_no_errors` helper to common/mod.rs that wraps `compile_module` + asserts no error diagnostics, since this pattern appears in collection_sub_tests.rs, collection_compile_tests.rs, and let_scope_tests.rs.\n\nmemory_hints: search \"compile_module test helper common\" in reify project; entity \"common/mod.rs\"\n\n### Absorbed from task 433: Extract parse_and_compile into reify-test-support and use CARGO_MANIFEST_DIR paths\nMove parse_and_compile helper from 3 test files (m9_trait_conformance.rs, m5_integration.rs, purpose_eval.rs) into crates/reify-test-support. Use CARGO_MANIFEST_DIR for fixture paths in m9_trait_conformance.rs (9 occurrences). Bind count_for results to local variables before assertions. (Review followup from task 194)\n\n### Absorbed from task 507: Add collect_errors() test helper to reify-test-support\nThe pattern .diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() appears ~125 times across ~25 test files. Add a collect_errors() helper to reduce boilerplate.\n\nAdd to crates/reify-test-support/src/lib.rs:\npub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> { diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() }\n\nMigrate the two new stdlib test files first; existing files can be migrated incrementally.\n\nFiles: crates/reify-test-support/src/lib.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs\n\n### Absorbed from task 557: Extract compile_with_stdlib test helper and fix fragile couplings\nDRY improvements for stdlib test infrastructure.\n\n1. Extract shared compile_with_stdlib(source) -> CompiledModule helper used by 5+ conformance tests.\n2. Replace hardcoded 'std/structural/physical' path string in load_stdlib_module with ModulePath::new constructor.\n3. Use .any() fast path in stdlib_loader error check instead of collecting into Vec.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs, crates/reify-compiler/src/stdlib_loader.rs\n\n### Absorbed from task 876: Consolidate constraint def test helpers into reify-test-support\nAdd compile_module, compile_template, error_diags, and parse_and_compile to crates/reify-test-support/src/. Remove per-file duplicates in: constraint_def_compile_tests.rs (lines 12-36), constraint_inst_tests.rs, and ~12 other compiler test files; and m9_constraint_def.rs (lines 20-34) plus m9_trait_conformance.rs, m5_integration.rs, m10_geometric_types.rs, purpose_eval.rs, determinacy_predicates.rs.\n\nNote: Prior consolidation tasks (2, 81, 614, 769) moved compile_source, eval_source, test_uri, and solver helpers. This task covers the remaining compile_module/compile_template/error_diags/parse_and_compile helpers that are still duplicated.\n\nmemory_hints: search \"reify-test-support helpers consolidate\" for prior consolidation work\n\n### Absorbed from task 1257: Extract shared compile_source helper into reify-test-support\nThe validation helper added in Task 1247 (`crates/reify-test-support/src/fixtures.rs:1247-1285`) duplicates parse+compile+filter-by-severity boilerplate that already lives in `crates/reify-compiler/tests/port_compile_tests.rs:9-28` (`compile_module` / `compile_first_template`).\n\nSince `reify-test-support` already depends on `reify-compiler`, this helper could be lifted to a public utility in test-support and reused by both call sites.\n\nProposed approach:\n- Add `pub fn compile_source(source: &str) -> CompiledModule` (and optionally `compile_first_template`) in a `reify-test-support` module — likely a new `compile_helpers.rs` so `fixtures.rs` stays focused on data fixtures.\n- Migrate `crates/reify-compiler/tests/port_compile_tests.rs` to use the shared helper.\n- Migrate the in-`fixtures.rs` test mod to call the shared helper.\n\nWatch for: dev-dependency direction. `reify-test-support` is already a normal dep of `reify-compiler` (so `port_compile_tests.rs` can use it via dev-deps). Confirm Cargo.toml wiring before refactor.\n\nNot blocking — the duplication is small and intents differ slightly (fixture validation vs. compiler behavior tests) — but worth doing as the codebase keeps growing copies of this pattern.\n\nSource: review_comprehensive S4 on Task 1247 (esc-1247-1023).\n\n### Absorbed from task 1419: Extract shared unit-test helpers to tests/common/mod.rs\nThe helpers `parse_and_compile`, `compile_with_prelude_helper`, and `errors_only` are byte-identical copies across `crates/reify-compiler/tests/unit_declaration_tests.rs` (lines 17-41) and `crates/reify-compiler/tests/user_defined_unit_tests.rs` (lines 15-41). A third file, `unit_registry_tests.rs`, has similar boilerplate. Move these helpers into a shared `crates/reify-compiler/tests/common/mod.rs` (the standard Cargo integration-test shared-code pattern), and update all three consumers to `mod common; use common::{parse_and_compile, compile_with_prelude_helper, errors_only};`. This prevents future drift where a fix applied to one copy is missed in the other. Scope: tests only, no production code changes; all existing tests must pass unchanged.\n\n### Absorbed from task 1595: Migrate reify-compiler tests to shared parse_and_compile helper\nTwo local copies of `fn parse_and_compile` remain after task 1332's consolidation:\n- crates/reify-compiler/tests/unit_registry_tests.rs:14 — uses `ModulePath::single(\"unit_test\")`\n- crates/reify-compiler/tests/type_alias_compile_tests.rs:12 — uses `ModulePath::single(\"alias_test\")`\n\nreify-compiler already has `reify-test-support` as a dev-dependency (Cargo.toml:13), so the migration is just a use-site swap.\n\n**Important behavior difference:** The shared `reify_test_support::parse_and_compile` asserts zero error-severity diagnostics, but the local copies in these two files return the raw `CompiledModule` without filtering. The existing callers use a separate `errors_only(module)` helper to inspect diagnostics, and some tests intentionally compile source that produces errors (e.g., cycle detection, unknown aliases). Those tests must NOT use the asserting shared helper.\n\nRecommended approach:\n1. Find all call sites in each file.\n2. For tests that expect success, migrate to `reify_test_support::parse_and_compile`.\n3. For tests that expect errors, use `reify_test_support::parse_compile_expect_err(source, needle)` or keep a local `parse_no_assert` helper that just calls `reify_syntax::parse` + `compile` without the assert.\n4. Remove the local `parse_and_compile` fn once all call sites are migrated.\n5. Verify no test depends on the `\"unit_test\"` or `\"alias_test\"` module-path strings (grep those literals).\n\n**Priority:** low. Code-reuse / drift-prevention.\n\n**Source:** review of task 1332 (esc-1332-348, reviewer_comprehensive suggestion 4, code_reuse).\n\n### Absorbed from task 1600: Harden reify-test-support helpers: parse_or_panic DRY, test quality, remaining copies\nFollow-up quality improvements from task 1332 review:\\n\\n1. **parse_or_panic DRY** (S2): Extract private `fn parse_or_panic(source) -> ParsedModule` from the three pipeline helpers in helpers.rs to remove the triplicated parse+assert prologue.\\n2. **Remaining copies** (S3): Two more copies of `parse_and_compile` remain in reify-compiler tests (type_alias_compile_tests.rs, unit_registry_tests.rs). Migrate them to reify_test_support::parse_and_compile. Verify no test relies on the custom ModulePath names.\\n3. **Test quality** (S4-S7): Strengthen helper unit tests — use non-geometry source in test_make_engine, use controlled needle in test_parse_compile_expect_err_needle_match, reduce stdlib-shape coupling in test_parse_and_compile_with_stdlib.\\n\\nSource: reviewer suggestions S2-S7 from task 1332 unblock.\\nFiles: crates/reify-test-support/src/helpers.rs, crates/reify-compiler/tests/type_alias_compile_tests.rs, crates/reify-compiler/tests/unit_registry_tests.rs\n",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:15:23.203Z",
+        "updatedAt": "2026-04-15T08:44:24.442Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -13663,7 +13663,7 @@
         "id": "612",
         "title": "Fix compile_geometry_op None placeholder and GeomRef::Step(0) hardcoding bugs",
         "description": "Two pre-existing bugs in geometry compilation (crates/reify-compiler/src/lib.rs and crates/reify-eval):\n\n1. **compile_geometry_op None placeholder**: When compile_geometry_op returns None (compilation failure), no placeholder is pushed into step_handles. This causes silent corruption in GeomRef::Step(n) relative indexing — all subsequent step indices are off by one per failed op, leading to wrong geometry references downstream.\n\n2. **compile_geometry_call GeomRef::Step(0) hardcoding**: compile_geometry_call() hardcodes target: GeomRef::Step(0) for all pattern/modify/transform ops. This means all geometry operations target the first step regardless of the intended target geometry.\n\nFix: (1) Push a sentinel/error placeholder into step_handles when compile_geometry_op returns None. (2) Resolve the correct GeomRef target based on the geometry name→step index map.\n\nmemory_hints: search \"compile_geometry_op None placeholder step_handles\", search \"compile_geometry_call GeomRef Step hardcoded\", get_entity \"GeometryKernel\"",
-        "details": "",
+        "details": "<info added on 2026-04-15T08:29:55.169Z>\nRESCOPED 2026-04-15 by reconciliation run d6cb436a: Task 1715 ('Generic geometry-arg resolution in compile_geometry_call') completed and fixed the GeomRef::Step(0) hardcoding bug for all 14 geometry functions. Task 612 is now scoped to address ONLY bug #1: the compile_geometry_op None placeholder. When compile_geometry_op returns None (compilation failure), no placeholder is pushed into step_handles. This causes silent corruption in GeomRef::Step(n) relative indexing — all subsequent step indices are off by one per failed op. Fix: push a sentinel/error placeholder into step_handles when compile_geometry_op returns None. Remove all scope related to GeomRef::Step(0) hardcoding (now handled by task 1715). See also task 1732 for remaining loft/sweep error-path GeomRef::Step(0) fallbacks. Files: crates/reify-compiler/src/lib.rs, crates/reify-eval/src/lib.rs.\n</info added on 2026-04-15T08:29:55.169Z>",
         "testStrategy": "",
         "status": "in-progress",
         "dependencies": [],
@@ -26812,11 +26812,11 @@
         "description": "Consolidates CompiledModule filter helper API slimming (return iterators), has_test_annotation helper extraction (eliminate three-site duplication), is_test encapsulation on TopologyTemplate with asymmetry docs, and @test-on-function half-support resolution.",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 1251 plus 3 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 1251: Return iterators and slim API surface of CompiledModule filter helpers\n\n\nIn `crates/reify-compiler/src/lib.rs` lines 178-199, change `test_templates`, `non_test_templates`, `test_constraint_defs`, and `non_test_constraint_defs` to return `impl Iterator<Item = &TopologyTemplate>` / `&ConstraintDef` instead of `Vec`. While doing so, evaluate whether the four methods can be replaced by two (`test_templates_iter`, `test_constraint_defs_iter`) and let callers negate with `.filter(|t| !t.is_test)` — eliminating the API-surface doubling identified in suggestion [1].\n\n### Absorbed from task 1252: Extract has_test_annotation helper to eliminate three-site duplication\nThe expression `annotations.iter().any(|a| a.name == \"test\")` is inlined verbatim in three places: `crates/reify-compiler/src/lib.rs:6384`, `crates/reify-syntax/src/lib.rs:465`, and `crates/reify-test-support/src/builders/topology.rs:356`. Extract a single helper (e.g. `fn has_test_annotation(anns: &[impl HasName]) -> bool` or one helper per annotation type) and replace all three call sites. Document that `\"test\"` is the canonical lowercase spelling.\n\n### Absorbed from task 1253: Encapsulate is_test on TopologyTemplate and document is_test asymmetry\nIn `crates/reify-compiler/src/lib.rs` around line 248: (a) make `is_test` a private field and expose it via a `pub fn is_test(&self) -> bool` getter, with a doc note that mutating `annotations` post-construction is unsupported. This is symmetric with `ConstraintDef::is_test()`. (b) Add TODO comments on `test_constraint_defs`/`non_test_constraint_defs` (lib.rs ~192-199) and on `ConstraintDef::is_test()` in `crates/reify-syntax/src/lib.rs:465` noting that the method will move to a `CompiledConstraintDef::is_test` field once constraint-def lowering lands.\n\n### Absorbed from task 1254: Resolve @test-on-function half-support\nIn `crates/reify-compiler/src/lib.rs:4728`, `function` is listed as a valid context for `@test`, but `CompiledFunction` (re-exported from `reify_types`) has no `is_test` field and `CompiledModule` has no `test_functions()` helper. Either (a) remove `function` from the valid context match arm if test-functions are out of scope for Task 267, or (b) add `CompiledFunction::is_test()` in `reify_types` and `CompiledModule::test_functions()` / `non_test_functions()` in `crates/reify-compiler/src/lib.rs` to make the API coherent.\n",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:57:39.885Z",
+        "updatedAt": "2026-04-15T08:06:45.301Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -26840,7 +26840,24 @@
             "1254"
           ],
           "bundled_at": "2026-04-11",
-          "bundle_key": "I"
+          "bundle_key": "I",
+          "memory_hints": {
+            "entities": [
+              "has_test_annotation",
+              "TEST_ANNOTATION_NAME",
+              "ConstraintDef",
+              "CompiledModule",
+              "TopologyTemplate"
+            ],
+            "queries": [
+              "has_test_annotation helper reify_types reify_syntax mirror two locations",
+              "TEST_ANNOTATION_NAME single source of truth lowercase test annotation spelling",
+              "CompiledModule filter iterators test_templates non_test_templates return type",
+              "TopologyTemplate is_test field encapsulation getter post-construction mutation",
+              "ConstraintDef is_test delegates syntax helper"
+            ]
+          },
+          "_causation_id": "7638df16-caa7-4b48-82dc-f1ed5f5a5d41"
         }
       },
       {
@@ -32805,11 +32822,11 @@
         "description": "Two follow-up improvements: (1) entity.rs:417-447: collapse duplicate HashMap building for sub_member_types and collection_sub_member_types into single build. (2) expr.rs:1518-1530: ICE fallback should return CompiledExpr::literal(Value::Undef, Type::Real) instead of value_ref with fabricated type, matching other error paths in the same match arm.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:52:54.898Z",
+        "updatedAt": "2026-04-15T07:21:13.765Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -35899,13 +35916,13 @@
         "description": "All non-boolean geometry functions (translate, rotate, scale, rotate_around, circular_pattern, linear_pattern, mirror, extrude, revolve, revolve_full, sweep, loft, shell, thicken, draft) hardcode GeomRef::Step(0) and compile geometry target args as scalars. Fix: metadata table mapping function→geometry arg indices, single generic resolution path replacing all 14 broken + 5 boolean blocks. See geometry.rs line 238+. Depends on task 1609 pattern.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [
           "1609"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:55:26.867Z",
+        "updatedAt": "2026-04-15T08:01:17.878Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
@@ -36042,15 +36059,21 @@
         "description": "Two test-quality improvements in crates/reify-eval/tests/field_eval_tests.rs:\n\n1. **Tighten eigenvalue tolerance in `eval_sample_principal_stresses_full_symmetric_dispatch`** (lines 732-738): The expected eigenvalues are hardcoded to 4 decimal places ([1.3256, 2.4601, 5.2143]) with tolerance 1e-3, but the comment notes the closed-form trig computation is accurate to ~1e-12. Use higher-precision expected values (e.g., [1.32554567, 2.46013747, 5.21431686]) and tighten tolerance to 1e-6 or 1e-8 to catch numerical regressions earlier.\n\n2. **Add ordering assertion to `eval_sample_principal_stresses_hydrostatic_dispatch`** (lines 618-626): The full-symmetric test checks `eigenvalues[0] <= eigenvalues[1] <= eigenvalues[2]` but the hydrostatic test does not. Add the same ascending-order invariant check for consistency, even though all eigenvalues are equal.\n\nmemory_hints: search \"field_eval_tests eigenvalue\", search \"principal_stresses dispatch test\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T07:13:10.219Z",
+        "updatedAt": "2026-04-15T07:58:31.705Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/field_eval_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Tighten eigenvalue precision and add ordering assertion in field_eval edge-case tests"
+            ]
+          }
         }
       },
       {
@@ -36096,11 +36119,11 @@
         "description": "Extract a shared helper function in option_compile_tests.rs to reduce boilerplate across the OptionNone assertion tests. Currently ~6 tests repeat the same three-assertion pattern: cell_type == Option<Length>, default_expr.result_type == Option<Length>, kind == OptionNone. A helper like `fn assert_option_none_length(member: &ValueCellDecl, label: &str)` would deduplicate this.\n\nAdditionally, tighten the member lookup from `m.id.member.contains(\"p.x\")` to `m.id.member == \"p.x\"` (exact match) to prevent false matches. This applies to both the type-alias tests added by task 1726 and the original tests (lines ~376, ~439, ~780).\n\n## Memory hints\n- Search: \"option_compile_tests OptionNone assertion pattern\"\n- Related tasks: 1726 (added the type-alias tests with the duplicated pattern), 1098 (parent implementation)\n- Related files: crates/reify-compiler/tests/option_compile_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T07:02:47.836Z",
+        "updatedAt": "2026-04-15T07:22:25.683Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -36118,15 +36141,29 @@
         "description": "Two test-quality improvements in crates/reify-eval/tests/field_eval_tests.rs for the helpers introduced by Task 1723:\n\n1. **Pin `#[should_panic]` expected messages** (lines 377, 384): The two `#[should_panic]` tests (`test_assert_real_approx_panics_outside_tolerance`, `test_assert_real_approx_panics_for_non_real_variant`) don't use `expected = \"...\"` to assert the panic message. They would silently pass if the function panicked for an unrelated reason. Add `expected` substrings to pin the panic source, e.g. `#[should_panic(expected = \"should fail\")]`.\n\n2. **Add near-boundary tolerance test case** (line 366-374): `test_assert_real_approx_passes_within_tolerance` only tests exact matches (3.14 vs 3.14, 0.0 vs 0.0). Add a case like `assert_real_approx(&Value::Real(3.14 + REAL_TOLERANCE * 0.9), 3.14, \"near-boundary\");` to exercise the tolerance comparison for non-trivial deltas.\n\nmemory_hints: search \"field_eval_tests helpers assert_real_approx\", get_entity \"REAL_TOLERANCE\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T07:05:35.446Z",
+        "updatedAt": "2026-04-15T07:42:02.586Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/field_eval_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "assert_real_approx",
+              "field_eval_tests",
+              "TOLERANCE"
+            ],
+            "queries": [
+              "assert_real_approx helper field_eval_tests.rs tolerance constant",
+              "should_panic expected message pinning test quality",
+              "field_eval tolerance boundary case test"
+            ]
+          },
+          "stash_fail_watch_cycle": 1,
+          "_causation_id": "a6a69c0f-4d18-428a-aeb5-931c6a57d9d3"
         }
       },
       {
@@ -36140,7 +36177,28 @@
           "1715"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T07:21:15.538Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "memory_hints": {
+            "entities": [
+              "GeomRef",
+              "geometry.rs",
+              "loft",
+              "sweep"
+            ],
+            "queries": [
+              "GeomRef::Step(0) loft sweep error-path fallback fix",
+              "compile_geometry_call geometry argument resolution task 1715",
+              "geometry step index tracking compile_geometry_op"
+            ]
+          },
+          "_causation_id": "a6a69c0f-4d18-428a-aeb5-931c6a57d9d3"
+        }
       },
       {
         "id": "1733",
@@ -36153,14 +36211,133 @@
           "1715"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T07:22:08.760Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/tests/let_scope_tests.rs"
+          ],
+          "memory_hints": {
+            "entities": [
+              "compile_geometry_call",
+              "GeomRef",
+              "geometry_arg_indices"
+            ],
+            "queries": [
+              "geometry-arg resolution test coverage let_scope_tests.rs",
+              "geometry registry cross-check argument type metadata table",
+              "compile_geometry_call fix task 1715 generic resolution"
+            ]
+          },
+          "_causation_id": "a6a69c0f-4d18-428a-aeb5-931c6a57d9d3"
+        }
+      },
+      {
+        "id": "1734",
+        "title": "Assert info diagnostic emission in qualified_access_ice_fallback test",
+        "description": "In crates/reify-compiler/tests/task_1570_tests.rs, the test `qualified_access_ice_fallback_returns_undef_literal` (line ~267) verifies that the QualifiedAccess ICE fallback returns `CompiledExpr::literal(Value::Undef, Type::Real)`, but does not assert that the `Diagnostic::info` added in expr.rs:1557-1562 is actually emitted. If the info diagnostic were accidentally removed in a future refactor, the test would still pass silently.\n\nAdd an assertion checking that exactly one `Severity::Info` diagnostic exists with a message containing \"member not found in scope\", e.g.:\n```rust\nlet info_diags: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Info && d.message.contains(\"member not found in scope\")).collect();\nassert_eq!(info_diags.len(), 1, \"expected one info diagnostic for QualifiedAccess fallback\");\n```\n\nmemory_hints: search(\"task 1570 QualifiedAccess ICE fallback Undef literal\"), get_entity(\"task_1570_tests.rs\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T07:28:05.874Z"
+      },
+      {
+        "id": "1735",
+        "title": "Add negative-direction exact-boundary test for assert_real_approx",
+        "description": "Add a symmetric negative-direction boundary test in `crates/reify-eval/tests/field_eval_tests.rs`. The existing `test_assert_real_approx_panics_at_exact_boundary` (line ~387) only checks `expected + REAL_TOLERANCE`. Add a companion `#[should_panic(expected = \"diff =\")]` test case with `Value::Real(3.14 - REAL_TOLERANCE)` vs expected `3.14` to verify the tolerance check handles negative deltas symmetrically. This guards against a missing `abs()` in the comparison logic.\n\nmemory_hints: search \"field_eval_tests assert_real_approx boundary\", get_entity \"REAL_TOLERANCE\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T08:06:08.715Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/field_eval_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1736",
+        "title": "Add negative-direction exact-boundary test for assert_real_approx",
+        "description": "Add a symmetric negative-direction boundary test in `crates/reify-eval/tests/field_eval_tests.rs`. The existing `test_assert_real_approx_panics_at_exact_boundary` (line ~387) only checks `expected + REAL_TOLERANCE`. Add a companion `#[should_panic(expected = \"diff =\")]` test case with `Value::Real(3.14 - REAL_TOLERANCE)` vs expected `3.14` to verify the tolerance check handles negative deltas symmetrically. This guards against a missing `abs()` in the comparison logic.\n\nmemory_hints: search \"field_eval_tests assert_real_approx boundary\", get_entity \"REAL_TOLERANCE\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "cancelled",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T08:37:39.189Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/field_eval_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1737",
+        "title": "Add consistent sorted-ascending assertions across all principal stress tests",
+        "description": "Two minor consistency improvements in crates/reify-eval/tests/field_eval_tests.rs:\n\n1. **Add sorted-ascending assertion to `eval_sample_principal_stresses_field_dispatch`** (~line 474): The hydrostatic and full-symmetric principal stress tests both include an explicit `eigenvalues[0] <= eigenvalues[1] && eigenvalues[1] <= eigenvalues[2]` assertion, but the first test (`field_dispatch`) only verifies values match pre-sorted expected values [0.0, 0.0, 100.0] without the explicit sort invariant check. Add the same assertion pattern for self-consistency and regression safety.\n\n2. **Add clarifying comment to hydrostatic test's sort assertion** (~line 663): The sorted-ascending assertion in the hydrostatic test is trivially true because all three eigenvalues equal `p`. Add a brief comment like `// Degenerate: all equal, so trivially sorted — guards against regression if tensor changes` to document intent.\n\nmemory_hints: search \"field_eval_tests eigenvalue ordering\", get_entity \"principal_stresses\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T08:23:58.114Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/field_eval_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1738",
+        "title": "Centralize annotation name constants (deprecated, optimized, solver_hint)",
+        "description": "In `crates/reify-compiler/src/annotations.rs:67`, only `@test` uses the `TEST_ANNOTATION` constant from `reify_types`. The other annotation names — `\"deprecated\"`, `\"optimized\"`, `\"solver_hint\"` — remain hardcoded string literals. Add named constants (e.g. `DEPRECATED_ANNOTATION`, `OPTIMIZED_ANNOTATION`, `SOLVER_HINT_ANNOTATION`) in `reify_types` alongside `TEST_ANNOTATION` and replace all literal usages to complete the single-source-of-truth pattern.\n\nmemory_hints: search for \"TEST_ANNOTATION constant\" and \"annotation name\" to find all usage sites.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T08:28:05.014Z"
+      },
+      {
+        "id": "1739",
+        "title": "Add length assertion to extract_eigenvalues test helper",
+        "description": "The `extract_eigenvalues` helper in `crates/reify-eval/tests/field_eval_tests.rs` (line ~39) assumes exactly 3 items but does not assert this internally. If a caller passes >3 items it panics with index-out-of-bounds on the fixed-size array; if <3 items it silently returns zeros for the missing slots. All current callers guard with `assert_eq!(items.len(), 3, ...)` so this is safe today, but a future caller could omit the guard.\n\nAdd `assert_eq!(items.len(), 3, \"expected 3 eigenvalues, got {}\", items.len());` at the top of `extract_eigenvalues` for defensive robustness.\n\nmemory_hints: search \"extract_eigenvalues field_eval_tests helper\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T08:31:47.856Z"
+      },
+      {
+        "id": "1740",
+        "title": "Replace hard-coded annotation name strings in reify-test-support with centralized constants",
+        "description": "The reify-test-support crate still has ~40+ hard-coded annotation name strings (\"deprecated\", \"optimized\", \"solver_hint\", \"test\") across fixtures.rs and builders/ (annotation.rs, topology.rs, purpose.rs, field.rs, trait_def.rs, mod.rs). These should use the constants from reify_types (DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION) to complete the single-source-of-truth migration started in Task 1738.\n\nThe dependency on reify-types is already in place (workspace dependency in Cargo.toml).\n\nmemory_hints: search for \"annotation constants\" and \"TEST_ANNOTATION\" to find the constant definitions in reify_types. get_entity for \"reify-test-support\" to understand the crate's structure.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T08:44:23.128Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T07:17:56.152Z",
-      "taskCount": 1730,
-      "completedCount": 1490,
+      "lastModified": "2026-04-15T08:44:24.442Z",
+      "taskCount": 1737,
+      "completedCount": 1501,
       "tags": [
         "master"
       ]

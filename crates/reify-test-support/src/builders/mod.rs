@@ -108,6 +108,7 @@ mod reexport_contract_tests {
             field_literal_expr, laplacian_call, pragma, pragma_bare, pragma_bool, pragma_ident,
             pragma_kv, pragma_number, pragma_string, pragma_with_args,
         };
+        use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
         // Annotation helpers
         let _ = ann_str("hello");
@@ -115,8 +116,8 @@ mod reexport_contract_tests {
         let _ = ann_real(3.125);
         let _ = ann_bool(true);
         let _ = ann_ident("foo");
-        let ann = annotation("test");
-        let _ = annotation_with_args("deprecated", vec![ann_str("use Foo")]);
+        let ann = annotation(TEST_ANNOTATION);
+        let _ = annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use Foo")]);
 
         // Pragma helpers
         let _ = pragma_ident("opt_level");
