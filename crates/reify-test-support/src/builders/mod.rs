@@ -119,8 +119,8 @@ mod reexport_contract_tests {
         let _ = ann_real(3.125);
         let _ = ann_bool(true);
         let _ = ann_ident("foo");
-        let ann = annotation("test");
-        let _ = annotation_with_args("deprecated", vec![ann_str("use Foo")]);
+        let ann = annotation(TEST_ANNOTATION);
+        let _ = annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use Foo")]);
 
         // Pragma helpers
         let _ = pragma_ident("opt_level");
