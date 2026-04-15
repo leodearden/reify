@@ -35223,7 +35223,7 @@
         "description": "Two minor improvements to PrefixSet in crates/reify-compiler/src/si_units.rs, from task 1676 review:\n\n1. **Ordering doc-comment (lines 362-376):** The derived-unit loop iterates SI_PREFIXES in declaration order and filters via PrefixSet::includes(). Add a one-line comment above the loop: \"// Note: emits prefixed variants in SI_PREFIXES order (ascending magnitude), regardless of the order symbols appear in PrefixSet::Only.\" This makes the ordering invariant explicit for future contributors.\n\n2. **debug_assert guard (lines 63-66):** PrefixSet::includes() returns true for *any* string when the variant is All, including invalid prefix symbols. Add a debug_assert in the All arm: `debug_assert!(super::SI_PREFIXES.iter().any(|(s,_)| *s == sym), \"unknown prefix symbol\");` This guards against misuse while being zero-cost in release builds.\n\nModules: crates/reify-compiler/src/si_units.rs\n\nmemory_hints: search \"PrefixSet si_units\" for context on the enum design.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -35234,7 +35234,8 @@
           "modules": [
             "crates/reify-compiler/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T00:31:43.128Z"
       },
       {
         "id": "1688",
@@ -35299,7 +35300,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T00:31:42.247Z",
+      "lastModified": "2026-04-15T00:31:43.128Z",
       "taskCount": 1690,
       "completedCount": 1430,
       "tags": [
