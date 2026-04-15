@@ -108,6 +108,10 @@ mod reexport_contract_tests {
             field_literal_expr, laplacian_call, pragma, pragma_bare, pragma_bool, pragma_ident,
             pragma_kv, pragma_number, pragma_string, pragma_with_args,
         };
+        use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
+
+        // Canary: confirm annotation constants are accessible from this module
+        assert_eq!(TEST_ANNOTATION, "test");
 
         // Annotation helpers
         let _ = ann_str("hello");
