@@ -35243,7 +35243,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/structural_physical_tests.rs",
+            "crates/reify-compiler/tests/common/mod.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": 1689,
@@ -35254,7 +35263,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/guard_compilation.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": 1690,
