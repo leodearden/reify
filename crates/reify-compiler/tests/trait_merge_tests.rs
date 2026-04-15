@@ -806,6 +806,62 @@ structure def S : ProvidesLengthParam + ProvidesRealLet {
     );
 }
 
+/// TraitA provides `param x : Real = 1`, TraitB provides `let x : Real = 42`.
+/// Structure provides its own `let x : Real = 5.0` — the structure's let member overrides.
+///
+/// Complements `cross_kind_defaults_structure_override_suppresses_both` (which uses a
+/// structure `param` override). This variant verifies that a structure `let` override also
+/// suppresses both the Param and Let trait defaults, and that exactly 1 'x' cell survives
+/// with kind Let.
+#[test]
+fn cross_kind_defaults_let_structure_override_suppresses_both() {
+    let source = r#"
+trait ProvidesParamX {
+    param x : Real = 1.0
+}
+
+trait ProvidesLetX {
+    let x : Real = 42.0
+}
+
+structure def S : ProvidesParamX + ProvidesLetX {
+    let x : Real = 5.0
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors when structure let-overrides cross-kind defaults, got: {:?}",
+        errors
+    );
+
+    // Exactly 1 'x' cell — the structure's own Let (both trait defaults suppressed).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' cell (structure let-override, no trait defaults injected), \
+         got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Let,
+        "the surviving cell should be the structure's Let, got {:?}",
+        x_cells[0].kind
+    );
+}
+
 /// Two traits each providing `param x : Real = 1.0`. Structure implements both.
 /// Same-kind, same-type dedup must still produce exactly 1 'x' value cell.
 ///

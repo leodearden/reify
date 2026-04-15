@@ -136,6 +136,9 @@ pub(crate) fn check_trait_conformance(
     // requirement only by a `let` default. A kind mismatch is treated the same as "no
     // default" so the user sees "missing required member" rather than a confusing
     // kind-mismatch error (the fix is the same either way: provide the member).
+    //
+    // See also `DefaultKindTag` (module-level) — this enum intentionally omits
+    // `Constraint` because constraints are never candidates for satisfying requirements.
     #[derive(Copy, Clone, PartialEq, Eq, Hash)]
     enum AvailableDefaultKind {
         Param,
@@ -194,6 +197,11 @@ pub(crate) fn check_trait_conformance(
                         // a `param` requirement (param slots must be externally settable).
                         // The (name, kind) composite key means the lookup is already kind-filtered —
                         // no additional kind-guard is needed on the match arms.
+                        //
+                        // Note: `.get(&(req.name.clone(), ...))` allocates a String on every lookup
+                        // because `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`.
+                        // Requirement counts are small in practice so this is not a hot path; if it
+                        // ever becomes one, switch to a two-level map `HashMap<String, HashMap<K, V>>`.
                         match available_defaults
                             .get(&(req.name.clone(), required_default_kind))
                         {
@@ -501,6 +509,12 @@ pub(crate) fn collect_all_requirements(
                 DefaultKind::Constraint(_) => (Type::Bool, DefaultKindTag::Constraint),
             };
 
+            // Note: `name.to_string()` allocates even on the `continue` (already-seen) path
+            // because `HashMap<(String, DefaultKindTag), _>` has no `Borrow` impl for
+            // `(&str, DefaultKindTag)`. Default counts per trait are tiny, so this is not a
+            // hot path. To eliminate the allocation a two-level map
+            // `HashMap<String, HashMap<DefaultKindTag, _>>` would allow a borrow-based outer
+            // lookup, but the added complexity is not worth it at current scale.
             let key = (name.to_string(), kind_tag);
             if let Some((existing_type, existing_trait)) = seen_defaults.get(&key) {
                 if existing_type != &default_type && !structure_members.contains_key(name.as_str())
