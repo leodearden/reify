@@ -1,0 +1,33 @@
+// Stdlib: Stress Analysis Traits
+// Provides trait definitions for stress analysis results and analysis
+// configurations. These traits describe the interface for von Mises stress,
+// principal stresses, maximum shear stress, and safety factor computations.
+
+// ── Analysis result trait ──────────────────────────────────────────────────
+
+// AnalysisResult describes the outputs of a stress analysis.
+// All params use `Real` as a dimension-agnostic placeholder. The runtime
+// builtins produce correctly-dimensioned values (e.g. Scalar<PRESSURE> for
+// stresses, dimensionless Real for safety_factor_value). This trait is
+// intended as a structural contract — it does not participate in dimension
+// checking and will not reject dimensioned conforming values.
+trait AnalysisResult {
+    param von_mises_stress : Real
+    param principal_stress_1 : Real
+    param principal_stress_2 : Real
+    param principal_stress_3 : Real
+    param max_shear_stress : Real
+    param safety_factor_value : Real
+    constraint von_mises_stress >= 0
+    constraint max_shear_stress >= 0
+    constraint safety_factor_value > 0
+}
+
+// ── Analysis configuration trait ───────────────────────────────────────────
+
+// Analysis describes a stress analysis configuration.
+// yield_strength: material yield strength used for safety factor (Pa, using Real)
+trait Analysis {
+    param yield_strength : Real
+    constraint yield_strength > 0
+}

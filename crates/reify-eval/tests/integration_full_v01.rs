@@ -41,16 +41,24 @@ fn compiled() -> &'static CompiledModule {
     C.get_or_init(|| parse_and_compile_with_stdlib(source()))
 }
 
-/// Eval the canonical source with SimpleConstraintChecker.
-fn eval_canonical() -> reify_eval::EvalResult {
-    let mut engine = make_simple_engine();
-    engine.eval(compiled())
+/// Eval the canonical source with SimpleConstraintChecker, caching the result.
+/// Returns a `&'static EvalResult` — no recompute or clone on subsequent calls.
+fn eval_canonical() -> &'static reify_eval::EvalResult {
+    static E: std::sync::OnceLock<reify_eval::EvalResult> = std::sync::OnceLock::new();
+    E.get_or_init(|| {
+        let mut engine = make_simple_engine();
+        engine.eval(compiled())
+    })
 }
 
-/// Check the canonical source with SimpleConstraintChecker.
-fn check_canonical() -> reify_eval::CheckResult {
-    let mut engine = make_simple_engine();
-    engine.check(compiled())
+/// Check the canonical source with SimpleConstraintChecker, caching the result.
+/// Returns a `&'static CheckResult` — no recompute or clone on subsequent calls.
+fn check_canonical() -> &'static reify_eval::CheckResult {
+    static K: std::sync::OnceLock<reify_eval::CheckResult> = std::sync::OnceLock::new();
+    K.get_or_init(|| {
+        let mut engine = make_simple_engine();
+        engine.check(compiled())
+    })
 }
 
 /// Parse, compile (with stdlib), check a mutated source string.
@@ -82,6 +90,19 @@ macro_rules! assert_min_count {
             count
         );
     }};
+}
+
+// ── Compile-time Send+Sync guards ─────────────────────────────────────────────
+
+/// Asserts at compile time that `EvalResult` and `CheckResult` satisfy `Send + Sync`.
+///
+/// `OnceLock<T>` requires `T: Send + Sync`. If a future refactor adds a
+/// non-Send field to either type, this function — rather than the OnceLock
+/// statics above — will produce the compiler error with a clear diagnosis.
+fn _assert_send_sync() {
+    fn _assert<T: Send + Sync>() {}
+    _assert::<reify_eval::EvalResult>();
+    _assert::<reify_eval::CheckResult>();
 }
 
 // ── Test 1: file parses without errors ───────────────────────────────────────
@@ -433,7 +454,7 @@ fn field_sample_and_gradient() {
 fn function_overload_resolution() {
     let result = eval_canonical();
 
-    // safe_load_real: Real overload → 150.75
+    // safe_load_real: Real overload → 150.75 (100.5 * 1.5)
     let real_id = ValueCellId::new("Assembly", "safe_load_real");
     let real_val = result
         .values

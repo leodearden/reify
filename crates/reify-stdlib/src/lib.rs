@@ -6,6 +6,7 @@ mod helpers;
 #[macro_use]
 mod test_macros;
 
+mod analysis;
 mod complex;
 mod geometry;
 mod linalg;
@@ -37,6 +38,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = matrix::eval_matrix(name, args) {
+        return v;
+    }
+    if let Some(v) = analysis::eval_analysis(name, args) {
         return v;
     }
     Value::Undef
