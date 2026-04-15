@@ -36175,18 +36175,18 @@
         "description": "In crates/reify-compiler/tests/task_1570_tests.rs, the test `qualified_access_ice_fallback_returns_undef_literal` (line ~267) verifies that the QualifiedAccess ICE fallback returns `CompiledExpr::literal(Value::Undef, Type::Real)`, but does not assert that the `Diagnostic::info` added in expr.rs:1557-1562 is actually emitted. If the info diagnostic were accidentally removed in a future refactor, the test would still pass silently.\n\nAdd an assertion checking that exactly one `Severity::Info` diagnostic exists with a message containing \"member not found in scope\", e.g.:\n```rust\nlet info_diags: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Info && d.message.contains(\"member not found in scope\")).collect();\nassert_eq!(info_diags.len(), 1, \"expected one info diagnostic for QualifiedAccess fallback\");\n```\n\nmemory_hints: search(\"task 1570 QualifiedAccess ICE fallback Undef literal\"), get_entity(\"task_1570_tests.rs\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T07:21:16.306Z"
+        "updatedAt": "2026-04-15T07:28:05.874Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T07:22:25.683Z",
+      "lastModified": "2026-04-15T07:28:05.875Z",
       "taskCount": 1731,
-      "completedCount": 1492,
+      "completedCount": 1493,
       "tags": [
         "master"
       ]
