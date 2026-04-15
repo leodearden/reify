@@ -776,13 +776,27 @@ structure def S : A {
 }
 "#;
 
-    let (_, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
     let errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // d comes from trait D, reachable via both B->D and C->D; must appear exactly once.
+    let d_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "d")
+        .collect();
+    assert_eq!(
+        d_cells.len(),
+        1,
+        "expected exactly 1 value cell 'd' (diamond dedup), got {}: {:?}",
+        d_cells.len(),
+        d_cells
+    );
 }
 
 /// Task-189 step-11: Let default from D injected exactly once in deep diamond.
