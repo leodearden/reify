@@ -900,6 +900,56 @@ pub fn annotated_module() -> CompiledModule {
         .build()
 }
 
+// ─── shared stdlib test constants ──────────────────────────────────────
+
+/// The 9 material traits defined in `materials_mechanical.ri`.
+pub const EXPECTED_MATERIAL_TRAITS: &[&str; 9] = &[
+    "Material",
+    "Elastic",
+    "Strong",
+    "Hard",
+    "FatigueRated",
+    "FractureTough",
+    "Ductile",
+    "ImpactResistant",
+    "Damping",
+];
+
+/// Steel:Elastic conformance source — 3 params for the Elastic trait.
+pub fn steel_elastic_source() -> &'static str {
+    r#"
+structure def Steel : Elastic {
+    param youngs_modulus : Real = 200.0
+    param poissons_ratio : Real = 0.3
+    param shear_modulus : Real = 77.0
+}
+"#
+}
+
+/// Steel:Strong conformance source — 3 params for the Strong trait.
+pub fn steel_strong_source() -> &'static str {
+    r#"
+structure def Steel : Strong {
+    param yield_strength : Real = 250.0
+    param uts : Real = 400.0
+    param compressive_strength : Real = 250.0
+}
+"#
+}
+
+/// Steel:Material+Elastic conformance source — 5 params for both traits.
+pub fn steel_material_elastic_source() -> &'static str {
+    r#"
+structure def Steel : Material + Elastic {
+    param density : Real = 7800.0
+    param name : String = "A36"
+    param youngs_modulus : Real = 200.0
+    param poissons_ratio : Real = 0.3
+    param shear_modulus : Real = 77.0
+}
+"#
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

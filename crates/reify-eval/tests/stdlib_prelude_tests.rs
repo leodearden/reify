@@ -2,7 +2,8 @@
 
 use reify_compiler::stdlib_loader;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Severity};
+use reify_test_support::{collect_errors, steel_elastic_source, steel_material_elastic_source};
+use reify_types::{ModulePath, ValueCellId};
 
 // ─── step-7: Engine stores prelude ──────────────────────────────────
 
@@ -19,16 +20,11 @@ fn engine_has_non_empty_prelude() {
 
 /// eval() with a user module compiled via compile_with_prelude works for
 /// a structure conforming to a prelude trait — values are populated and
-/// no error diagnostics.
+/// no error diagnostics. Verifies the 3 specific Elastic params
+/// (youngs_modulus, poissons_ratio, shear_modulus) are present.
 #[test]
 fn eval_with_prelude_trait_conformance() {
-    let source = r#"
-structure def Steel : Elastic {
-    param youngs_modulus : Real = 200.0
-    param poissons_ratio : Real = 0.3
-    param shear_modulus : Real = 77.0
-}
-"#;
+    let source = steel_elastic_source();
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
@@ -38,34 +34,56 @@ structure def Steel : Elastic {
     );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
-    // Should have value cells from the Steel structure
-    assert!(
-        !result.values.is_empty(),
-        "eval should produce non-empty values for Steel structure"
-    );
-
     // No error diagnostics from eval
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let eval_errors = collect_errors(&result.diagnostics);
     assert!(
         eval_errors.is_empty(),
         "eval should produce no error diagnostics, got: {:?}",
         eval_errors
     );
+
+    // Verify all 3 Elastic params are present with correct values
+    let entity = "Steel";
+    let expected_params: &[(&str, f64)] = &[
+        ("youngs_modulus", 200.0),
+        ("poissons_ratio", 0.3),
+        ("shear_modulus", 77.0),
+    ];
+    for (param, expected_val) in expected_params {
+        let cell_id = ValueCellId::new(entity, *param);
+        let value = result.values.get(&cell_id).unwrap_or_else(|| {
+            panic!(
+                "eval should produce a value for Elastic param '{}', but it was missing. \
+                 Available values: {:?}",
+                param,
+                result
+                    .values
+                    .iter()
+                    .map(|(k, _)| k.to_string())
+                    .collect::<Vec<_>>()
+            )
+        });
+        let actual = value.as_f64().unwrap_or_else(|| {
+            panic!(
+                "Elastic param '{}' should be numeric, got: {:?}",
+                param, value
+            )
+        });
+        assert!(
+            (actual - expected_val).abs() < 1e-9,
+            "Elastic param '{}' should be {}, got {}",
+            param,
+            expected_val,
+            actual
+        );
+    }
 }
 
 // ─── step-9: End-to-end prelude pipeline ─────────────────────────────
@@ -76,15 +94,7 @@ structure def Steel : Elastic {
 /// (3) trait_bounds on template include both Material and Elastic.
 #[test]
 fn end_to_end_material_elastic_conformance() {
-    let source = r#"
-structure def Steel : Material + Elastic {
-    param density : Real = 7800.0
-    param name : String = "A36"
-    param youngs_modulus : Real = 200.0
-    param poissons_ratio : Real = 0.3
-    param shear_modulus : Real = 77.0
-}
-"#;
+    let source = steel_material_elastic_source();
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
@@ -95,11 +105,7 @@ structure def Steel : Material + Elastic {
 
     // (1) No error diagnostics from compilation
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
-    let compile_errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let compile_errors = collect_errors(&compiled.diagnostics);
     assert!(
         compile_errors.is_empty(),
         "compile should produce no error diagnostics, got: {:?}",
@@ -128,11 +134,7 @@ structure def Steel : Material + Elastic {
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let eval_errors = collect_errors(&result.diagnostics);
     assert!(
         eval_errors.is_empty(),
         "eval should produce no error diagnostics, got: {:?}",

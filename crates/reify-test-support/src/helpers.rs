@@ -1,6 +1,6 @@
 //! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
 
-use reify_types::{ModulePath, Severity};
+use reify_types::{Diagnostic, ModulePath, Severity};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::MockConstraintChecker;
@@ -51,6 +51,18 @@ pub fn check_source(src: &str) -> reify_eval::CheckResult {
     engine.check(&compiled)
 }
 
+/// Filter diagnostics to only those with [`Severity::Error`].
+///
+/// This replaces the duplicated `error_diags` helper found across multiple
+/// test files (`constraint_inst_tests`, `optimized_annotation_tests`,
+/// `constraint_def_compile_tests`).
+pub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
 /// Parse `source`, assert no parse errors, compile, assert no compile errors.
 /// Returns the compiled module ready for eval.
 ///
@@ -65,11 +77,7 @@ pub fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
     );
 
     let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     compiled
@@ -92,11 +100,7 @@ pub fn parse_and_compile_with_stdlib(source: &str) -> reify_compiler::CompiledMo
     );
 
     let compiled = reify_compiler::compile_with_stdlib(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     compiled
@@ -118,11 +122,7 @@ pub fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::C
     );
 
     let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = collect_errors(&compiled.diagnostics);
     assert!(!errors.is_empty(), "expected at least one compile error");
     if !needle.is_empty() {
         assert!(
@@ -138,7 +138,6 @@ pub fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::C
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
-    use reify_types::Severity;
 
     #[cfg(feature = "eval-helpers")]
     #[test]
@@ -234,11 +233,7 @@ mod tests {
             param name: String = "Steel"
         }"#;
         let compiled = super::parse_and_compile_with_stdlib(source);
-        let errors: Vec<_> = compiled
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
+        let errors = super::collect_errors(&compiled.diagnostics);
         assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
     }
 
@@ -288,11 +283,7 @@ mod tests {
     #[test]
     fn test_parse_and_compile_valid() {
         let compiled = super::parse_and_compile(bracket_source());
-        let errors: Vec<_> = compiled
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
+        let errors = super::collect_errors(&compiled.diagnostics);
         assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
         assert!(
             !compiled.templates.is_empty(),
