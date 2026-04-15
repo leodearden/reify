@@ -1408,3 +1408,141 @@ structure def S {
         member_warnings
     );
 }
+
+// ── task-393/step-3: incompatible_directions_reverse_suppresses_warning ──
+
+#[test]
+fn incompatible_directions_reverse_suppresses_warning() {
+    // Two Out ports with same trait T but different members (a has {d,l}, b has {d,r}).
+    // Reverse connect (Out <- Out, i.e. checking is_forward_compatible(Out, Out)) is
+    // direction-incompatible. Auto-match should be skipped; no unmatched-members warning.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T {
+        param d : Length = 5mm
+        param l : Length = 1mm
+    }
+    port b : out T {
+        param d : Length = 5mm
+        param r : Length = 1mm
+    }
+    connect a <- b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+
+    // Direction error must be present (Out <- Out means is_forward_compatible(Out, Out) = false)
+    let dir_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("incompatible port directions"))
+        .collect();
+    assert!(
+        !dir_errors.is_empty(),
+        "expected direction-incompatible error for Out <- Out, got: {:?}",
+        diagnostics
+    );
+
+    // No unmatched-members warning should be emitted
+    let member_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("do not match"))
+        .collect();
+    assert!(
+        member_warnings.is_empty(),
+        "expected no unmatched-members warning when Reverse directions are incompatible, got: {:?}",
+        member_warnings
+    );
+}
+
+// ── task-393/step-4: incompatible_bidi_suppresses_warning ────────────────
+
+#[test]
+fn incompatible_bidi_suppresses_warning() {
+    // An In port and an Out port with same trait T but different members connected via <->.
+    // Bidirectional requires both ports to be bidi, so this is direction-incompatible.
+    // Auto-match should be skipped; no unmatched-members warning should be emitted.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : in T {
+        param d : Length = 5mm
+        param l : Length = 1mm
+    }
+    port b : out T {
+        param d : Length = 5mm
+        param r : Length = 1mm
+    }
+    connect a <-> b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+
+    // Bidi-specific direction error must be present
+    let bidi_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("bidirectional connect requires both ports to be bidi"))
+        .collect();
+    assert!(
+        !bidi_errors.is_empty(),
+        "expected bidi-direction error for In <-> Out, got: {:?}",
+        diagnostics
+    );
+
+    // No unmatched-members warning should be emitted
+    let member_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("do not match"))
+        .collect();
+    assert!(
+        member_warnings.is_empty(),
+        "expected no unmatched-members warning when bidi directions are incompatible, got: {:?}",
+        member_warnings
+    );
+}
+
+// ── task-393/step-5: compatible_directions_still_emits_unmatched_warning ──
+
+#[test]
+fn compatible_directions_still_emits_unmatched_warning() {
+    // Out->In (compatible directions) with same trait T but different members (a has {d,l}, b has {d,r}).
+    // The direction check passes, so auto-match IS invoked and should emit the unmatched-members warning.
+    // This regression test ensures the guard doesn't suppress the valid warning path.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T {
+        param d : Length = 5mm
+        param l : Length = 1mm
+    }
+    port b : in T {
+        param d : Length = 5mm
+        param r : Length = 1mm
+    }
+    connect a -> b
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+
+    // No direction error
+    let dir_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("incompatible port directions"))
+        .collect();
+    assert!(
+        dir_errors.is_empty(),
+        "expected no direction-incompatible error for Out -> In, got: {:?}",
+        dir_errors
+    );
+
+    // Unmatched-members warning MUST still be emitted
+    let member_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("do not match"))
+        .collect();
+    assert!(
+        !member_warnings.is_empty(),
+        "expected unmatched-members warning for compatible Out->In with mismatched members, got: {:?}",
+        diagnostics
+    );
+}
