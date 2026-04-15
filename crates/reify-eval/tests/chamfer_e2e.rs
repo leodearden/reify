@@ -150,7 +150,8 @@ fn chamfer_through_full_eval_pipeline() {
         kind: ModifyKind::Chamfer,
         target: GeomRef::Step(0),
         args: vec![
-            ("target".into(), mm_literal(20.0)), // placeholder expr; actual handle from Step(0)
+            // "target" arg is not evaluated; actual handle resolved from GeomRef::Step(0)
+            ("target".into(), mm_literal(20.0)),
             ("distance".into(), mm_literal(3.0)),
         ],
     };

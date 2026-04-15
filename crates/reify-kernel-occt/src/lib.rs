@@ -1736,6 +1736,92 @@ mod tests {
         }
     }
 
+    // --- Chamfer distance validation tests ---
+
+    #[test]
+    fn execute_chamfer_zero_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(0.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-distance chamfer"),
+        }
+    }
+
+    #[test]
+    fn execute_chamfer_negative_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(-1.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for negative-distance chamfer"),
+        }
+    }
+
+    #[test]
+    fn execute_chamfer_nan_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(f64::NAN),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-distance chamfer"),
+        }
+    }
+
+    #[test]
+    fn execute_chamfer_infinity_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(f64::INFINITY),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-distance chamfer"),
+        }
+    }
+
     // --- Rotate NaN/infinity/zero-axis rejection tests (step-3) ---
 
     #[test]

@@ -613,6 +613,17 @@ mod tests {
             "chamfered shape should have a valid handle id, got {:?}",
             chamfered.id
         );
+        // Verify the resulting shape is exportable and topologically valid by
+        // exporting to STEP and checking the ISO-10303-21 header is present.
+        let mut buf = Vec::new();
+        handle
+            .export(chamfered.id, reify_types::ExportFormat::Step, &mut buf)
+            .expect("chamfered shape should be exportable to STEP");
+        let content = String::from_utf8(buf).expect("STEP output should be valid UTF-8");
+        assert!(
+            content.contains("ISO-10303-21"),
+            "chamfered STEP export should contain ISO-10303-21 header"
+        );
     }
 
     #[test]

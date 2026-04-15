@@ -885,6 +885,28 @@ pub(crate) fn compile_geometry_call(
                 ],
             }])
         }
+        // fillet(target, radius)
+        "fillet" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "fillet() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Fillet,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("radius".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
         // --- Curve constructors ---
         // line_segment(x1, y1, z1, x2, y2, z2)
         "line_segment" => {
