@@ -182,6 +182,37 @@ fn nested_boolean_ops_with_let_args() {
     );
 }
 
+// ─── task-1609 step-10: non-geometry let in boolean op errors ───
+
+#[test]
+fn non_geometry_let_in_boolean_op_errors() {
+    // A non-geometry let (scalar) used as a boolean op argument should error.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let x = 5
+    let b = cylinder(r, h)
+    let c = difference(x, b)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected error diagnostic when non-geometry let used in boolean op"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("argument 1 must be a geometry expression")),
+        "expected 'argument 1 must be a geometry expression' error, got: {:?}",
+        errors
+    );
+}
+
 // ─── step-4: geometry let still produces realization ───
 
 #[test]
