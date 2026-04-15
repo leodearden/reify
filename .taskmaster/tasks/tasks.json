@@ -37905,10 +37905,11 @@
         "description": "Two small fixes in crates/reify-eval/tests/stress_large_assembly.rs from task 1786 review:\n\n1. Remove Value from the import on line 19 (now unused after as_f64() refactoring — will produce compiler warning).\n2. Update the doc comment on compiled() (line 39) to say 'Parse, compile with stdlib, and cache the result.' instead of claiming it asserts no compile errors — the assertion lives inside parse_and_compile_with_stdlib, not in this function body.\n\nFiles: crates/reify-eval/tests/stress_large_assembly.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:08:47.464Z"
       },
       {
         "id": "1815",
@@ -37968,7 +37969,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:08:47.158Z",
+      "lastModified": "2026-04-15T21:08:47.464Z",
       "taskCount": 1814,
       "completedCount": 1547,
       "tags": [
