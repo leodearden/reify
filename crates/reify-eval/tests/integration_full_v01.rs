@@ -912,6 +912,8 @@ fn option_some_none_values() {
             "Assembly.maybe_load inner should be Real(100.0) or Int(100), got {:?}",
             inner
         );
+    } else {
+        unreachable!("guarded by prior assert — maybe_val is Value::Option(Some(_))");
     }
 
     // no_load = none → Value::Option(None)
@@ -967,7 +969,7 @@ fn check_no_error_diagnostics() {
     assert_no_errors(&result.diagnostics, "integration_full_v01.ri check");
 }
 
-// ── Test 20: violation regression guard ──────────────────────────────────────
+// ── Test 25: violation regression guard ──────────────────────────────────────
 
 /// Regression guard: deliberately make `height < 2000mm` into `height < 100mm`
 /// (height=300mm > 100mm → Violated). Verifies at least one Violated result
