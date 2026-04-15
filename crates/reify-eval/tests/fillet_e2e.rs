@@ -154,10 +154,7 @@ fn fillet_through_full_eval_pipeline() {
         kind: ModifyKind::Fillet,
         target: GeomRef::Step(0),
         args: vec![
-            // "target" arg slot is structurally required by the IR format but its value is
-            // NEVER evaluated — the actual handle is resolved from GeomRef::Step(0) above.
-            // Using 0.0 as an explicit sentinel to signal the value is intentionally ignored.
-            ("target".into(), mm_literal(0.0)),
+            // "target" handle is resolved from GeomRef::Step(0), not from args.
             ("radius".into(), mm_literal(3.0)),
         ],
     };
