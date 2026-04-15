@@ -1231,3 +1231,53 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug() {
     // In debug mode the result_dim debug_assert fires before any numeric work.
     let _sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 }
+
+/// Characterization test: `make_xyz_sum_field` returns a correctly-structured
+/// `(Value, Type)` pair for the given domain type.
+///
+/// Verifies that:
+/// - The returned `Value` is a `Value::Field` with `source=Analytical` and
+///   `codomain_type=Type::Real`.
+/// - The returned `Type` is a `Type::Field` with `domain=Type::point3(Type::Real)`
+///   and `codomain=Type::Real`.
+#[test]
+fn xyz_sum_field_helper_returns_expected_structure() {
+    let domain_type = Type::point3(Type::Real);
+    let (field_val, field_type) = make_xyz_sum_field(domain_type.clone());
+
+    // Check the Value side
+    match &field_val {
+        Value::Field {
+            domain_type: d,
+            codomain_type: c,
+            source,
+            ..
+        } => {
+            assert_eq!(d, &Type::point3(Type::Real), "domain_type must be point3(Real)");
+            assert_eq!(c, &Type::Real, "codomain_type must be Real");
+            assert_eq!(
+                source,
+                &FieldSourceKind::Analytical,
+                "source must be Analytical"
+            );
+        }
+        other => panic!("expected Value::Field, got {:?}", other),
+    }
+
+    // Check the Type side
+    match &field_type {
+        Type::Field { domain, codomain } => {
+            assert_eq!(
+                domain.as_ref(),
+                &Type::point3(Type::Real),
+                "field_type domain must be point3(Real)"
+            );
+            assert_eq!(
+                codomain.as_ref(),
+                &Type::Real,
+                "field_type codomain must be Real"
+            );
+        }
+        other => panic!("expected Type::Field, got {:?}", other),
+    }
+}
