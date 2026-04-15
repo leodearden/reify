@@ -38337,15 +38337,16 @@
         "description": "Two small improvements in the builtin constants test file from task 1806 review:\n\n1. **Sync test** (`constants.rs` + test file): Add a unit test `builtin_names_covers_all_constants` that iterates `BUILTIN_NAMES` and asserts each entry resolves via `resolve_builtin_constant`. This catches the scenario where a name is added to `BUILTIN_NAMES` but not to the match arms in `resolve_builtin_constant` — which would produce a hint suggesting a name that also doesn't resolve. The reverse (adding to `resolve_builtin_constant` without `BUILTIN_NAMES`) is acceptable per the existing comment, but the test should catch the worse case.\n\n2. **Dead assertion** (`constant_compile_tests.rs`): In `user_defined_pi_caps_in_scope_no_hint` (line ~314), the assertion `!errors.iter().any(|d| d.message.contains(\"did you mean\"))` at line ~319-322 is dead code — the preceding `assert!(errors.is_empty(), ...)` already guarantees `errors` is empty. Remove the redundant check, consistent with the pattern in `lowercase_pi_no_hint` and `lowercase_tau_no_hint` which explicitly removed this redundant guard.\n\nmemory_hints: search \"BUILTIN_NAMES resolve_builtin_constant\", search \"user_defined_pi_caps_in_scope_no_hint\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:56:41.784Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:56:40.918Z",
+      "lastModified": "2026-04-15T21:56:41.784Z",
       "taskCount": 1832,
       "completedCount": 1560,
       "tags": [
