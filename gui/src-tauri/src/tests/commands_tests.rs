@@ -195,6 +195,45 @@ fn get_entity_identity_map_impl_returns_ok_on_healthy_mutex() {
     assert!(!map.is_empty(), "entity identity map should be non-empty for a loaded module");
 }
 
+#[test]
+fn get_containing_definition_impl_returns_err_on_poisoned_mutex() {
+    use crate::commands::get_containing_definition_impl;
+
+    let session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let engine = Arc::new(Mutex::new(session));
+    let engine_clone = Arc::clone(&engine);
+
+    // Poison the mutex by panicking in a thread while holding the lock.
+    let _ = std::thread::spawn(move || {
+        let _guard = engine_clone.lock().unwrap();
+        panic!("poison the mutex");
+    })
+    .join();
+
+    let result = get_containing_definition_impl(&engine, 1, 1);
+    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.unwrap_err().contains("Lock error"),
+        "error message should contain 'Lock error'"
+    );
+}
+
+#[test]
+fn get_containing_definition_impl_returns_ok_on_healthy_mutex() {
+    use crate::commands::get_containing_definition_impl;
+
+    let session = make_loaded_session();
+    let engine = Mutex::new(session);
+
+    // Line 1, col 1 is outside any definition; result should be Ok(None).
+    let result = get_containing_definition_impl(&engine, 1, 1);
+    assert!(result.is_ok(), "expected Ok on healthy mutex");
+    // We don't assert Some/None here — position semantics depend on source content.
+}
+
 // --- Integration tests (step-11) ---
 
 #[test]
