@@ -183,11 +183,15 @@ impl CompiledModule {
     /// Returns all constraint defs tagged with `@test`.
     ///
     /// Uses `ConstraintDef::is_test()` as the canonical predicate.
+    // TODO(constraint-def-lowering): migrate to CompiledConstraintDef::is_test field
+    // once constraint-def lowering lands.
     pub fn test_constraint_defs(&self) -> impl Iterator<Item = &reify_syntax::ConstraintDef> {
         self.constraint_defs.iter().filter(|d| d.is_test())
     }
 
     /// Returns all constraint defs NOT tagged with `@test`.
+    // TODO(constraint-def-lowering): migrate to CompiledConstraintDef::is_test field
+    // once constraint-def lowering lands.
     pub fn non_test_constraint_defs(&self) -> impl Iterator<Item = &reify_syntax::ConstraintDef> {
         self.constraint_defs.iter().filter(|d| !d.is_test())
     }
