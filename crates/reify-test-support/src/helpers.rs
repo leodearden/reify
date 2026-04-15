@@ -271,6 +271,20 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    #[should_panic(expected = "parse errors")]
+    fn test_eval_source_panics_on_invalid_source() {
+        super::eval_source("not valid {");
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    #[should_panic(expected = "parse errors")]
+    fn test_check_source_panics_on_invalid_source() {
+        super::check_source("not valid {");
+    }
+
     #[test]
     fn test_parse_and_compile_valid() {
         let compiled = super::parse_and_compile(bracket_source());

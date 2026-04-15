@@ -4,7 +4,7 @@
 //! parse → compile → eval/check → verify.
 //! Uses examples/m9_constraint_def.ri as the source file.
 
-use reify_test_support::{check_source, parse_and_compile};
+use reify_test_support::{check_source, make_simple_engine, parse_and_compile};
 use reify_types::{ModulePath, Satisfaction, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -183,7 +183,8 @@ fn conjunction_predicate_labels() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let check_result = check_source(&source);
+    let mut engine = make_simple_engine();
+    let check_result = engine.check(&compiled);
 
     // Beam must be in the compiled templates
     let has_beam = compiled.templates.iter().any(|t| t.name == "Beam");
@@ -220,7 +221,8 @@ fn reused_def_both_structures() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let check_result = check_source(&source);
+    let mut engine = make_simple_engine();
+    let check_result = engine.check(&compiled);
 
     // Both structures must exist
     let has_thin = compiled.templates.iter().any(|t| t.name == "ThinPlate");
@@ -254,7 +256,8 @@ fn named_args_order_independent() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let check_result = check_source(&source);
+    let mut engine = make_simple_engine();
+    let check_result = engine.check(&compiled);
 
     // FlippedPipe must be present
     let has_flipped = compiled.templates.iter().any(|t| t.name == "FlippedPipe");
@@ -319,7 +322,8 @@ fn guarded_constraint_inactive() {
         std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
-    let check_result = check_source(&source);
+    let mut engine = make_simple_engine();
+    let check_result = engine.check(&compiled);
 
     // InactiveWall must exist as a template
     let has_inactive = compiled.templates.iter().any(|t| t.name == "InactiveWall");
