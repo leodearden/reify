@@ -2,6 +2,7 @@ pub mod cache;
 pub mod demand;
 pub mod deps;
 pub mod dirty;
+mod geometry_ops;
 pub mod graph;
 pub mod journal;
 pub mod snapshot;
