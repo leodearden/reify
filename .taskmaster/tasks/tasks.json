@@ -35406,7 +35406,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T00:53:36.026Z"
+        "updatedAt": "2026-04-15T00:53:36.026Z",
+        "metadata": {
+          "memory_hints": {
+            "searches": [
+              "solver_hint annotation implementation task 275 zero-argument",
+              "solver_hint_tests missing kind diagnostic branch"
+            ],
+            "entities": []
+          },
+          "_causation_id": "8a9210de-78df-4834-a133-09f74785f437"
+        }
       },
       {
         "id": 1696,
