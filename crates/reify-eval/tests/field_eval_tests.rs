@@ -390,6 +390,14 @@ fn test_assert_real_approx_panics_at_exact_boundary() {
 }
 
 #[test]
+#[should_panic(expected = "diff =")]
+fn test_assert_real_approx_panics_at_exact_boundary_negative() {
+    // Difference of exactly REAL_TOLERANCE in the negative direction is NOT strictly
+    // less-than, so must panic — guards against future removal of the .abs() call
+    assert_real_approx(&Value::Real(3.14 - REAL_TOLERANCE), 3.14, "boundary-neg");
+}
+
+#[test]
 #[should_panic(expected = "expected Value::Real")]
 fn test_assert_real_approx_panics_for_non_real_variant() {
     // Bool is not a Real — must panic with a descriptive message
