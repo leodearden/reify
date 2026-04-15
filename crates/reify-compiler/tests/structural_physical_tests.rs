@@ -729,6 +729,33 @@ structure def PlasticBody : Plastic {
     assert_constraint_op(template, "plastic_strain", BinOp::Gt);
 }
 
+// ─── task-1700: assert_constraint_op member-not-found path ───────────────────
+
+/// Validates that `assert_constraint_op` panics with a message containing
+/// "expected a constraint referencing" when the member name is not found in
+/// any constraint. Exercises the `unwrap_or_else` panic path at line 43.
+#[test]
+#[should_panic(expected = "expected a constraint referencing")]
+fn assert_constraint_op_detects_member_not_found() {
+    let compiled = compile_structure(
+        r#"
+structure def PlasticBody : Plastic {
+    param plastic_strain : Real = 0.0
+    param hardening_modulus : Real = 500.0
+}
+"#,
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    // Pass a non-existent member name — the .find() returns None and
+    // the unwrap_or_else triggers the "expected a constraint referencing" panic.
+    assert_constraint_op(template, "nonexistent", BinOp::Ge);
+}
+
 // ─── step-21: load_stdlib_module uses production path (wrong code path) ──────
 
 /// Step 21: Regression test for review issue [wrong_code_path_under_test].
