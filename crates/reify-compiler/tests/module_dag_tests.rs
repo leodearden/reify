@@ -3,20 +3,9 @@
 mod common;
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
-
-/// Create a unique temp directory for tests.
-fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join("reify_dag_test")
-        .join(name)
-        .join(format!("{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 // ── Step 19: Circular import detection ────────────────────────────
 
