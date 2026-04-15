@@ -239,7 +239,7 @@ fn get_entity_tree(
 #[tauri::command]
 fn get_entity_identity_map(
     state: tauri::State<'_, AppState>,
-) -> std::collections::HashMap<String, reify_gui::types::EntityIdentity> {
+) -> Result<std::collections::HashMap<String, reify_gui::types::EntityIdentity>, String> {
     reify_gui::commands::get_entity_identity_map_impl(&state.engine)
 }
 

@@ -117,11 +117,11 @@ pub fn get_entity_tree_impl(
 /// Returns an empty map when no module is loaded.
 pub fn get_entity_identity_map_impl(
     engine: &Mutex<EngineSession>,
-) -> HashMap<String, EntityIdentity> {
+) -> Result<HashMap<String, EntityIdentity>, String> {
     engine
         .lock()
+        .map_err(|e| format!("Lock error: {}", e))
         .map(|s| s.get_entity_identity_map())
-        .unwrap_or_default()
 }
 
 /// Return a preview GuiState for a single named definition evaluated with its defaults.
