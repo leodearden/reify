@@ -35700,6 +35700,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1711,
+        "title": "Remove dead FFI functions loft_two_profiles and shape_vec_len from OCCT kernel",
+        "description": "Two FFI functions are declared in the CXX bridge (ffi.rs) and implemented in C++ (occt_wrapper.cpp/h) but never called from Rust code:\n\n1. `shape_vec_len()` at ffi.rs:42 — declared but never used; no kernel operation queries vector length\n2. `loft_two_profiles()` at ffi.rs:139 — declared but never used; the kernel uses `loft_profiles()` (vector-based variant) instead\n\nRemove these from:\n- crates/reify-kernel-occt/src/ffi.rs (CXX bridge declarations)\n- crates/reify-kernel-occt/cpp/occt_wrapper.h (C++ declarations)\n- crates/reify-kernel-occt/cpp/occt_wrapper.cpp (C++ implementations)\n\nmemory_hints: search \"OCCT FFI\", search \"loft_two_profiles\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35712,7 +35723,7 @@
       ],
       "created": "2026-04-15T05:35:54.030Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T05:35:54.134Z"
+      "updated": "2026-04-15T05:36:52.975Z"
     }
   }
 }
