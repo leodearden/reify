@@ -1,0 +1,125 @@
+// M8.4 I/O export integration fixture.
+//
+// Exercises an export-ready part with:
+//   • Physical + Elastic + Strong trait conformance (Steel AISI 1020)
+//   • DimensionalTolerance sub with computed lets (upper_limit, lower_limit, band)
+//   • Flatness and SurfaceFinish subs for GD&T annotation
+//   • Geometry body (box) — parsed/compiled but not evaluated (no kernel in tests)
+//
+// NOTE: enum types and GD&T structure definitions are re-declared locally.
+// This is the same workaround as m8_tolerancing.ri: compile_with_stdlib provides
+// type resolution, but the output CompiledModule only contains user-defined
+// templates. The eval engine resolves sub-component templates from module.templates,
+// so DimensionalTolerance, Flatness, etc. must be re-declared locally.
+// See m8_tolerancing.ri for the full rationale and TODO tracking.
+
+// ── Local enum re-declarations ────────────────────────────────────────────────
+
+enum MaterialCondition { MMC, LMC, RFS }
+enum SurfaceParameter { Ra, Rz, Rq, Rt, Rp, Rv, Rsk, Rku }
+enum SurfaceDirection { Parallel, Perpendicular, Crossed, Multidirectional, Circular, Radial }
+
+// ── Local structure definitions (eval-time availability) ─────────────────────
+// Must appear before ExportPart so the compiled module contains them when
+// sub declarations in ExportPart are resolved.
+
+// GD&T flatness tolerance (form)
+structure def Flatness {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+// Surface texture specification per ISO 1302
+structure def SurfaceFinish {
+    param parameter : SurfaceParameter
+    param value : Length
+    param direction : SurfaceDirection
+    param process : String
+}
+
+// Dimensional tolerance with computed limits and band
+structure def DimensionalTolerance {
+    param nominal : Length
+    param upper_deviation : Length
+    param lower_deviation : Length
+    let upper_limit   = nominal + upper_deviation
+    let lower_limit   = nominal + lower_deviation
+    let tolerance_band = upper_deviation - lower_deviation
+    constraint upper_deviation >= lower_deviation
+}
+
+// ── Export-ready part ─────────────────────────────────────────────────────────
+//
+// Steel AISI 1020 properties:
+//   density       = 7850.0 kg/m³
+//   volume        = 0.001 m³
+//   mass          = volume * density = 0.001 * 7850 = 7.85 (computed by Physical)
+//   youngs_modulus = 200e9 Pa
+//   poissons_ratio = 0.29
+//   shear_modulus  ≈ 77.5e9 Pa
+//   yield_strength = 207e6 Pa
+//   uts            = 380e6 Pa
+//
+// Tolerance:
+//   nominal = 100mm, upper_deviation = +0.05mm, lower_deviation = -0.05mm
+//   upper_limit   = 100mm + 0.05mm  = 100.05mm = 0.10005m
+//   lower_limit   = 100mm - 0.05mm  = 99.95mm  = 0.09995m
+//   tolerance_band = 0.05mm - (-0.05mm) = 0.1mm = 0.0001m
+
+structure def ExportPart : Physical + Elastic + Strong {
+    // ── Material (via Physical) ────────────────────────────────────────────
+    param name    : String = "Steel AISI 1020"
+    param density : Real   = 7850.0
+
+    // ── Physical ──────────────────────────────────────────────────────────
+    param volume      : Real = 0.001
+    param centroid_x  : Real = 0.0
+    param centroid_y  : Real = 0.0
+    param centroid_z  : Real = 0.0
+
+    // ── Elastic ───────────────────────────────────────────────────────────
+    param youngs_modulus : Real = 200000000000.0
+    param poissons_ratio : Real = 0.29
+    param shear_modulus  : Real = 77500000000.0
+
+    // ── Strong ────────────────────────────────────────────────────────────
+    param yield_strength      : Real = 207000000.0
+    param uts                 : Real = 380000000.0
+    param compressive_strength : Real = 207000000.0
+
+    // ── GD&T sub-components ───────────────────────────────────────────────
+
+    // Dimensional tolerance: 100mm nominal, ±0.05mm bilateral
+    //   upper_limit   = 100mm + 0.05mm = 0.10005m
+    //   lower_limit   = 100mm - 0.05mm = 0.09995m
+    //   tolerance_band = 0.1mm = 0.0001m
+    sub tol = DimensionalTolerance(
+        nominal:          100mm,
+        upper_deviation:  0.05mm,
+        lower_deviation: -0.05mm
+    )
+
+    // Flatness tolerance: 0.02mm zone
+    sub flat = Flatness(
+        tolerance_value:    0.02mm,
+        material_condition: MaterialCondition.RFS,
+        feature:            0.0
+    )
+
+    // Surface finish: Ra 0.8 μm, parallel lay, milling process
+    sub finish = SurfaceFinish(
+        parameter:  SurfaceParameter.Ra,
+        value:      0.8um,
+        direction:  SurfaceDirection.Parallel,
+        process:    "milling"
+    )
+
+    // ── @test constraints ─────────────────────────────────────────────────
+    //
+    // Mass computed by Physical trait: volume * density = 0.001 * 7850 = 7.85
+    // uts >= yield_strength is injected by Strong trait.
+
+    constraint volume > 0.0
+    constraint density > 0.0
+}
