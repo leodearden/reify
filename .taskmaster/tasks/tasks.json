@@ -35977,11 +35977,11 @@
         "description": "Add a test that places `param x : Option<Length> = none` inside an `else` block of a `where` guard and asserts the OptionNone fixup produces the correct `Option<Length>` type. The existing guarded-block tests only exercise the main branch; the else-branch path through `register_guarded_names` and `compile_guarded_members` is untested for OptionNone typing.",
         "details": "## Context\n\nTask 1098 added OptionNone fixup for guarded members and port members, with tests for the main branch of guarded groups. The `else_members` path is processed identically (see `guards.rs:154` for `register_guarded_names` and the corresponding compile path), but no test exercises it.\n\n## Approach\n\nAdd a test to `crates/reify-compiler/tests/option_compile_tests.rs` similar to `guarded_param_none_with_typed_annotation_gets_correct_type` but using the `else` block:\n\n```rust\nentity E {\n    param active : Bool = true\n    where active {\n        // main branch (already tested)\n    } else {\n        param x : Option<Length> = none\n    }\n}\n```\n\nAssert that the guarded group's else-branch member has `cell_type == Option<Length>` and `default_expr.result_type == Option<Length>`.\n\n## Memory hints\n- Search: \"OptionNone guarded else branch fixup\"\n- Related tasks: 1098 (parent implementation)\n- Related files: `crates/reify-compiler/tests/option_compile_tests.rs`, `crates/reify-compiler/src/guards.rs`",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:29:15.124Z"
+        "updatedAt": "2026-04-15T06:42:37.463Z"
       },
       {
         "id": "1726",
@@ -36015,9 +36015,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:40:22.431Z",
+      "lastModified": "2026-04-15T06:42:37.463Z",
       "taskCount": 1724,
-      "completedCount": 1481,
+      "completedCount": 1482,
       "tags": [
         "master"
       ]
