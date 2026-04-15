@@ -208,14 +208,14 @@ fn compiled_module_test_templates_returns_only_marked() {
     let module = compile_module(source);
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
 
-    let test_tmpls = module.test_templates();
+    let test_tmpls: Vec<_> = module.test_templates().collect();
     assert_eq!(test_tmpls.len(), 2, "expected 2 test templates, got {:?}", test_tmpls.iter().map(|t| &t.name).collect::<Vec<_>>());
     let test_names: std::collections::HashSet<&str> =
         test_tmpls.iter().map(|t| t.name.as_str()).collect();
     assert!(test_names.contains("A"), "expected A in test_templates");
     assert!(test_names.contains("H"), "expected H in test_templates");
 
-    let non_test_tmpls = module.non_test_templates();
+    let non_test_tmpls: Vec<_> = module.non_test_templates().collect();
     assert_eq!(non_test_tmpls.len(), 1, "expected 1 non-test template");
     assert_eq!(non_test_tmpls[0].name, "B");
 }
@@ -268,11 +268,11 @@ fn compiled_module_test_constraint_defs_returns_only_marked() {
     let module = compile_module(source);
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
 
-    let test_defs = module.test_constraint_defs();
+    let test_defs: Vec<_> = module.test_constraint_defs().collect();
     assert_eq!(test_defs.len(), 1, "expected 1 test constraint def");
     assert_eq!(test_defs[0].name, "TestC");
 
-    let non_test_defs = module.non_test_constraint_defs();
+    let non_test_defs: Vec<_> = module.non_test_constraint_defs().collect();
     assert_eq!(non_test_defs.len(), 1, "expected 1 non-test constraint def");
     assert_eq!(non_test_defs[0].name, "NormalC");
 }

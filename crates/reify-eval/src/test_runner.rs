@@ -233,8 +233,7 @@ mod tests {
         use super::build_isolated_module;
         let source = "@test structure TestA { param x : Real\n constraint x > 0 }\nstructure def B { param y : Real\n constraint y > 0 }\n@test structure TestC { param z : Real }";
         let module = parse_and_compile_inline(source);
-        let test_templates = module.test_templates();
-        let target = test_templates.iter().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
         let names: Vec<&str> = isolated.templates.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names.len(), 2, "expected TestA + B, got {:?}", names);
@@ -248,8 +247,7 @@ mod tests {
         use super::build_isolated_module;
         let source = "@test structure TestA { param x : Real\n constraint x > 0 }\nstructure def B { param y : Real\n constraint y > 0\n constraint y < 100 }";
         let module = parse_and_compile_inline(source);
-        let test_templates = module.test_templates();
-        let target = test_templates.iter().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
         let b = isolated.templates.iter().find(|t| t.name == "B").expect("B not found");
         assert!(b.constraints.is_empty(), "B.constraints should be stripped, got {} constraints", b.constraints.len());
@@ -265,8 +263,7 @@ mod tests {
         use super::build_isolated_module;
         let source = "@test structure TestA { param x : Real\n constraint x > 0 }\nstructure def B { param y : Real\n constraint y > 0 }";
         let module = parse_and_compile_inline(source);
-        let test_templates = module.test_templates();
-        let target = test_templates.iter().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
         let testa = isolated.templates.iter().find(|t| t.name == "TestA").expect("TestA not in isolated");
         assert!(!testa.constraints.is_empty(), "TestA constraints should be preserved");
@@ -313,8 +310,7 @@ constraint def Positive {
 }
 "#;
         let module = parse_and_compile_inline(source);
-        let test_templates = module.test_templates();
-        let target = test_templates.iter().find(|t| t.name == "TestA").expect("TestA not found");
+        let target = module.test_templates().find(|t| t.name == "TestA").expect("TestA not found");
         let isolated = build_isolated_module(&module, target);
         assert!(!module.constraint_defs.is_empty(), "constraint_defs must be non-empty in source module");
         assert_eq!(isolated.constraint_defs.len(), module.constraint_defs.len(),

@@ -169,27 +169,27 @@ impl CompiledModule {
     /// This is the canonical filter for test entities — consumers should prefer
     /// this over scanning `template.annotations` manually. Per Task 267, test
     /// entities are excluded from the normal evaluation graph.
-    pub fn test_templates(&self) -> Vec<&TopologyTemplate> {
-        self.templates.iter().filter(|t| t.is_test()).collect()
+    pub fn test_templates(&self) -> impl Iterator<Item = &TopologyTemplate> {
+        self.templates.iter().filter(|t| t.is_test())
     }
 
     /// Returns all templates NOT tagged with `@test`.
     ///
     /// These are the templates that participate in the normal evaluation graph.
-    pub fn non_test_templates(&self) -> Vec<&TopologyTemplate> {
-        self.templates.iter().filter(|t| !t.is_test()).collect()
+    pub fn non_test_templates(&self) -> impl Iterator<Item = &TopologyTemplate> {
+        self.templates.iter().filter(|t| !t.is_test())
     }
 
     /// Returns all constraint defs tagged with `@test`.
     ///
     /// Uses `ConstraintDef::is_test()` as the canonical predicate.
-    pub fn test_constraint_defs(&self) -> Vec<&reify_syntax::ConstraintDef> {
-        self.constraint_defs.iter().filter(|d| d.is_test()).collect()
+    pub fn test_constraint_defs(&self) -> impl Iterator<Item = &reify_syntax::ConstraintDef> {
+        self.constraint_defs.iter().filter(|d| d.is_test())
     }
 
     /// Returns all constraint defs NOT tagged with `@test`.
-    pub fn non_test_constraint_defs(&self) -> Vec<&reify_syntax::ConstraintDef> {
-        self.constraint_defs.iter().filter(|d| !d.is_test()).collect()
+    pub fn non_test_constraint_defs(&self) -> impl Iterator<Item = &reify_syntax::ConstraintDef> {
+        self.constraint_defs.iter().filter(|d| !d.is_test())
     }
 }
 
