@@ -113,6 +113,35 @@ pub struct EvaluationStatus {
     pub progress: Option<f64>,
 }
 
+/// A node in the hierarchical entity tree emitted by `get_entity_tree`.
+///
+/// Root nodes correspond to top-level topology templates (structures/occurrences).
+/// Children represent value cells (param, let, auto), sub-components, and ports.
+///
+/// # Kind values
+/// - `"structure"` / `"occurrence"` — top-level template root
+/// - `"param"` — a `ValueCellKind::Param` cell
+/// - `"let"` — a `ValueCellKind::Let` cell
+/// - `"auto"` — a `ValueCellKind::Auto` cell
+/// - `"sub"` — a sub-component (`SubComponentDecl`)
+/// - `"port"` — a port (`CompiledPort`)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EntityTreeNode {
+    /// Dot-separated path identifying this entity (e.g. `"Bracket"`, `"Bracket.width"`, `"Bracket.bolt"`).
+    pub entity_path: String,
+    /// Entity kind string — one of `"structure"`, `"occurrence"`, `"param"`, `"let"`, `"auto"`, `"sub"`, `"port"`.
+    pub kind: String,
+    /// Type name for value cells (`cell_type.to_string()`) and sub-components (`structure_name`).
+    /// `None` for template root nodes.
+    pub type_name: Option<String>,
+    /// Whether this entity has at least one realization (tessellatable geometry).
+    pub has_mesh: bool,
+    /// Heuristic: member is named `"geometry"` AND the parent template has `"Physical"` in `trait_bounds`.
+    pub trait_geometry: bool,
+    /// Child nodes (value cells, sub-components, ports of this template).
+    pub children: Vec<EntityTreeNode>,
+}
+
 /// Format a Value for GUI display, returning (formatted_value, unit_string).
 ///
 /// Delegates to [`Value::format_display_pair()`] — the canonical implementation

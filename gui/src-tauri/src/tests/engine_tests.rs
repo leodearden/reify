@@ -10,6 +10,7 @@ use reify_types::ExportFormat;
 use reify_types::{DiagnosticInfo, SourceLocationInfo};
 
 use crate::engine::{EngineSession, module_key, parse_value_string};
+use crate::types::EntityTreeNode;
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -2113,4 +2114,65 @@ fn get_source_location_file_key_updates_after_update_source() {
         loc_after.end_column, loc_before.end_column,
         "end_column should be unchanged when update_source uses identical source text"
     );
+}
+
+// ---- Step 1: EntityTreeNode type serialization tests ----
+
+#[test]
+fn entity_tree_node_serialization_roundtrip() {
+    let node = EntityTreeNode {
+        entity_path: "Bracket".to_string(),
+        kind: "structure".to_string(),
+        type_name: None,
+        has_mesh: false,
+        trait_geometry: false,
+        children: vec![],
+    };
+    let json = serde_json::to_string(&node).expect("serialize should succeed");
+    let back: EntityTreeNode = serde_json::from_str(&json).expect("deserialize should succeed");
+    assert_eq!(node, back);
+}
+
+#[test]
+fn entity_tree_node_nested_children_serialize_correctly() {
+    let child = EntityTreeNode {
+        entity_path: "Bracket.width".to_string(),
+        kind: "param".to_string(),
+        type_name: Some("Length".to_string()),
+        has_mesh: false,
+        trait_geometry: false,
+        children: vec![],
+    };
+    let root = EntityTreeNode {
+        entity_path: "Bracket".to_string(),
+        kind: "structure".to_string(),
+        type_name: None,
+        has_mesh: true,
+        trait_geometry: false,
+        children: vec![child],
+    };
+    let json = serde_json::to_string(&root).expect("serialize should succeed");
+    assert!(json.contains("\"entity_path\":\"Bracket.width\""));
+    assert!(json.contains("\"kind\":\"param\""));
+    assert!(json.contains("\"type_name\":\"Length\""));
+    assert!(json.contains("\"has_mesh\":true"));
+    let back: EntityTreeNode = serde_json::from_str(&json).expect("deserialize should succeed");
+    assert_eq!(root, back);
+    assert_eq!(back.children.len(), 1);
+    assert_eq!(back.children[0].entity_path, "Bracket.width");
+}
+
+#[test]
+fn entity_tree_node_default_type_name_is_none() {
+    let node = EntityTreeNode {
+        entity_path: "Foo".to_string(),
+        kind: "occurrence".to_string(),
+        type_name: None,
+        has_mesh: false,
+        trait_geometry: false,
+        children: vec![],
+    };
+    let json = serde_json::to_string(&node).expect("serialize should succeed");
+    let back: EntityTreeNode = serde_json::from_str(&json).expect("deserialize should succeed");
+    assert_eq!(back.type_name, None);
 }
