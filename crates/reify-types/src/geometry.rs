@@ -131,6 +131,21 @@ pub enum GeometryOp {
         plane_origin: [f64; 3],
         plane_normal: [f64; 3],
     },
+    /// Create a 2D grid pattern of copies along two directions.
+    LinearPattern2D {
+        target: GeometryHandleId,
+        direction1: [f64; 3],
+        count1: usize,
+        spacing1: Value,
+        direction2: [f64; 3],
+        count2: usize,
+        spacing2: Value,
+    },
+    /// Create copies at user-specified translation offsets.
+    ArbitraryPattern {
+        target: GeometryHandleId,
+        transforms: Vec<[f64; 3]>,
+    },
     /// Loft through a sequence of profiles.
     Loft { profiles: Vec<GeometryHandleId> },
     /// Extrude a 2D profile along Z axis by distance.
