@@ -1,0 +1,566 @@
+//! M8.4 stdlib integration tests.
+//!
+//! Exercises three stdlib modules — linalg, fields_analysis, io_export —
+//! through the full parse → compile_with_stdlib → eval pipeline using
+//! .ri fixture files in examples/.
+//!
+//! Follows the same pattern as m8_3_stdlib_integration.rs:
+//! `parse_and_compile_with_stdlib` + `SimpleConstraintChecker`.
+//! The three fixtures exercise:
+//!   linalg.ri         — advanced matrix ops (outer, determinant, inverse, transpose,
+//!                        eigenvalues) + complex number builtins
+//!   fields_analysis.ri — analytical field defs (sample/gradient) + analysis
+//!                        builtins (von_mises, safety_factor) on tensors
+//!   io_export.ri       — Physical+Elastic+Strong trait conformance, tolerancing
+//!                        subs, and geometry (box) for export-ready parts
+
+use reify_test_support::make_simple_engine;
+use reify_types::{Severity, Value, ValueCellId};
+
+// ── File paths (resolved at compile time from this crate's root) ─────────────
+
+const PATH_LINALG: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/linalg.ri"
+);
+
+const PATH_FIELDS_ANALYSIS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/fields_analysis.ri"
+);
+
+const PATH_IO_EXPORT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/io_export.ri"
+);
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Read a .ri fixture file, parse, compile with stdlib (asserting no
+/// Severity::Error diagnostics at each stage), eval with
+/// `SimpleConstraintChecker`, and assert no eval errors.
+/// Returns the full `EvalResult` for per-test assertions.
+fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+
+    let parsed = reify_syntax::parse(&source, reify_types::ModulePath::single(module_name));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in {}: {:?}",
+        path,
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "compile errors in {}: {:?}",
+        path,
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "eval errors in {}: {:?}",
+        path,
+        eval_errors
+    );
+
+    result
+}
+
+// ── Section 1: linalg.ri ─────────────────────────────────────────────────────
+
+/// Smoke test: linalg.ri parses, compiles (stdlib), evals without errors,
+/// and produces non-empty values.
+#[test]
+fn linalg_smoke() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+    assert!(
+        !result.values.is_empty(),
+        "linalg.ri eval should produce non-empty values"
+    );
+}
+
+// ── step-3: linalg_rotation_det_is_one ───────────────────────────────────────
+
+/// Asserts LinalgDemo.det_rot ≈ 1.0 (Value::Real).
+/// R_z(90°) = [[0,-1,0],[1,0,0],[0,0,1]] has exact determinant 1.
+#[test]
+fn linalg_rotation_det_is_one() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let det_id = ValueCellId::new("LinalgDemo", "det_rot");
+    let det_val = result
+        .values
+        .get(&det_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.det_rot not found in eval result"));
+
+    match det_val {
+        Value::Real(v) => {
+            assert!(
+                (v - 1.0).abs() < 1e-9,
+                "LinalgDemo.det_rot should be ≈1.0 (det of rotation matrix), got {}",
+                v
+            );
+        }
+        other => panic!(
+            "LinalgDemo.det_rot should be Value::Real, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── step-3: linalg_eigenvalues_of_diagonal ───────────────────────────────────
+
+/// Asserts LinalgDemo.eig = eigenvalues(diag(3,5,7)) = sorted [3.0, 5.0, 7.0]
+/// (Value::List of Value::Real).
+#[test]
+fn linalg_eigenvalues_of_diagonal() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let eig_id = ValueCellId::new("LinalgDemo", "eig");
+    let eig_val = result
+        .values
+        .get(&eig_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.eig not found in eval result"));
+
+    match eig_val {
+        Value::List(items) => {
+            assert_eq!(
+                items.len(),
+                3,
+                "eigenvalues should have 3 entries, got {}",
+                items.len()
+            );
+            // `compute_eigenvalues_3x3` returns eigenvalues sorted ascending.
+            // We independently sort the extracted floats before comparison so
+            // the test stays robust if that sort-order contract ever changes.
+            let expected = [3.0_f64, 5.0, 7.0];
+            let mut actuals: Vec<f64> = items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| match item {
+                    Value::Real(v) => *v,
+                    Value::Int(n) => *n as f64,
+                    other => panic!(
+                        "eigenvalue[{}] should be Real or Int, got {:?}",
+                        i, other
+                    ),
+                })
+                .collect();
+            actuals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            for (i, (&actual, &exp)) in actuals.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    (actual - exp).abs() < 1e-9,
+                    "eigenvalue[{}]: expected {}, got {}",
+                    i,
+                    exp,
+                    actual
+                );
+            }
+        }
+        other => panic!(
+            "LinalgDemo.eig should be Value::List, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── step-3: linalg_inverse_equals_transpose ──────────────────────────────────
+
+/// Spot-checks that LinalgDemo.inv_rot and LinalgDemo.trans_rot have matching
+/// [0][0] elements. For R_z(90°) the [0][0] element of both R^-1 and R^T is 0.
+/// This verifies the orthogonal matrix property: R^{-1} = R^T.
+#[test]
+fn linalg_inverse_equals_transpose() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let inv_id = ValueCellId::new("LinalgDemo", "inv_rot");
+    let inv_val = result
+        .values
+        .get(&inv_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.inv_rot not found"));
+
+    let trans_id = ValueCellId::new("LinalgDemo", "trans_rot");
+    let trans_val = result
+        .values
+        .get(&trans_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.trans_rot not found"));
+
+    // Helper: extract [row][col] element from a nested Tensor
+    fn tensor_elem(v: &Value, row: usize, col: usize) -> f64 {
+        match v {
+            Value::Tensor(rows) => match &rows[row] {
+                Value::Tensor(cols) => match &cols[col] {
+                    Value::Real(x) => *x,
+                    Value::Int(i) => *i as f64,
+                    other => panic!("tensor element should be Real or Int, got {:?}", other),
+                },
+                other => panic!("tensor row should be Tensor, got {:?}", other),
+            },
+            other => panic!("expected Tensor, got {:?}", other),
+        }
+    }
+
+    // For R_z(90°): R = [[0,-1,0],[1,0,0],[0,0,1]]
+    // R^T = R^-1 = [[0,1,0],[-1,0,0],[0,0,1]]  (orthogonal matrix property)
+    //
+    // Check all 9 elements: (a) inv_rot == trans_rot at every position, and
+    // (b) trans_rot matches the known analytical values of R^T.
+    // A 2-element spot-check could pass by coincidence (e.g. both zero at [0][0]).
+    let expected_rt: [[f64; 3]; 3] = [
+        [ 0.0,  1.0, 0.0],
+        [-1.0,  0.0, 0.0],
+        [ 0.0,  0.0, 1.0],
+    ];
+    for row in 0..3usize {
+        for col in 0..3usize {
+            let inv_elem   = tensor_elem(inv_val,   row, col);
+            let trans_elem = tensor_elem(trans_val, row, col);
+            let exp        = expected_rt[row][col];
+            assert!(
+                (inv_elem - trans_elem).abs() < 1e-9,
+                "inv_rot[{}][{}] ({}) != trans_rot[{}][{}] ({}): R^-1 should equal R^T",
+                row, col, inv_elem, row, col, trans_elem
+            );
+            assert!(
+                (trans_elem - exp).abs() < 1e-9,
+                "trans_rot[{}][{}] should be ≈{}, got {}",
+                row, col, exp, trans_elem
+            );
+        }
+    }
+}
+
+// ── step-3: linalg_complex_re_im ─────────────────────────────────────────────
+
+/// Asserts LinalgDemo.z_re ≈ 3.0 and LinalgDemo.z_im ≈ 4.0 (both Value::Real,
+/// since z = complex(3.0, 4.0) is dimensionless).
+#[test]
+fn linalg_complex_re_im() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    // re(z) → Value::Real(3.0) for dimensionless complex
+    let re_id = ValueCellId::new("LinalgDemo", "z_re");
+    let re_val = result
+        .values
+        .get(&re_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.z_re not found"));
+    match re_val {
+        Value::Real(v) => assert!(
+            (v - 3.0).abs() < 1e-9,
+            "z_re should be ≈3.0, got {}",
+            v
+        ),
+        other => panic!("LinalgDemo.z_re should be Value::Real, got {:?}", other),
+    }
+
+    // im(z) → Value::Real(4.0) for dimensionless complex
+    let im_id = ValueCellId::new("LinalgDemo", "z_im");
+    let im_val = result
+        .values
+        .get(&im_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.z_im not found"));
+    match im_val {
+        Value::Real(v) => assert!(
+            (v - 4.0).abs() < 1e-9,
+            "z_im should be ≈4.0, got {}",
+            v
+        ),
+        other => panic!("LinalgDemo.z_im should be Value::Real, got {:?}", other),
+    }
+}
+
+// ── step-3: linalg_complex_magnitude ─────────────────────────────────────────
+
+/// Asserts LinalgDemo.z_mag = complex_magnitude(z) ≈ 5.0 (Value::Real).
+/// z = complex(3.0, 4.0) → |z| = sqrt(9+16) = 5.0.
+#[test]
+fn linalg_complex_magnitude() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let mag_id = ValueCellId::new("LinalgDemo", "z_mag");
+    let mag_val = result
+        .values
+        .get(&mag_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.z_mag not found"));
+
+    match mag_val {
+        Value::Real(v) => {
+            assert!(
+                (v - 5.0).abs() < 1e-9,
+                "z_mag should be ≈5.0 (|3+4i| = 5), got {}",
+                v
+            );
+        }
+        other => panic!(
+            "LinalgDemo.z_mag should be Value::Real, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── Section 2: fields_analysis.ri ────────────────────────────────────────────
+
+/// Smoke test: fields_analysis.ri parses, compiles (stdlib), evals without
+/// errors, and produces non-empty values.
+#[test]
+fn fields_analysis_smoke() {
+    let result = eval_ri_file(PATH_FIELDS_ANALYSIS, "fields_analysis");
+    assert!(
+        !result.values.is_empty(),
+        "fields_analysis.ri eval should produce non-empty values"
+    );
+}
+
+// ── step-7: fields_temperature_sample ────────────────────────────────────────
+
+/// Asserts FieldsAnalysisDemo.temp_at_5 = sample(temperature, 5.0) ≈ 45.0.
+/// temperature(x) = x*x + 20.0, so temperature(5.0) = 25 + 20 = 45.0.
+#[test]
+fn fields_temperature_sample() {
+    let result = eval_ri_file(PATH_FIELDS_ANALYSIS, "fields_analysis");
+
+    let id = ValueCellId::new("FieldsAnalysisDemo", "temp_at_5");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("FieldsAnalysisDemo.temp_at_5 not found"));
+
+    let v = match val {
+        Value::Real(v) => *v,
+        Value::Int(i) => *i as f64,
+        other => panic!(
+            "FieldsAnalysisDemo.temp_at_5 should be Real or Int, got {:?}",
+            other
+        ),
+    };
+    assert!(
+        (v - 45.0).abs() < 1e-9,
+        "temp_at_5 should be ≈45.0 (= 5²+20), got {}",
+        v
+    );
+}
+
+// ── step-7: fields_temperature_gradient ──────────────────────────────────────
+
+/// Asserts FieldsAnalysisDemo.dtemp_at_5 = sample(gradient(temperature), 5.0) ≈ 10.0.
+/// gradient(x*x+20) = 2*x, so at x=5: derivative ≈ 10.0 (central differences).
+#[test]
+fn fields_temperature_gradient() {
+    let result = eval_ri_file(PATH_FIELDS_ANALYSIS, "fields_analysis");
+
+    let id = ValueCellId::new("FieldsAnalysisDemo", "dtemp_at_5");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("FieldsAnalysisDemo.dtemp_at_5 not found"));
+
+    let v = match val {
+        Value::Real(v) => *v,
+        Value::Int(i) => *i as f64,
+        other => panic!(
+            "FieldsAnalysisDemo.dtemp_at_5 should be Real or Int, got {:?}",
+            other
+        ),
+    };
+    assert!(
+        (v - 10.0).abs() < 1e-4,
+        "dtemp_at_5 should be ≈10.0 (= 2*5, central differences), got {}",
+        v
+    );
+}
+
+// ── step-7: fields_von_mises_uniaxial ────────────────────────────────────────
+
+/// Asserts FieldsAnalysisDemo.vm_stress = von_mises(sigma) ≈ 100.0.
+/// sigma = 100.0 * outer(e1, e1) is a uniaxial stress tensor; von Mises = σ.
+#[test]
+fn fields_von_mises_uniaxial() {
+    let result = eval_ri_file(PATH_FIELDS_ANALYSIS, "fields_analysis");
+
+    let id = ValueCellId::new("FieldsAnalysisDemo", "vm_stress");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("FieldsAnalysisDemo.vm_stress not found"));
+
+    let v = match val {
+        Value::Real(v) => *v,
+        Value::Int(i) => *i as f64,
+        other => panic!(
+            "FieldsAnalysisDemo.vm_stress should be Real or Int, got {:?}",
+            other
+        ),
+    };
+    assert!(
+        (v - 100.0).abs() < 1e-9,
+        "vm_stress should be ≈100.0 (uniaxial von Mises = σ), got {}",
+        v
+    );
+}
+
+// ── step-7: fields_safety_factor ─────────────────────────────────────────────
+
+/// Asserts FieldsAnalysisDemo.sf = safety_factor(sigma, 250.0) ≈ 2.5.
+/// yield_strength=250, von_mises(sigma)=100 → SF = 250/100 = 2.5 (dimensionless Real).
+#[test]
+fn fields_safety_factor() {
+    let result = eval_ri_file(PATH_FIELDS_ANALYSIS, "fields_analysis");
+
+    let id = ValueCellId::new("FieldsAnalysisDemo", "sf");
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("FieldsAnalysisDemo.sf not found"));
+
+    let v = match val {
+        Value::Real(v) => *v,
+        Value::Int(i) => *i as f64,
+        other => panic!(
+            "FieldsAnalysisDemo.sf should be Real (dimensionless), got {:?}",
+            other
+        ),
+    };
+    assert!(
+        (v - 2.5).abs() < 1e-9,
+        "sf should be ≈2.5 (= 250/100), got {}",
+        v
+    );
+}
+
+// ── Section 3: io_export.ri ───────────────────────────────────────────────────
+
+/// Smoke test: io_export.ri parses, compiles (stdlib), evals without errors,
+/// and produces non-empty values.
+#[test]
+fn io_export_smoke() {
+    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    assert!(
+        !result.values.is_empty(),
+        "io_export.ri eval should produce non-empty values"
+    );
+}
+
+// ── step-11: io_export_mass_computed ─────────────────────────────────────────
+
+/// Asserts ExportPart.mass = volume * density = 0.001 * 7850 = 7.85 (Value::Real).
+/// Steel AISI 1020: density=7850 kg/m³, volume=0.001 m³.
+#[test]
+fn io_export_mass_computed() {
+    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+
+    let mass_id = ValueCellId::new("ExportPart", "mass");
+    let mass_val = result
+        .values
+        .get(&mass_id)
+        .unwrap_or_else(|| panic!("ExportPart.mass not found in eval result"));
+
+    match mass_val {
+        Value::Real(v) => {
+            assert!(
+                (v - 7.85).abs() < 1e-9,
+                "ExportPart.mass should be ≈7.85 (= 0.001 * 7850), got {}",
+                v
+            );
+        }
+        other => panic!(
+            "ExportPart.mass should be Value::Real, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── step-11: io_export_tolerance_upper_limit ─────────────────────────────────
+
+/// Asserts ExportPart.tol.upper_limit ≈ 0.10005m (100mm + 0.05mm).
+/// DimensionalTolerance: nominal=100mm, upper_deviation=+0.05mm
+/// upper_limit = nominal + upper_deviation = 0.100 + 0.00005 = 0.10005m.
+#[test]
+fn io_export_tolerance_upper_limit() {
+    use reify_types::DimensionVector;
+
+    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+
+    let ul_id = ValueCellId::new("ExportPart.tol", "upper_limit");
+    let ul_val = result
+        .values
+        .get(&ul_id)
+        .unwrap_or_else(|| panic!("ExportPart.tol.upper_limit not found in eval result"));
+
+    match ul_val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 0.10005).abs() < 1e-9,
+                "ExportPart.tol.upper_limit should be ≈0.10005m (100mm+0.05mm), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "ExportPart.tol.upper_limit should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "ExportPart.tol.upper_limit should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── step-11: io_export_tolerance_band ────────────────────────────────────────
+
+/// Asserts ExportPart.tol.tolerance_band ≈ 0.0001m (0.1mm = 2×0.05mm).
+/// DimensionalTolerance: upper_deviation=+0.05mm, lower_deviation=-0.05mm
+/// tolerance_band = upper_deviation - lower_deviation = 0.05mm - (-0.05mm) = 0.1mm.
+#[test]
+fn io_export_tolerance_band() {
+    use reify_types::DimensionVector;
+
+    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+
+    let tb_id = ValueCellId::new("ExportPart.tol", "tolerance_band");
+    let tb_val = result
+        .values
+        .get(&tb_id)
+        .unwrap_or_else(|| panic!("ExportPart.tol.tolerance_band not found in eval result"));
+
+    match tb_val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 0.0001).abs() < 1e-12,
+                "ExportPart.tol.tolerance_band should be ≈0.0001m (0.1mm), got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension,
+                reify_types::DimensionVector::LENGTH,
+                "ExportPart.tol.tolerance_band should have LENGTH dimension"
+            );
+        }
+        other => panic!(
+            "ExportPart.tol.tolerance_band should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
+
+// NOTE: each test independently calls eval_ri_file, re-parsing and re-compiling
+// the same .ri fixture. This matches the established m8_3 pattern; future
+// iterations may share results across same-fixture tests via
+// `std::sync::LazyLock` to avoid redundant parse→compile→eval cycles.
