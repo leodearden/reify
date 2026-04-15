@@ -35173,7 +35173,7 @@
         "id": "1680",
         "title": "Restore Fillet needle and generalize assert_rejected_at_compile",
         "description": "From esc-1628-28. Two fixes in geometry_error_handling.rs. S1: Restore 'Fillet' needle in build_modify_missing_arg_no_kernel_error. S2: Generalize assert_rejected_at_compile to accept Option for primitive check.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1628"
         ],
@@ -35209,7 +35209,8 @@
           "modules": [
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T07:04:00.474Z"
       },
       {
         "id": "1681",
@@ -36095,7 +36096,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T07:03:58.385Z",
+      "lastModified": "2026-04-15T07:04:00.474Z",
       "taskCount": 1728,
       "completedCount": 1487,
       "tags": [
