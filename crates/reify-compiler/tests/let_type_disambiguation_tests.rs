@@ -10,7 +10,7 @@
 //! produced a false type-mismatch before this fix.
 
 use reify_compiler::DefaultKind;
-use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
+use reify_test_support::{compile_source, errors_only};
 use reify_types::{DimensionVector, Type};
 
 // ── step-1 (test): DefaultKind::Let carries cell_type ────────────────────────
