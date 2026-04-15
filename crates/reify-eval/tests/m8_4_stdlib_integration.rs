@@ -166,7 +166,7 @@ fn linalg_eigenvalues_of_diagonal() {
                 .enumerate()
                 .map(|(i, item)| expect_real_or_int(item, &format!("eigenvalue[{i}]")))
                 .collect();
-            actuals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            actuals.sort_by(|a, b| a.total_cmp(b));
             for (i, (&actual, &exp)) in actuals.iter().zip(expected.iter()).enumerate() {
                 assert!(
                     (actual - exp).abs() < 1e-9,
