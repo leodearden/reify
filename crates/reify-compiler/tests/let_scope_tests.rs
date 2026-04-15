@@ -1171,3 +1171,159 @@ fn ident_alias_geometry_let_produces_realization() {
         template.realizations.len()
     );
 }
+
+#[test]
+fn ident_alias_in_boolean_op() {
+    // alias is an ident alias of a geometry let; difference(alias, sphere(r))
+    // must resolve alias through geometry_lets HashMap.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+    let result = difference(alias, sphere(r))
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        3,
+        "expected 3 realizations (body, alias, result), got {}",
+        template.realizations.len()
+    );
+    let result_real = realization_named(template, &["body", "alias", "result"], "result");
+    assert_op_sequence(
+        &result_real.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sphere,
+            ExpectedOp::BoolDiff(0, 1),
+        ],
+    );
+}
+
+#[test]
+fn chained_ident_alias_transitive() {
+    // Multi-level chain: let a = cyl; let b = a; let c = b.
+    // The incremental set must capture all three as geometry lets so that
+    // difference(c, sphere(r)) resolves c → b → a → cylinder.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let a = cylinder(r, h)
+    let b = a
+    let c = b
+    let result = difference(c, sphere(r))
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        4,
+        "expected 4 realizations (a, b, c, result), got {}",
+        template.realizations.len()
+    );
+    let result_real =
+        realization_named(template, &["a", "b", "c", "result"], "result");
+    assert_op_sequence(
+        &result_real.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sphere,
+            ExpectedOp::BoolDiff(0, 1),
+        ],
+    );
+}
+
+#[test]
+fn ident_alias_not_a_value_cell() {
+    // An ident alias to a geometry let must NOT appear as a value cell.
+    // (Verifies the second-pass skip for ident aliases.)
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert!(
+        !template.value_cells.iter().any(|vc| vc.id.member == "alias"),
+        "geometry-let ident alias 'alias' should NOT be a value cell, but found one"
+    );
+    assert!(
+        !template.value_cells.iter().any(|vc| vc.id.member == "body"),
+        "geometry let 'body' should NOT be a value cell, but found one"
+    );
+}
+
+#[test]
+fn ident_alias_realization_op_sequence() {
+    // The alias realization's ops must equal those of the aliased geometry let.
+    // compile_geometry_call resolves the Ident through geometry_lets → cylinder expr.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let alias_real = realization_named(template, &["body", "alias"], "alias");
+    assert_op_sequence(&alias_real.operations, &[ExpectedOp::Cylinder]);
+}
+
+#[test]
+fn ident_alias_with_transform() {
+    // Alias used as geometry arg in a non-boolean geometry function (translate).
+    // translate's geometry_arg_indices is [0], so the first arg is resolved as
+    // a geometry let Ident.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+    let result = translate(alias, 1, 0, 0)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        3,
+        "expected 3 realizations (body, alias, result), got {}",
+        template.realizations.len()
+    );
+    let result_real =
+        realization_named(template, &["body", "alias", "result"], "result");
+    assert_op_sequence(
+        &result_real.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::Translate, 0),
+        ],
+    );
+}
+
+#[test]
+fn ident_alias_scope_type_is_geometry() {
+    // After the fix, `alias` has Type::Geometry in scope (not Real). Arithmetic
+    // on a Geometry-typed name produces a compile error (type mismatch). This
+    // verifies the first-pass type registration works for ident aliases.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+    let x = alias + 1
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error when performing arithmetic on a geometry-typed alias, got none"
+    );
+}
