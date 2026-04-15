@@ -280,10 +280,32 @@ pub fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::C
     compiled
 }
 
+/// Assert that `diagnostics` contains at least one entry whose severity equals
+/// `severity` and whose message contains `contains`.
+///
+/// Use this to verify that a specific diagnostic was emitted — for example, to
+/// confirm that a particular error or warning appears after a compile step.
+///
+/// # Panics
+/// Panics if no diagnostic matches both `severity` and `contains`. The panic
+/// message includes the full `diagnostics` list for debugging.
+#[track_caller]
+pub fn assert_has_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.severity == severity && d.message.contains(contains)),
+        "expected diagnostic with severity={:?} containing {:?}, got: {:?}",
+        severity,
+        contains,
+        diagnostics
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
-    use reify_types::Severity;
+    use reify_types::{Diagnostic, Severity};
 
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
     #[cfg(feature = "eval-helpers")]
@@ -664,5 +686,29 @@ mod tests {
             !compiled.templates.is_empty(),
             "bracket source should produce at least one template"
         );
+    }
+
+    // ── assert_has_diagnostic ──────────────────────────────────────────────
+
+    /// assert_has_diagnostic should not panic when the diagnostics slice contains
+    /// an entry matching the requested severity and message substring.
+    #[test]
+    fn test_assert_has_diagnostic_passes_on_match() {
+        let diags = vec![
+            Diagnostic::warning("unused port x"),
+            Diagnostic::error("type mismatch for y"),
+        ];
+        // Should not panic — there is an Error-severity entry containing "type mismatch".
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    /// assert_has_diagnostic should panic when no diagnostic in the slice matches
+    /// the requested severity + message substring.
+    #[test]
+    #[should_panic(expected = "expected diagnostic")]
+    fn test_assert_has_diagnostic_panics_when_no_match() {
+        let diags = vec![Diagnostic::warning("unused port x")];
+        // Should panic — no Error-severity diagnostic exists.
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
     }
 }
