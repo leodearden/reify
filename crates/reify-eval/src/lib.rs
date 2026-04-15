@@ -3911,6 +3911,11 @@ fn compile_geometry_op(
                 }
             }
         }
+        CompiledGeometryOp::Curve { kind, args } => {
+            // Stub — wired up in steps 29-30
+            let _ = (kind, args);
+            None
+        }
     }
 }
 

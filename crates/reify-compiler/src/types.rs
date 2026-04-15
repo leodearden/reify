@@ -445,6 +445,11 @@ pub enum CompiledGeometryOp {
         profiles: Vec<GeomRef>,
         args: Vec<(String, CompiledExpr)>,
     },
+    /// Curve construction (line_segment, arc, helix, interp, bezier, nurbs).
+    Curve {
+        kind: CurveKind,
+        args: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Primitive geometry kinds.
@@ -497,6 +502,17 @@ pub enum SweepKind {
     Extrude,
     Revolve,
     Sweep,
+}
+
+/// Curve construction operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CurveKind {
+    LineSegment,
+    Arc,
+    Helix,
+    InterpCurve,
+    BezierCurve,
+    NurbsCurve,
 }
 
 /// Reference to a geometry result within a realization.

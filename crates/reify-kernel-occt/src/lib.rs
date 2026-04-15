@@ -105,14 +105,23 @@ impl OcctKernel {
         }
     }
 
-    /// Store a shape and return the next handle.
+    /// Store a shape and return the next handle (defaults to `ReprKind::Solid`).
     fn store(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandle {
+        self.store_with_repr(shape, ReprKind::Solid)
+    }
+
+    /// Store a shape with an explicit `ReprKind`.
+    fn store_with_repr(
+        &mut self,
+        shape: cxx::UniquePtr<ffi::ffi::OcctShape>,
+        repr: ReprKind,
+    ) -> GeometryHandle {
         let id = self.next_id;
         self.next_id += 1;
         self.shapes.insert(id, shape);
         GeometryHandle {
             id: GeometryHandleId(id),
-            repr: ReprKind::Solid,
+            repr,
         }
     }
 
@@ -508,6 +517,16 @@ impl OcctKernel {
                 let path_shape = self.get_shape(*path)?;
                 ffi::ffi::make_pipe(profile_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::LineSegment { .. }
+            | GeometryOp::Arc { .. }
+            | GeometryOp::Helix { .. }
+            | GeometryOp::InterpCurve { .. }
+            | GeometryOp::BezierCurve { .. }
+            | GeometryOp::NurbsCurve { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "curve constructor not yet implemented".into(),
+                ));
             }
         };
         Ok(self.store(shape))
