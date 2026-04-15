@@ -38157,10 +38157,11 @@
         "description": "The `match ty { Type::List(inner) => assert_eq!(...), other => panic!(...) }` pattern is duplicated 5 times across the 3 collection-sub fallback tests added in task 1770 (lines ~910-1078 of self_keyword_tests.rs). Extract a local helper:\n\n```rust\nfn assert_list_of_struct_ref(ty: &reify_types::Type, expected_name: &str) {\n    match ty {\n        reify_types::Type::List(inner) => assert_eq!(\n            inner.as_ref(),\n            &reify_types::Type::StructureRef(expected_name.to_string()),\n            \"expected StructureRef(\\\"{expected_name}\\\"), got: {inner:?}\",\n        ),\n        other => panic!(\"expected List type, got: {other:?}\"),\n    }\n}\n```\n\nReplace all 5 inline match blocks with calls to this helper.\n\nmemory_hints: search \"assert_list_of_struct_ref\" or \"collection_sub fallback test\" in reify project.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:33:14.229Z"
       },
       {
         "id": "1828",
@@ -38176,7 +38177,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:33:13.721Z",
+      "lastModified": "2026-04-15T21:33:14.229Z",
       "taskCount": 1823,
       "completedCount": 1552,
       "tags": [
