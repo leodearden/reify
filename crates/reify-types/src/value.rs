@@ -695,6 +695,7 @@ impl Value {
                 Value::List(_) => Type::List(Box::new(Type::Real)),
                 Value::Set(_) => Type::Set(Box::new(Type::Real)),
                 Value::Map(_) => Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+                Value::Option(Some(inner)) => Type::Option(Box::new(inner.infer_type())),
                 Value::Option(None) => Type::Option(Box::new(Type::Bool)),
                 Value::Tensor(_) => panic!(
                     "infer_type() cannot infer Tensor type (rank/n/quantity). \
@@ -712,8 +713,10 @@ impl Value {
                     "infer_type() cannot infer Transform dimensionality. \
                      Use CompiledExpr::literal(value, type) directly."
                 ),
-                // try_infer_type() only returns None for the variants above;
-                // all other variants return Some, so this arm is unreachable.
+                // try_infer_type() only returns None for the variants above
+                // (List, Set, Map, Option(None), Option(Some(ambiguous_inner)),
+                // Tensor, Matrix, Frame, Transform); all other variants return
+                // Some, so this arm is unreachable.
                 _ => unreachable!("try_infer_type returned None for an unexpected variant"),
             },
         }
