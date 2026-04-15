@@ -327,3 +327,301 @@ fn sample_von_mises_field_hydrostatic_returns_zero() {
         ),
     }
 }
+
+// ── Step 21: principal_stresses, max_shear, safety_factor on Field ──────────
+
+/// Helper: build an analysis field wrapper and verify its metadata.
+fn assert_analysis_wrapper(
+    op_name: &str,
+    expected_source: FieldSourceKind,
+    expected_codomain: Type,
+) {
+    let sigma = 100e6;
+    let tensor = make_stress_tensor(
+        &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+        DimensionVector::PRESSURE,
+    );
+    let (field, field_type) = make_constant_stress_field(tensor);
+
+    let result_type = Type::Field {
+        domain: Box::new(Type::point3(Type::Real)),
+        codomain: Box::new(expected_codomain.clone()),
+    };
+
+    let args = vec![CompiledExpr::literal(field, field_type)];
+    let expr = make_function_call(op_name, args, result_type);
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    let Value::Field {
+        domain_type,
+        codomain_type,
+        source,
+        lambda,
+    } = &result
+    else {
+        panic!("{op_name}(Field) should return a Field, got {:?}", result);
+    };
+
+    assert_eq!(
+        *domain_type,
+        Type::point3(Type::Real),
+        "{op_name}: domain should be Point3(Real)"
+    );
+    assert_eq!(
+        *codomain_type, expected_codomain,
+        "{op_name}: codomain mismatch"
+    );
+    assert_eq!(
+        *source, expected_source,
+        "{op_name}: source kind mismatch"
+    );
+    assert!(
+        matches!(lambda.as_ref(), Value::Field { source: FieldSourceKind::Analytical, .. }),
+        "{op_name}: lambda slot should contain original analytical field"
+    );
+}
+
+#[test]
+fn principal_stresses_field_returns_field_with_correct_source() {
+    // principal_stresses returns a List, so codomain is the list type.
+    // In practice, the codomain type for a list of 3 scalars is not directly
+    // representable as a simple Type. The wrapper should use a list-compatible type.
+    // For now, we test that it returns a Field with PrincipalStresses source.
+    assert_analysis_wrapper(
+        "principal_stresses",
+        FieldSourceKind::PrincipalStresses,
+        // Codomain: List<Scalar[PRESSURE]> — represented as the scalar element type
+        // since List type isn't a simple Type variant. The implementation decides.
+        pressure_scalar_type(),
+    );
+}
+
+#[test]
+fn max_shear_field_returns_field_with_correct_source() {
+    assert_analysis_wrapper(
+        "max_shear",
+        FieldSourceKind::MaxShear,
+        pressure_scalar_type(),
+    );
+}
+
+#[test]
+fn safety_factor_field_returns_field_with_correct_source() {
+    // safety_factor takes 2 args: tensor field + yield_strength scalar
+    let sigma = 100e6;
+    let tensor = make_stress_tensor(
+        &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+        DimensionVector::PRESSURE,
+    );
+    let (field, field_type) = make_constant_stress_field(tensor);
+
+    let yield_strength = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+
+    let result_type = Type::Field {
+        domain: Box::new(Type::point3(Type::Real)),
+        codomain: Box::new(Type::Real),
+    };
+
+    let expr = make_function_call(
+        "safety_factor",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(yield_strength, pressure_scalar_type()),
+        ],
+        result_type,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    let Value::Field {
+        domain_type,
+        codomain_type,
+        source,
+        ..
+    } = &result
+    else {
+        panic!(
+            "safety_factor(Field, Scalar) should return a Field, got {:?}",
+            result
+        );
+    };
+
+    assert_eq!(*domain_type, Type::point3(Type::Real));
+    assert_eq!(*source, FieldSourceKind::SafetyFactor);
+    // Safety factor is dimensionless (yield / von_mises cancels PRESSURE dims)
+    assert_eq!(*codomain_type, Type::Real);
+}
+
+// ── Sampling tests for principal_stresses, max_shear, safety_factor ─────────
+
+#[test]
+fn sample_principal_stresses_field_diagonal_returns_sorted_list() {
+    // Diagonal tensor [[100,0,0],[0,50,0],[0,0,25]] → sorted [25, 50, 100]
+    let tensor = make_stress_tensor(
+        &[&[100.0, 0.0, 0.0], &[0.0, 50.0, 0.0], &[0.0, 0.0, 25.0]],
+        DimensionVector::PRESSURE,
+    );
+    let (field, field_type) = make_constant_stress_field(tensor);
+
+    let ps_field_type = Type::Field {
+        domain: Box::new(Type::point3(Type::Real)),
+        codomain: Box::new(pressure_scalar_type()),
+    };
+    let ps_expr = make_function_call(
+        "principal_stresses",
+        vec![CompiledExpr::literal(field, field_type)],
+        ps_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let ps_field = eval_expr(&ps_expr, &EvalContext::simple(&values));
+
+    let sample_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(ps_field, ps_field_type),
+            CompiledExpr::literal(sample_point, Type::point3(Type::Real)),
+        ],
+        Type::List(Box::new(pressure_scalar_type())),
+    );
+
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let Value::List(items) = &result else {
+        panic!(
+            "sample(principal_stresses(field), pt) should return List, got {:?}",
+            result
+        );
+    };
+
+    assert_eq!(items.len(), 3, "should have 3 principal stresses");
+    let expected = [25.0, 50.0, 100.0];
+    for (i, (item, &exp)) in items.iter().zip(expected.iter()).enumerate() {
+        match item {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(*dimension, DimensionVector::PRESSURE);
+                assert!(
+                    (si_value - exp).abs() < 1e-6,
+                    "principal stress {i}: expected {exp}, got {si_value}"
+                );
+            }
+            _ => panic!("principal stress {i} should be Scalar, got {:?}", item),
+        }
+    }
+}
+
+#[test]
+fn sample_max_shear_field_uniaxial_returns_half_sigma() {
+    // Uniaxial [[σ,0,0],[0,0,0],[0,0,0]] → max_shear = σ/2
+    let sigma = 200.0_f64;
+    let tensor = make_stress_tensor(
+        &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+        DimensionVector::PRESSURE,
+    );
+    let (field, field_type) = make_constant_stress_field(tensor);
+
+    let ms_field_type = Type::Field {
+        domain: Box::new(Type::point3(Type::Real)),
+        codomain: Box::new(pressure_scalar_type()),
+    };
+    let ms_expr = make_function_call(
+        "max_shear",
+        vec![CompiledExpr::literal(field, field_type)],
+        ms_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let ms_field = eval_expr(&ms_expr, &EvalContext::simple(&values));
+
+    let sample_point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(ms_field, ms_field_type),
+            CompiledExpr::literal(sample_point, Type::point3(Type::Real)),
+        ],
+        pressure_scalar_type(),
+    );
+
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &result {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(*dimension, DimensionVector::PRESSURE);
+            let expected = sigma / 2.0;
+            assert!(
+                (si_value - expected).abs() < 1e-6,
+                "max_shear of uniaxial: expected {expected}, got {si_value}"
+            );
+        }
+        _ => panic!(
+            "sample(max_shear(field), pt) should return Scalar, got {:?}",
+            result
+        ),
+    }
+}
+
+#[test]
+fn sample_safety_factor_field_returns_yield_over_von_mises() {
+    // Uniaxial stress=100e6: von_mises = 100e6
+    // yield_strength = 250e6 → safety_factor = 2.5
+    let sigma = 100e6_f64;
+    let tensor = make_stress_tensor(
+        &[&[sigma, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]],
+        DimensionVector::PRESSURE,
+    );
+    let (field, field_type) = make_constant_stress_field(tensor);
+
+    let yield_val = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+
+    let sf_field_type = Type::Field {
+        domain: Box::new(Type::point3(Type::Real)),
+        codomain: Box::new(Type::Real),
+    };
+    let sf_expr = make_function_call(
+        "safety_factor",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(yield_val, pressure_scalar_type()),
+        ],
+        sf_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let sf_field = eval_expr(&sf_expr, &EvalContext::simple(&values));
+
+    let sample_point = Value::Point(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(sf_field, sf_field_type),
+            CompiledExpr::literal(sample_point, Type::point3(Type::Real)),
+        ],
+        Type::Real,
+    );
+
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &result {
+        Value::Real(v) => {
+            assert!(
+                (v - 2.5).abs() < 1e-6,
+                "safety_factor: expected 2.5, got {v}"
+            );
+        }
+        _ => panic!(
+            "sample(safety_factor(field, yield), pt) should return Real, got {:?}",
+            result
+        ),
+    }
+}
