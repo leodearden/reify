@@ -232,7 +232,7 @@ fn get_source_location(
 #[tauri::command]
 fn get_entity_tree(
     state: tauri::State<'_, AppState>,
-) -> Vec<reify_gui::types::EntityTreeNode> {
+) -> Result<Vec<reify_gui::types::EntityTreeNode>, String> {
     reify_gui::commands::get_entity_tree_impl(&state.engine)
 }
 

@@ -103,11 +103,13 @@ pub fn open_file_engine_impl(
 /// Return the hierarchical entity tree for the currently loaded module.
 ///
 /// Returns an empty vec when no module is loaded.
-pub fn get_entity_tree_impl(engine: &Mutex<EngineSession>) -> Vec<EntityTreeNode> {
+pub fn get_entity_tree_impl(
+    engine: &Mutex<EngineSession>,
+) -> Result<Vec<EntityTreeNode>, String> {
     engine
         .lock()
+        .map_err(|e| format!("Lock error: {}", e))
         .map(|s| s.get_entity_tree())
-        .unwrap_or_default()
 }
 
 /// Return the entity identity map (entity_path → EntityIdentity) for the loaded module.
