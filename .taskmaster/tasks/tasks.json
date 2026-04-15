@@ -36754,6 +36754,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1761,
+        "title": "Viewport test quality: extract shared Three.js mocks, fix brittle assertion, add ghost edge-case tests",
+        "description": "Address three test quality issues from task 1742 review:\n\n1. **Extract shared mock (S6)**: MockMeshBasicMaterial is duplicated nearly identically between meshManager.test.ts (lines 74-95) and ghostMaterial.test.ts (lines 7-29). Extract into a shared test utility file at gui/src/__tests__/viewport/mocks/threeMocks.ts and import in both.\n\n2. **Fix brittle opacity assertion (S5)**: ghostMaterial.test.ts line 62-63 asserts opacity in range [0.12, 0.18] but implementation uses fixed 0.15. Change to exact assertion: expect((mat as any).opacity).toBe(0.15).\n\n3. **Add missing edge-case tests (S8)**: In meshManager.test.ts, add tests for:\n   - ghost→ghost idempotency: setVisibility('A', 'ghost') called twice doesn't double-add ghost clones or throw, and no scene operations occur on the second call\n   - orphan visibility: setVisibility on an entity that was never synced and never arrives doesn't cause issues\n\n### memory_hints\n- search: \"viewport test mock three.js\"\n- search: \"ghost material test quality\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36766,7 +36777,7 @@
       ],
       "created": "2026-04-15T11:55:22.719Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T11:56:10.473Z"
+      "updated": "2026-04-15T11:56:46.777Z"
     }
   }
 }
