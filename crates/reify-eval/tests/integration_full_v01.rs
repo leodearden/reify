@@ -60,6 +60,30 @@ fn check_source(src: &str) -> reify_eval::CheckResult {
     engine.check(&compiled)
 }
 
+/// Assert that `$parsed` (a `ParsedModule`) has at least `$min` declarations
+/// matching `$pat`.  Panics with an actionable message that includes `$label`
+/// and the actual count.
+///
+/// A `macro_rules!` macro is required here because closures cannot accept
+/// match patterns as arguments — `matches!(d, $pat)` requires a `$pat:pat`
+/// macro fragment.
+macro_rules! assert_min_count {
+    ($parsed:expr, $pat:pat, $label:expr, $min:expr) => {{
+        let count = $parsed
+            .declarations
+            .iter()
+            .filter(|d| matches!(d, $pat))
+            .count();
+        assert!(
+            count >= $min,
+            "expected >={} {} declarations, got {}",
+            $min,
+            $label,
+            count
+        );
+    }};
+}
+
 // ── Test 1: file parses without errors ───────────────────────────────────────
 
 /// Read integration_full_v01.ri, verify it parses without errors, and assert
@@ -865,6 +889,19 @@ fn constraint_def_labels() {
             entry.id
         );
     }
+}
+
+// ── Macro test: assert_min_count! catches unmet threshold ────────────────────
+
+/// Verify that `assert_min_count!` panics with an actionable message when the
+/// threshold is not met.  Parses an empty source (0 declarations) and asserts
+/// >=1 Trait — the macro must panic with "expected >=1 Trait" in the message.
+#[test]
+#[should_panic(expected = "expected >=1 Trait")]
+fn assert_min_count_macro_catches_unmet_threshold() {
+    use reify_syntax::Declaration;
+    let parsed = reify_syntax::parse("", ModulePath::single("empty"));
+    assert_min_count!(parsed, Declaration::Trait(_), "Trait", 1);
 }
 
 // ── Test 20: violation regression guard ──────────────────────────────────────
