@@ -582,6 +582,94 @@ fn sample_multi_param_lambda_with_mismatched_point_returns_undef() {
     );
 }
 
+/// Sampling a multi-param lambda field with a `Value::Vector` input unpacks the
+/// vector components as individual scalar arguments, identical to the
+/// `Value::Point` case.
+///
+/// # Contract pinned
+///
+/// `sample()` must accept both `Value::Point` and `Value::Vector` for multi-param
+/// lambdas — they share structural representation (both wrap `Vec<Value>`), and
+/// the calculus paths (`extract_point_coords`, `compute_numerical_divergence_at_point`,
+/// `compute_numerical_curl_at_point`) already establish this convention with the
+/// comment "Accept both Point and Vector — they share structural representation."
+///
+/// Keeping sample() Point-only creates a user-facing asymmetry where a
+/// `Value::Vector([1.0, 2.0, 3.0])` passed to a 3-param lambda silently returns
+/// `Undef` instead of `Real(6.0)`.
+///
+/// # Test specifics
+///
+/// - Field lambda: 3-param `|x, y, z| → (x + y) + z`
+/// - Domain type: `Type::vec3(Type::Real)` (Vector3<Real>)
+/// - Input: `Value::Vector([Real(1.0), Real(2.0), Real(3.0)])`
+/// - Expected: `Real(6.0)` — vector unpacked into x=1.0, y=2.0, z=3.0; (1+2)+3=6
+#[test]
+fn sample_multi_param_lambda_with_vector_input() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda body: (x + y) + z  — same body as the matching-arity Point test.
+    let xy = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        xy,
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+
+    // 3-param lambda — params.len() == 3
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::vec3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // sample(field, Vector([1.0, 2.0, 3.0])) -> Real(6.0)
+    // sample() must unpack Vector([1.0, 2.0, 3.0]) into [x=1.0, y=2.0, z=3.0].
+    // apply_lambda sees 3 args == 3 params -> arity passes.
+    // Body (x + y) + z = (1.0 + 2.0) + 3.0 = 6.0.
+    let vector_val = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(vector_val, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(6.0),
+        "sample() of a 3-param lambda with a matching-length Vector must unpack \
+         Vector components into x, y, z arguments; expected Real(6.0) from (1+2)+3 body"
+    );
+}
+
 // ── Transient: gradient stub tests (MUST be updated when gradient is implemented) ──
 
 /// Gradient of a constant field should yield near-zero components.
