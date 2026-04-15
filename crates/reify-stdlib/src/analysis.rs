@@ -62,6 +62,19 @@ fn von_mises(args: &[Value]) -> Value {
 /// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending.
 fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     // Row-major: d[0]=a00, d[1]=a01, d[2]=a02, d[4]=a11, d[5]=a12, d[8]=a22
+    // This function assumes a symmetric matrix — only upper-triangle entries
+    // (d[1], d[2], d[5]) are read. The lower-triangle (d[3], d[6], d[7]) is
+    // ignored. For non-symmetric inputs the result will be silently wrong.
+    debug_assert!(
+        {
+            let tol = |a: f64, b: f64| (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()));
+            tol(d[1], d[3]) && tol(d[2], d[6]) && tol(d[5], d[7])
+        },
+        "compute_eigenvalues_3x3 assumes a symmetric matrix but got non-symmetric entries: \
+         a01={} vs a10={}, a02={} vs a20={}, a12={} vs a21={}",
+        d[1], d[3], d[2], d[6], d[5], d[7]
+    );
+
     let a00 = d[0];
     let a11 = d[4];
     let a22 = d[8];
