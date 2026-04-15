@@ -57,8 +57,9 @@ pub enum FieldSourceKind {
     /// A field produced by `max_shear()` — lambda slot stores the original tensor
     /// field; sample handler applies pointwise max shear computation.
     MaxShear,
-    /// A field produced by `safety_factor()` — lambda slot stores the original
-    /// tensor field; the yield strength is captured in the codomain metadata.
+    /// A field produced by `safety_factor()` — lambda slot stores a
+    /// `Value::List([original_field, yield_val])`; sample handler unpacks both
+    /// and applies pointwise safety-factor computation.
     SafetyFactor,
 }
 
