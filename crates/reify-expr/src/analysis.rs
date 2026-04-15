@@ -139,12 +139,11 @@ pub(crate) fn compute_von_mises(field_val: &Value) -> Value {
 /// Mirrors the unpacking logic in the `sample` handler for `Value::Lambda` fields.
 fn sample_inner_field(lambda: &Value, point: &Value, ctx: &EvalContext) -> Value {
     if let Value::Lambda { params, .. } = lambda {
-        if params.len() > 1 {
-            if let Value::Point(items) = point {
-                if params.len() == items.len() {
-                    return apply_lambda(lambda, items.as_slice(), ctx);
-                }
-            }
+        if params.len() > 1
+            && let Value::Point(items) = point
+            && params.len() == items.len()
+        {
+            return apply_lambda(lambda, items.as_slice(), ctx);
         }
         apply_lambda(lambda, std::slice::from_ref(point), ctx)
     } else {
