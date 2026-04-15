@@ -38298,7 +38298,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T21:47:02.195Z"
+        "updatedAt": "2026-04-15T21:47:02.195Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/src/scope.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
+          ]
+        }
       },
       {
         "id": 1835,
