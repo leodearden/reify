@@ -20,6 +20,8 @@ export function createEditorStore() {
     const exists = state.openFiles.some((f) => f.path === file.path);
     if (!exists) {
       setState('openFiles', (files) => [...files, file]);
+    } else {
+      updateFileContent(file.path, file.content);
     }
     setState('activeFile', file.path);
   }
