@@ -448,8 +448,21 @@ pub(crate) fn compile_entity(
                     );
                 } else {
                     first_meta_span = Some(meta.span);
+                    let mut seen_meta_keys: std::collections::HashMap<&str, ()> =
+                        std::collections::HashMap::new();
                     for (key, value) in &meta.entries {
-                        scope.meta_entries.insert(key.clone(), value.clone());
+                        if seen_meta_keys.contains_key(key.as_str()) {
+                            diagnostics.push(
+                                Diagnostic::error(format!("duplicate meta key '{}'", key))
+                                    .with_label(DiagnosticLabel::new(
+                                        meta.span,
+                                        "in this meta block",
+                                    )),
+                            );
+                        } else {
+                            seen_meta_keys.insert(key.as_str(), ());
+                            scope.meta_entries.insert(key.clone(), value.clone());
+                        }
                     }
                 }
             }
