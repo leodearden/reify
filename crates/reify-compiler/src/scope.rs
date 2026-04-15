@@ -89,6 +89,23 @@ impl<'u> CompilationScope<'u> {
         self.names.insert(name.to_string(), (id, ty, Some(guard)));
     }
 
+    /// Insert `name → (id, ty, None)` only if `name` is not already registered.
+    ///
+    /// Returns `true` if the entry was inserted (vacant), `false` if it already
+    /// existed (occupied) and was left unchanged. Unlike `register`, this method
+    /// is guaranteed never to overwrite an existing registration.
+    pub(crate) fn register_if_absent(&mut self, name: &str, ty: Type) -> bool {
+        use std::collections::hash_map::Entry;
+        match self.names.entry(name.to_string()) {
+            Entry::Vacant(e) => {
+                let id = ValueCellId::new(&self.entity_name, name);
+                e.insert((id, ty, None));
+                true
+            }
+            Entry::Occupied(_) => false,
+        }
+    }
+
     pub(crate) fn resolve(&self, name: &str) -> Option<(&ValueCellId, &Type)> {
         self.names.get(name).map(|(id, ty, _)| (id, ty))
     }
