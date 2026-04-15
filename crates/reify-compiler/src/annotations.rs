@@ -366,5 +366,24 @@ mod tests {
         );
         assert!(!is_valid_optimized(&a));
     }
+
+    /// Documents that only the *first* arg is tested — extra trailing args are ignored.
+    #[test]
+    fn is_valid_optimized_true_for_string_first_arg_with_trailing_args() {
+        let a = ann(
+            "optimized",
+            vec![
+                reify_types::AnnotationArg::String("kernel::foo".to_string()),
+                reify_types::AnnotationArg::Int(42),
+            ],
+        );
+        assert!(is_valid_optimized(&a));
+    }
+
+    #[test]
+    fn is_valid_optimized_false_for_bool_arg() {
+        let a = ann("optimized", vec![reify_types::AnnotationArg::Bool(true)]);
+        assert!(!is_valid_optimized(&a));
+    }
 }
 
