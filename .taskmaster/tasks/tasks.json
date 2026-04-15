@@ -35385,7 +35385,15 @@
             "crates/reify-syntax/src/ts_parser.rs",
             "crates/reify-syntax/tests/annotation_tests.rs",
             "crates/reify-test-support/src/fixtures.rs"
-          ]
+          ],
+          "memory_hints": {
+            "searches": [
+              "lower_members annotations drop non-param non-let members ts_parser",
+              "solver_hint annotation storage ValueCellDecl reify-syntax"
+            ],
+            "entities": []
+          },
+          "_causation_id": "8a9210de-78df-4834-a133-09f74785f437"
         }
       },
       {
