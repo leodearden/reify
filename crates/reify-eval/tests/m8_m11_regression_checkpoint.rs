@@ -247,7 +247,7 @@ fn checkpoint_m10_geometric_types_eval() {
 }
 
 /// Spot-check M11 field calculus: `FieldUser.f3 = sample(linear_f, 3.0)` where
-/// `linear_f(x) = 2x + 1` → expected value is 7.0.
+/// `linear_f(x) = 2.5x + 1.0` → expected value is 8.5.
 ///
 /// **Fails in step-1** because SOURCE = "" → FieldUser.f3 not found.
 #[test]
