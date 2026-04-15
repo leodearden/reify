@@ -112,6 +112,55 @@ mod tests {
     use crate::fixtures::bracket_source;
     use reify_types::Severity;
 
+    #[test]
+    fn test_compile_source_valid() {
+        let compiled = super::compile_source(bracket_source());
+        assert!(
+            !compiled.templates.is_empty(),
+            "compile_source should produce at least one template for bracket source"
+        );
+    }
+
+    #[test]
+    fn test_compile_source_with_errors() {
+        // Source with an undefined reference — compile_source should NOT panic,
+        // instead it returns the module WITH error diagnostics.
+        let source = r#"structure Bad {
+            let x = unknown_variable
+        }"#;
+        let compiled = super::compile_source(source);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            !errors.is_empty(),
+            "compile_source with invalid source should produce error diagnostics"
+        );
+    }
+
+    #[test]
+    fn test_compile_source_with_stdlib() {
+        // Source referencing stdlib trait Material — should compile without errors
+        // only when stdlib is loaded.
+        let source = r#"structure Steel : Material {
+            param density: Real = 7850
+            param name: String = "Steel"
+        }"#;
+        let compiled = super::compile_source_with_stdlib(source);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "compile_source_with_stdlib should compile stdlib-dependent source without errors: {:?}",
+            errors
+        );
+    }
+
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_make_engine() {
