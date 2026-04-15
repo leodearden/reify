@@ -313,13 +313,14 @@ fn loft_through_full_eval_pipeline() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: abort realization on first geometry failure
+// Tests: sentinel placeholder behavior for compile failures
 // ---------------------------------------------------------------------------
 
-/// When a realization contains multiple ops that all fail to compile, only the
-/// first failure should be reported. The loop should abort after the first
-/// compile_geometry_op returns None, preventing cascading diagnostics from
-/// downstream ops that reference the missing step handle.
+/// When a realization contains multiple ops that all fail to compile, all
+/// failures should be reported. With the sentinel fix, the loop pushes
+/// GeometryHandleId::INVALID and continues (does not break), so all ops are
+/// attempted and each emits its own diagnostic.
+/// The realization is still rolled back because had_failure=true.
 #[test]
 fn cascading_compile_failures_aborted_after_first() {
     use reify_types::Type;
@@ -329,6 +330,7 @@ fn cascading_compile_failures_aborted_after_first() {
 
     // Three Boolean(Union) ops, all referencing non-existent Step indices.
     // compile_geometry_op returns None for each because step_handles is empty.
+    // With the sentinel fix, all 3 ops are attempted → 3 compile-failure diagnostics.
     let union_op_0 = CompiledGeometryOp::Boolean {
         op: BooleanOp::Union,
         left: GeomRef::Step(0),
@@ -359,6 +361,7 @@ fn cascading_compile_failures_aborted_after_first() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
+    // All 3 ops are attempted with sentinel — each emits its own diagnostic
     let compile_failures: Vec<_> = result
         .diagnostics
         .iter()
@@ -367,14 +370,21 @@ fn cascading_compile_failures_aborted_after_first() {
 
     assert_eq!(
         compile_failures.len(),
-        1,
-        "expected exactly 1 compile-failure diagnostic (abort after first), got {}: {:?}",
+        3,
+        "expected exactly 3 compile-failure diagnostics (sentinel continues after each failure), \
+         got {}: {:?}",
         compile_failures.len(),
         result
             .diagnostics
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+
+    // Realization must be rolled back (had_failure=true) — no geometry output
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when all ops fail (realization rolled back)"
     );
 }
 
@@ -533,8 +543,9 @@ fn realization_abort_is_per_realization() {
 }
 
 /// The tessellate path (tessellate_realizations → tessellate_from_values) should
-/// also abort on the first compile failure, producing exactly 1 diagnostic and
-/// no meshes for the failing realization.
+/// also use the sentinel approach: all 3 ops are attempted, each emits a
+/// compile-failure diagnostic, and no meshes are produced for the failing
+/// realization because it is rolled back.
 #[test]
 fn tessellate_aborts_cascading_compile_failures() {
     use reify_types::Type;
@@ -543,6 +554,7 @@ fn tessellate_aborts_cascading_compile_failures() {
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
     // Three Boolean(Union) ops, all referencing non-existent Step indices.
+    // With the sentinel fix, all 3 are attempted → 3 compile-failure diagnostics.
     let union_op_0 = CompiledGeometryOp::Boolean {
         op: BooleanOp::Union,
         left: GeomRef::Step(0),
@@ -573,6 +585,7 @@ fn tessellate_aborts_cascading_compile_failures() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.tessellate_realizations(&module);
 
+    // All 3 ops attempted with sentinel → 3 compile-failure diagnostics
     let compile_failures: Vec<_> = result
         .diagnostics
         .iter()
@@ -581,8 +594,9 @@ fn tessellate_aborts_cascading_compile_failures() {
 
     assert_eq!(
         compile_failures.len(),
-        1,
-        "expected exactly 1 compile-failure diagnostic from tessellate, got {}: {:?}",
+        3,
+        "expected exactly 3 compile-failure diagnostics from tessellate \
+         (sentinel continues after each failure), got {}: {:?}",
         compile_failures.len(),
         result
             .diagnostics
@@ -591,16 +605,18 @@ fn tessellate_aborts_cascading_compile_failures() {
             .collect::<Vec<_>>()
     );
 
+    // Realization rolled back — no meshes
     assert!(
         result.meshes.is_empty(),
-        "expected no meshes when all ops fail to compile"
+        "expected no meshes when all ops fail to compile (realization rolled back)"
     );
 }
 
-/// The exact scenario from the task description: a mid-sequence compile failure
-/// prevents downstream dependent ops from running. op0 (Box) succeeds, op1
-/// (Boolean referencing non-existent steps) fails to compile, and op2 (Fillet
-/// on Step(1)) would also fail but should never execute because the loop aborted.
+/// Sentinel behavior for mixed-failure sequence: op0 (Box) succeeds, op1
+/// (Boolean referencing non-existent steps) fails to compile → INVALID sentinel
+/// pushed at step[1], loop continues. op2 (Fillet on Step(1)) is attempted;
+/// Step(1) resolves to INVALID so compile_geometry_op returns None → second
+/// compile-failure diagnostic. Kernel only receives the Box from op0.
 #[test]
 fn mixed_failure_then_dependent_ops_aborted() {
     use reify_compiler::ModifyKind;
@@ -609,7 +625,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
-    // Op 0: Box (succeeds)
+    // Op 0: Box (succeeds) → handle at step[0]
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
@@ -620,13 +636,15 @@ fn mixed_failure_then_dependent_ops_aborted() {
     };
 
     // Op 1: Boolean union referencing non-existent Step(5) and Step(6) → compile failure
+    // Sentinel INVALID pushed at step[1], loop continues.
     let union_op = CompiledGeometryOp::Boolean {
         op: BooleanOp::Union,
         left: GeomRef::Step(5),
         right: GeomRef::Step(6),
     };
 
-    // Op 2: Fillet on Step(1) — depends on the boolean result, should never run
+    // Op 2: Fillet on Step(1) — IS attempted (sentinel loop continues), but
+    // Step(1) is INVALID so compile_geometry_op returns None → second failure.
     let fillet_op = CompiledGeometryOp::Modify {
         kind: ModifyKind::Fillet,
         target: GeomRef::Step(1),
@@ -659,7 +677,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
         ops.len()
     );
 
-    // (b) exactly 1 compile-failure diagnostic (from op1)
+    // (b) 2 compile-failure diagnostics: op1 (bad refs) and op2 (INVALID target)
     let compile_failures: Vec<_> = result
         .diagnostics
         .iter()
@@ -667,8 +685,9 @@ fn mixed_failure_then_dependent_ops_aborted() {
         .collect();
     assert_eq!(
         compile_failures.len(),
-        1,
-        "expected exactly 1 compile-failure diagnostic, got {}: {:?}",
+        2,
+        "expected 2 compile-failure diagnostics (op1 bad refs + op2 INVALID target), \
+         got {}: {:?}",
         compile_failures.len(),
         result
             .diagnostics
@@ -677,8 +696,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
             .collect::<Vec<_>>()
     );
 
-    // (c) op2 never ran — no second compile-failure diagnostic
-    // (already verified by count == 1 above, but also verify no kernel errors)
+    // (c) no kernel errors — op2's compile failure happens before kernel dispatch
     let kernel_errors: Vec<_> = result
         .diagnostics
         .iter()
@@ -687,7 +705,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
     assert_eq!(
         kernel_errors.len(),
         0,
-        "expected no geometry error diagnostics (op2 should not have run)"
+        "expected no geometry error diagnostics (kernel was never called for op1 or op2)"
     );
 }
 
@@ -1492,5 +1510,279 @@ fn build_revolve_zero_angle_emits_diagnostic() {
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
         &["revolve dropped", "angle"],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests for sentinel placeholder (task-612): compile_geometry_op returning None
+// should push INVALID placeholder and continue, not break.
+// ---------------------------------------------------------------------------
+
+/// When op 1 of 3 fails to compile (returns None), a sentinel should be pushed
+/// and op 2 should still be attempted. This verifies that the kernel receives
+/// 2 sphere calls (ops 0 and 2), not just 1.
+///
+/// Currently fails because the loop `break`s on the first None.
+/// After the fix: sentinel pushed at index 1, loop continues, op 2 succeeds.
+/// The realization is rolled back because had_failure=true.
+#[test]
+fn sentinel_placeholder_continues_independent_ops() {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Sphere (will succeed)
+    let sphere_op_0 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(10.0))],
+    };
+
+    // Op 1: Boolean Union referencing Step(99) and Step(99) — indices that don't
+    // exist in step_handles, so compile_geometry_op returns None.
+    let failing_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(99),
+        right: GeomRef::Step(99),
+    };
+
+    // Op 2: Sphere (would succeed if loop continues past op 1)
+    let sphere_op_2 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(10.0)))
+        .realization(e, 0, vec![sphere_op_0, failing_op, sphere_op_2])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_sentinel_continues"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    let kernel_ops = ops_ref.lock().unwrap();
+
+    // After the sentinel fix: both Sphere ops (0 and 2) should reach the kernel
+    let sphere_ops: Vec<_> = kernel_ops
+        .iter()
+        .filter(|rec| matches!(rec.op, reify_types::GeometryOp::Sphere { .. }))
+        .collect();
+
+    assert_eq!(
+        sphere_ops.len(),
+        2,
+        "expected 2 sphere operations (sentinel allows op 2 to proceed), got {}: kernel_ops={:?}",
+        sphere_ops.len(),
+        kernel_ops
+            .iter()
+            .map(|r| format!("{:?}", r.op))
+            .collect::<Vec<_>>()
+    );
+
+    // The realization should be rolled back (had_failure=true) → no geometry output
+    assert!(
+        result.geometry_output.is_none(),
+        "realization should be rolled back when any op fails, but got geometry output"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests for rollback correctness with sentinel (step-8)
+// ---------------------------------------------------------------------------
+
+/// Rollback correctness: op0 (Sphere) succeeds and produces a valid handle, but
+/// op1 (Boolean referencing non-existent Step(5)) fails to compile and sets
+/// had_failure=true. Even though op0's handle is in step_handles at the time
+/// of failure, the realization's handle range must be truncated to handle_start
+/// because had_failure=true triggers the rollback condition.
+///
+/// Verifies: geometry_output is None despite op0 producing a valid handle, and
+/// a compile-failure diagnostic is emitted for op1.
+#[test]
+fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Sphere (compiles and executes OK) → valid handle in step_handles[0]
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(10.0))],
+    };
+
+    // Op 1: Boolean referencing non-existent Step(5) → compile failure, sets had_failure
+    let union_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(5),
+        right: GeomRef::Step(5),
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "radius", Type::length(), Some(mm_literal(10.0)))
+        .realization(e, 0, vec![sphere_op, union_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_had_failure_rollback"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (a) kernel received exactly 1 execute call (Sphere from op0)
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected 1 kernel execute call (Sphere from op0), got {}",
+        ops.len()
+    );
+
+    // (b) had_failure rollback: geometry_output must be None even though op0 succeeded
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None — had_failure=true must trigger rollback \
+         even though op0 produced a valid Sphere handle"
+    );
+
+    // (c) exactly 1 compile-failure diagnostic (from op1)
+    let compile_failures: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .collect();
+    assert_eq!(
+        compile_failures.len(),
+        1,
+        "expected 1 compile-failure diagnostic (op1 bad refs), got {}: {:?}",
+        compile_failures.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Regression test for the Draft plane resolution missing INVALID filter.
+///
+/// Scenario: 3 ops in a realization:
+///   Op 0 — Sphere → succeeds, pushes a valid handle into step_handles[0]
+///   Op 1 — Boolean(Step(5), Step(5)) → fails compile (indices OOB) → pushes
+///           INVALID sentinel into step_handles[1]
+///   Op 2 — Draft(target=Step(0)) → target_id resolves to the sphere handle (valid),
+///           but step_handles.last() is INVALID (the sentinel from op 1).
+///           After the fix, the INVALID filter causes plane_id to be None,
+///           so compile_geometry_op returns None for the Draft.
+///
+/// Before the fix: INVALID was forwarded as `plane` to the kernel, leading to
+/// undefined behaviour. After the fix: the Draft is also treated as a compile
+/// failure (sentinel pushed, had_failure=true), geometry_output remains None.
+#[test]
+fn draft_plane_invalid_sentinel_causes_compile_failure() {
+    use reify_compiler::ModifyKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(reify_types::Value::Real(v), Type::Real);
+
+    // Op 0: Sphere — succeeds, produces a valid handle at step_handles[0]
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(10.0))],
+    };
+
+    // Op 1: Boolean with out-of-bounds Step refs — fails compile → INVALID sentinel
+    // pushed at step_handles[1], had_failure=true.
+    let bad_bool_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(5),
+        right: GeomRef::Step(5),
+    };
+
+    // Op 2: Draft targeting Step(0) (the sphere).
+    //   target_id resolves to the sphere handle (valid, not INVALID).
+    //   step_handles.last() = INVALID (sentinel from op 1).
+    //   After the fix: .filter(|h| *h != GeometryHandleId::INVALID) → None
+    //   → compile_geometry_op returns None → another sentinel pushed.
+    let draft_op = CompiledGeometryOp::Modify {
+        kind: ModifyKind::Draft,
+        target: GeomRef::Step(0),
+        args: vec![
+            // "target" arg (not used for target_id resolution — that comes from `target` field)
+            ("target".into(), mm_literal(10.0)),
+            // "angle" arg must evaluate to a Value so the `eval_arg("angle")?` succeeds
+            ("angle".into(), real_literal(5.0)),
+            // "plane" arg is in args but not used for plane resolution (step_handles.last() is used)
+            ("plane".into(), real_literal(0.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "radius", Type::length(), Some(mm_literal(10.0)))
+        .realization(e, 0, vec![sphere_op, bad_bool_op, draft_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_draft_invalid_plane"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (a) Kernel received exactly 1 execute call — only the Sphere from op0.
+    //     Op1 fails compile (not sent to kernel). Op2 fails compile because
+    //     plane_id is INVALID (not sent to kernel).
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected only 1 kernel execute call (Sphere), got {}: {:?}",
+        ops.len(),
+        ops
+    );
+
+    // (b) geometry_output is None: all handles are rolled back because had_failure=true.
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None — Draft with INVALID plane must trigger rollback"
+    );
+
+    // (c) Exactly 2 compile-failure diagnostics: one for op1 (bad bool refs) and one
+    //     for op2 (Draft with INVALID plane).
+    let compile_failures: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .collect();
+    assert_eq!(
+        compile_failures.len(),
+        2,
+        "expected 2 compile-failure diagnostics (op1 bad refs + op2 INVALID plane), got {}: {:?}",
+        compile_failures.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }

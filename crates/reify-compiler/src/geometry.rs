@@ -452,6 +452,8 @@ pub(crate) fn compile_geometry_call(
             }
             let mut profiles = Vec::with_capacity(args.len());
             for i in 0..args.len() {
+                // Silent fallback — consistent with extrude/revolve_full which use
+                // geom_ref() and never emit an error for non-geometry profiles.
                 let r = geom_refs
                     .get(&i)
                     .cloned()
@@ -583,13 +585,19 @@ pub(crate) fn compile_geometry_call(
                 );
                 return None;
             }
+            // Note: sweep() emits an error diagnostic when profile or path are not
+            // geometry expressions. This is intentionally asymmetric with loft(), which
+            // silently falls back to GeomRef::Step(step_offset) for any non-geometry
+            // profile (matching the geom_ref() helper convention used by extrude/revolve_full).
+            // sweep() is stricter because its two arguments have specific, named roles
+            // (profile and path) that are clearly communicated to the user.
             let profile = if let Some(r) = geom_refs.get(&0).cloned() {
                 r
             } else {
                 diagnostics.push(Diagnostic::error(
                     "sweep() profile (argument 1) must be a geometry expression".to_string(),
                 ));
-                GeomRef::Step(0)
+                GeomRef::Step(step_offset)
             };
             let path = if let Some(r) = geom_refs.get(&1).cloned() {
                 r

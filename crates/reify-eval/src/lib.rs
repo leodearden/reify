@@ -3088,6 +3088,7 @@ impl Engine {
             for template in &module.templates {
                 for realization in &template.realizations {
                     let handle_start = step_handles.len();
+                    let mut had_failure = false;
                     for op in &realization.operations {
                         total_ops += 1;
                         let geom_op = compile_geometry_op(
@@ -3103,6 +3104,11 @@ impl Engine {
                                 Ok(handle) => {
                                     step_handles.push(handle.id);
                                 }
+                                // Kernel errors break immediately: a geometry engine failure
+                                // is often unrecoverable (e.g. corrupt state), and subsequent
+                                // ops that depend on the failed handle would fail too. Compile
+                                // errors (None branch below) are cheaper to continue past because
+                                // we can push a sentinel and still attempt independent ops.
                                 Err(e) => {
                                     diagnostics
                                         .push(Diagnostic::error(format!("geometry error: {}", e)));
@@ -3113,12 +3119,13 @@ impl Engine {
                                 diagnostics.push(Diagnostic::error(
                                     "failed to compile geometry operation",
                                 ));
-                                break;
+                                step_handles.push(GeometryHandleId::INVALID);
+                                had_failure = true;
                             }
                         }
                     }
                     // Discard intermediate handles from partially-failed realizations
-                    if step_handles.len() - handle_start < realization.operations.len() {
+                    if had_failure || step_handles.len() - handle_start < realization.operations.len() {
                         step_handles.truncate(handle_start);
                     }
                 }
@@ -3168,6 +3175,7 @@ impl Engine {
             for template in &module.templates {
                 for realization in &template.realizations {
                     let handle_start = step_handles.len();
+                    let mut had_failure = false;
                     for op in &realization.operations {
                         total_ops += 1;
                         let geom_op = compile_geometry_op(
@@ -3183,6 +3191,11 @@ impl Engine {
                                 Ok(handle) => {
                                     step_handles.push(handle.id);
                                 }
+                                // Kernel errors break immediately: a geometry engine failure
+                                // is often unrecoverable (e.g. corrupt state), and subsequent
+                                // ops that depend on the failed handle would fail too. Compile
+                                // errors (None branch below) are cheaper to continue past because
+                                // we can push a sentinel and still attempt independent ops.
                                 Err(e) => {
                                     diagnostics
                                         .push(Diagnostic::error(format!("geometry error: {}", e)));
@@ -3193,12 +3206,13 @@ impl Engine {
                                 diagnostics.push(Diagnostic::error(
                                     "failed to compile geometry operation",
                                 ));
-                                break;
+                                step_handles.push(GeometryHandleId::INVALID);
+                                had_failure = true;
                             }
                         }
                     }
                     // Discard intermediate handles from partially-failed realizations
-                    if step_handles.len() - handle_start < realization.operations.len() {
+                    if had_failure || step_handles.len() - handle_start < realization.operations.len() {
                         step_handles.truncate(handle_start);
                     }
                 }
@@ -3289,6 +3303,7 @@ impl Engine {
         for template in &module.templates {
             for realization in &template.realizations {
                 let handle_start = step_handles.len();
+                let mut had_failure = false;
 
                 for op in &realization.operations {
                     let geom_op = compile_geometry_op(
@@ -3304,6 +3319,11 @@ impl Engine {
                             Ok(handle) => {
                                 step_handles.push(handle.id);
                             }
+                            // Kernel errors break immediately: a geometry engine failure
+                            // is often unrecoverable (e.g. corrupt state), and subsequent
+                            // ops that depend on the failed handle would fail too. Compile
+                            // errors (None branch below) are cheaper to continue past because
+                            // we can push a sentinel and still attempt independent ops.
                             Err(e) => {
                                 diagnostics
                                     .push(Diagnostic::error(format!("geometry error: {}", e)));
@@ -3313,13 +3333,14 @@ impl Engine {
                         None => {
                             diagnostics
                                 .push(Diagnostic::error("failed to compile geometry operation"));
-                            break;
+                            step_handles.push(GeometryHandleId::INVALID);
+                            had_failure = true;
                         }
                     }
                 }
 
                 // Discard intermediate handles from partially-failed realizations
-                if step_handles.len() - handle_start < realization.operations.len() {
+                if had_failure || step_handles.len() - handle_start < realization.operations.len() {
                     step_handles.truncate(handle_start);
                 }
 
@@ -3659,8 +3680,8 @@ fn compile_geometry_op(
         CompiledGeometryOp::Boolean { op, left, right } => {
             let resolve_ref = |r: &GeomRef| -> Option<GeometryHandleId> {
                 match r {
-                    GeomRef::Step(idx) => step_handles.get(*idx).copied(),
-                    GeomRef::Sub(_name) => step_handles.last().copied(),
+                    GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID),
+                    GeomRef::Sub(_name) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID),
                 }
             };
             let left_id = resolve_ref(left)?;
@@ -3682,8 +3703,8 @@ fn compile_geometry_op(
         }
         CompiledGeometryOp::Modify { kind, target, args } => {
             let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                GeomRef::Sub(_) => step_handles.last().copied()?,
+                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
             };
             let mut eval_arg = |name: &str| -> Option<reify_types::Value> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
@@ -3724,7 +3745,9 @@ fn compile_geometry_op(
                     // plane is passed as an expression that evaluates to a value;
                     // at this level we don't have the geometry handle yet, so we
                     // use step_handles.last() as a placeholder for the plane reference.
-                    let plane_id = step_handles.last().copied();
+                    // Filter INVALID so a preceding compile failure (sentinel) propagates
+                    // as None here rather than forwarding INVALID to the kernel.
+                    let plane_id = step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID);
                     Some(reify_types::GeometryOp::Draft {
                         target: target_id,
                         angle,
@@ -3742,8 +3765,8 @@ fn compile_geometry_op(
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
             let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                GeomRef::Sub(_) => step_handles.last().copied()?,
+                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
             };
             let mut f64_arg = |name: &str| {
                 eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
@@ -3803,8 +3826,8 @@ fn compile_geometry_op(
         CompiledGeometryOp::Pattern { kind, target, args } => {
             // Pattern operations resolve target via step index
             let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                GeomRef::Sub(_) => step_handles.last().copied()?,
+                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
             };
             match kind {
                 reify_compiler::PatternKind::Linear => {
@@ -3860,8 +3883,8 @@ fn compile_geometry_op(
                     let resolved: Option<Vec<GeometryHandleId>> = profiles
                         .iter()
                         .map(|r| match r {
-                            GeomRef::Step(idx) => step_handles.get(*idx).copied(),
-                            GeomRef::Sub(_) => step_handles.last().copied(),
+                            GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID),
+                            GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID),
                         })
                         .collect();
                     Some(reify_types::GeometryOp::Loft {
@@ -3870,8 +3893,8 @@ fn compile_geometry_op(
                 }
                 reify_compiler::SweepKind::Extrude => {
                     let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     let distance = eval_named_arg(
                         "distance",
@@ -3906,8 +3929,8 @@ fn compile_geometry_op(
                 }
                 reify_compiler::SweepKind::Revolve => {
                     let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     let mut f64_arg = |name: &str| {
                         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
@@ -3949,13 +3972,13 @@ fn compile_geometry_op(
                 reify_compiler::SweepKind::Sweep => {
                     // Resolve profile GeomRef (first entry in profiles) to a handle
                     let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     // Resolve path GeomRef (second entry in profiles) to a handle
                     let path_handle = match profiles.get(1)? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     Some(reify_types::GeometryOp::Sweep {
                         profile: profile_handle,
@@ -6140,6 +6163,91 @@ mod tests {
         assert_ne!(
             fp_ab, fp_ba,
             "cell ordering must affect the fingerprint (cell identity contributes to the hash)"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests: INVALID sentinel preserves step index alignment (task-612, step-9)
+    // ---------------------------------------------------------------------------
+
+    /// Verifies that an INVALID sentinel at step index 1 does not shift subsequent
+    /// valid handles. With step_handles = [42, INVALID, 100]:
+    /// - Boolean(Step(0), Step(2)) → Some(Union { left: 42, right: 100 })
+    ///   Step(0) resolves to 42 and Step(2) resolves to 100, both correct.
+    ///   The INVALID at index 1 is skipped; indices ≥ 2 are unaffected.
+    /// - Boolean(Step(0), Step(1)) → None
+    ///   Step(1) is INVALID, filtered out by the sentinel check, so the op fails.
+    ///
+    /// Together these two assertions confirm that:
+    /// (a) the sentinel at index 1 maintains index alignment for subsequent handles,
+    /// (b) the INVALID value correctly blocks resolution of its own index.
+    #[test]
+    fn compile_geometry_op_invalid_sentinel_preserves_index_alignment() {
+        use reify_compiler::BooleanOp;
+        let values = ValueMap::new();
+
+        // step_handles[0] = 42 (valid sphere handle)
+        // step_handles[1] = INVALID (sentinel for a failed op)
+        // step_handles[2] = 100 (valid handle — must remain at index 2)
+        let step_handles = vec![
+            GeometryHandleId(42),
+            GeometryHandleId::INVALID,
+            GeometryHandleId(100),
+        ];
+
+        // (a) Union(Step(0), Step(2)): both resolve correctly despite sentinel at index 1
+        let op_ok = CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(2),
+        };
+        let result_ok = compile_geometry_op(
+            &op_ok,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut Vec::new(),
+        );
+        let result_ok = result_ok.expect(
+            "Boolean(Step(0), Step(2)) should succeed: both indices hold valid handles",
+        );
+        match result_ok {
+            reify_types::GeometryOp::Union { left, right } => {
+                assert_eq!(
+                    left,
+                    GeometryHandleId(42),
+                    "Step(0) should resolve to handle 42 (not shifted by sentinel at index 1)"
+                );
+                assert_eq!(
+                    right,
+                    GeometryHandleId(100),
+                    "Step(2) should resolve to handle 100 (aligned correctly despite sentinel at 1)"
+                );
+            }
+            other => panic!(
+                "expected GeometryOp::Union from Boolean(Step(0), Step(2)), got {:?}",
+                other
+            ),
+        }
+
+        // (b) Union(Step(0), Step(1)): Step(1) is INVALID → filtered out → returns None
+        let op_fail = CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(1),
+        };
+        let result_fail = compile_geometry_op(
+            &op_fail,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut Vec::new(),
+        );
+        assert!(
+            result_fail.is_none(),
+            "Boolean(Step(0), Step(1)) should return None: Step(1) is INVALID and filtered out"
         );
     }
 }
