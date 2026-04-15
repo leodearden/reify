@@ -36041,15 +36041,16 @@
         "description": "Add a complementary negative test in collection_sub_tests.rs that expects a diagnostic when InstanceQualifiedAccess references a trait not implemented by one of the mixed subs (collection + non-collection coexisting). The existing test at line 541 covers the happy path (both sub kinds coexist and resolve); this would lock down error reporting for the failure case.\n\nMemory hints: search \"InstanceQualifiedAccess mixed sub collection_sub_tests\" for test context; search \"sub_member_types collection_sub_member_types\" for the compilation model.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:52:55.489Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:52:54.898Z",
+      "lastModified": "2026-04-15T06:52:55.489Z",
       "taskCount": 1726,
       "completedCount": 1485,
       "tags": [
