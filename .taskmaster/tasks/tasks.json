@@ -37861,11 +37861,11 @@
         "description": "Break up crates/reify-eval/src/lib.rs (6709 lines) into smaller modules to reduce orchestrator lock contention. This file is the #1 concurrency bottleneck — 15 tasks contend on it with max_per_module=1.\n\nmemory_hints:\n- search: \"reify-eval lib.rs extraction\" \"geometry_ops module\"\n- entity: reify-eval, Engine, compile_geometry_op",
         "details": "## Extraction 1: geometry_ops.rs (~3500 lines, highest value)\n\nMove `compile_geometry_op` (line 3705) and its helpers to `crates/reify-eval/src/geometry_ops.rs`:\n- `compile_geometry_op` — free function, zero coupling to Engine\n- `eval_named_arg` (line 3602)\n- `eval_named_arg_f64` (line 3633)\n- `eval_all_args_to_f64` (line 3660)\n- All tests from lines 4799–6709 (~1910 lines) that test compile_geometry_op\n\nThis is the highest-value extraction: 6 of the 15 tasks touching lib.rs only need this code. After extraction they lock `geometry_ops.rs` instead, immediately enabling parallel execution.\n\n## Extraction 2: concurrent.rs (~500 lines)\n\nMove concurrent-edit Engine methods to `crates/reify-eval/src/concurrent.rs` via a separate impl block:\n- `prepare_concurrent_edit` (line 767)\n- `rollback_concurrent_edit` (line 849)\n- `apply_concurrent_edit` (line 867)\n- `resolve_concurrent_edit` (line 947)\n- `ConcurrentEditSetup` struct (line 208)\n- `ConcurrentNodeResult` struct (line 242)\n- `ConcurrentEditResult` struct (line 257)\n\nThese methods form a cohesive group. Use `impl Engine` in a separate file (Rust allows multiple impl blocks across files within the same crate).\n\n## Extraction 3: unfold.rs (~340 lines)\n\nMove recursive-unfolding free functions to `crates/reify-eval/src/unfold.rs`:\n- `unfold_recursive_sub` (line 4276)\n- `elaborate_child_instance` (line 4469)\n- `elaborate_child_params_only` (line 4516)\n- `elaborate_child_lets_only` (line 4611)\n\n## Expected concurrency impact\n\n- Extraction 1 alone moves ~6 tasks off the lib.rs lock key (40% contention reduction)\n- Extractions 1+2 together move ~9 tasks off (60% reduction)\n- Remaining ~6 tasks still contend on eval()/edit_param() which are tightly coupled to Engine internals\n\n## Constraints\n\n- All extractions are pure moves — no behavioral changes\n- Public API surface of reify-eval must not change (re-export moved items from lib.rs)\n- Tests must continue to pass: `cargo test --workspace`\n- Run `cargo clippy --workspace -- -D warnings` to verify no new warnings",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T21:12:27.767Z",
+        "updatedAt": "2026-04-15T21:36:28.972Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/concurrent.rs",
@@ -38222,7 +38222,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:36:26.362Z",
+      "lastModified": "2026-04-15T21:36:28.972Z",
       "taskCount": 1824,
       "completedCount": 1553,
       "tags": [
