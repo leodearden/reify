@@ -1537,6 +1537,13 @@ fn bfs_traverses_through_wrapper_with_zero_value_cells() {
     let mut engine = Engine::new(Box::new(checker), None);
     let result = engine.eval(&module);
 
+    // No spurious diagnostics should be emitted during BFS traversal through zero-value-cell wrappers
+    assert!(
+        result.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        result.diagnostics
+    );
+
     // Sanity: child entity exists with n=1
     assert_eq!(
         result.values.get(&ValueCellId::new("S.child", "n")),
