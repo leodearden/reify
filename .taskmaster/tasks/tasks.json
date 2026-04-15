@@ -37677,11 +37677,11 @@
         "description": "Add a check_canonical_is_cached() test that calls check_canonical() twice and asserts pointer equality, matching the pattern of the existing eval_canonical_is_cached() test (lines 96-104). Both eval_canonical() and check_canonical() were changed to use OnceLock caching, but only eval_canonical has a test verifying the caching behavior.\n\nInsert the new test near line 104, right after eval_canonical_is_cached().\n\nmemory_hints: search \"eval_canonical_is_cached\" in stress_large_assembly.rs for the pattern to follow.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T17:06:32.441Z",
+        "updatedAt": "2026-04-15T21:32:59.719Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/stress_large_assembly.rs"
@@ -38172,7 +38172,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:32:59.211Z",
+      "lastModified": "2026-04-15T21:32:59.719Z",
       "taskCount": 1823,
       "completedCount": 1552,
       "tags": [
