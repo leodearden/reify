@@ -516,6 +516,21 @@ fn shared_let_operand_step_indices_correct() {
     );
 }
 
+// ─── task-1712 step-1: realization_named panics on names/realizations count mismatch ───
+
+#[test]
+#[should_panic(expected = "names count")]
+fn realization_named_panics_on_count_mismatch() {
+    // SRC_DIFFERENCE_LET_BOUND produces 3 realizations: body, hole, result.
+    // Passing only &["body"] (1 element) with target "body" would silently
+    // succeed without the guard: idx=0 is in bounds, returning realizations[0]
+    // even though the mapping is wrong. The names-count guard must catch this.
+    let compiled = compile_no_errors(SRC_DIFFERENCE_LET_BOUND);
+    let template = &compiled.templates[0];
+    // Deliberate mismatch: 1 name vs 3 realizations
+    let _ = realization_named(template, &["body"], "body");
+}
+
 // ─── step-4: geometry let still produces realization ───
 
 #[test]
