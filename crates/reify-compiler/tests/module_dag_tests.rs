@@ -811,3 +811,59 @@ fn compile_project_multi_import_prelude() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ── step-1 (task-1759): #no_prelude suppresses import prelude pub units ───────
+
+/// Verifies that `#no_prelude` suppresses the import prelude so that pub units
+/// from imported modules are NOT seeded into the unit registry.
+///
+/// dep defines `pub unit myunit : Length = 0.001`.  consumer declares
+/// `#no_prelude`, imports dep, and references `5myunit` in a param.
+/// Because `#no_prelude` shadows the prelude with `&[]` (lib.rs:131), the
+/// unit lookup fails and the consumer module must carry an "unknown unit"
+/// diagnostic for `myunit`.
+///
+/// This exercises the lib.rs:130-131 empty-slice shadowing path through the
+/// full `compile_project` pipeline.
+#[test]
+fn no_prelude_suppresses_import_prelude() {
+    let dir = test_dir("no_prelude_suppresses_import_prelude");
+
+    // dep.ri: exports pub unit myunit
+    fs::write(
+        dir.join("dep.ri"),
+        "pub unit myunit : Length = 0.001\npub structure Part {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    // consumer.ri: #no_prelude suppresses dep's pub units
+    fs::write(
+        dir.join("consumer.ri"),
+        "#no_prelude\nimport dep\nstructure S {\n    param y: Length = 5myunit\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result =
+        reify_compiler::module_dag::compile_project(&dir.join("consumer.ri"), &resolver);
+
+    let modules = result.expect("compile_project should return Ok even with diagnostics");
+    let entry = modules.last().expect("no modules returned");
+
+    let errors: Vec<_> = entry
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+
+    let unknown_unit_diag = errors
+        .iter()
+        .find(|d| d.message.contains("unknown unit") && d.message.contains("myunit"));
+    assert!(
+        unknown_unit_diag.is_some(),
+        "expected 'unknown unit: myunit' error (prelude suppressed by #no_prelude), got: {:#?}",
+        errors
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
