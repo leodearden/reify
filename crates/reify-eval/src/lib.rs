@@ -59,15 +59,14 @@ impl std::fmt::Display for EngineError {
             EngineError::CellNotFound { cell } => {
                 write!(
                     f,
-                    "value cell not found in evaluation graph: {}.{}",
-                    cell.entity, cell.member
+                    "value cell not found in evaluation graph: {cell}"
                 )
             }
             EngineError::DimensionMismatch { cell, expected, got } => {
                 write!(
                     f,
-                    "dimension mismatch for {}.{}: expected {:?}, got {:?}",
-                    cell.entity, cell.member, expected, got
+                    "dimension mismatch for {cell}: expected {:?}, got {:?}",
+                    expected, got
                 )
             }
         }
@@ -1828,28 +1827,27 @@ impl Engine {
             .as_ref()
             .ok_or(EngineError::NotInitialized)?;
 
-        // Validate that the cell exists in the evaluation graph.
-        if !state.snapshot.graph.value_cells.contains_key(&cell) {
-            return Err(EngineError::CellNotFound { cell });
-        }
+        // Single lookup: validate existence and retrieve the node in one traversal.
+        // This eliminates the earlier double-lookup (contains_key + get().unwrap()).
+        let cell_node = match state.snapshot.graph.value_cells.get(&cell) {
+            Some(node) => node,
+            None => return Err(EngineError::CellNotFound { cell }),
+        };
 
         // Validate dimension compatibility for Scalar cells.
         // If the cell is Type::Scalar { dimension: expected } and the supplied
         // value is Value::Scalar { dimension: got } where got != expected,
         // reject the edit immediately rather than propagating a dimension-corrupt
         // value through the eval graph.
+        if let reify_types::Type::Scalar { dimension: expected } = cell_node.cell_type
+            && let reify_types::Value::Scalar { dimension: got, .. } = &new_value
+            && *got != expected
         {
-            let cell_node = state.snapshot.graph.value_cells.get(&cell).unwrap();
-            if let reify_types::Type::Scalar { dimension: expected } = cell_node.cell_type
-                && let reify_types::Value::Scalar { dimension: got, .. } = &new_value
-                && *got != expected
-            {
-                return Err(EngineError::DimensionMismatch {
-                    cell,
-                    expected,
-                    got: *got,
-                });
-            }
+            return Err(EngineError::DimensionMismatch {
+                cell,
+                expected,
+                got: *got,
+            });
         }
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
