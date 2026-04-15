@@ -36490,6 +36490,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1754,
+        "title": "Extract shared realization-processing loop to reduce sentinel logic duplication",
+        "description": "In crates/reify-eval/src/lib.rs, the sentinel/had_failure logic is duplicated identically across three nearly-identical loops: build_snapshot (~line 3088-3131), build (~line 3175-3218), and tessellate_from_values (~line 3303-3345). Each follows the same pattern: iterate ops, compile, match Ok/Err/None, push INVALID on None, check had_failure for rollback. This diff added ~15 lines of identical logic (including identical comments) to each copy.\n\nExtract the inner realization-processing loop into a shared helper function, e.g. `fn execute_realization_ops(kernel, ops, step_handles, ...) -> bool` returning had_failure. This centralizes the sentinel logic and rollback check.\n\nmemory_hints: search \"realization loop build_snapshot build tessellate sentinel\", search \"execute_realization_ops helper extraction\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36502,7 +36513,7 @@
       ],
       "created": "2026-04-15T09:54:32.566Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T10:27:28.084Z"
+      "updated": "2026-04-15T10:28:06.436Z"
     }
   }
 }
