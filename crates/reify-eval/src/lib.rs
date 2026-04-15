@@ -39,6 +39,12 @@ pub enum EngineError {
     NotInitialized,
     /// The specified ValueCellId does not exist in the evaluation graph.
     CellNotFound { cell: reify_types::ValueCellId },
+    /// The supplied value's dimension does not match the cell's declared type.
+    DimensionMismatch {
+        cell: reify_types::ValueCellId,
+        expected: reify_types::DimensionVector,
+        got: reify_types::DimensionVector,
+    },
 }
 
 impl std::fmt::Display for EngineError {
@@ -55,6 +61,13 @@ impl std::fmt::Display for EngineError {
                     f,
                     "value cell not found in evaluation graph: {}.{}",
                     cell.entity, cell.member
+                )
+            }
+            EngineError::DimensionMismatch { cell, expected, got } => {
+                write!(
+                    f,
+                    "dimension mismatch for {}.{}: expected {:?}, got {:?}",
+                    cell.entity, cell.member, expected, got
                 )
             }
         }
@@ -1818,6 +1831,26 @@ impl Engine {
         // Validate that the cell exists in the evaluation graph.
         if !state.snapshot.graph.value_cells.contains_key(&cell) {
             return Err(EngineError::CellNotFound { cell });
+        }
+
+        // Validate dimension compatibility for Scalar cells.
+        // If the cell is Type::Scalar { dimension: expected } and the supplied
+        // value is Value::Scalar { dimension: got } where got != expected,
+        // reject the edit immediately rather than propagating a dimension-corrupt
+        // value through the eval graph.
+        {
+            let cell_node = state.snapshot.graph.value_cells.get(&cell).unwrap();
+            if let reify_types::Type::Scalar { dimension: expected } = cell_node.cell_type {
+                if let reify_types::Value::Scalar { dimension: got, .. } = &new_value {
+                    if *got != expected {
+                        return Err(EngineError::DimensionMismatch {
+                            cell,
+                            expected,
+                            got: *got,
+                        });
+                    }
+                }
+            }
         }
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
