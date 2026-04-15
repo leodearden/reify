@@ -106,10 +106,8 @@ pub fn open_file_engine_impl(
 pub fn get_entity_tree_impl(
     engine: &Mutex<EngineSession>,
 ) -> Result<Vec<EntityTreeNode>, String> {
-    engine
-        .lock()
-        .map_err(|e| format!("Lock error: {}", e))
-        .map(|s| s.get_entity_tree())
+    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(s.get_entity_tree())
 }
 
 /// Return the entity identity map (entity_path → EntityIdentity) for the loaded module.
@@ -118,10 +116,8 @@ pub fn get_entity_tree_impl(
 pub fn get_entity_identity_map_impl(
     engine: &Mutex<EngineSession>,
 ) -> Result<HashMap<String, EntityIdentity>, String> {
-    engine
-        .lock()
-        .map_err(|e| format!("Lock error: {}", e))
-        .map(|s| s.get_entity_identity_map())
+    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(s.get_entity_identity_map())
 }
 
 /// Return a preview GuiState for a single named definition evaluated with its defaults.
