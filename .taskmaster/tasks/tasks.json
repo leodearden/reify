@@ -35528,11 +35528,11 @@
         "description": "In `crates/reify-compiler/tests/structural_physical_tests.rs`, the `assert_constraint_op` helper (lines 35-50) has two panic paths:\n1. Member not found → `unwrap_or_else(|| panic!(\"expected a constraint referencing {member}\"))`\n2. Wrong operator → `assert_eq!(*op, expected, ...)`\n\nPath (2) is tested by `assert_constraint_op_detects_wrong_operator` (line 713). Path (1) is untested.\n\nAdd a `#[test] #[should_panic(expected = \"expected a constraint referencing\")]` test that passes a non-existent member name (e.g. `\"nonexistent\"`) to `assert_constraint_op` to verify the lookup-failure diagnostic message.\n\nmemory_hints: search \"assert_constraint_op helper\" for the helper definition; search \"assert_constraint_op_detects_wrong_operator\" for the existing panic test pattern to follow.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T01:34:52.287Z"
+        "updatedAt": "2026-04-15T01:47:24.171Z"
       },
       {
         "id": "1701",
@@ -35555,9 +35555,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:46:14.411Z",
+      "lastModified": "2026-04-15T01:47:24.171Z",
       "taskCount": 1701,
-      "completedCount": 1453,
+      "completedCount": 1454,
       "tags": [
         "master"
       ]
