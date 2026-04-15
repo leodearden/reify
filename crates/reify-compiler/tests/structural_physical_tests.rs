@@ -700,18 +700,7 @@ structure def PlasticBody : Plastic {
         .first()
         .expect("expected at least 1 template");
 
-    // Confirm the injected constraint for hardening_modulus uses Gt (>), not Ge (>=).
-    let hm_constraint = template.constraints.iter().find(|cc| {
-        matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
-            if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "hardening_modulus")
-        )
-    });
-    let cc = hm_constraint.expect("expected a constraint referencing hardening_modulus");
-    assert!(
-        matches!(&cc.expr.kind, CompiledExprKind::BinOp { op: BinOp::Gt, .. }),
-        "hardening_modulus constraint must use BinOp::Gt (>), not BinOp::Ge (>=), got: {:?}",
-        cc.expr.kind
-    );
+    assert_constraint_op(template, "hardening_modulus", BinOp::Gt);
 }
 
 // ─── task-1699: assert_constraint_op helper ───────────────────────────────────
