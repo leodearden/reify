@@ -763,3 +763,50 @@ fn edit_param_snapshot_provenance_chain() {
         );
     }
 }
+
+// ── Error-path tests: CellNotFound ────────────────────────────────────────────
+
+/// edit_param with a ValueCellId whose entity does not exist in the graph
+/// should return Err(EngineError::CellNotFound { .. }).
+#[test]
+fn edit_param_nonexistent_entity_returns_cell_not_found() {
+    let (mut engine, _initial) = make_eval_engine();
+    let bad_id = ValueCellId::new("NoSuchEntity", "height");
+    let err = engine
+        .edit_param(bad_id, mm(100.0))
+        .expect_err("edit_param with nonexistent entity should return Err");
+    assert!(
+        matches!(err, reify_eval::EngineError::CellNotFound { .. }),
+        "expected EngineError::CellNotFound, got {err:?}"
+    );
+}
+
+/// edit_param with a ValueCellId whose member does not exist in the graph
+/// should return Err(EngineError::CellNotFound { .. }).
+#[test]
+fn edit_param_nonexistent_param_returns_cell_not_found() {
+    let (mut engine, _initial) = make_eval_engine();
+    let bad_id = ValueCellId::new("Assembly", "no_such_param");
+    let err = engine
+        .edit_param(bad_id, mm(100.0))
+        .expect_err("edit_param with nonexistent param should return Err");
+    assert!(
+        matches!(err, reify_eval::EngineError::CellNotFound { .. }),
+        "expected EngineError::CellNotFound, got {err:?}"
+    );
+}
+
+/// edit_check with a ValueCellId whose entity does not exist in the graph
+/// should return Err(EngineError::CellNotFound { .. }) (delegates to edit_param).
+#[test]
+fn edit_check_nonexistent_entity_returns_cell_not_found() {
+    let (mut engine, _initial) = make_eval_engine();
+    let bad_id = ValueCellId::new("NoSuchEntity", "height");
+    let err = engine
+        .edit_check(bad_id, mm(100.0))
+        .expect_err("edit_check with nonexistent entity should return Err");
+    assert!(
+        matches!(err, reify_eval::EngineError::CellNotFound { .. }),
+        "expected EngineError::CellNotFound, got {err:?}"
+    );
+}
