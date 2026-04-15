@@ -38236,6 +38236,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1831,
+        "title": "Extract shared test helper for chamfer/fillet e2e modify pipeline boilerplate",
+        "description": "The chamfer_e2e.rs and fillet_e2e.rs modify pipeline tests (both the original full-pipeline tests and the new minimal-args contract tests from task 1819) are structurally identical — ~60 lines of boilerplate each (Box primitive setup, template/module building, engine creation, ops extraction). The only differences are ModifyKind (Chamfer vs Fillet), the parameter arg name ('distance' vs 'radius'), and the GeometryOp variant matched.\n\nConsider extracting a shared helper, e.g.:\n```rust\nfn run_modify_pipeline(kind: ModifyKind, args: Vec<(String, CompiledExpr)>) -> Vec<GeometryOpRecord>\n```\ninto a test utility module. The match/assertion at the end can remain test-specific since the GeometryOp variants differ.\n\nNote: This is distinct from task 1802 which covers compiler-side deduplication of `compile_modify_2arg` in geometry.rs. This task covers test-side deduplication.\n\n## memory_hints\n- search: \"test helper extraction patterns reify-eval\"\n- get_entity: \"chamfer_e2e.rs\"\n- get_entity: \"fillet_e2e.rs\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -38248,7 +38259,7 @@
       ],
       "created": "2026-04-15T21:38:55.464Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T21:38:55.489Z"
+      "updated": "2026-04-15T21:39:32.447Z"
     }
   }
 }
