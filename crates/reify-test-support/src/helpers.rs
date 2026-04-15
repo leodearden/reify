@@ -23,6 +23,34 @@ pub fn make_simple_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None)
 }
 
+/// Parse, compile, eval with `SimpleConstraintChecker`, return `EvalResult`.
+///
+/// Convenience helper for tests that need to go straight from source text
+/// to evaluated values without manually constructing an engine.
+///
+/// # Panics
+/// Panics if there are any parse or compile errors.
+#[cfg(feature = "eval-helpers")]
+pub fn eval_source(src: &str) -> reify_eval::EvalResult {
+    let compiled = parse_and_compile(src);
+    let mut engine = make_simple_engine();
+    engine.eval(&compiled)
+}
+
+/// Parse, compile, check with `SimpleConstraintChecker`, return `CheckResult`.
+///
+/// Convenience helper for tests that need to go straight from source text
+/// to constraint check results without manually constructing an engine.
+///
+/// # Panics
+/// Panics if there are any parse or compile errors.
+#[cfg(feature = "eval-helpers")]
+pub fn check_source(src: &str) -> reify_eval::CheckResult {
+    let compiled = parse_and_compile(src);
+    let mut engine = make_simple_engine();
+    engine.check(&compiled)
+}
+
 /// Filter diagnostics to only those with [`Severity::Error`].
 ///
 /// This replaces the duplicated `error_diags` helper found across multiple
@@ -145,6 +173,38 @@ mod tests {
         }
     }
 
+    /// Negative test: a constraint that is definitively false should produce
+    /// `Satisfaction::Violated` under `SimpleConstraintChecker`, differentiating
+    /// it from `MockConstraintChecker` (which only tracks, never really evaluates).
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_make_simple_engine_violated_constraint() {
+        use reify_types::Satisfaction;
+
+        let source = r#"structure Bad {
+            param a: Real = 1.0
+            constraint a > 2.0
+        }"#;
+
+        let result = super::check_source(source);
+
+        // Must produce exactly 1 constraint result
+        assert_eq!(
+            result.constraint_results.len(),
+            1,
+            "expected exactly 1 constraint result, got {}",
+            result.constraint_results.len()
+        );
+
+        // That constraint must be Violated (1.0 > 2.0 is false)
+        assert_eq!(
+            result.constraint_results[0].satisfaction,
+            Satisfaction::Violated,
+            "constraint should be Violated (1.0 > 2.0 is false), got {:?}",
+            result.constraint_results[0].satisfaction
+        );
+    }
+
     #[test]
     fn test_parse_compile_expect_err_detects_error() {
         // Source with an undefined reference should produce a compile error.
@@ -175,6 +235,49 @@ mod tests {
         let compiled = super::parse_and_compile_with_stdlib(source);
         let errors = super::collect_errors(&compiled.diagnostics);
         assert!(errors.is_empty(), "unexpected compile errors: {:?}", errors);
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_eval_source() {
+        let result = super::eval_source(bracket_source());
+        assert!(
+            !result.values.is_empty(),
+            "eval_source should produce non-empty values for bracket source"
+        );
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_check_source() {
+        use reify_types::Satisfaction;
+        let result = super::check_source(bracket_source());
+        assert!(
+            !result.constraint_results.is_empty(),
+            "check_source should produce non-empty constraint_results for bracket source"
+        );
+        for entry in &result.constraint_results {
+            assert_eq!(
+                entry.satisfaction,
+                Satisfaction::Satisfied,
+                "constraint {} should be Satisfied via check_source",
+                entry.id,
+            );
+        }
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    #[should_panic(expected = "parse errors")]
+    fn test_eval_source_panics_on_invalid_source() {
+        super::eval_source("not valid {");
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    #[should_panic(expected = "parse errors")]
+    fn test_check_source_panics_on_invalid_source() {
+        super::check_source("not valid {");
     }
 
     #[test]
