@@ -642,15 +642,30 @@ fn eval_sample_principal_stresses_hydrostatic_dispatch() {
         );
     };
     assert_eq!(items.len(), 3, "should have 3 principal stresses");
+
+    // Extract eigenvalues
+    let mut eigenvalues = [0.0_f64; 3];
     for (i, item) in items.iter().enumerate() {
         match item {
-            Value::Real(v) => assert!(
-                (v - p).abs() < 1e-10,
-                "principal stress[{i}]: expected {p}, got {v}"
-            ),
+            Value::Real(v) => eigenvalues[i] = *v,
             _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
         }
     }
+
+    // Each eigenvalue should equal p
+    for (i, &v) in eigenvalues.iter().enumerate() {
+        assert!(
+            (v - p).abs() < 1e-10,
+            "principal stress[{i}]: expected {p}, got {v}"
+        );
+    }
+
+    // Eigenvalues should be sorted ascending
+    assert!(
+        eigenvalues[0] <= eigenvalues[1] && eigenvalues[1] <= eigenvalues[2],
+        "eigenvalues should be sorted ascending, got {:?}",
+        eigenvalues
+    );
 }
 
 // ── Edge case: max_shear of hydrostatic tensor ────────────────────────────────
