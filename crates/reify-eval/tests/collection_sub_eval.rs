@@ -597,6 +597,98 @@ fn edit_param_non_int_old_count_emits_warning() {
     }
 }
 
+// ─── task-1588 step-3: non-Int new_count emits Warning diagnostic ───
+
+#[test]
+fn edit_param_non_int_new_count_emits_warning() {
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
+    let n_id = ValueCellId::new("Parent", "n");
+
+    // Establish baseline: 4 bolt instances in snapshot
+    let _initial = engine.eval(&module);
+
+    // Edit n to Real(2.0) — new_count_val = Real(2.0) should emit a Warning
+    // old_count_val = Int(4) → Int arm (no warning from old_count match)
+    let r1 = engine
+        .edit_param(n_id, Value::Real(2.0))
+        .expect("edit to Real should succeed");
+
+    // (a) diagnostics must contain a Warning about non-integer new count
+    let has_warning = r1.diagnostics.iter().any(|d| {
+        d.severity == Severity::Warning
+            && d.message.contains("non-integer")
+            && d.message.contains("Parent.__count_bolts")
+    });
+    assert!(
+        has_warning,
+        "expected a Warning diagnostic about non-integer new count cell, got: {:?}",
+        r1.diagnostics
+    );
+
+    // (b) all 4 old bolt instances were removed (old_count = 4 from Int arm)
+    for i in 0..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            r1.values.get(&scoped_id).is_none(),
+            "bolts[{}] should be removed when switching away from Int count",
+            i
+        );
+    }
+
+    // (c) 0 new instances created (new_count = 0 because Real(2.0) → _ => 0)
+    let bolt_count = count_bolt_diameter_instances(&r1.values);
+    assert_eq!(
+        bolt_count, 0,
+        "zero bolt instances should be created when new count is Real(2.0), got {}",
+        bolt_count
+    );
+}
+
+// ─── task-1588 step-5: Undef count transitions do NOT emit spurious warnings ───
+
+#[test]
+fn edit_param_undef_count_transition_no_spurious_warning() {
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
+    let n_id = ValueCellId::new("Parent", "n");
+
+    // Establish baseline: 4 bolt instances in snapshot
+    let _initial = engine.eval(&module);
+
+    // Edit n to Undef — old_count_val=Int(4) (Int arm), new_count_val=Undef (Undef arm)
+    // Neither arm should emit a warning.
+    let r1 = engine
+        .edit_param(n_id.clone(), Value::Undef)
+        .expect("edit to Undef should succeed");
+
+    let warnings: Vec<_> = r1
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "expected no Warning diagnostics for Int→Undef count transition, got: {:?}",
+        warnings
+    );
+
+    // Edit n to Int(2) — old_count_val=Undef (Undef arm), new_count_val=Int(2) (Int arm)
+    // Neither arm should emit a warning.
+    let r2 = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit to Int(2) should succeed");
+
+    let warnings: Vec<_> = r2
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "expected no Warning diagnostics for Undef→Int count transition, got: {:?}",
+        warnings
+    );
+}
+
 // ─── step-30: count Int→Undef removes all instances (regression for unreachable!() bug) ───
 
 #[test]
