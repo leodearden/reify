@@ -110,12 +110,33 @@ fn count_zero_compiles() {
     );
 }
 
-/// PatternCountOne compiles and evals without errors.
+/// PatternCountOne has exactly 1 realization with Linear2D pattern kind.
 #[test]
 fn count_one_single_instance() {
-    // eval_ri_file already asserts no errors
-    eval_ri_file(FIXTURE_PATH, "pattern_composition");
-    // If we reach here, PatternCountOne compiled and eval'd cleanly.
+    let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "PatternCountOne")
+        .expect("PatternCountOne template should be present");
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "PatternCountOne should have 1 realization (the linear_pattern_2d call), got {}",
+        template.realizations.len()
+    );
+    let op = &template.realizations[0].operations[0];
+    assert!(
+        matches!(
+            op,
+            reify_compiler::CompiledGeometryOp::Pattern {
+                kind: PatternKind::Linear2D,
+                ..
+            }
+        ),
+        "PatternCountOne realization should be Pattern(Linear2D), got {:?}",
+        op
+    );
 }
 
 /// PatternGrid10x10 template has exactly 1 realization with Pattern2D kind.
