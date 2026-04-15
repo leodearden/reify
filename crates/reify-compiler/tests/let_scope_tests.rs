@@ -1,42 +1,8 @@
 //! Tests for let-binding scope resolution, especially geometry lets.
 
 use reify_compiler::CompiledGeometryOp;
+use reify_test_support::{compile_source, parse_and_compile};
 use reify_types::Severity;
-
-/// Helper: parse + compile source, assert no errors, return compiled output.
-fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_let_scope"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no error diagnostics, got: {:?}",
-        errors
-    );
-    compiled
-}
-
-/// Helper: parse + compile source, return compiled output (may have errors).
-fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_let_scope"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
 
 // ─── step-1: geometry let should be in scope for subsequent let ───
 
@@ -50,7 +16,7 @@ fn geometry_let_in_scope_for_subsequent_let() {
     let hole = cylinder(r, h)
     let pattern = circular_pattern(hole, 0, 0, 0, 0, 0, 1, 6, 360)
 }"#;
-    let compiled = compile_with_diagnostics(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -74,7 +40,7 @@ fn geometry_let_still_produces_realization() {
     param h: Scalar = 10mm
     let c = cylinder(r, h)
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
     assert_eq!(
         template.realizations.len(),
@@ -101,7 +67,7 @@ fn non_geometry_let_to_let_reference_still_works() {
     let x = 5
     let y = x + 1
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
     // Both should be value cells, not realizations
     assert!(
@@ -126,7 +92,7 @@ fn multiple_geometry_lets_all_produce_realizations() {
     let pattern = circular_pattern(base, 0, 0, 0, 0, 0, 1, 6, 360)
     let mirrored = mirror(base, 0, 0, 0, 0, 1, 0)
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
     assert_eq!(
         template.realizations.len(),
@@ -146,7 +112,7 @@ fn geometry_let_not_a_value_cell() {
     param h: Scalar = 10mm
     let hole = cylinder(r, h)
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
     // 'hole' should NOT appear as a value cell
     assert!(

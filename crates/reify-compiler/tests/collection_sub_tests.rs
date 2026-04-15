@@ -1,30 +1,7 @@
 //! Collection sub-structure tests (task 64).
 
-use reify_types::{CompiledExprKind, Severity};
-
-/// Helper: parse + compile source, assert no errors, return compiled output.
-fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_coll"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no error diagnostics, got: {:?}",
-        errors
-    );
-    compiled
-}
+use reify_test_support::parse_and_compile;
+use reify_types::CompiledExprKind;
 
 // ─── step-1: parse collection sub form ───
 
@@ -89,7 +66,7 @@ fn compile_collection_sub() {
         structure Bolt { param diameter : Scalar = 10mm }
         structure S { sub bolts : List<Bolt> }
     "#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     // Find the S template
     let s_template = compiled
         .templates
@@ -111,7 +88,7 @@ fn compile_instantiation_sub() {
         structure Rib { param width : Scalar = 5mm }
         structure S { sub rib = Rib() }
     "#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -138,7 +115,7 @@ fn compile_count_constraint() {
             constraint bolts.count == n
         }
     "#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -190,7 +167,7 @@ fn compile_indexed_collection_member_access() {
             let d = bolts[0].diameter
         }
     "#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -236,7 +213,7 @@ fn compile_indexed_collection_member_access_preserves_type() {
             let c = bolts[0].count_per_row
         }
     "#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -275,7 +252,7 @@ fn compile_count_constraint_before_sub_declaration() {
             sub bolts : List<Bolt>
         }
     "#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -318,7 +295,7 @@ fn compile_bolts_count_expression() {
             let n = bolts.count
         }
     "#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -367,7 +344,7 @@ fn compile_dynamic_index_collection_member_access() {
             let d = bolts[idx].diameter
         }
     "#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -440,7 +417,7 @@ fn compile_indexed_member_access_multi_member_child() {
             let g = bolts[0].grade
         }
     "#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -489,7 +466,7 @@ fn compile_collection_sub_as_standalone_identifier() {
             let grades = bolts
         }
     "#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -547,7 +524,7 @@ fn compile_collection_identifier_after_noncollection_sub() {
             let gs = bolts
         }
     "#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()

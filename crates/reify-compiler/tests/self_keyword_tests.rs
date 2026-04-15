@@ -14,43 +14,8 @@
 //! There is no gap between step-8 and step-11 in this file — the apparent gap
 //! is a cross-file artifact of the original task-153 plan.
 
+use reify_test_support::{compile_source, parse_and_compile};
 use reify_types::{Severity, ValueCellId};
-
-/// Helper: parse + compile source, assert no errors, return compiled output.
-fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no error diagnostics, got: {:?}",
-        errors
-    );
-    compiled
-}
-
-/// Helper: parse + compile source, return compiled output (may have errors).
-#[allow(dead_code)]
-fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
 
 // ─── step-1: self.param resolves to correct ValueRef ───
 
@@ -61,7 +26,7 @@ fn self_dot_param_resolves_to_value_ref() {
     param x : Scalar = 5mm
     let y = self.x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // `y` should be a value cell
@@ -103,7 +68,7 @@ structure S {
     sub bolt = Bolt()
     let val = self.bolt.d
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
 
     // Find the S template
     let template = compiled
@@ -148,7 +113,7 @@ fn self_in_let_binding_compiles() {
     param a : Scalar = 3mm
     let b = self.a + 1mm
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Both value cells should exist
@@ -171,7 +136,7 @@ fn self_in_constraint_compiles() {
     param x : Scalar = 5mm
     constraint self.x > 2mm
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Should have at least one constraint
@@ -204,7 +169,7 @@ fn bare_self_as_entity_reference() {
     param x : Scalar = 5mm
     let me = self
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -245,7 +210,7 @@ fn self_in_guarded_block() {
         let child_width = self.width / 2
     }
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Should have a guarded group
@@ -393,7 +358,7 @@ structure S {
     sub items : List<Bolt>
     let x = self.items
 }"#;
-    let compiled = compile_with_diagnostics(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -430,7 +395,7 @@ structure S {
     sub items : List<Bolt>
     let d = self.items.diameter
 }"#;
-    let compiled = compile_with_diagnostics(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -467,7 +432,7 @@ structure S {
     sub bolt = Bolt()
     let b = self.bolt
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -497,7 +462,7 @@ fn self_param_equivalence_with_bare_param() {
     let via_self = self.x
     let via_bare = x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     let via_self_cell = template
@@ -549,7 +514,7 @@ fn self_dot_param_inside_lambda_captures_entity_param() {
     param x : Scalar = 5mm
     let f = |y: Scalar| y + self.x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -596,7 +561,7 @@ fn bare_self_inside_lambda_captures_entity_ref() {
     param x : Scalar = 5mm
     let f = |_unused| self
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
