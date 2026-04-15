@@ -37916,6 +37916,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1816,
+        "title": "MenuBar: ShortcutId union type + test assertion specificity",
+        "description": "Two improvements to the MenuBar component from task 1794 review:\n\n1. ShortcutId union type (gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx): Add `as const` to the SHORTCUTS array, derive `type ShortcutId = typeof SHORTCUTS[number]['id']`, export it, and use it as the type for MenuItemDef.shortcutId.\n2. Test assertion specificity (gui/src/__tests__/MenuBar.test.tsx): Replace ~12 instances of expect(element).toBeTruthy() with expect(element).toBeDefined().\n\nFiles: gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx, gui/src/__tests__/MenuBar.test.tsx",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37928,7 +37939,7 @@
       ],
       "created": "2026-04-15T20:32:16.782Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T20:47:32.486Z"
+      "updated": "2026-04-15T20:48:38.878Z"
     }
   }
 }
