@@ -35,6 +35,14 @@ fn von_mises(args: &[Value]) -> Value {
         };
         let _ = (nrows, ncols); // used only for the 3×3 guard above
 
+        debug_assert!(
+            {
+                let tol = |a: f64, b: f64| (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()));
+                tol(d[1], d[3]) && tol(d[2], d[6]) && tol(d[5], d[7])
+            },
+            "von_mises: input matrix is not symmetric"
+        );
+
         let sxx = d[0];
         let syy = d[4];
         let szz = d[8];

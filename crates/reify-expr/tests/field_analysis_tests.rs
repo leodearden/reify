@@ -467,7 +467,7 @@ fn sample_principal_stresses_field_diagonal_returns_sorted_list() {
 
     let ps_field_type = Type::Field {
         domain: Box::new(Type::point3(Type::Real)),
-        codomain: Box::new(pressure_scalar_type()),
+        codomain: Box::new(Type::List(Box::new(pressure_scalar_type()))),
     };
     let ps_expr = make_function_call(
         "principal_stresses",
