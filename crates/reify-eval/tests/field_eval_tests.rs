@@ -374,7 +374,7 @@ fn test_assert_real_approx_passes_within_tolerance() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "diff =")]
 fn test_assert_real_approx_panics_outside_tolerance() {
     // Difference of 1.0 is far beyond REAL_TOLERANCE — must panic
     assert_real_approx(&Value::Real(1.0), 2.0, "should fail");
