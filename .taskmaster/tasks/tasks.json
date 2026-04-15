@@ -33178,7 +33178,15 @@
           ],
           "files": [
             "crates/reify-eval/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "edit_param old_count collection count re-elaboration stale cells",
+              "task 957 new_count silent default unreachable",
+              "Value::Undef stale child value cells reify-eval"
+            ]
+          }
         }
       },
       {
