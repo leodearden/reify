@@ -2410,3 +2410,193 @@ structure Assembly { sub bolt = Bolt() }"#,
     assert_eq!(sub_node.type_name.as_deref(), Some("Bolt"),
         "sub node type_name should be structure_name");
 }
+
+// ---- Step 7: EntityIdentity and get_entity_identity_map() tests ----
+
+/// EntityIdentity serializes and deserializes without loss.
+#[test]
+fn entity_identity_serialization_roundtrip() {
+    use crate::types::{EntityIdentity, SourceSpanInfo};
+    let identity = EntityIdentity {
+        content_hash: "abc123def456abc123def456abc123de".to_string(),
+        structural_fingerprint: "structure::0:deadbeef00000000000000000000000".to_string(),
+        source_span: Some(SourceSpanInfo { start: 10, end: 50 }),
+    };
+    let json = serde_json::to_string(&identity).expect("serialize should succeed");
+    let back: EntityIdentity =
+        serde_json::from_str(&json).expect("deserialize should succeed");
+    assert_eq!(identity, back);
+}
+
+/// EntityIdentity with source_span=None round-trips to None.
+#[test]
+fn entity_identity_source_span_none_serialization() {
+    use crate::types::EntityIdentity;
+    let identity = EntityIdentity {
+        content_hash: "ff00aa11ff00aa11ff00aa11ff00aa11".to_string(),
+        structural_fingerprint: "param:Bracket:0:00000000000000000000000000000000".to_string(),
+        source_span: None,
+    };
+    let json = serde_json::to_string(&identity).expect("serialize should succeed");
+    let back: EntityIdentity =
+        serde_json::from_str(&json).expect("deserialize should succeed");
+    assert_eq!(back.source_span, None);
+}
+
+/// No module loaded → get_entity_identity_map returns empty map.
+#[test]
+fn get_entity_identity_map_no_module_returns_empty() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+    assert!(map.is_empty(), "no module loaded → empty identity map");
+}
+
+/// After loading bracket, the map contains a "Bracket" root entry and
+/// a "Bracket.width" value-cell entry.
+#[test]
+fn get_entity_identity_map_bracket_has_expected_keys() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+    assert!(
+        map.contains_key("Bracket"),
+        "map should contain 'Bracket' root key; keys: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        map.contains_key("Bracket.width"),
+        "map should contain 'Bracket.width' value-cell key"
+    );
+}
+
+/// content_hash for the Bracket root entry is a 32-character lowercase hex string.
+///
+/// Pins: ContentHash::to_string() emits exactly 32 lowercase hex digits
+/// (it wraps a u128 formatted as {:032x}).
+#[test]
+fn get_entity_identity_map_content_hash_is_hex_string() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+    let bracket_identity = map.get("Bracket").expect("Bracket should be in map");
+    let hash = &bracket_identity.content_hash;
+    assert!(!hash.is_empty(), "content_hash must not be empty");
+    assert!(
+        hash.chars().all(|c| c.is_ascii_hexdigit()),
+        "content_hash must be all hex digits: '{}'",
+        hash
+    );
+    assert_eq!(hash.len(), 32, "ContentHash::to_string() emits 32 hex chars");
+}
+
+/// Bracket root structural_fingerprint has format '{type}:{parent}:{child_count}:{hash}'.
+///
+/// For a root template:
+/// - type = "structure" or "occurrence"
+/// - parent = "" (empty — no parent)
+/// - child_count = number of sub-components (Bracket has 0)
+/// - hash = non-empty hex string from children content hashes
+#[test]
+fn get_entity_identity_map_root_structural_fingerprint_format() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+    let bracket_identity = map.get("Bracket").expect("Bracket should be in map");
+    let fp = &bracket_identity.structural_fingerprint;
+    // Format: '{type}:{parent}:{child_count}:{hash}' — 4 colon-separated parts
+    let parts: Vec<&str> = fp.splitn(4, ':').collect();
+    assert_eq!(
+        parts.len(), 4,
+        "fingerprint must have 4 colon-separated parts; got: '{}'",
+        fp
+    );
+    assert_eq!(parts[0], "structure", "first part is entity kind");
+    assert_eq!(parts[1], "", "parent of root template is empty string");
+    let child_count: usize = parts[2]
+        .parse()
+        .expect("third part (child_count) must be a non-negative integer");
+    assert_eq!(child_count, 0, "Bracket has no sub-components");
+    assert!(!parts[3].is_empty(), "fourth part (hash) must not be empty");
+}
+
+/// Bracket.width value-cell fingerprint format: '{cell_kind}:{parent}:{child_count}:{hash}'.
+#[test]
+fn get_entity_identity_map_value_cell_structural_fingerprint_format() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+    let width_identity = map.get("Bracket.width").expect("Bracket.width should be in map");
+    let fp = &width_identity.structural_fingerprint;
+    let parts: Vec<&str> = fp.splitn(4, ':').collect();
+    assert_eq!(parts.len(), 4, "fingerprint must have 4 parts; got: '{}'", fp);
+    assert_eq!(parts[0], "param", "Bracket.width is a param cell");
+    assert_eq!(parts[1], "Bracket", "parent template is 'Bracket'");
+    assert_eq!(parts[2], "0", "value cell has no sub-children");
+    assert!(!parts[3].is_empty(), "hash must not be empty");
+}
+
+/// Value-cell entries carry a source_span with end > start.
+#[test]
+fn get_entity_identity_map_value_cell_has_source_span() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+    let width_identity = map.get("Bracket.width").expect("Bracket.width should be in map");
+    let span = width_identity
+        .source_span
+        .as_ref()
+        .expect("value cell should have source_span");
+    assert!(span.end > span.start, "span end must be after start");
+}
+
+/// Root template entries have source_span = None (TopologyTemplate has no span field).
+#[test]
+fn get_entity_identity_map_root_template_has_no_source_span() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+    let bracket_identity = map.get("Bracket").expect("Bracket should be in map");
+    assert_eq!(
+        bracket_identity.source_span, None,
+        "root template entry should have no source_span"
+    );
+}
