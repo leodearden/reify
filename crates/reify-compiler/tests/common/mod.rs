@@ -3,7 +3,10 @@
 /// Include in a test binary with `mod common;` at the top of the file.
 /// All three helper functions are `pub` so they are visible after `use common::{...}`.
 use reify_compiler::{CompiledModule, compile, compile_with_prelude, stdlib_loader};
-use reify_types::{Diagnostic, ModulePath, Severity, SourceSpan};
+use reify_types::{
+    BinOp, CompiledExpr, CompiledExprKind, Diagnostic, DimensionVector, ModulePath, Severity,
+    SourceSpan, Value,
+};
 
 /// Parse `source` and compile it as a single module named `"unit_test"`.
 /// Panics if the parser returns any errors.
@@ -64,4 +67,48 @@ pub fn assert_single_non_empty_label(diag: &Diagnostic) {
         "diagnostic label '{}' has SourceSpan::empty(0) — misleading offset",
         diag.labels[0].message
     );
+}
+
+/// Standard tolerance for unit SI-value assertions across the test suite.
+///
+/// All unit SI-value comparisons (e.g. `10mm → 0.01 m`) use this epsilon.
+/// A tighter tolerance (e.g. 1e-10) is unnecessary and risks spurious failures
+/// on platforms with slightly different FP rounding.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+pub const UNIT_EPSILON: f64 = 1e-9;
+
+/// Extract a `(si_value, dimension)` pair from a `Scalar` literal expression.
+///
+/// Panics with a descriptive message if `expr` is not a
+/// `CompiledExprKind::Literal(Value::Scalar { .. })`.  Use this instead of
+/// the three-level `if let` / `else panic!` pattern that previously appeared
+/// at every scalar-assertion site.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+pub fn expect_scalar(expr: &CompiledExpr) -> (f64, DimensionVector) {
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+            (*si_value, *dimension)
+        }
+        other => panic!(
+            "expected CompiledExprKind::Literal(Value::Scalar {{ .. }}), got {:?}",
+            other
+        ),
+    }
+}
+
+/// Extract an `(op, left, right)` triple from a `BinOp` expression.
+///
+/// Panics with a descriptive message if `expr` is not a
+/// `CompiledExprKind::BinOp { .. }`.  Use this instead of the nested
+/// `if let` / `else panic!` pattern that previously appeared at every
+/// BinOp-assertion site.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+pub fn expect_binop(expr: &CompiledExpr) -> (&BinOp, &CompiledExpr, &CompiledExpr) {
+    match &expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => (op, left, right),
+        other => panic!(
+            "expected CompiledExprKind::BinOp {{ .. }}, got {:?}",
+            other
+        ),
+    }
 }

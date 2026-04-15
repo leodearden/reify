@@ -123,6 +123,12 @@ structure def S {
          got: {:?}",
         group.members.iter().map(|m| m.id.member.as_str()).collect::<Vec<_>>()
     );
+    assert!(
+        group.constraints.is_empty(),
+        "chain inside guarded block should produce no compiled constraints in the guard, \
+         got: {:?}",
+        group.constraints
+    );
 }
 
 /// Parse `param x : Scalar = 5mm where active` — the per-declaration where clause
@@ -818,6 +824,14 @@ structure def S {
         "expected 'guarded' key from the guarded meta block to be silently dropped, \
          got meta: {:?}",
         template.meta
+    );
+    // Positive assertion: the top-level meta block must still compile correctly.
+    // Without this, an entirely-empty meta map would trivially satisfy the
+    // negative assertion above, masking a complete compilation failure.
+    assert_eq!(
+        template.meta.get("tag").map(String::as_str),
+        Some("top"),
+        "top-level meta block should still compile — only the guarded meta block is dropped"
     );
 }
 

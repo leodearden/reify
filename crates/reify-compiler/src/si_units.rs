@@ -56,11 +56,17 @@ pub enum PrefixSet {
 impl PrefixSet {
     /// Returns `true` if `sym` should be emitted for this `PrefixSet`.
     ///
-    /// - `All` → always `true`.
+    /// - `All` → always `true` (debug-asserts that `sym` is a known `SI_PREFIXES` symbol).
     /// - `Only(list)` → `list.contains(&sym)`.
     pub fn includes(&self, sym: &str) -> bool {
         match self {
-            PrefixSet::All => true,
+            PrefixSet::All => {
+                debug_assert!(
+                    SI_PREFIXES.iter().any(|(s, _)| *s == sym),
+                    "unknown prefix symbol: `{sym}`"
+                );
+                true
+            }
             PrefixSet::Only(list) => list.contains(&sym),
         }
     }
@@ -363,6 +369,8 @@ pub fn build_si_units_source() -> String {
         // u.prefix_combos.includes(sym). This mirrors the base-unit loop and
         // correctly handles both PrefixSet::All and PrefixSet::Only without
         // silently producing zero results if a unit ever carries PrefixSet::All.
+        // Note: emits prefixed variants in SI_PREFIXES order (ascending magnitude),
+        // regardless of the order symbols appear in PrefixSet::Only.
         for (prefix, prefix_factor) in SI_PREFIXES {
             if !u.prefix_combos.includes(prefix) {
                 continue;
@@ -572,6 +580,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Regression guard: `SI_PREFIXES` entries must be in strictly ascending
+    /// order of magnitude (factor). The ordering doc-comment on the
+    /// derived-unit prefix loop states that prefixed variants are emitted in
+    /// `SI_PREFIXES` declaration order, so this test locks that invariant.
+    /// A future reordering of `SI_PREFIXES` would be caught here.
+    #[test]
+    fn si_prefixes_are_in_ascending_magnitude_order() {
+        for window in SI_PREFIXES.windows(2) {
+            let (sym_a, factor_a) = window[0];
+            let (sym_b, factor_b) = window[1];
+            assert!(
+                factor_a < factor_b,
+                "SI_PREFIXES out of order: `{}` ({}) must be < `{}` ({})",
+                sym_a, factor_a, sym_b, factor_b
+            );
+        }
+    }
+
+    /// `PrefixSet::All.includes()` should panic (debug_assert) when the caller
+    /// passes a symbol that doesn't exist in `SI_PREFIXES`. In production this
+    /// would be a silent logic error; the debug_assert catches it early.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unknown prefix symbol")]
+    fn debug_assert_rejects_unknown_prefix_in_all() {
+        // "bogus" is not in SI_PREFIXES — the debug_assert in the All arm
+        // must fire. Without the guard this call returns `true` silently.
+        let _ = PrefixSet::All.includes("bogus");
     }
 
     /// Defensive check that every `prefix_combos` entry in `SI_PREFIX_BASES`

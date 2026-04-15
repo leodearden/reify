@@ -536,22 +536,13 @@ fn quantity_literal_uses_registry_unit() {
         .find(|c| c.id.member == "width")
         .expect("width not found");
     // Default value should be 10 * 0.0000254 = 0.000254
-    if let Some(default_expr) = &width_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &default_expr.kind
-        {
-            assert!(
-                (si_value - 0.000254).abs() < 1e-9,
-                "expected si_value≈0.000254, got {}",
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal, got {:?}", default_expr.kind);
-        }
-    } else {
-        panic!("width cell has no default_expr");
-    }
+    let default_expr = width_cell.default_expr.as_ref().expect("width cell has no default_expr");
+    let (si_value, _dimension) = common::expect_scalar(default_expr);
+    assert!(
+        (si_value - 0.000254).abs() < common::UNIT_EPSILON,
+        "expected si_value≈0.000254, got {}",
+        si_value
+    );
 }
 
 #[test]
@@ -583,20 +574,14 @@ fn hardcoded_units_still_work_without_declarations() {
             .default_expr
             .as_ref()
             .unwrap_or_else(|| panic!("{} has no default_expr", name));
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            assert!(
-                (si_value - expected).abs() < 1e-9,
-                "{} expected {}, got {}",
-                desc,
-                expected,
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal for {}", name);
-        }
+        let (si_value, _dimension) = common::expect_scalar(expr);
+        assert!(
+            (si_value - expected).abs() < common::UNIT_EPSILON,
+            "{} expected {}, got {}",
+            desc,
+            expected,
+            si_value
+        );
     };
 
     check("a", 0.01, "10mm should be 0.01m");
@@ -705,25 +690,13 @@ fn integration_unit_in_structure_param() {
         .iter()
         .find(|c| c.id.member == "width")
         .expect("width not found");
-    if let Some(default_expr) = &width_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &default_expr.kind
-        {
-            assert!(
-                (si_value - 0.05).abs() < 1e-9,
-                "50mm should be 0.05m, got {}",
-                si_value
-            );
-        } else {
-            panic!(
-                "expected scalar literal for width, got {:?}",
-                default_expr.kind
-            );
-        }
-    } else {
-        panic!("width has no default_expr");
-    }
+    let default_expr = width_cell.default_expr.as_ref().expect("width has no default_expr");
+    let (si_value, _dimension) = common::expect_scalar(default_expr);
+    assert!(
+        (si_value - 0.05).abs() < common::UNIT_EPSILON,
+        "50mm should be 0.05m, got {}",
+        si_value
+    );
 }
 
 // ─── step-21: offset-only unit ────────────────────────────────────────────────
@@ -774,22 +747,13 @@ fn offset_unit_quantity_literal_applies_offset() {
         .iter()
         .find(|c| c.id.member == "t")
         .expect("t not found");
-    if let Some(expr) = &t_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            assert!(
-                (si_value - 373.15).abs() < 1e-9,
-                "100kelvin should be 373.15K, got {}",
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal for t, got {:?}", expr.kind);
-        }
-    } else {
-        panic!("t has no default_expr");
-    }
+    let expr = t_cell.default_expr.as_ref().expect("t has no default_expr");
+    let (si_value, _dimension) = common::expect_scalar(expr);
+    assert!(
+        (si_value - 373.15).abs() < common::UNIT_EPSILON,
+        "100kelvin should be 373.15K, got {}",
+        si_value
+    );
 }
 
 // ─── step-27: compile_unit returns None for broken conversion expression ──────
@@ -872,25 +836,18 @@ fn regression_hardcoded_units_all_still_resolve() {
             .iter()
             .find(|c| c.id.member == name)
             .unwrap_or_else(|| panic!("{} not found", name));
-        if let Some(expr) = &cell.default_expr {
-            if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-                si_value,
-                ..
-            }) = &expr.kind
-            {
-                assert!(
-                    (si_value - expected_si).abs() < 1e-9,
-                    "{}: expected {}, got {}",
-                    name,
-                    expected_si,
-                    si_value
-                );
-            } else {
-                panic!("{}: expected scalar literal, got {:?}", name, expr.kind);
-            }
-        } else {
-            panic!("{}: no default_expr", name);
-        }
+        let expr = cell
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("{}: no default_expr", name));
+        let (si_value, _dimension) = common::expect_scalar(expr);
+        assert!(
+            (si_value - expected_si).abs() < common::UNIT_EPSILON,
+            "{}: expected {}, got {}",
+            name,
+            expected_si,
+            si_value
+        );
     };
     check("a", 0.001); // 1mm
     check("b", 0.01); // 1cm
@@ -978,22 +935,13 @@ fn affine_unit_still_works_in_runtime_value_expression() {
         .iter()
         .find(|c| c.id.member == "t")
         .expect("t not found");
-    if let Some(expr) = &t_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            assert!(
-                (si_value - 298.15).abs() < 1e-9,
-                "25degC should be 298.15K, got {}",
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal for t, got {:?}", expr.kind);
-        }
-    } else {
-        panic!("t has no default_expr");
-    }
+    let expr = t_cell.default_expr.as_ref().expect("t has no default_expr");
+    let (si_value, _dimension) = common::expect_scalar(expr);
+    assert!(
+        (si_value - 298.15).abs() < common::UNIT_EPSILON,
+        "25degC should be 298.15K, got {}",
+        si_value
+    );
 }
 
 // ─── step-1 (task-208): evaluate_const_expr rejects non-finite arithmetic ─────
@@ -1284,22 +1232,13 @@ fn valid_quantity_literal_in_structure_param_still_compiles() {
         .iter()
         .find(|c| c.id.member == "x")
         .expect("x not found");
-    if let Some(expr) = &x_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            assert!(
-                (si_value - 0.01).abs() < 1e-9,
-                "10mm should be 0.01m, got {}",
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal for x, got {:?}", expr.kind);
-        }
-    } else {
-        panic!("x has no default_expr");
-    }
+    let expr = x_cell.default_expr.as_ref().expect("x has no default_expr");
+    let (si_value, _dimension) = common::expect_scalar(expr);
+    assert!(
+        (si_value - 0.01).abs() < common::UNIT_EPSILON,
+        "10mm should be 0.01m, got {}",
+        si_value
+    );
 }
 
 // ─── task-208: prelude unit seeding in compile_with_prelude ─────────────────
@@ -1340,22 +1279,13 @@ structure def Bracket {
         .iter()
         .find(|c| c.id.member == "width")
         .expect("width not found");
-    if let Some(expr) = &width.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            assert!(
-                (si_value - 0.01).abs() < 1e-9,
-                "10mm should be 0.01m via prelude, got {}",
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal, got {:?}", expr.kind);
-        }
-    } else {
-        panic!("width has no default_expr");
-    }
+    let expr = width.default_expr.as_ref().expect("width has no default_expr");
+    let (si_value, _dimension) = common::expect_scalar(expr);
+    assert!(
+        (si_value - 0.01).abs() < common::UNIT_EPSILON,
+        "10mm should be 0.01m via prelude, got {}",
+        si_value
+    );
 }
 
 /// compile_with_prelude resolves prelude units in unit conversion expressions.
@@ -1436,22 +1366,13 @@ structure def Plate {
         .iter()
         .find(|c| c.id.member == "thickness")
         .expect("thickness not found");
-    if let Some(expr) = &thickness.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            assert!(
-                (si_value - 0.01).abs() < 1e-9,
-                "10mm should be 0.01m via compile_with_stdlib, got {}",
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal for thickness, got {:?}", expr.kind);
-        }
-    } else {
-        panic!("thickness has no default_expr");
-    }
+    let expr = thickness.default_expr.as_ref().expect("thickness has no default_expr");
+    let (si_value, _dimension) = common::expect_scalar(expr);
+    assert!(
+        (si_value - 0.01).abs() < common::UNIT_EPSILON,
+        "10mm should be 0.01m via compile_with_stdlib, got {}",
+        si_value
+    );
 }
 
 // ─── step-15 (task-208): regression — all 9 hardcoded units via compile_with_stdlib ─
@@ -1505,20 +1426,14 @@ fn all_nine_hardcoded_units_resolve_via_stdlib() {
             .default_expr
             .as_ref()
             .unwrap_or_else(|| panic!("no default_expr for unit '{}'", unit));
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            assert!(
-                (si_value - expected_factor).abs() < 1e-15,
-                "1{} should have si_value ≈ {}, got {}",
-                unit,
-                expected_factor,
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal for 1{}, got {:?}", unit, expr.kind);
-        }
+        let (si_value, _dimension) = common::expect_scalar(expr);
+        assert!(
+            (si_value - expected_factor).abs() < 1e-15,
+            "1{} should have si_value ≈ {}, got {}",
+            unit,
+            expected_factor,
+            si_value
+        );
     }
 }
 
@@ -1564,14 +1479,8 @@ structure def TempCheck {
             .default_expr
             .as_ref()
             .unwrap_or_else(|| panic!("{} has no default_expr", name));
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            *si_value
-        } else {
-            panic!("expected scalar literal for {}, got {:?}", name, expr.kind);
-        }
+        let (si_value, _dimension) = common::expect_scalar(expr);
+        si_value
     };
 
     let ice_si = si_value_of("ice");
@@ -1745,4 +1654,81 @@ fn affine_unit_in_conversion_referencing_other_affine_rejected() {
         "expected diagnostic about affine/offset unit in conversion; got: {:?}",
         errors
     );
+}
+
+// ─── helper-extraction tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_expect_scalar_extracts_si_value_and_dimension() {
+    // Compile a simple Length param and verify that common::expect_scalar
+    // can extract the si_value and dimension without nested if-let boilerplate.
+    let module = parse_and_compile("structure S { param x : Length = 10mm }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "x")
+        .expect("x not found");
+    let expr = cell.default_expr.as_ref().expect("x has no default_expr");
+    let (si_value, dimension) = common::expect_scalar(expr);
+    assert!(
+        (si_value - 0.01).abs() < common::UNIT_EPSILON,
+        "expected si_value≈0.01 (10mm), got {}",
+        si_value
+    );
+    assert_eq!(dimension, DimensionVector::LENGTH);
+}
+
+#[test]
+fn test_expect_binop_extracts_op_and_operands() {
+    // Compile a source with a let-binding BinOp expression and verify that
+    // common::expect_binop can extract op/left/right without nested if-let boilerplate.
+    let module = parse_and_compile(
+        "unit thou : Length = 0.0000254\n\
+         structure S {\n\
+             param w : Length = 10thou\n\
+             let x = w + 5thou\n\
+         }",
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "x")
+        .expect("x not found");
+    let expr = cell.default_expr.as_ref().expect("x has no default_expr");
+    let (op, _left, right) = common::expect_binop(expr);
+    assert!(
+        matches!(op, reify_types::BinOp::Add),
+        "expected Add op for w + 5thou, got {:?}",
+        op
+    );
+    // The right operand is `5thou` — verify si_value and dimension via expect_scalar.
+    let (si_value, dimension) = common::expect_scalar(right);
+    let expected = 5.0 * 0.0000254;
+    assert!(
+        (si_value - expected).abs() < common::UNIT_EPSILON,
+        "expected si_value≈{} (5 * 0.0000254), got {}",
+        expected,
+        si_value
+    );
+    assert_eq!(dimension, DimensionVector::LENGTH);
 }

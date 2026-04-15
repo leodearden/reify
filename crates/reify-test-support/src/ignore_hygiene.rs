@@ -106,6 +106,11 @@ pub fn find_stale_plan_pointers_in_source(source: &str) -> Vec<String> {
 ///
 /// All scanner constants are assembled at runtime via `.concat()` so the
 /// source file does not contain the guarded sequences as adjacent characters.
+///
+/// **Rustfmt assumption:** the scanner recognises only the canonical
+/// `#[ignore = "..."]` form (space-equals-space-quote).  Non-canonical
+/// forms such as `#[ignore="..."]` are silently ignored; rustfmt
+/// enforces the canonical form in practice.
 pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
     // DO NOT inline — split at boundary ["#[", "ignore"] keeps the guarded
     // 8-char sequence from appearing adjacent in this source file; inlining
@@ -523,17 +528,18 @@ mod tests {
     #[test]
     fn check_ignore_reasons_rejects_non_known_bug_reason() {
         // A reason string that does NOT begin with "known bug:" must be rejected
-        // by the positive-invariant guard.  The reason deliberately does not
-        // contain the stale-pointer needle so only the positive guard fires.
-        // The error must mention "known bug:" so we can tell the positive-invariant
-        // guard fired (not the bare-ignore guard or the stale-pointer sentinel).
+        // by the positive-invariant guard (guard 2).  The reason deliberately does
+        // not contain the stale-pointer needle so only the positive guard fires.
+        // The error must mention "does not begin with" — a substring unique to
+        // guard 2's error format — to confirm the positive-invariant guard fired
+        // (not the bare-ignore guard or the stale-pointer sentinel).
         // Source assembled at runtime.
         let src = ["#[", "ignore = \"some other prefix here\"]"].concat();
         let err = check_ignore_reasons(&src)
             .expect_err("expected a non-\"known bug:\" reason string to be rejected");
         assert!(
-            err.contains("known bug:"),
-            "expected error message to identify the positive-invariant guard: {err:?}",
+            err.contains("does not begin with"),
+            "expected error to identify the positive-invariant guard via 'does not begin with': {err:?}",
         );
     }
 
@@ -577,12 +583,16 @@ mod tests {
         // Regular `//` line comments are NOT skipped — only `///` and `//!` are.
         // This pins the documented limitation so a future refactor that
         // accidentally starts skipping `//` is caught immediately.
+        // The error must mention "bare" to confirm guard 1 (bare-ignore rejection)
+        // fired — not a different guard — pinning which guard rejects the `//` line.
         // Source assembled at runtime to avoid self-triggering.
         let src = ["// regular comment: ", "#[", "ignore]\n"].concat();
+        let err = check_ignore_reasons(&src)
+            .expect_err("expected bare-ignore inside a regular // comment to be rejected \
+                         (// comments are not skipped; only /// and //! are)");
         assert!(
-            check_ignore_reasons(&src).is_err(),
-            "expected bare-ignore inside a regular // comment to be rejected \
-             (// comments are not skipped; only /// and //! are)",
+            err.contains("bare"),
+            "expected the bare-ignore guard (guard 1) to fire, not a different guard: {err:?}",
         );
     }
 
@@ -596,6 +606,34 @@ mod tests {
             check_ignore_reasons(src).is_ok(),
             "expected source with no ignore attributes to be accepted",
         );
+    }
+
+    #[test]
+    fn check_ignore_reasons_non_canonical_form_is_silently_ignored() {
+        // The scanner recognises only the canonical rustfmt form (space-equals-space-quote:
+        // ` = "`).  Non-canonical attribute forms — no spaces around `=`, space only
+        // before `=`, or space only after `=` — do not match any guard branch and are
+        // silently passed over.  This test pins all three whitespace variants so any
+        // future tightening (e.g. stripping whitespace before matching) must first
+        // update this test.
+        //
+        // The reason string deliberately does NOT start with `known bug:`.  If a future
+        // refactor starts matching non-canonical forms, guard 2 would reject this reason
+        // and the test would fail loudly, providing a clear regression signal.
+        //
+        // Sources assembled at runtime so this file does not contain the guarded adjacent
+        // sequences and does not self-trigger the meta-test scanner.
+        let non_canonical_forms = [
+            ["#[", "ignore=\"not a known bug: test\"]"].concat(),   // no spaces around =
+            ["#[", "ignore =\"not a known bug: test\"]"].concat(),  // space before = only
+            ["#[", "ignore= \"not a known bug: test\"]"].concat(),  // space after = only
+        ];
+        for src in &non_canonical_forms {
+            assert!(
+                check_ignore_reasons(src).is_ok(),
+                "expected non-canonical #[ignore...] form to be silently ignored: {src:?}",
+            );
+        }
     }
 
     /// Guard 3 "no-marker" path: a `///` doc-comment line that contains the

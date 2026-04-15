@@ -4,6 +4,8 @@
 //! into the unit registry of importing modules, and that private units remain
 //! invisible across module boundaries.
 
+mod common;
+
 use std::fs;
 use std::path::PathBuf;
 
@@ -111,48 +113,28 @@ fn user_unit_in_let_binding() {
         .find(|c| c.id.member == "w_thou")
         .expect("w_thou value cell not found");
     // Walk default_expr → BinOp → right operand → Scalar si_value + dimension
-    if let Some(expr) = &w_thou.default_expr {
-        if let reify_types::CompiledExprKind::BinOp { op, right, .. } = &expr.kind {
-            assert!(
-                matches!(op, reify_types::BinOp::Add),
-                "expected Add op for w + 5thou, got {:?}",
-                op
-            );
-            if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-                si_value,
-                dimension,
-                ..
-            }) = &right.kind
-            {
-                let expected = 5.0 * 0.0000254;
-                assert!(
-                    (si_value - expected).abs() < 1e-10,
-                    "expected si_value≈{} (5 * 0.0000254 = 0.000127), got {} \
-                     (a hardcoded-mm fallback regression would yield ≈0.005)",
-                    expected,
-                    si_value
-                );
-                assert_eq!(
-                    *dimension,
-                    reify_types::DimensionVector::LENGTH,
-                    "expected Length dimension for 5thou, got {:?}",
-                    dimension
-                );
-            } else {
-                panic!(
-                    "expected scalar literal for 5thou (right operand of BinOp), got {:?}",
-                    right.kind
-                );
-            }
-        } else {
-            panic!(
-                "expected BinOp (w + 5thou) as default_expr kind, got {:?}",
-                expr.kind
-            );
-        }
-    } else {
-        panic!("w_thou has no default_expr");
-    }
+    let expr = w_thou.default_expr.as_ref().expect("w_thou has no default_expr");
+    let (op, _left, right) = common::expect_binop(expr);
+    assert!(
+        matches!(op, reify_types::BinOp::Add),
+        "expected Add op for w + 5thou, got {:?}",
+        op
+    );
+    let expected = 5.0 * 0.0000254;
+    let (si_value, dimension) = common::expect_scalar(right);
+    assert!(
+        (si_value - expected).abs() < common::UNIT_EPSILON,
+        "expected si_value≈{} (5 * 0.0000254 = 0.000127), got {} \
+         (a hardcoded-mm fallback regression would yield ≈0.005)",
+        expected,
+        si_value
+    );
+    assert_eq!(
+        dimension,
+        reify_types::DimensionVector::LENGTH,
+        "expected Length dimension for 5thou, got {:?}",
+        dimension
+    );
 }
 
 // ─── step-3: user-defined unit overrides hardcoded fallback ──────────────────
@@ -178,23 +160,14 @@ fn user_unit_overrides_hardcoded_fallback() {
         .iter()
         .find(|c| c.id.member == "w")
         .expect("w not found");
-    if let Some(expr) = &w_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            // registry value: 10 * 0.005 = 0.05, NOT hardcoded 10 * 0.001 = 0.01
-            assert!(
-                (si_value - 0.05).abs() < 1e-9,
-                "expected registry value 0.05 (10 * 0.005), got {} (hardcoded would be 0.01)",
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal, got {:?}", expr.kind);
-        }
-    } else {
-        panic!("w has no default_expr");
-    }
+    let expr = w_cell.default_expr.as_ref().expect("w has no default_expr");
+    let (si_value, _dimension) = common::expect_scalar(expr);
+    // registry value: 10 * 0.005 = 0.05, NOT hardcoded 10 * 0.001 = 0.01
+    assert!(
+        (si_value - 0.05).abs() < common::UNIT_EPSILON,
+        "expected registry value 0.05 (10 * 0.005), got {} (hardcoded would be 0.01)",
+        si_value
+    );
 }
 
 // ─── step-5: cross-module pub unit visible via compile_with_prelude ───────────
@@ -225,24 +198,15 @@ fn cross_module_pub_unit_visible_via_compile_with_prelude() {
         .iter()
         .find(|c| c.id.member == "w")
         .expect("w not found");
-    if let Some(expr) = &w_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            let expected = 5.0 * 0.0000254;
-            assert!(
-                (si_value - expected).abs() < 1e-10,
-                "expected si_value≈{} (5 * 0.0000254), got {}",
-                expected,
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal, got {:?}", expr.kind);
-        }
-    } else {
-        panic!("w has no default_expr");
-    }
+    let expr = w_cell.default_expr.as_ref().expect("w has no default_expr");
+    let expected = 5.0 * 0.0000254;
+    let (si_value, _dimension) = common::expect_scalar(expr);
+    assert!(
+        (si_value - expected).abs() < common::UNIT_EPSILON,
+        "expected si_value≈{} (5 * 0.0000254), got {}",
+        expected,
+        si_value
+    );
 }
 
 // ─── step-7: cross-module private unit NOT visible via compile_with_prelude ───

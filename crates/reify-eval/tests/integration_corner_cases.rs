@@ -19,7 +19,7 @@ use std::fs;
 use std::sync::OnceLock;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_types::{DimensionVector, ModulePath, Satisfaction, Severity, Value, ValueCellId};
+use reify_types::{Diagnostic, DimensionVector, ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -89,12 +89,30 @@ fn eval_ri_file() -> reify_eval::EvalResult {
 
 /// Evaluate the cached compiled module and run constraint checking.
 /// Returns the CheckResult for satisfaction assertions.
+/// Engine::check() calls eval() internally; its CheckResult.diagnostics already
+/// contains all eval diagnostics, so no separate eval() call is needed.
 fn eval_and_check_ri() -> reify_eval::CheckResult {
     let compiled = compiled();
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let _ = engine.eval(&compiled);
-    engine.check(&compiled)
+    let result = engine.check(&compiled);
+    assert_no_errors(&result.diagnostics, "integration_corner_cases.ri eval/check");
+    result
+}
+
+/// Assert that a diagnostics slice contains no entries with [`Severity::Error`].
+/// Panics with the offending diagnostics and `context` label on failure.
+fn assert_no_errors(diagnostics: &[Diagnostic], context: &str) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "errors in {}: {:?}",
+        context,
+        errors
+    );
 }
 
 // ── step-1: smoke test ────────────────────────────────────────────────────────
@@ -146,38 +164,18 @@ fn type_alias_three_deep_resolves() {
 ///                 trait ports live in the trait definition, not in the implementing structure's
 ///                 template, so we verify the trait_bounds relationship
 ///   - constraint: inherited `size > 0mm` is Satisfied (no Violated constraints)
+///
+/// Uses a single engine + single check() call: CheckResult.values serves param/let
+/// assertions and CheckResult.constraint_results serves the constraint assertion.
+/// This avoids the two-engine / three-eval pattern of the previous version.
 #[test]
 fn trait_all_member_kinds() {
-    // ── param + let: value assertions ──
-    let result = eval_ri_file();
+    let compiled = compiled();
 
-    let size_id = ValueCellId::new("FullTraitImpl", "size");
-    let size_val = result
-        .values
-        .get(&size_id)
-        .unwrap_or_else(|| panic!("FullTraitImpl.size not found"));
-    assert!(
-        matches!(size_val, Value::Scalar { .. }),
-        "FullTraitImpl.size should be Scalar, got: {:?}",
-        size_val
-    );
-
-    let doubled_id = ValueCellId::new("FullTraitImpl", "doubled");
-    let doubled_val = result
-        .values
-        .get(&doubled_id)
-        .unwrap_or_else(|| panic!("FullTraitImpl.doubled not found"));
-    assert!(
-        matches!(doubled_val, Value::Scalar { .. }),
-        "FullTraitImpl.doubled should be Scalar, got: {:?}",
-        doubled_val
-    );
-
-    // ── port: trait_bounds relationship ──
+    // ── port: trait_bounds relationship (compiled module, no eval needed) ──
     // Ports declared in a trait live in the trait definition, not in the implementing
     // structure's TopologyTemplate.ports. We verify via trait_bounds that FullTraitImpl
     // declares conformance to FullTrait (which has `port output : out FullTrait`).
-    let compiled = compiled();
     let template = compiled
         .templates
         .iter()
@@ -190,8 +188,38 @@ fn trait_all_member_kinds() {
         template.trait_bounds
     );
 
+    // ── single engine: check() gives values + constraint_results in one eval pass ──
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let check_result = engine.check(&compiled);
+
+    // Assert no eval-severity errors from the single CheckResult.
+    assert_no_errors(&check_result.diagnostics, "trait_all_member_kinds");
+
+    // ── param + let: value assertions from CheckResult.values ──
+    let size_id = ValueCellId::new("FullTraitImpl", "size");
+    let size_val = check_result
+        .values
+        .get(&size_id)
+        .unwrap_or_else(|| panic!("FullTraitImpl.size not found"));
+    assert!(
+        matches!(size_val, Value::Scalar { .. }),
+        "FullTraitImpl.size should be Scalar, got: {:?}",
+        size_val
+    );
+
+    let doubled_id = ValueCellId::new("FullTraitImpl", "doubled");
+    let doubled_val = check_result
+        .values
+        .get(&doubled_id)
+        .unwrap_or_else(|| panic!("FullTraitImpl.doubled not found"));
+    assert!(
+        matches!(doubled_val, Value::Scalar { .. }),
+        "FullTraitImpl.doubled should be Scalar, got: {:?}",
+        doubled_val
+    );
+
     // ── constraint: verify no Violated constraints on FullTraitImpl ──
-    let check_result = eval_and_check_ri();
     let violated: Vec<_> = check_result
         .constraint_results
         .iter()
@@ -311,8 +339,9 @@ fn option_none_is_determined() {
     );
 }
 
-/// Verify OptionEdgeCases.s evaluates to Value::Option(Some(_)).
-/// some(Undef) wraps the Undef in an Option — the Option itself is determined.
+/// Verify OptionEdgeCases.s evaluates to Value::Option(Some(Undef)).
+/// some(u) where u is an unset param (Undef) wraps Undef in an Option;
+/// the inner value must be Undef — not just Some(_).
 #[test]
 fn option_some_undef_is_determined() {
     let result = eval_ri_file();
@@ -321,11 +350,20 @@ fn option_some_undef_is_determined() {
         .values
         .get(&s_id)
         .unwrap_or_else(|| panic!("OptionEdgeCases.s not found"));
-    assert!(
-        matches!(s_val, Value::Option(Some(_))),
-        "some(undef) should produce Value::Option(Some(_)), got: {:?}",
-        s_val
-    );
+    match s_val {
+        Value::Option(Some(inner)) => {
+            assert_eq!(
+                **inner,
+                Value::Undef,
+                "some(undef) inner value should be Undef, got: {:?}",
+                inner
+            );
+        }
+        other => panic!(
+            "some(undef) should produce Value::Option(Some(Undef)), got: {:?}",
+            other
+        ),
+    }
 }
 
 // ── step-11: recursive depth=0 no child ──────────────────────────────────────
@@ -459,8 +497,14 @@ fn range_equal_bounds_value() {
                 upper.as_deref(),
                 "EqualRange.r lower and upper bounds should be equal (5mm..5mm)"
             );
-            let _ = lower_inclusive;
-            let _ = upper_inclusive;
+            assert!(
+                *lower_inclusive,
+                "EqualRange.r lower_inclusive should be true for `5mm..5mm` (non-exclusive `..`)"
+            );
+            assert!(
+                *upper_inclusive,
+                "EqualRange.r upper_inclusive should be true for `5mm..5mm` (non-exclusive `..`)"
+            );
         }
         other => panic!("EqualRange.r should be Value::Range, got: {:?}", other),
     }

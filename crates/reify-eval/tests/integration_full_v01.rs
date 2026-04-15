@@ -490,9 +490,11 @@ fn function_overload_resolution() {
         .unwrap_or_else(|| panic!("Assembly.safe_load_real not found in eval result"));
     match real_val {
         Value::Real(v) => {
-            assert!(
-                (v - 150.75).abs() < 0.01,
-                "expected 150.75 for Assembly.safe_load_real (safety_factor(real) * 1.5), got {v}"
+            // 100.5 * 1.5 = 150.75: all three values are exactly representable in
+            // IEEE 754 f64, so the multiplication is exact — use exact equality.
+            assert_eq!(
+                *v, 150.75,
+                "expected exactly 150.75 for Assembly.safe_load_real (safety_factor(100.5) → Real overload → 100.5 * 1.5), got {v}"
             );
         }
         other => panic!("expected Real for Assembly.safe_load_real, got {:?}", other),
