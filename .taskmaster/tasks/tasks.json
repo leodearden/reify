@@ -35377,13 +35377,13 @@
         "description": "In examples/integration_full_v01.ri, the constraint `constraint height_ok == height_ok` is commented as `// Complex number non-undef` but actually just checks boolean self-equality — a tautology that always holds. It tests neither complex numbers nor provides meaningful validation.\n\nFix: Replace with a meaningful complex-number assertion (e.g. `constraint determined(impedance)` which is already present) or update the comment to `// Sanity: height_ok is determined` and change the constraint to `constraint determined(height_ok)`.\n\nmemory_hints: search \"tautological constraint integration\"; get_entity \"integration_full_v01\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1693"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T00:46:24.713Z",
+        "updatedAt": "2026-04-15T02:24:14.010Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/integration_full_v01.rs",
@@ -35680,7 +35680,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T02:24:12.193Z",
+      "lastModified": "2026-04-15T02:24:14.010Z",
       "taskCount": 1707,
       "completedCount": 1461,
       "tags": [
