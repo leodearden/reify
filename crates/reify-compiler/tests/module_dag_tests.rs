@@ -739,12 +739,17 @@ fn compile_module_multi_import_prelude() {
 
 /// Validate that circular-import error messages are deterministic.
 ///
-/// Creates a three-module cycle: alpha -> beta -> gamma -> alpha.
+/// Creates a three-module cycle: cherry -> apple -> banana -> cherry.
+/// Module names are chosen so alphabetical order (apple, banana, cherry)
+/// DIFFERS from DFS traversal order (cherry, apple, banana).  This ensures
+/// `sort_unstable()` on `in_progress` is the only thing that can produce the
+/// observed sorted output — the test genuinely fails without the sort fix.
+///
 /// Compiles twice (with independent `ModuleDag` instances) and asserts:
 /// (a) both runs produce an error mentioning "circular" or "cycle",
 /// (b) the error messages are identical between runs, and
 /// (c) the module names appear in sorted alphabetical order within the message
-///     ("alpha" before "beta" before "gamma").
+///     ("apple" before "banana" before "cherry").
 ///
 /// Without the HashSet-to-sorted-Vec fix (step-10), the iteration order of
 /// `in_progress` is hash-order-dependent and may fail the sorted-order assertion.
@@ -752,32 +757,33 @@ fn compile_module_multi_import_prelude() {
 fn circular_import_error_message_deterministic() {
     let dir = test_dir("circular_deterministic");
 
-    // alpha imports beta
+    // cherry imports apple (DFS entry point)
     fs::write(
-        dir.join("alpha.ri"),
-        "import beta\nstructure Alpha { param x: Scalar = 1mm }",
+        dir.join("cherry.ri"),
+        "import apple\nstructure Cherry { param x: Scalar = 1mm }",
     )
     .unwrap();
 
-    // beta imports gamma
+    // apple imports banana
     fs::write(
-        dir.join("beta.ri"),
-        "import gamma\nstructure Beta { param y: Scalar = 2mm }",
+        dir.join("apple.ri"),
+        "import banana\nstructure Apple { param y: Scalar = 2mm }",
     )
     .unwrap();
 
-    // gamma imports alpha (closes the cycle: alpha -> beta -> gamma -> alpha)
+    // banana imports cherry (closes the cycle: cherry -> apple -> banana -> cherry)
     fs::write(
-        dir.join("gamma.ri"),
-        "import alpha\nstructure Gamma { param z: Scalar = 3mm }",
+        dir.join("banana.ri"),
+        "import cherry\nstructure Banana { param z: Scalar = 3mm }",
     )
     .unwrap();
 
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
 
-    // First compilation
+    // First compilation — DFS visits cherry, apple, banana, then detects cherry again.
+    // in_progress = {cherry, apple, banana}; sorted = [apple, banana, cherry].
     let mut dag1 = ModuleDag::new();
-    let result1 = dag1.compile_module("alpha", &resolver);
+    let result1 = dag1.compile_module("cherry", &resolver);
     assert!(result1.is_err(), "expected error for 3-cycle (first run)");
     let msg1 = result1
         .unwrap_err()
@@ -793,7 +799,7 @@ fn circular_import_error_message_deterministic() {
 
     // Second compilation (fresh dag)
     let mut dag2 = ModuleDag::new();
-    let result2 = dag2.compile_module("alpha", &resolver);
+    let result2 = dag2.compile_module("cherry", &resolver);
     assert!(result2.is_err(), "expected error for 3-cycle (second run)");
     let msg2 = result2
         .unwrap_err()
@@ -809,18 +815,20 @@ fn circular_import_error_message_deterministic() {
     );
 
     // (c) Module names must appear in sorted alphabetical order within the message.
-    // With sorted output, alpha appears before beta which appears before gamma.
-    let alpha_pos = msg1.find("alpha").expect("'alpha' must appear in error");
-    let beta_pos = msg1.find("beta").expect("'beta' must appear in error");
-    let gamma_pos = msg1.find("gamma").expect("'gamma' must appear in error");
+    // Alphabetical: apple < banana < cherry.  DFS order is cherry < apple < banana,
+    // so this assertion fails without sort_unstable().
+    let apple_pos = msg1.find("apple").expect("'apple' must appear in error");
+    let banana_pos = msg1.find("banana").expect("'banana' must appear in error");
+    // cherry appears twice (sorted list + triggered-by suffix); take the first occurrence.
+    let cherry_pos = msg1.find("cherry").expect("'cherry' must appear in error");
     assert!(
-        alpha_pos < beta_pos,
-        "expected 'alpha' before 'beta' in sorted cycle, got: {}",
+        apple_pos < banana_pos,
+        "expected 'apple' before 'banana' in sorted cycle, got: {}",
         msg1
     );
     assert!(
-        beta_pos < gamma_pos,
-        "expected 'beta' before 'gamma' in sorted cycle, got: {}",
+        banana_pos < cherry_pos,
+        "expected 'banana' before 'cherry' in sorted cycle, got: {}",
         msg1
     );
 

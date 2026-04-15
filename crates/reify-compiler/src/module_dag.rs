@@ -144,8 +144,8 @@ impl ModuleDag {
             let mut cycle: Vec<&str> = self.in_progress.iter().map(|s| s.as_str()).collect();
             cycle.sort_unstable();
             return Err(vec![Diagnostic::error(format!(
-                "circular dependency detected: {} -> {}",
-                cycle.join(" -> "),
+                "circular dependency detected among: {} (triggered by re-import of {})",
+                cycle.join(", "),
                 module_path,
             ))]);
         }
