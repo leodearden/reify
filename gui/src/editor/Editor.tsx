@@ -2,10 +2,11 @@ import { onMount, onCleanup, createEffect } from 'solid-js';
 import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
+import { bracketMatching } from '@codemirror/language';
 import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { search, searchKeymap } from '@codemirror/search';
 import { linter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
+import { reifyEditorTheme, reifyHighlighting } from './editorTheme';
 import { reifyLanguage } from './reifyLanguage';
 import { updateSource, saveFile, openFile as bridgeOpenFile } from '../bridge';
 import { createLspClient } from './lspClient';
@@ -70,7 +71,8 @@ export function Editor(props: EditorProps) {
       lineNumbers(),
       bracketMatching(),
       closeBrackets(),
-      syntaxHighlighting(defaultHighlightStyle),
+      reifyEditorTheme,
+      reifyHighlighting,
       history(),
       // LSP-powered completions — dynamic URI getter resolves on each request
       autocompletion({ override: [reifyCompletionSource(() => currentUri)] }),

@@ -1,35 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Track created MeshBasicMaterial instances and their constructor options
-const mockBasicMaterials: any[] = [];
+// vi.hoisted runs before vi.mock factories (which are hoisted above module-level
+// const/let declarations). This ensures mockBasicMaterials is initialized when
+// the async mock factory calls makeMockMeshBasicMaterial(mockBasicMaterials).
+const mockBasicMaterials = vi.hoisted<any[]>(() => []);
 
-vi.mock('three', () => {
-  class MockMeshBasicMaterial {
-    color: any;
-    transparent: boolean;
-    opacity: number;
-    depthWrite: boolean;
-    side: any;
-    polygonOffset: boolean;
-    polygonOffsetFactor: number;
-    polygonOffsetUnits: number;
-    dispose = vi.fn();
-
-    constructor(opts?: any) {
-      this.color = opts?.color;
-      this.transparent = opts?.transparent ?? false;
-      this.opacity = opts?.opacity ?? 1;
-      this.depthWrite = opts?.depthWrite ?? true;
-      this.side = opts?.side;
-      this.polygonOffset = opts?.polygonOffset ?? false;
-      this.polygonOffsetFactor = opts?.polygonOffsetFactor ?? 0;
-      this.polygonOffsetUnits = opts?.polygonOffsetUnits ?? 0;
-      mockBasicMaterials.push(this);
-    }
-  }
-
+vi.mock('three', async () => {
+  const { makeMockMeshBasicMaterial } = await import('./mocks/threeMocks');
   return {
-    MeshBasicMaterial: MockMeshBasicMaterial,
+    MeshBasicMaterial: makeMockMeshBasicMaterial(mockBasicMaterials),
     FrontSide: 0,
   };
 });
@@ -59,10 +38,9 @@ describe('createGhostMaterial', () => {
     expect((mat as any).transparent).toBe(true);
   });
 
-  it('sets opacity in the range [0.12, 0.18]', () => {
+  it('sets opacity to 0.15', () => {
     const mat = createGhostMaterial();
-    expect((mat as any).opacity).toBeGreaterThanOrEqual(0.12);
-    expect((mat as any).opacity).toBeLessThanOrEqual(0.18);
+    expect((mat as any).opacity).toBe(0.15);
   });
 
   it('sets depthWrite: false', () => {

@@ -11,8 +11,8 @@
 //!   - Mixed batches (one optimized + one fallback) produce correct per-id
 //!     results in the order `active_constraint_ids` returns them.
 
-use reify_test_support::{MockOptimizedImpl, make_simple_engine, parse_and_compile};
-use reify_types::Satisfaction;
+use reify_test_support::{BrokenCountOptimizedImpl, MockOptimizedImpl, make_simple_engine, parse_and_compile};
+use reify_types::{ConstraintDiagnostics, ConstraintNodeId, ConstraintResult, Satisfaction, Severity};
 
 // ── Test 1: register_optimized_impl stores & dispatches ─────────────────────
 
@@ -221,5 +221,562 @@ structure def Mixed {
         second.satisfaction,
         Satisfaction::Satisfied,
         "PlainEq should be handled by the language-level checker (Satisfied)"
+    );
+}
+
+// ── Test 4: empty registry fast path — single @optimized constraint ──────────
+
+#[test]
+fn empty_registry_fast_path_returns_correct_results() {
+    // A module with a single @optimized constraint and an empty registry.
+    // With no registered impls the language-level checker must handle it.
+    // This test validates the behavioral contract: the constraint should be
+    // Satisfied (1.0 == 1.0) even though no optimized impl is registered.
+    let source = r#"
+@optimized("geo::coincident")
+constraint def Coincident {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def S {
+    param x: Real = 1.0
+    constraint Coincident(a: x, b: x)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    // Empty registry — no register_optimized_impl calls.
+    let mut engine = make_simple_engine();
+
+    let check_result = engine.check(&compiled);
+
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "expected exactly one constraint result, got {:?}",
+        check_result.constraint_results
+    );
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "with empty registry the language-level checker must handle the constraint \
+         (x == x is Satisfied)"
+    );
+}
+
+// ── Test 4b: empty registry fast path — single Violated constraint ─────────
+
+#[test]
+fn empty_registry_fast_path_single_violated() {
+    // Counterpart to Test 4: a single @optimized constraint that evaluates to
+    // Violated (a != b where a=1.0, b=2.0). Confirms the fast path correctly
+    // propagates a Violated result for a single entry.
+    let source = r#"
+@optimized("geo::coincident")
+constraint def Coincident {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def S {
+    param x: Real = 1.0
+    param y: Real = 2.0
+    constraint Coincident(a: x, b: y)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    let mut engine = make_simple_engine();
+
+    let check_result = engine.check(&compiled);
+
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "expected exactly one constraint result, got {:?}",
+        check_result.constraint_results
+    );
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Violated,
+        "with empty registry the language-level checker must handle the constraint \
+         (x == y where x=1.0, y=2.0 is Violated)"
+    );
+}
+
+// ── Test 5: empty registry — multiple mixed constraints preserve order ────────
+
+#[test]
+fn empty_registry_multiple_constraints_preserves_order() {
+    // Three constraints in a single structure: two @optimized-annotated (different
+    // targets) and one plain. With empty optimization_registry ALL fall through to
+    // the language-level checker. This test verifies:
+    //   1. All constraints are evaluated (none silently dropped).
+    //   2. Results appear in declaration order — first OptA, then OptB, then PlainEq.
+    //   3. The language-level checker evaluates each predicate correctly.
+    //
+    // OptB intentionally evaluates to Violated (a > b with x=1.0, y=2.0) so the
+    // ordering assertion depends on both label identity AND distinct satisfaction
+    // values — a misordering cannot hide behind uniform Satisfied results.
+    let source = r#"
+@optimized("target_a")
+constraint def OptA {
+    param a: Real
+    param b: Real
+    a == b
+}
+@optimized("target_b")
+constraint def OptB {
+    param a: Real
+    param b: Real
+    a > b
+}
+constraint def PlainEq {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def Multi {
+    param x: Real = 1.0
+    param y: Real = 2.0
+    constraint OptA(a: x, b: x)
+    constraint OptB(a: x, b: y)
+    constraint PlainEq(a: x, b: x)
+}
+"#;
+    let compiled = parse_and_compile(source);
+    // Empty registry — no register_optimized_impl calls.
+    let mut engine = make_simple_engine();
+
+    let check_result = engine.check(&compiled);
+
+    assert_eq!(
+        check_result.constraint_results.len(),
+        3,
+        "expected three constraint results, got {:?}",
+        check_result.constraint_results
+    );
+
+    let r0 = &check_result.constraint_results[0];
+    let r1 = &check_result.constraint_results[1];
+    let r2 = &check_result.constraint_results[2];
+
+    // Verify declaration order is preserved.
+    let l0 = r0.label.as_deref().unwrap_or("");
+    let l1 = r1.label.as_deref().unwrap_or("");
+    let l2 = r2.label.as_deref().unwrap_or("");
+    assert!(
+        l0.contains("OptA"),
+        "first result should be OptA, got label={:?}",
+        r0.label
+    );
+    assert!(
+        l1.contains("OptB"),
+        "second result should be OptB, got label={:?}",
+        r1.label
+    );
+    assert!(
+        l2.contains("PlainEq"),
+        "third result should be PlainEq, got label={:?}",
+        r2.label
+    );
+
+    // Verify each predicate is evaluated correctly by the language-level checker.
+    // The Satisfied/Violated mix means a misordering cannot hide behind uniform results.
+    assert_eq!(
+        r0.satisfaction,
+        Satisfaction::Satisfied,
+        "OptA: x == x (1.0 == 1.0) should be Satisfied"
+    );
+    assert_eq!(
+        r1.satisfaction,
+        Satisfaction::Violated,
+        "OptB: x > y (1.0 > 2.0) should be Violated"
+    );
+    assert_eq!(
+        r2.satisfaction,
+        Satisfaction::Satisfied,
+        "PlainEq: x == x (1.0 == 1.0) should be Satisfied"
+    );
+}
+
+// ── Test 6: BrokenCountOptimizedImpl (returns 0 results) triggers fallback ───
+
+#[test]
+fn optimized_impl_wrong_result_count_falls_back_with_diagnostic() {
+    // A module with a single @optimized("geo::coincident") constraint where
+    // a == b (1.0 == 1.0). We register a BrokenCountOptimizedImpl that returns
+    // an empty Vec, triggering the count mismatch.
+    //
+    // Expected behavior after Task 1657 impl:
+    //   (a) no panic
+    //   (b) check_result.diagnostics contains a Diagnostic with Severity::Error
+    //       whose message contains "OptimizedImpl" and "falling back"
+    //   (c) constraint_results has exactly 1 entry with Satisfaction::Satisfied
+    //       (from the language-level fallback evaluating 1.0 == 1.0)
+    //
+    // Currently: panics at assert_eq! in dispatch_constraints.
+    let source = r#"
+@optimized("geo::coincident")
+constraint def Coincident {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def S {
+    param x: Real = 1.0
+    constraint Coincident(a: x, b: x)
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    let mock = BrokenCountOptimizedImpl::new(vec![]); // wrong count: 0 results for 1 constraint
+    let calls = mock.calls_handle();
+    let mut engine = make_simple_engine();
+    engine.register_optimized_impl("geo::coincident", Box::new(mock));
+
+    let check_result = engine.check(&compiled);
+
+    // (c) fallback evaluation: x == x is Satisfied
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "expected exactly one constraint result from fallback, got {:?}",
+        check_result.constraint_results
+    );
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "fallback checker must evaluate x == x as Satisfied"
+    );
+
+    // (b) diagnostic error for the contract violation
+    let error_diags: Vec<_> = check_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "expected at least one Error diagnostic for the broken OptimizedImpl, \
+         got diagnostics: {:?}",
+        check_result.diagnostics
+    );
+    let violation_diag = error_diags.iter().find(|d| {
+        d.message.contains("OptimizedImpl") && d.message.contains("falling back")
+    });
+    assert!(
+        violation_diag.is_some(),
+        "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
+         got error diagnostics: {:?}",
+        error_diags
+    );
+
+    // Broken impl was still invoked (before fallback kicked in)
+    assert!(
+        !calls.lock().unwrap().is_empty(),
+        "the broken impl must have been called before the fallback"
+    );
+}
+
+// ── Test 7: mixed batch — one broken impl, one working impl, one plain ────────
+
+#[test]
+fn mixed_batch_one_broken_optimized_impl_falls_back_correctly() {
+    // Three constraints in one structure:
+    //   OptA(@optimized("target_a"), a == b, a=b=1.0) — BrokenCountOptimizedImpl
+    //      returns empty Vec → fallback → Satisfied
+    //   OptB(@optimized("target_b"), a == b, a=b=1.0) — MockOptimizedImpl
+    //      returns Violated → Violated
+    //   PlainEq(no annotation, a == b, a=b=1.0) — language-level checker → Satisfied
+    //
+    // Assertions:
+    //   (a) diagnostic error for target_a only (broken impl)
+    //   (b) OptA gets Satisfaction::Satisfied (fallback evaluated 1.0 == 1.0)
+    //   (c) OptB gets Satisfaction::Violated (working mock)
+    //   (d) PlainEq gets Satisfaction::Satisfied (language-level checker)
+    //   (e) order is preserved: OptA first, OptB second, PlainEq third
+    let source = r#"
+@optimized("target_a")
+constraint def OptA {
+    param a: Real
+    param b: Real
+    a == b
+}
+@optimized("target_b")
+constraint def OptB {
+    param a: Real
+    param b: Real
+    a == b
+}
+constraint def PlainEq {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def Mixed {
+    param x: Real = 1.0
+    constraint OptA(a: x, b: x)
+    constraint OptB(a: x, b: x)
+    constraint PlainEq(a: x, b: x)
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    // Broken impl for target_a: returns empty Vec (0 results for 1 constraint)
+    let broken = BrokenCountOptimizedImpl::new(vec![]);
+    let broken_calls = broken.calls_handle();
+
+    // Working mock for target_b: returns Violated
+    let working = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
+    let working_calls = working.calls_handle();
+
+    let mut engine = make_simple_engine();
+    engine.register_optimized_impl("target_a", Box::new(broken));
+    engine.register_optimized_impl("target_b", Box::new(working));
+
+    let check_result = engine.check(&compiled);
+
+    // (e) Three results in declaration order
+    assert_eq!(
+        check_result.constraint_results.len(),
+        3,
+        "expected three constraint results, got {:?}",
+        check_result.constraint_results
+    );
+
+    let r0 = &check_result.constraint_results[0];
+    let r1 = &check_result.constraint_results[1];
+    let r2 = &check_result.constraint_results[2];
+
+    let l0 = r0.label.as_deref().unwrap_or("");
+    let l1 = r1.label.as_deref().unwrap_or("");
+    let l2 = r2.label.as_deref().unwrap_or("");
+
+    assert!(l0.contains("OptA"), "first result should be OptA, got label={:?}", r0.label);
+    assert!(l1.contains("OptB"), "second result should be OptB, got label={:?}", r1.label);
+    assert!(l2.contains("PlainEq"), "third result should be PlainEq, got label={:?}", r2.label);
+
+    // (b) OptA: broken impl fell back, language-level checker sees x == x → Satisfied
+    assert_eq!(
+        r0.satisfaction,
+        Satisfaction::Satisfied,
+        "OptA should be Satisfied via fallback"
+    );
+    // (c) OptB: working mock returns Violated
+    assert_eq!(
+        r1.satisfaction,
+        Satisfaction::Violated,
+        "OptB should be Violated via working mock"
+    );
+    // (d) PlainEq: language-level checker → Satisfied
+    assert_eq!(
+        r2.satisfaction,
+        Satisfaction::Satisfied,
+        "PlainEq should be Satisfied via language-level checker"
+    );
+
+    // (a) Exactly one Error diagnostic for target_a's contract violation
+    let error_diags: Vec<_> = check_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        error_diags.len(),
+        1,
+        "expected exactly one Error diagnostic (for target_a), got: {:?}",
+        error_diags
+    );
+    let diag = &error_diags[0];
+    assert!(
+        diag.message.contains("target_a"),
+        "diagnostic should mention target_a, got: {:?}",
+        diag.message
+    );
+    assert!(
+        diag.message.contains("falling back"),
+        "diagnostic should mention falling back, got: {:?}",
+        diag.message
+    );
+
+    // Both impls were invoked
+    assert!(
+        !broken_calls.lock().unwrap().is_empty(),
+        "broken impl must have been invoked before fallback"
+    );
+    assert!(
+        !working_calls.lock().unwrap().is_empty(),
+        "working mock must have been invoked for OptB"
+    );
+}
+
+// ── Test 8: BrokenCountOptimizedImpl returns TOO MANY results (count > expected)
+
+#[test]
+fn optimized_impl_wrong_count_nonzero_still_falls_back() {
+    // A module with a single @optimized("geo::coincident") constraint (a == b,
+    // 1.0 == 1.0). We register a BrokenCountOptimizedImpl that returns 2 results
+    // for 1 constraint — testing the count > expected case (not just empty).
+    //
+    // Expected behavior:
+    //   (a) no panic
+    //   (b) Error diagnostic mentioning the target and falling back
+    //   (c) constraint_results has exactly 1 entry with Satisfaction::Satisfied
+    //       (fallback language-level checker evaluating 1.0 == 1.0)
+    let source = r#"
+@optimized("geo::coincident")
+constraint def Coincident {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def S {
+    param x: Real = 1.0
+    constraint Coincident(a: x, b: x)
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    // Two dummy results for one constraint — wrong count in the other direction
+    let dummy_id = ConstraintNodeId::new("dummy", 0);
+    let fixed_results = vec![
+        ConstraintResult {
+            id: dummy_id.clone(),
+            satisfaction: Satisfaction::Violated,
+            diagnostics: ConstraintDiagnostics::default(),
+        },
+        ConstraintResult {
+            id: dummy_id.clone(),
+            satisfaction: Satisfaction::Violated,
+            diagnostics: ConstraintDiagnostics::default(),
+        },
+    ];
+    let mock = BrokenCountOptimizedImpl::new(fixed_results); // 2 results for 1 constraint
+    let calls = mock.calls_handle();
+    let mut engine = make_simple_engine();
+    engine.register_optimized_impl("geo::coincident", Box::new(mock));
+
+    let check_result = engine.check(&compiled);
+
+    // (c) fallback: x == x is Satisfied
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "expected exactly one constraint result from fallback, got {:?}",
+        check_result.constraint_results
+    );
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Satisfied,
+        "fallback checker must evaluate x == x as Satisfied"
+    );
+
+    // (b) Error diagnostic for the contract violation
+    let error_diags: Vec<_> = check_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "expected at least one Error diagnostic for the broken OptimizedImpl (too many results), \
+         got diagnostics: {:?}",
+        check_result.diagnostics
+    );
+    let violation_diag = error_diags.iter().find(|d| {
+        d.message.contains("OptimizedImpl") && d.message.contains("falling back")
+    });
+    assert!(
+        violation_diag.is_some(),
+        "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
+         got error diagnostics: {:?}",
+        error_diags
+    );
+
+    // Broken impl was still invoked
+    assert!(
+        !calls.lock().unwrap().is_empty(),
+        "the broken impl must have been called before the fallback"
+    );
+}
+
+// ── Test 9: fallback evaluates a constraint as Violated (not just Satisfied) ─
+
+#[test]
+fn optimized_impl_fallback_evaluates_violated_correctly() {
+    // A module with a single @optimized("geo::coincident") constraint where
+    // a != b (1.0 != 2.0). We register a BrokenCountOptimizedImpl that returns
+    // an empty Vec, triggering the fallback path.
+    //
+    // This test verifies that the fallback faithfully reflects constraint
+    // semantics — not just that it avoids crashing. The language-level checker
+    // must evaluate 1.0 == 2.0 as Violated.
+    //
+    // Expected behavior:
+    //   (a) no panic
+    //   (b) Error diagnostic mentioning "OptimizedImpl" and "falling back"
+    //   (c) constraint_results has exactly 1 entry with Satisfaction::Violated
+    //       (fallback checker evaluating 1.0 != 2.0)
+    let source = r#"
+@optimized("geo::coincident")
+constraint def Coincident {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def S {
+    param x: Real = 1.0
+    param y: Real = 2.0
+    constraint Coincident(a: x, b: y)
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    let mock = BrokenCountOptimizedImpl::new(vec![]); // wrong count: 0 results for 1 constraint
+    let calls = mock.calls_handle();
+    let mut engine = make_simple_engine();
+    engine.register_optimized_impl("geo::coincident", Box::new(mock));
+
+    let check_result = engine.check(&compiled);
+
+    // (c) fallback evaluation: x != y so constraint is Violated
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "expected exactly one constraint result from fallback, got {:?}",
+        check_result.constraint_results
+    );
+    assert_eq!(
+        check_result.constraint_results[0].satisfaction,
+        Satisfaction::Violated,
+        "fallback checker must evaluate 1.0 == 2.0 as Violated"
+    );
+
+    // (b) Error diagnostic for the contract violation is still emitted
+    let error_diags: Vec<_> = check_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "expected at least one Error diagnostic for the broken OptimizedImpl, \
+         got diagnostics: {:?}",
+        check_result.diagnostics
+    );
+    let violation_diag = error_diags.iter().find(|d| {
+        d.message.contains("OptimizedImpl") && d.message.contains("falling back")
+    });
+    assert!(
+        violation_diag.is_some(),
+        "expected a diagnostic mentioning 'OptimizedImpl' and 'falling back', \
+         got error diagnostics: {:?}",
+        error_diags
+    );
+
+    // Broken impl was still invoked (before fallback kicked in)
+    assert!(
+        !calls.lock().unwrap().is_empty(),
+        "the broken impl must have been called before the fallback"
     );
 }

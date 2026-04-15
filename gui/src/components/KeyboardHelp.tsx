@@ -2,18 +2,12 @@
  * Keyboard shortcut help overlay component.
  */
 import { onMount, onCleanup } from 'solid-js';
+import { SHORTCUTS } from '../shortcuts';
 import styles from './KeyboardHelp.module.css';
 
 export interface KeyboardHelpProps {
   onClose: () => void;
 }
-
-const SHORTCUTS = [
-  { key: 'Ctrl+O', description: 'Open file' },
-  { key: 'F5', description: 'Re-evaluate' },
-  { key: 'Ctrl+E', description: 'Export' },
-  { key: '?', description: 'Toggle this help' },
-] as const;
 
 export function KeyboardHelp(props: KeyboardHelpProps) {
   function handleKeyDown(e: KeyboardEvent) {
@@ -36,7 +30,7 @@ export function KeyboardHelp(props: KeyboardHelpProps) {
         <h2 class={styles.title}>Keyboard Shortcuts</h2>
         <table class={styles.table}>
           <tbody>
-            {SHORTCUTS.map((s) => (
+            {SHORTCUTS.filter((s) => s.key).map((s) => (
               <tr>
                 <td class={styles.key}><kbd>{s.key}</kbd></td>
                 <td class={styles.desc}>{s.description}</td>

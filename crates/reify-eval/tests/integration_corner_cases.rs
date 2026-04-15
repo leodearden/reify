@@ -161,8 +161,8 @@ fn type_alias_three_deep_resolves() {
 ///   - param:      `size` evaluates as a Scalar value
 ///   - let:        `doubled` evaluates as a Scalar value
 ///   - port:       FullTraitImpl declares conformance to FullTrait (which owns the port);
-///                 trait ports live in the trait definition, not in the implementing structure's
-///                 template, so we verify the trait_bounds relationship
+///     trait ports live in the trait definition, not in the implementing structure's
+///     template, so we verify the trait_bounds relationship
 ///   - constraint: inherited `size > 0mm` is Satisfied (no Violated constraints)
 ///
 /// Uses a single engine + single check() call: CheckResult.values serves param/let

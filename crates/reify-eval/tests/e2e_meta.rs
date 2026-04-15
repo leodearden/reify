@@ -3,38 +3,8 @@
 //! Exercises the full parse→compile→eval pipeline for `meta.key` expressions,
 //! ensuring integration across the parser, compiler, and evaluator boundaries.
 
-use reify_test_support::{make_engine, parse_and_compile, parse_compile_expect_err};
+use reify_test_support::{assert_no_diagnostic, assert_no_error_diagnostics, make_engine, parse_and_compile, parse_compile_expect_err};
 use reify_types::{Satisfaction, Severity, Value, ValueCellId};
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Assert that `diagnostics` contains no Error-severity entries.
-/// `phase` is a short label used in the failure message (e.g. `"eval"`, `"check"`, `"compile"`).
-fn assert_no_error_diagnostics(diagnostics: &[reify_types::Diagnostic], phase: &str) {
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "{} errors: {:?}", phase, errors);
-}
-
-/// Mutual-exclusion guard: assert that no Error-severity diagnostic has a message
-/// containing `phrase`.  Used in regression-guard tests to confirm the compiler
-/// took exactly one error path and not the other.
-fn assert_no_error_containing(diagnostics: &[reify_types::Diagnostic], phrase: &str) {
-    let false_errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains(phrase))
-        .collect();
-    assert!(
-        false_errors.is_empty(),
-        "unexpected error containing {:?}: {:?}",
-        phrase,
-        false_errors
-    );
-}
 
 // ---------------------------------------------------------------------------
 // --- let binding uses meta.key ---
@@ -370,7 +340,7 @@ fn e2e_meta_access_missing_key() {
     // Mutual-exclusion guard: the missing-key path must NOT produce the
     // no-meta-block error.  If both appear (or the wrong one appears), a future
     // compiler regression would otherwise stay hidden.
-    assert_no_error_containing(&compiled.diagnostics, "entity has no meta block");
+    assert_no_diagnostic(&compiled.diagnostics, Severity::Error, "entity has no meta block");
 }
 
 /// Regression guard (suggestion 9): accessing `meta.description` on a structure
@@ -392,7 +362,7 @@ fn e2e_meta_access_no_meta_block() {
     // Mutual-exclusion guard: the no-meta-block path must NOT produce the
     // missing-key error.  If both appear (or the wrong one appears), a future
     // compiler regression would otherwise stay hidden.
-    assert_no_error_containing(&compiled.diagnostics, "meta block has no key");
+    assert_no_diagnostic(&compiled.diagnostics, Severity::Error, "meta block has no key");
 }
 
 // ---------------------------------------------------------------------------

@@ -16,9 +16,9 @@
 }
 
 .container :global(.cm-lsp-hover) {
-  background-color: var(--reify-tooltip-bg, #2d2d3f);
-  color: #e0e0e0;
-  border: 1px solid #444;
+  background-color: var(--reify-surface, #2a2a3a);
+  color: var(--reify-text, #cdd6f4);
+  border: 1px solid var(--reify-border, #45475a);
   border-radius: 4px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   padding: 6px 10px;

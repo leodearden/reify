@@ -198,7 +198,9 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
       scene.remove(mesh);
     }
 
-    // Clean up any ghost clone for this entity
+    // removeGhostClone MUST precede geometry disposal: the ghost clone shares
+    // the original mesh's BufferGeometry reference. Disposing the geometry first
+    // would leave the ghost clone referencing invalid GPU buffers.
     removeGhostClone(entityPath);
 
     (mesh.geometry as any).disposeBoundsTree();
@@ -283,6 +285,17 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
         }
       }
     }
+
+    // Prune orphan visibilityMap entries: any key not present in meshMap is a
+    // stale pre-set (setVisibility was called for an entity that never arrived,
+    // or arrived in a previous sync cycle but was then removed). meshMap is now
+    // authoritative — orphan entries would otherwise leak and cause a future
+    // arrival of the same entity to silently inherit the stale visibility state.
+    for (const key of [...visibilityMap.keys()]) {
+      if (!meshMap.has(key)) {
+        visibilityMap.delete(key);
+      }
+    }
   }
 
   function dispose(): void {
@@ -313,7 +326,11 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
   }
 
   function getGhostMeshes(): Map<string, Mesh> {
-    return ghostMeshMap;
+    // Return a shallow copy so callers cannot accidentally mutate internal state
+    // (e.g., by calling .delete() or .clear() on the returned map).
+    // getGhostMeshes is only called once per sync cycle (in adjustClipping), so
+    // a cache like sceneMeshCache would add complexity with no measurable benefit.
+    return new Map(ghostMeshMap);
   }
 
   return { sync, dispose, getSceneMeshes, setVisibility, getGhostMeshes };

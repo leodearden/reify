@@ -115,6 +115,117 @@ fn export_writes_file() {
     assert!(!data.is_empty(), "exported file should not be empty");
 }
 
+// --- Mutex-poison tests (task-1781) ---
+
+/// Return an `Arc<Mutex<EngineSession>>` whose mutex has already been poisoned.
+///
+/// Uses the standard technique: spawn a thread that panics while holding the lock,
+/// then join it. After the join the mutex is in a poisoned state.
+fn make_poisoned_engine() -> Arc<Mutex<EngineSession>> {
+    let session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let engine = Arc::new(Mutex::new(session));
+    let engine_clone = Arc::clone(&engine);
+    let _ = std::thread::spawn(move || {
+        let _guard = engine_clone.lock().unwrap();
+        panic!("poison the mutex");
+    })
+    .join();
+    engine
+}
+
+#[test]
+fn get_entity_tree_impl_returns_err_on_poisoned_mutex() {
+    use crate::commands::get_entity_tree_impl;
+
+    let engine = make_poisoned_engine();
+    let result = get_entity_tree_impl(&engine);
+    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.unwrap_err().contains("Lock error"),
+        "error message should contain 'Lock error'"
+    );
+}
+
+#[test]
+fn get_entity_tree_impl_returns_ok_on_healthy_mutex() {
+    use crate::commands::get_entity_tree_impl;
+
+    let session = make_loaded_session();
+    let engine = Mutex::new(session);
+
+    let result = get_entity_tree_impl(&engine);
+    assert!(result.is_ok(), "expected Ok on healthy mutex");
+    let tree = result.unwrap();
+    assert!(!tree.is_empty(), "entity tree should be non-empty for a loaded module");
+}
+
+#[test]
+fn get_entity_identity_map_impl_returns_err_on_poisoned_mutex() {
+    use crate::commands::get_entity_identity_map_impl;
+
+    let engine = make_poisoned_engine();
+    let result = get_entity_identity_map_impl(&engine);
+    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.unwrap_err().contains("Lock error"),
+        "error message should contain 'Lock error'"
+    );
+}
+
+#[test]
+fn get_entity_identity_map_impl_returns_ok_on_healthy_mutex() {
+    use crate::commands::get_entity_identity_map_impl;
+
+    let session = make_loaded_session();
+    let engine = Mutex::new(session);
+
+    let result = get_entity_identity_map_impl(&engine);
+    assert!(result.is_ok(), "expected Ok on healthy mutex");
+    let map = result.unwrap();
+    assert!(!map.is_empty(), "entity identity map should be non-empty for a loaded module");
+}
+
+#[test]
+fn get_containing_definition_impl_returns_err_on_poisoned_mutex() {
+    use crate::commands::get_containing_definition_impl;
+
+    let engine = make_poisoned_engine();
+    let result = get_containing_definition_impl(&engine, 1, 1);
+    assert!(result.is_err(), "expected Err on poisoned mutex, got {:?}", result);
+    assert!(
+        result.unwrap_err().contains("Lock error"),
+        "error message should contain 'Lock error'"
+    );
+}
+
+#[test]
+fn get_containing_definition_impl_returns_ok_on_healthy_mutex() {
+    use crate::commands::get_containing_definition_impl;
+
+    let session = make_loaded_session();
+    let engine = Mutex::new(session);
+
+    // bracket_source() starts with "structure Bracket {" on line 1.
+    // Position (1, 1) is the first character of that declaration → inside Bracket.
+    let result = get_containing_definition_impl(&engine, 1, 1);
+    let def_info = result
+        .expect("healthy mutex should return Ok")
+        .expect("position (1,1) should be inside the Bracket structure");
+    assert_eq!(def_info.name, "Bracket");
+    assert_eq!(def_info.kind, "structure");
+
+    // bracket_source() has 15 lines; line 16 is beyond the source → outside any definition.
+    let result_outside = get_containing_definition_impl(&engine, 16, 1);
+    assert_eq!(
+        result_outside,
+        Ok(None),
+        "position (16,1) is beyond the source and should be outside any definition"
+    );
+}
+
 // --- Integration tests (step-11) ---
 
 #[test]

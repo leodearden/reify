@@ -125,6 +125,45 @@ describe('Editor doc change handling', () => {
     vi.advanceTimersByTime(300);
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('doc change with null activeFile does not call markDirty or updateSource', () => {
+    // setupStore([]) leaves activeFile as null — validates the `if (path)` guard at Editor.tsx:139
+    const store = setupStore([]);
+    const markDirtySpy = vi.spyOn(store, 'markDirty');
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Dispatch a doc change — the EditorView has an empty doc but accepts dispatches
+    view.dispatch({ changes: { from: 0, insert: 'x' } });
+
+    // markDirty must not be called immediately (no activeFile to mark)
+    expect(markDirtySpy).not.toHaveBeenCalled();
+
+    // Advance past the debounce timer — updateSource must also not be called
+    vi.advanceTimersByTime(300);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it('doc change with activeFile transitioning to null before debounce fires does not call updateSource', () => {
+    // Start with one open file so activeFile is set
+    const store = setupStore([file1]);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Dispatch a doc change — starts the 300ms debounce timer
+    view.dispatch({ changes: { from: 0, insert: 'x' } });
+
+    // Mid-session: close the only file, setting activeFile back to null
+    store.closeFile(file1.path);
+
+    // When the debounce fires, the guard (if path) must prevent the call
+    vi.advanceTimersByTime(300);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('Editor save (Ctrl+S)', () => {
@@ -983,5 +1022,21 @@ describe('Editor cleanup race condition (RC-05)', () => {
     const closeCalls = lspCalls.filter((c) => c.includes('didClose'));
     expect(closeCalls).toHaveLength(1);
     expect(closeCalls[0]).toContain('bracket.ri');
+  });
+});
+
+describe('Editor theme integration', () => {
+  it('mounts .cm-editor element successfully with reify theme', () => {
+    const store = setupStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    expect(container.querySelector('.cm-editor')).not.toBeNull();
+  });
+
+  it('Editor.tsx imports reifyEditorTheme and reifyHighlightStyle from editorTheme', async () => {
+    // Verify the module source uses editorTheme imports, not defaultHighlightStyle
+    const editorSrc = await import('../editor/Editor?raw');
+    expect(editorSrc.default).toContain('editorTheme');
+    expect(editorSrc.default).not.toContain('defaultHighlightStyle');
   });
 });
