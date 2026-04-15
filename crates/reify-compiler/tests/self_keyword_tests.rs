@@ -775,6 +775,11 @@ structure S {
         "via_bare should have List type, got: {:?}",
         bare_ty
     );
+    assert_eq!(
+        self_ty,
+        bare_ty,
+        "via_self and via_bare should have identical result types"
+    );
 }
 
 // ─── task-1280 amend: lexicographic first-member selection with multiple params ───
