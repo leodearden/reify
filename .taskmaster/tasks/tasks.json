@@ -8295,10 +8295,13 @@
         "testStrategy": "",
         "priority": "medium",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/scope.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8307,7 +8310,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-15T12:44:10.635Z"
+        "updatedAt": "2026-04-15T12:48:03.965Z"
       },
       {
         "id": "389",
@@ -37409,7 +37412,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T12:47:13.648Z",
+      "lastModified": "2026-04-15T12:48:03.990Z",
       "taskCount": 1779,
       "completedCount": 1514,
       "tags": [
