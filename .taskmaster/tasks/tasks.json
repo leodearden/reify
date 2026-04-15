@@ -34997,11 +34997,11 @@
         "description": "sample() multi-param lambda unpacking (lib.rs:143-146) only matches Value::Point, while the calculus paths (extract_point_coords in calculus.rs:497) treat Value::Point and Value::Vector identically (\"Accept both Point and Vector — they share structural representation\"). This creates an asymmetry: if a Value::Vector is passed as the second argument to sample() with a multi-param lambda, it silently falls through to the single-arg path and returns Undef, whereas calculus operators would have accepted it.\n\nTwo changes needed:\n\n1. **Decide and implement**: Either extend the guard to `Value::Point(items) | Value::Vector(items)` to match the calculus convention, or add an explicit comment at lib.rs:143 explaining why Vector is intentionally excluded from sample()'s unpacking. Check if there's a semantic reason to distinguish (e.g., Points are positions, Vectors are displacements and shouldn't be \"sampled\").\n\n2. **Add pinning test**: Add `sample_multi_param_lambda_with_vector_input` in field_eval_tests.rs that passes a `Value::Vector(vec![Real(1.0), Real(2.0), Real(3.0)])` to a 3-param lambda. Assert the expected behavior (Undef if Vector stays excluded, Real(6.0) if Vector support is added). This prevents accidental regressions either way.\n\nmemory_hints: search \"extract_point_coords Point Vector\" and \"sample apply_lambda multi param\"; get_entity \"sample\" and \"apply_lambda\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:19:46.403Z",
+        "updatedAt": "2026-04-15T01:21:45.743Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/src/lib.rs",
@@ -35517,7 +35517,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:21:45.336Z",
+      "lastModified": "2026-04-15T01:21:45.743Z",
       "taskCount": 1699,
       "completedCount": 1448,
       "tags": [
