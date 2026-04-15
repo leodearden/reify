@@ -5,7 +5,7 @@
 //! to generic function call resolution.
 
 use reify_compiler::{CompiledGuardedGroup, TopologyTemplate};
-use reify_types::{CompiledExprKind, DimensionVector, Severity, Type};
+use reify_types::{CompiledExprKind, Diagnostic, DimensionVector, Severity, Type};
 
 /// Helper: compile source, return the first topology template and diagnostics.
 fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<reify_types::Diagnostic>) {
@@ -31,12 +31,7 @@ fn compile_and_get_expr(
 
     let compiled = reify_compiler::compile(&parsed);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert_no_errors(&compiled.diagnostics);
 
     let template = &compiled.templates[0];
     let cell = template
@@ -56,6 +51,15 @@ fn compile_expecting_errors(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
     reify_compiler::compile(&parsed)
+}
+
+/// Helper: assert that none of the diagnostics have error severity.
+fn assert_no_errors(diagnostics: &[Diagnostic]) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
 // ---------------------------------------------------------------------------
@@ -140,12 +144,7 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert_no_errors(&compiled.diagnostics);
 
     let template = &compiled.templates[0];
     let cell = template
@@ -310,12 +309,7 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors for `let x = none`, got: {:?}", errors);
+    assert_no_errors(&compiled.diagnostics);
 
     let template = &compiled.templates[0];
     let cell = template
@@ -360,11 +354,7 @@ structure def S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     assert_eq!(template.ports.len(), 1, "expected 1 port");
     let port = &template.ports[0];
@@ -424,11 +414,7 @@ structure def S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     assert_eq!(template.ports.len(), 1, "expected 1 port");
     let port = &template.ports[0];
@@ -484,11 +470,7 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     assert_eq!(
         template.guarded_groups.len(),
@@ -548,11 +530,7 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     assert_eq!(
         template.guarded_groups.len(),
@@ -618,11 +596,7 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     // The inner guarded group contains 'x'; find it by searching all groups.
     let group = template
@@ -687,11 +661,7 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     assert_eq!(
         template.guarded_groups.len(),
@@ -753,11 +723,7 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     assert_eq!(
         template.guarded_groups.len(),
