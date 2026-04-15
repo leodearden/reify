@@ -4,8 +4,8 @@
 //! parse → compile → eval/check → verify.
 //! Uses examples/m9_trait_conformance.ri as the source file.
 
-use reify_test_support::{make_simple_engine, parse_and_compile};
-use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
+use reify_test_support::{assert_no_eval_errors, make_simple_engine, parse_and_compile};
+use reify_types::{ModulePath, Satisfaction, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -47,15 +47,8 @@ fn trait_conformance_compiles_and_evals() {
 
     // Eval
     let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-
-    // No eval-level errors
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+    let eval_result = engine.eval(&compiled);
+    assert_no_eval_errors(&eval_result);
 
     // Check constraints — all should be Satisfied
     let result = engine.check(&compiled);
@@ -421,14 +414,7 @@ fn total_constraint_count() {
 
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
-
-    // No eval-level errors
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+    assert_no_eval_errors(&result);
 
     let check_result = engine.check(&compiled);
     assert!(
@@ -460,14 +446,7 @@ fn qualified_access_disambiguation() {
 
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
-
-    // No eval-level errors
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+    assert_no_eval_errors(&result);
 
     let check_result = engine.check(&compiled);
 
