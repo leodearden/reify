@@ -597,6 +597,72 @@ fn mixed_sub_types_instance_qualified_access() {
         "expected no ICE diagnostic on mixed sub-type instance qualified access, got: {:?}",
         compiled.diagnostics
     );
+
+    // Positive correctness check: verify that d1 and d2 resolved to the expected
+    // ValueRef IDs and types — not the ICE fallback (Type::Real) or an error result.
+    //
+    // For non-collection subs, InstanceQualifiedAccess produces a ValueRef scoped to
+    // "Outer.part" with the element type from Inner (Length).
+    // For collection subs it produces a ValueRef scoped to "Outer.parts" with the same
+    // element type — the evaluator handles list-expansion semantics at runtime.
+    let outer_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("should have template Outer");
+
+    // --- d1: non-collection sub member access ---
+    let d1_cell = outer_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d1")
+        .expect("should have let binding 'd1'");
+    let d1_expr = d1_cell
+        .default_expr
+        .as_ref()
+        .expect("d1 should have an expression");
+    match &d1_expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                id.entity, "Outer.part",
+                "d1 should reference sub-scope Outer.part"
+            );
+            assert_eq!(id.member, "diameter", "d1 should reference member 'diameter'");
+        }
+        other => panic!("expected ValueRef for d1, got {:?}", other),
+    }
+    assert_eq!(
+        d1_expr.result_type,
+        reify_types::Type::length(),
+        "d1 (non-collection sub InstanceQualifiedAccess) should resolve to Length"
+    );
+
+    // --- d2: collection sub member access ---
+    let d2_cell = outer_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d2")
+        .expect("should have let binding 'd2'");
+    let d2_expr = d2_cell
+        .default_expr
+        .as_ref()
+        .expect("d2 should have an expression");
+    match &d2_expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                id.entity, "Outer.parts",
+                "d2 should reference sub-scope Outer.parts"
+            );
+            assert_eq!(id.member, "diameter", "d2 should reference member 'diameter'");
+        }
+        other => panic!("expected ValueRef for d2, got {:?}", other),
+    }
+    assert_eq!(
+        d2_expr.result_type,
+        reify_types::Type::length(),
+        "d2 (collection sub InstanceQualifiedAccess) should resolve to Length (element type; \
+         list-expansion is handled by the evaluator at runtime)"
+    );
 }
 
 // ─── task-1441 regression: collection/scalar coexistence + bare collection identifier ───
