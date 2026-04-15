@@ -21,7 +21,7 @@
 //!
 //! Pattern (mirrors m9_error_cases.rs verbatim):
 //!   1. Build a small Reify source string with the error-producing construct.
-//!   2. Call `compile_source(source)` (or `compile_module_with_stdlib` when needed).
+//!   2. Call `compile_source(source)` (or `compile_source_with_stdlib` when needed).
 //!   3. Filter diagnostics via `errors_only` or `warnings_only`.
 //!   4. Assert the filtered list is non-empty (with `{:?}` dump on failure).
 //!   5. Assert a specific substring is present in at least one matching diagnostic.
@@ -40,7 +40,6 @@
 use reify_compiler::*;
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
 use reify_types::*;
-}
 
 // ── Smoke test ────────────────────────────────────────────────────────────────
 
