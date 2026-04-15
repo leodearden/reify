@@ -1681,7 +1681,7 @@ fn test_expect_scalar_extracts_si_value_and_dimension() {
     let expr = cell.default_expr.as_ref().expect("x has no default_expr");
     let (si_value, dimension) = common::expect_scalar(expr);
     assert!(
-        (si_value - 0.01).abs() < 1e-9,
+        (si_value - 0.01).abs() < common::UNIT_EPSILON,
         "expected si_value≈0.01 (10mm), got {}",
         si_value
     );
