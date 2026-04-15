@@ -903,7 +903,7 @@ pub fn annotated_module() -> CompiledModule {
 // ─── shared stdlib test constants ──────────────────────────────────────
 
 /// The 9 material traits defined in `materials_mechanical.ri`.
-pub const EXPECTED_MATERIAL_TRAITS: &[&str; 9] = &[
+pub const EXPECTED_MATERIAL_TRAITS: &[&str] = &[
     "Material",
     "Elastic",
     "Strong",
