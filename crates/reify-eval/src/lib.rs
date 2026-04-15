@@ -6148,4 +6148,89 @@ mod tests {
             "cell ordering must affect the fingerprint (cell identity contributes to the hash)"
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // Tests: INVALID sentinel preserves step index alignment (task-612, step-9)
+    // ---------------------------------------------------------------------------
+
+    /// Verifies that an INVALID sentinel at step index 1 does not shift subsequent
+    /// valid handles. With step_handles = [42, INVALID, 100]:
+    /// - Boolean(Step(0), Step(2)) → Some(Union { left: 42, right: 100 })
+    ///   Step(0) resolves to 42 and Step(2) resolves to 100, both correct.
+    ///   The INVALID at index 1 is skipped; indices ≥ 2 are unaffected.
+    /// - Boolean(Step(0), Step(1)) → None
+    ///   Step(1) is INVALID, filtered out by the sentinel check, so the op fails.
+    ///
+    /// Together these two assertions confirm that:
+    /// (a) the sentinel at index 1 maintains index alignment for subsequent handles,
+    /// (b) the INVALID value correctly blocks resolution of its own index.
+    #[test]
+    fn compile_geometry_op_invalid_sentinel_preserves_index_alignment() {
+        use reify_compiler::BooleanOp;
+        let values = ValueMap::new();
+
+        // step_handles[0] = 42 (valid sphere handle)
+        // step_handles[1] = INVALID (sentinel for a failed op)
+        // step_handles[2] = 100 (valid handle — must remain at index 2)
+        let step_handles = vec![
+            GeometryHandleId(42),
+            GeometryHandleId::INVALID,
+            GeometryHandleId(100),
+        ];
+
+        // (a) Union(Step(0), Step(2)): both resolve correctly despite sentinel at index 1
+        let op_ok = CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(2),
+        };
+        let result_ok = compile_geometry_op(
+            &op_ok,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut Vec::new(),
+        );
+        let result_ok = result_ok.expect(
+            "Boolean(Step(0), Step(2)) should succeed: both indices hold valid handles",
+        );
+        match result_ok {
+            reify_types::GeometryOp::Union { left, right } => {
+                assert_eq!(
+                    left,
+                    GeometryHandleId(42),
+                    "Step(0) should resolve to handle 42 (not shifted by sentinel at index 1)"
+                );
+                assert_eq!(
+                    right,
+                    GeometryHandleId(100),
+                    "Step(2) should resolve to handle 100 (aligned correctly despite sentinel at 1)"
+                );
+            }
+            other => panic!(
+                "expected GeometryOp::Union from Boolean(Step(0), Step(2)), got {:?}",
+                other
+            ),
+        }
+
+        // (b) Union(Step(0), Step(1)): Step(1) is INVALID → filtered out → returns None
+        let op_fail = CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(1),
+        };
+        let result_fail = compile_geometry_op(
+            &op_fail,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut Vec::new(),
+        );
+        assert!(
+            result_fail.is_none(),
+            "Boolean(Step(0), Step(1)) should return None: Step(1) is INVALID and filtered out"
+        );
+    }
 }
