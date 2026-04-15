@@ -3665,8 +3665,8 @@ fn compile_geometry_op(
         CompiledGeometryOp::Boolean { op, left, right } => {
             let resolve_ref = |r: &GeomRef| -> Option<GeometryHandleId> {
                 match r {
-                    GeomRef::Step(idx) => step_handles.get(*idx).copied(),
-                    GeomRef::Sub(_name) => step_handles.last().copied(),
+                    GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID),
+                    GeomRef::Sub(_name) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID),
                 }
             };
             let left_id = resolve_ref(left)?;
@@ -3688,8 +3688,8 @@ fn compile_geometry_op(
         }
         CompiledGeometryOp::Modify { kind, target, args } => {
             let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                GeomRef::Sub(_) => step_handles.last().copied()?,
+                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
             };
             let mut eval_arg = |name: &str| -> Option<reify_types::Value> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
@@ -3748,8 +3748,8 @@ fn compile_geometry_op(
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
             let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                GeomRef::Sub(_) => step_handles.last().copied()?,
+                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
             };
             let mut f64_arg = |name: &str| {
                 eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
@@ -3809,8 +3809,8 @@ fn compile_geometry_op(
         CompiledGeometryOp::Pattern { kind, target, args } => {
             // Pattern operations resolve target via step index
             let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                GeomRef::Sub(_) => step_handles.last().copied()?,
+                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
             };
             match kind {
                 reify_compiler::PatternKind::Linear => {
@@ -3866,8 +3866,8 @@ fn compile_geometry_op(
                     let resolved: Option<Vec<GeometryHandleId>> = profiles
                         .iter()
                         .map(|r| match r {
-                            GeomRef::Step(idx) => step_handles.get(*idx).copied(),
-                            GeomRef::Sub(_) => step_handles.last().copied(),
+                            GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID),
+                            GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID),
                         })
                         .collect();
                     Some(reify_types::GeometryOp::Loft {
@@ -3876,8 +3876,8 @@ fn compile_geometry_op(
                 }
                 reify_compiler::SweepKind::Extrude => {
                     let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     let distance = eval_named_arg(
                         "distance",
@@ -3912,8 +3912,8 @@ fn compile_geometry_op(
                 }
                 reify_compiler::SweepKind::Revolve => {
                     let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     let mut f64_arg = |name: &str| {
                         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
@@ -3955,13 +3955,13 @@ fn compile_geometry_op(
                 reify_compiler::SweepKind::Sweep => {
                     // Resolve profile GeomRef (first entry in profiles) to a handle
                     let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     // Resolve path GeomRef (second entry in profiles) to a handle
                     let path_handle = match profiles.get(1)? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
-                        GeomRef::Sub(_) => step_handles.last().copied()?,
+                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
+                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
                     };
                     Some(reify_types::GeometryOp::Sweep {
                         profile: profile_handle,
