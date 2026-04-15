@@ -848,6 +848,11 @@ structure S {
     );
 }
 
+// ─── task-1770 steps: fallback path tests ───
+// step-1: empty-params structure (sub_member_types["parts"] = Some(empty BTreeMap))
+// step-3: forward reference      (sub_member_types.get("bolts") = None)
+// step-4: self/bare equivalence on fallback path
+
 // ─── task-1770 step-1: fallback path — empty-params structure ───
 
 #[test]
@@ -902,6 +907,71 @@ structure S {
                 inner.as_ref(),
                 &reify_types::Type::StructureRef("Empty".to_string()),
                 "fallback type inner should be StructureRef(\"Empty\"), got: {:?}",
+                inner
+            );
+        }
+        other => panic!("expected List type, got: {:?}", other),
+    }
+}
+
+// ─── task-1770 step-3: fallback path — forward reference (sub_member_types returns None) ───
+
+#[test]
+fn collection_sub_fallback_forward_ref_uses_type_name() {
+    // S is declared BEFORE Bolt.  When the compiler processes S, Bolt's template has not
+    // yet been compiled, so sub_member_types.get("bolts") returns None — triggering the
+    // outer-None branch of the fallback (different from step-1's empty-BTreeMap branch).
+    // The fix should make both branches produce List(StructureRef("Bolt")), not
+    // List(StructureRef("bolts")).
+    //
+    // Assertions:
+    //   (a) cell ID : S.__list_bolts  (coarse fallback ID)
+    //   (b) type    : List(StructureRef("Bolt"))  — structure TYPE name
+    let source = r#"structure S {
+    sub bolts : List<Bolt>
+    let x = self.bolts
+}
+structure Bolt {
+    param diameter : Scalar = 10mm
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let x_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("x value cell");
+
+    // (a) cell ID must be S.__list_bolts (coarse fallback — Bolt was not yet compiled)
+    let expected_id = ValueCellId::new("S", "__list_bolts");
+    let x_refs = x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .collect_value_refs();
+    assert!(
+        x_refs.contains(&expected_id),
+        "forward-ref fallback should reference S.__list_bolts, got: {:?}",
+        x_refs
+    );
+
+    // (b) type must be List(StructureRef("Bolt")) — the structure type name
+    let x_ty = &x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .result_type;
+    match x_ty {
+        reify_types::Type::List(inner) => {
+            assert_eq!(
+                inner.as_ref(),
+                &reify_types::Type::StructureRef("Bolt".to_string()),
+                "forward-ref fallback inner type should be StructureRef(\"Bolt\"), got: {:?}",
                 inner
             );
         }
