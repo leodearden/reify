@@ -36234,10 +36234,11 @@
         "description": "Add a symmetric negative-direction boundary test in `crates/reify-eval/tests/field_eval_tests.rs`. The existing `test_assert_real_approx_panics_at_exact_boundary` (line ~387) only checks `expected + REAL_TOLERANCE`. Add a companion `#[should_panic(expected = \"diff =\")]` test case with `Value::Real(3.14 - REAL_TOLERANCE)` vs expected `3.14` to verify the tolerance check handles negative deltas symmetrically. This guards against a missing `abs()` in the comparison logic.\n\nmemory_hints: search \"field_eval_tests assert_real_approx boundary\", get_entity \"REAL_TOLERANCE\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T07:43:24.570Z"
       },
       {
         "id": "1736",
@@ -36253,7 +36254,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T07:43:24.209Z",
+      "lastModified": "2026-04-15T07:43:24.570Z",
       "taskCount": 1733,
       "completedCount": 1494,
       "tags": [
