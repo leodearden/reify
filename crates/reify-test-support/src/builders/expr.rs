@@ -8,7 +8,9 @@ use reify_types::{
 /// Create a literal expression from a value, inferring the type.
 ///
 /// Supports most Value variants including M5 types (Enum, List, Set, Map, Option,
-/// Lambda, Field). For empty collections, element type defaults to Int/Bool.
+/// Lambda, Field). For empty collections, element/value type defaults to `Real`;
+/// `Option(None)` defaults to `Bool`. Use [`try_infer_type()`] on the value if
+/// you need to detect genuinely ambiguous cases before constructing an expression.
 ///
 /// **Panics** for Frame, Transform, Tensor, and Matrix — their types cannot be
 /// inferred from the value alone. Use [`literal_frame`], [`literal_transform`],
@@ -405,9 +407,9 @@ mod tests {
     }
 
     #[test]
-    fn literal_empty_list_uses_int_fallback() {
+    fn literal_empty_list_uses_real_fallback() {
         let expr = literal(Value::List(vec![]));
-        assert_eq!(expr.result_type, Type::List(Box::new(Type::Int)));
+        assert_eq!(expr.result_type, Type::List(Box::new(Type::Real)));
     }
 
     // --- Collection expression builder tests ---

@@ -677,116 +677,45 @@ impl Value {
     /// Infer the [`Type`] of a runtime [`Value`].
     ///
     /// Used by test builders to derive a type from a literal value.
-    /// For variants whose type cannot be fully inferred (Tensor, Matrix),
+    /// For variants whose type cannot be fully inferred (Tensor, Matrix, Frame, Transform),
     /// this method panics — use `CompiledExpr::literal(value, type)` directly.
+    ///
+    /// For empty collections the following defaults apply (matching the compiler):
+    /// - empty `List` / `Set` → element type defaults to `Real`
+    /// - empty `Map` → key defaults to `String`, value defaults to `Real`
+    /// - `Option(None)` → inner type defaults to `Bool`
+    ///
+    /// Use [`try_infer_type()`] when you need to distinguish "genuinely ambiguous"
+    /// from "has a known fallback".
     pub fn infer_type(&self) -> crate::ty::Type {
         use crate::ty::Type;
-        match self {
-            Value::Bool(_) => Type::Bool,
-            Value::Int(_) => Type::Int,
-            Value::Real(_) => Type::Real,
-            Value::String(_) => Type::String,
-            Value::Scalar { dimension, .. } => Type::Scalar {
-                dimension: *dimension,
-            },
-            Value::Enum { type_name, .. } => Type::Enum(type_name.clone()),
-            Value::List(items) => {
-                let elem_ty = items.first().map(Value::infer_type).unwrap_or(Type::Int);
-                Type::List(Box::new(elem_ty))
-            }
-            Value::Set(items) => {
-                let elem_ty = items
-                    .iter()
-                    .next()
-                    .map(Value::infer_type)
-                    .unwrap_or(Type::Int);
-                Type::Set(Box::new(elem_ty))
-            }
-            Value::Map(m) => {
-                let (k_ty, v_ty) = m
-                    .iter()
-                    .next()
-                    .map(|(k, v)| (k.infer_type(), v.infer_type()))
-                    .unwrap_or((Type::String, Type::Int));
-                Type::Map(Box::new(k_ty), Box::new(v_ty))
-            }
-            Value::Option(Some(inner)) => Type::Option(Box::new(inner.infer_type())),
-            Value::Option(None) => Type::Option(Box::new(Type::Bool)),
-            Value::Lambda { params, body, .. } => {
-                let param_types = params.iter().map(|_| Type::Real).collect();
-                Type::Function {
-                    params: param_types,
-                    return_type: Box::new(body.result_type.clone()),
-                }
-            }
-            Value::Field {
-                domain_type,
-                codomain_type,
-                ..
-            } => Type::Field {
-                domain: Box::new(domain_type.clone()),
-                codomain: Box::new(codomain_type.clone()),
-            },
-            Value::Tensor(_) => {
-                panic!(
+        match self.try_infer_type() {
+            Some(ty) => ty,
+            None => match self {
+                Value::List(_) => Type::List(Box::new(Type::Real)),
+                Value::Set(_) => Type::Set(Box::new(Type::Real)),
+                Value::Map(_) => Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+                Value::Option(None) => Type::Option(Box::new(Type::Bool)),
+                Value::Tensor(_) => panic!(
                     "infer_type() cannot infer Tensor type (rank/n/quantity). \
                      Use CompiledExpr::literal(value, type) directly."
-                )
-            }
-            Value::Complex { dimension, .. } => Type::complex(Type::Scalar {
-                dimension: *dimension,
-            }),
-            Value::Matrix(_) => {
-                panic!(
+                ),
+                Value::Matrix(_) => panic!(
                     "infer_type() cannot infer Matrix type. \
                      Use CompiledExpr::literal(value, type) directly."
-                )
-            }
-            Value::Point(components) => {
-                let q = components
-                    .first()
-                    .map(Value::infer_type)
-                    .unwrap_or(Type::Real);
-                Type::Point {
-                    n: components.len(),
-                    quantity: Box::new(q),
-                }
-            }
-            Value::Vector(components) => {
-                let q = components
-                    .first()
-                    .map(Value::infer_type)
-                    .unwrap_or(Type::Real);
-                Type::Vector {
-                    n: components.len(),
-                    quantity: Box::new(q),
-                }
-            }
-            Value::Orientation { .. } => Type::Orientation(3),
-            Value::Frame { .. } => {
-                panic!(
+                ),
+                Value::Frame { .. } => panic!(
                     "infer_type() cannot infer Frame dimensionality. \
                      Use CompiledExpr::literal(value, type) directly."
-                )
-            }
-            Value::Transform { .. } => {
-                panic!(
+                ),
+                Value::Transform { .. } => panic!(
                     "infer_type() cannot infer Transform dimensionality. \
                      Use CompiledExpr::literal(value, type) directly."
-                )
-            }
-            Value::Plane { .. } => Type::Plane,
-            Value::Axis { .. } => Type::Axis,
-            Value::BoundingBox { .. } => Type::BoundingBox,
-            Value::Range { lower, upper, .. } => {
-                let elem_ty = lower
-                    .as_ref()
-                    .or(upper.as_ref())
-                    .map(|v| v.infer_type())
-                    .unwrap_or(Type::Real);
-                Type::Range(Box::new(elem_ty))
-            }
-            Value::Undef => Type::Bool,
+                ),
+                // try_infer_type() only returns None for the variants above;
+                // all other variants return Some, so this arm is unreachable.
+                _ => unreachable!("try_infer_type returned None for an unexpected variant"),
+            },
         }
     }
 
