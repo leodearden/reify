@@ -2067,6 +2067,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn linear_pattern_2d_count_zero_errors() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // count1 == 0 should fail
+        let result = kernel.execute(&GeometryOp::LinearPattern2D {
+            target: box_h.id,
+            direction1: [1.0, 0.0, 0.0],
+            count1: 0,
+            spacing1: Value::Real(20.0),
+            direction2: [0.0, 1.0, 0.0],
+            count2: 4,
+            spacing2: Value::Real(20.0),
+        });
+        assert!(result.is_err(), "count1==0 should produce OperationFailed");
+        // count2 == 0 should fail
+        let result = kernel.execute(&GeometryOp::LinearPattern2D {
+            target: box_h.id,
+            direction1: [1.0, 0.0, 0.0],
+            count1: 3,
+            spacing1: Value::Real(20.0),
+            direction2: [0.0, 1.0, 0.0],
+            count2: 0,
+            spacing2: Value::Real(20.0),
+        });
+        assert!(result.is_err(), "count2==0 should produce OperationFailed");
+    }
+
+    #[test]
+    fn arbitrary_pattern_empty_errors() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Empty transforms should fail
+        let result = kernel.execute(&GeometryOp::ArbitraryPattern {
+            target: box_h.id,
+            transforms: vec![],
+        });
+        assert!(
+            result.is_err(),
+            "empty transforms should produce OperationFailed"
+        );
+    }
+
     // --- Loft tests ---
 
     #[test]
