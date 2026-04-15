@@ -487,6 +487,17 @@ structure S {
         cc.optimized_target
     );
 
+    // The malformed second @optimized() must fire a missing-target warning.
+    let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .collect();
+    assert!(
+        !missing_target_warnings.is_empty(),
+        "expected a missing-target warning for the malformed second @optimized(), got none; all diags: {:?}",
+        module.diagnostics
+    );
+
     // The malformed second @optimized() does NOT count as a valid duplicate,
     // so no duplicate warning should fire.
     let duplicate_warnings: Vec<_> = warning_diags(&module.diagnostics)
@@ -537,6 +548,17 @@ structure S {
         Some("kernel::foo".to_string()),
         "expected extractor to skip non-string @optimized(123) and return the valid target; got: {:?}",
         cc.optimized_target
+    );
+
+    // The missing-target warning must still fire (on the non-string first @optimized).
+    let missing_target_warnings: Vec<_> = warning_diags(&module.diagnostics)
+        .into_iter()
+        .filter(|d| d.message.contains("@optimized requires a string literal target"))
+        .collect();
+    assert!(
+        !missing_target_warnings.is_empty(),
+        "expected a missing-target warning for the non-string first @optimized(123), got none; all diags: {:?}",
+        module.diagnostics
     );
 
     // No duplicate warning: the non-string first annotation is not a valid

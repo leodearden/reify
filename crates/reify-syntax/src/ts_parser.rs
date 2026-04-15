@@ -1089,6 +1089,7 @@ impl<'a> Lowering<'a> {
             is_pub: false,
             value,
             where_clause: None, // fn let bindings have no where clause
+            annotations: Vec::new(),
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -1232,14 +1233,44 @@ impl<'a> Lowering<'a> {
     fn lower_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
         let mut members = Vec::new();
         let mut pragmas = Vec::new();
+        let mut pending_annotations: Vec<Annotation> = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "pragma" {
-                if let Some(pragma) = self.lower_pragma(child) {
-                    pragmas.push(pragma);
+            match child.kind() {
+                "annotation" => {
+                    if let Some(annotation) = self.lower_annotation(child) {
+                        pending_annotations.push(annotation);
+                    }
                 }
-            } else if let Some(member) = self.lower_member(child) {
-                members.push(member);
+                "pragma" => {
+                    if let Some(pragma) = self.lower_pragma(child) {
+                        pragmas.push(pragma);
+                    }
+                }
+                "ERROR" => {
+                    // Consume pending annotations so they don't leak past a syntax error.
+                    let _ = std::mem::take(&mut pending_annotations);
+                    self.push_error(
+                        format!("syntax error: {}", self.node_text(child)),
+                        self.span(child),
+                    );
+                }
+                _ => {
+                    // Drain pending annotations before lowering the member.
+                    // If lowering fails (returns None), annotations are still consumed.
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut member) = self.lower_member(child) {
+                        match &mut member {
+                            MemberDecl::Param(p) => p.annotations = annotations,
+                            MemberDecl::Let(l) => l.annotations = annotations,
+                            _ => {
+                                // Annotations on non-param/non-let members are
+                                // silently dropped — no defined semantics yet.
+                            }
+                        }
+                        members.push(member);
+                    }
+                }
             }
         }
         (members, pragmas)
@@ -1315,6 +1346,7 @@ impl<'a> Lowering<'a> {
         let mut main_members = Vec::new();
         let mut else_members = Vec::new();
         let mut in_else = false;
+        let mut pending_annotations: Vec<Annotation> = Vec::new();
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
@@ -1324,11 +1356,33 @@ impl<'a> Lowering<'a> {
                 continue;
             }
 
-            if let Some(member) = self.lower_member(child) {
-                if in_else {
-                    else_members.push(member);
-                } else {
-                    main_members.push(member);
+            match child.kind() {
+                "annotation" => {
+                    if let Some(annotation) = self.lower_annotation(child) {
+                        pending_annotations.push(annotation);
+                    }
+                }
+                "ERROR" => {
+                    let _ = std::mem::take(&mut pending_annotations);
+                    self.push_error(
+                        format!("syntax error: {}", self.node_text(child)),
+                        self.span(child),
+                    );
+                }
+                _ => {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut member) = self.lower_member(child) {
+                        match &mut member {
+                            MemberDecl::Param(p) => p.annotations = annotations,
+                            MemberDecl::Let(l) => l.annotations = annotations,
+                            _ => {}
+                        }
+                        if in_else {
+                            else_members.push(member);
+                        } else {
+                            main_members.push(member);
+                        }
+                    }
                 }
             }
         }
@@ -1392,6 +1446,7 @@ impl<'a> Lowering<'a> {
             type_expr,
             default,
             where_clause,
+            annotations: Vec::new(),
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -1422,6 +1477,7 @@ impl<'a> Lowering<'a> {
             type_expr,
             value,
             where_clause,
+            annotations: Vec::new(),
             span: self.span(node),
             content_hash: self.content_hash(node),
         })

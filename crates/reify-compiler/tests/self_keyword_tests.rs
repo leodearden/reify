@@ -52,6 +52,61 @@ fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
     reify_compiler::compile(&parsed)
 }
 
+/// Returns `true` if any string in `messages` contains `word` as a whole token.
+///
+/// Token boundaries are any character that is neither ASCII alphanumeric nor `_`.
+/// Extracted from duplicated closure logic that previously appeared at four call
+/// sites in this file.
+fn mentions_word<'a>(mut messages: impl Iterator<Item = &'a str>, word: &str) -> bool {
+    messages.any(|msg| {
+        msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|tok| tok == word)
+    })
+}
+
+/// Convenience wrapper: returns `true` if any lowercased message in `msgs` contains
+/// the word `"self"` as a whole token (i.e. not as part of `myself` or `self_param`).
+fn msgs_mention_self(msgs: &[String]) -> bool {
+    mentions_word(msgs.iter().map(String::as_str), "self")
+}
+
+#[test]
+fn test_mentions_word() {
+    // (1) exact match: the word 'self' appears as its own token
+    assert!(mentions_word(
+        ["unknown identifier `self`"].iter().copied(),
+        "self"
+    ));
+
+    // (2) substring-only: 'self' is embedded inside 'myself' — not a whole word
+    assert!(!mentions_word(["myself"].iter().copied(), "self"));
+
+    // (3) underscore-adjacent: 'self_param' is a single token, does not match 'self'
+    assert!(!mentions_word(["self_param"].iter().copied(), "self"));
+
+    // (4) callers pre-lowercase their messages, so pass lowercased strings;
+    //     'self' at start of message
+    assert!(mentions_word(["self is invalid here"].iter().copied(), "self"));
+
+    // (5) empty iterator → false
+    assert!(!mentions_word(std::iter::empty(), "self"));
+
+    // (6) word at end of message
+    assert!(mentions_word(["cannot use self"].iter().copied(), "self"));
+
+    // (7) multiple messages — only the second mentions the word
+    assert!(mentions_word(
+        ["unrelated error", "invalid use of self"].iter().copied(),
+        "self"
+    ));
+
+    // (8) none of the messages mention the word
+    assert!(!mentions_word(
+        ["unrelated error", "something else entirely"].iter().copied(),
+        "self"
+    ));
+}
+
 // ─── step-1: self.param resolves to correct ValueRef ───
 
 #[test]
@@ -321,13 +376,9 @@ fn self_error_in_fn_body() {
             !errors.is_empty(),
             "expected error diagnostic for `self` in fn body"
         );
-        let mentions_self = errors.iter().any(|d| {
-            let msg = d.message.to_lowercase();
-            msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .any(|tok| tok == "self")
-        });
+        let msgs: Vec<String> = errors.iter().map(|d| d.message.to_lowercase()).collect();
         assert!(
-            mentions_self,
+            msgs_mention_self(&msgs),
             "expected a compile error mentioning `self` for `self` in fn body, got: {:?}",
             errors.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
@@ -336,13 +387,9 @@ fn self_error_in_fn_body() {
         // The parse error message embeds the source snippet, which includes `self`;
         // verify the error references `self` as a whole word to guard against
         // unrelated syntax regressions being mistaken for a self-rejection.
-        let mentions_self = parsed.errors.iter().any(|e| {
-            let msg = e.message.to_lowercase();
-            msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .any(|tok| tok == "self")
-        });
+        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.to_lowercase()).collect();
         assert!(
-            mentions_self,
+            msgs_mention_self(&msgs),
             "expected a parse error mentioning `self` for `self` in fn body, got: {:?}",
             parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -654,13 +701,9 @@ fn self_inside_lambda_in_fn_body_errors() {
             !errors.is_empty(),
             "expected error diagnostic for `self` inside lambda in fn body"
         );
-        let mentions_self = errors.iter().any(|d| {
-            let msg = d.message.to_lowercase();
-            msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .any(|tok| tok == "self")
-        });
+        let msgs: Vec<String> = errors.iter().map(|d| d.message.to_lowercase()).collect();
         assert!(
-            mentions_self,
+            msgs_mention_self(&msgs),
             "expected a compile error mentioning `self` for `self` inside lambda in fn body, got: {:?}",
             errors.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
@@ -669,13 +712,9 @@ fn self_inside_lambda_in_fn_body_errors() {
         // The parse error message embeds the source snippet, which includes `self`;
         // verify the error references `self` as a whole word to guard against
         // unrelated syntax regressions being mistaken for a self-rejection.
-        let mentions_self = parsed.errors.iter().any(|e| {
-            let msg = e.message.to_lowercase();
-            msg.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .any(|tok| tok == "self")
-        });
+        let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.to_lowercase()).collect();
         assert!(
-            mentions_self,
+            msgs_mention_self(&msgs),
             "expected a parse error mentioning `self` for `self` inside lambda in fn body, got: {:?}",
             parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );

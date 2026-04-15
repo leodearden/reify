@@ -4,6 +4,8 @@
 //! into the unit registry of importing modules, and that private units remain
 //! invisible across module boundaries.
 
+mod common;
+
 use std::fs;
 use std::path::PathBuf;
 
@@ -51,6 +53,36 @@ fn test_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// Write the three-module transitive chain used by one-hop limitation pinning tests:
+/// `a.ri` declares `pub unit mil`, `b.ri` imports a (no local units),
+/// `c.ri` imports b and tries to use `5mil`.
+fn write_transitive_unit_chain(dir: &std::path::Path) {
+    fs::write(dir.join("a.ri"), "pub unit mil : Length = 0.0000254").unwrap();
+    fs::write(dir.join("b.ri"), "import a").unwrap();
+    fs::write(
+        dir.join("c.ri"),
+        "import b\nstructure S { param w : Length = 5mil }",
+    )
+    .unwrap();
+}
+
+/// Assert that `errors` contains at least one diagnostic whose lowercased message
+/// contains both "unknown unit" and "mil". Used to pin the one-hop limitation.
+fn assert_unknown_unit_mil(errors: &[&reify_types::Diagnostic]) {
+    assert!(
+        !errors.is_empty(),
+        "expected 'unknown unit' error: `mil` should not be visible two hops away (one-hop limitation)"
+    );
+    assert!(
+        errors.iter().any(|d| {
+            let msg = d.message.to_lowercase();
+            msg.contains("unknown unit") && msg.contains("mil")
+        }),
+        "error should mention 'unknown unit' and 'mil'; got: {:?}",
+        errors
+    );
+}
+
 // ─── step-1: user-declared unit works in a let binding expression ─────────────
 
 #[test]
@@ -81,48 +113,28 @@ fn user_unit_in_let_binding() {
         .find(|c| c.id.member == "w_thou")
         .expect("w_thou value cell not found");
     // Walk default_expr → BinOp → right operand → Scalar si_value + dimension
-    if let Some(expr) = &w_thou.default_expr {
-        if let reify_types::CompiledExprKind::BinOp { op, right, .. } = &expr.kind {
-            assert!(
-                matches!(op, reify_types::BinOp::Add),
-                "expected Add op for w + 5thou, got {:?}",
-                op
-            );
-            if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-                si_value,
-                dimension,
-                ..
-            }) = &right.kind
-            {
-                let expected = 5.0 * 0.0000254;
-                assert!(
-                    (si_value - expected).abs() < 1e-10,
-                    "expected si_value≈{} (5 * 0.0000254 = 0.000127), got {} \
-                     (a hardcoded-mm fallback regression would yield ≈0.005)",
-                    expected,
-                    si_value
-                );
-                assert_eq!(
-                    *dimension,
-                    reify_types::DimensionVector::LENGTH,
-                    "expected Length dimension for 5thou, got {:?}",
-                    dimension
-                );
-            } else {
-                panic!(
-                    "expected scalar literal for 5thou (right operand of BinOp), got {:?}",
-                    right.kind
-                );
-            }
-        } else {
-            panic!(
-                "expected BinOp (w + 5thou) as default_expr kind, got {:?}",
-                expr.kind
-            );
-        }
-    } else {
-        panic!("w_thou has no default_expr");
-    }
+    let expr = w_thou.default_expr.as_ref().expect("w_thou has no default_expr");
+    let (op, _left, right) = common::expect_binop(expr);
+    assert!(
+        matches!(op, reify_types::BinOp::Add),
+        "expected Add op for w + 5thou, got {:?}",
+        op
+    );
+    let expected = 5.0 * 0.0000254;
+    let (si_value, dimension) = common::expect_scalar(right);
+    assert!(
+        (si_value - expected).abs() < common::UNIT_EPSILON,
+        "expected si_value≈{} (5 * 0.0000254 = 0.000127), got {} \
+         (a hardcoded-mm fallback regression would yield ≈0.005)",
+        expected,
+        si_value
+    );
+    assert_eq!(
+        dimension,
+        reify_types::DimensionVector::LENGTH,
+        "expected Length dimension for 5thou, got {:?}",
+        dimension
+    );
 }
 
 // ─── step-3: user-defined unit overrides hardcoded fallback ──────────────────
@@ -148,23 +160,14 @@ fn user_unit_overrides_hardcoded_fallback() {
         .iter()
         .find(|c| c.id.member == "w")
         .expect("w not found");
-    if let Some(expr) = &w_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            // registry value: 10 * 0.005 = 0.05, NOT hardcoded 10 * 0.001 = 0.01
-            assert!(
-                (si_value - 0.05).abs() < 1e-9,
-                "expected registry value 0.05 (10 * 0.005), got {} (hardcoded would be 0.01)",
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal, got {:?}", expr.kind);
-        }
-    } else {
-        panic!("w has no default_expr");
-    }
+    let expr = w_cell.default_expr.as_ref().expect("w has no default_expr");
+    let (si_value, _dimension) = common::expect_scalar(expr);
+    // registry value: 10 * 0.005 = 0.05, NOT hardcoded 10 * 0.001 = 0.01
+    assert!(
+        (si_value - 0.05).abs() < common::UNIT_EPSILON,
+        "expected registry value 0.05 (10 * 0.005), got {} (hardcoded would be 0.01)",
+        si_value
+    );
 }
 
 // ─── step-5: cross-module pub unit visible via compile_with_prelude ───────────
@@ -195,24 +198,15 @@ fn cross_module_pub_unit_visible_via_compile_with_prelude() {
         .iter()
         .find(|c| c.id.member == "w")
         .expect("w not found");
-    if let Some(expr) = &w_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
-        {
-            let expected = 5.0 * 0.0000254;
-            assert!(
-                (si_value - expected).abs() < 1e-10,
-                "expected si_value≈{} (5 * 0.0000254), got {}",
-                expected,
-                si_value
-            );
-        } else {
-            panic!("expected scalar literal, got {:?}", expr.kind);
-        }
-    } else {
-        panic!("w has no default_expr");
-    }
+    let expr = w_cell.default_expr.as_ref().expect("w has no default_expr");
+    let expected = 5.0 * 0.0000254;
+    let (si_value, _dimension) = common::expect_scalar(expr);
+    assert!(
+        (si_value - expected).abs() < common::UNIT_EPSILON,
+        "expected si_value≈{} (5 * 0.0000254), got {}",
+        expected,
+        si_value
+    );
 }
 
 // ─── step-7: cross-module private unit NOT visible via compile_with_prelude ───
@@ -428,4 +422,111 @@ fn local_unit_duplicating_imported_pub_unit_produces_error() {
         "error should mention 'duplicate' and 'mil'; got: {:?}",
         errors
     );
+}
+
+// ─── step-17: transitive pub unit NOT visible two hops via compile_with_prelude ─
+
+#[test]
+fn transitive_pub_unit_not_visible_via_compile_with_prelude() {
+    // One-hop limitation pinning test.
+    // A declares `pub unit mil`, B is compiled with prelude=[A] (B has no local units),
+    // C is compiled with prelude=[B] and tries to use `5mil`.
+    // Since B.units is empty (no locally-declared units), the prelude-seeding loop
+    // for C finds nothing in B.units, so `mil` is invisible to C.
+    let module_a = parse_and_compile("pub unit mil : Length = 0.0000254");
+    assert!(
+        errors_only(&module_a).is_empty(),
+        "module_a errors: {:?}",
+        errors_only(&module_a)
+    );
+
+    // Module B: compiled with A as prelude, but B declares no units of its own.
+    // B can use `mil` (it's in B's registry via prelude seeding), but
+    // B's CompiledModule.units remains empty (only holds locally-declared units).
+    // Positive one-hop assertion: B's source actively resolves `mil` from its
+    // prelude, confirming the one-hop seeding works end-to-end.
+    let module_b =
+        compile_with_prelude_helper("structure T { param x : Length = 1mil }", &[module_a]);
+    assert!(
+        errors_only(&module_b).is_empty(),
+        "module_b errors: {:?}",
+        errors_only(&module_b)
+    );
+    assert!(
+        module_b.units.is_empty(),
+        "module_b should have no locally-declared units"
+    );
+
+    // Module C: compiled with B as prelude, tries to use `mil`.
+    // The prelude-seeding loop iterates B.units (empty), so `mil` is not seeded into C.
+    let module_c = compile_with_prelude_helper(
+        "structure S { param w : Length = 5mil }",
+        &[module_b],
+    );
+    let errors = errors_only(&module_c);
+    assert_unknown_unit_mil(&errors);
+}
+
+// ─── step-19: transitive pub unit NOT visible two hops via ModuleDag ──────────
+
+#[test]
+fn transitive_pub_unit_not_visible_via_module_dag() {
+    // One-hop limitation pinning test via filesystem ModuleDag path.
+    // a.ri declares `pub unit mil`, b.ri has `import a` (no local units),
+    // c.ri has `import b` and uses `5mil`.
+    // The DAG seeds A's `mil` into B's registry, but B's CompiledModule.units
+    // is empty (B has no locally-declared units). When C is compiled, prelude-seeding
+    // from B.units yields nothing, so `mil` is unknown in C.
+    let dir = test_dir("transitive_pub_unit_module_dag");
+    write_transitive_unit_chain(&dir);
+
+    let resolver =
+        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = reify_compiler::module_dag::ModuleDag::new();
+    // compile_module succeeds (no parse errors); semantic errors appear in the module.
+    let result = dag.compile_module("c", &resolver);
+    assert!(
+        result.is_ok(),
+        "compile_module should succeed (no parse errors): {:?}",
+        result
+    );
+
+    let module_c = dag.modules.get("c").expect("module c not in dag");
+    let errors = errors_only(module_c);
+    assert_unknown_unit_mil(&errors);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ─── step-21: transitive pub unit NOT visible two hops via compile_project ────
+
+#[test]
+fn transitive_pub_unit_not_visible_via_compile_project() {
+    // One-hop limitation pinning test via compile_project entry path.
+    // Same three-module chain: a.ri → b.ri → c.ri (c.ri is the entry file).
+    // C's entry-point compilation cannot see `mil` from A because B's
+    // CompiledModule.units is empty (B has no locally-declared units).
+    let dir = test_dir("transitive_pub_unit_compile_project");
+    write_transitive_unit_chain(&dir);
+
+    let resolver =
+        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result =
+        reify_compiler::module_dag::compile_project(&dir.join("c.ri"), &resolver);
+    // Parse succeeds; semantic errors are attached to the module, not returned as Err.
+    assert!(
+        result.is_ok(),
+        "compile_project should succeed (no parse errors): {:?}",
+        result
+    );
+
+    let modules = result.unwrap();
+    let entry_module = modules
+        .iter()
+        .find(|m| m.path.to_string() == "c")
+        .expect("module 'c' not found in compile_project output");
+    let errors = errors_only(entry_module);
+    assert_unknown_unit_mil(&errors);
+
+    let _ = fs::remove_dir_all(&dir);
 }

@@ -116,7 +116,11 @@ fn make_field_with_source_builds_field_with_given_source() {
             | FieldSourceKind::Gradient
             | FieldSourceKind::Divergence
             | FieldSourceKind::Curl
-            | FieldSourceKind::Laplacian => {}
+            | FieldSourceKind::Laplacian
+            | FieldSourceKind::VonMises
+            | FieldSourceKind::PrincipalStresses
+            | FieldSourceKind::MaxShear
+            | FieldSourceKind::SafetyFactor => {}
         }
     }
 
@@ -129,6 +133,10 @@ fn make_field_with_source_builds_field_with_given_source() {
         FieldSourceKind::Divergence,
         FieldSourceKind::Curl,
         FieldSourceKind::Laplacian,
+        FieldSourceKind::VonMises,
+        FieldSourceKind::PrincipalStresses,
+        FieldSourceKind::MaxShear,
+        FieldSourceKind::SafetyFactor,
     ] {
         let (field, field_type) =
             make_field_with_source(Type::Real, Type::Real, source_kind.clone(), lambda.clone());
@@ -4291,6 +4299,17 @@ fn sample_point_enum_correctness() {
 /// All scanner constants are assembled at runtime via `.concat()` so this file
 /// does not contain the guarded sequences as adjacent characters and cannot
 /// accidentally self-trigger.
+///
+/// Note: guard 3 (stale-plan-pointer check) is also enforced workspace-wide by
+/// the integration test `no_stale_plan_pointers_in_workspace_ignore_reasons` in
+/// `crates/reify-test-support/tests/ignore_reason_hygiene.rs`, which walks all
+/// `**/tests/**/*.rs` files via
+/// `reify_test_support::ignore_hygiene::collect_workspace_stale_pointers`.
+/// This narrow test is retained because it additionally enforces guards 1
+/// (bare-ignore rejection) and 2 (known-bug prefix invariant) for this file
+/// specifically — the workspace-wide test intentionally omits those guards
+/// because existing `#[ignore]` attributes in `reify-eval` do not yet follow
+/// the `"known bug:"` convention.
 #[test]
 fn ignore_reason_strings_have_no_stale_plan_pointers() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/field_calculus_tests.rs");

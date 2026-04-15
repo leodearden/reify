@@ -106,6 +106,11 @@ pub fn find_stale_plan_pointers_in_source(source: &str) -> Vec<String> {
 ///
 /// All scanner constants are assembled at runtime via `.concat()` so the
 /// source file does not contain the guarded sequences as adjacent characters.
+///
+/// **Rustfmt assumption:** the scanner recognises only the canonical
+/// `#[ignore = "..."]` form (space-equals-space-quote).  Non-canonical
+/// forms such as `#[ignore="..."]` are silently ignored; rustfmt
+/// enforces the canonical form in practice.
 pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
     // DO NOT inline — split at boundary ["#[", "ignore"] keeps the guarded
     // 8-char sequence from appearing adjacent in this source file; inlining
@@ -174,9 +179,16 @@ pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
 }
 
 /// Recursively walk `workspace_root` collecting every `.rs` file whose path
-/// contains a directory component named `tests`. Skips `target` and any
-/// directory whose name starts with `.` (which covers `.git`, `.worktrees`,
-/// etc.).
+/// contains a directory component named `tests`. Skips the following directories:
+///
+/// - `target` — Cargo build artifacts
+/// - Dot-dirs (any name starting with `.`) — VCS internals (`.git`), worktrees
+///   (`.worktrees`), and similar tooling directories
+/// - `node_modules` — JS/Node tooling output; `tree-sitter-reify/` can acquire
+///   this directory from JS build steps, and `.rs` files inside it would produce
+///   false matches
+/// - `vendor` — Cargo vendored dependency trees; vendored crate source is not
+///   project-owned test code and scanning it wastes time
 ///
 /// Uses `std::fs::read_dir` with an explicit stack (no recursion, no external
 /// `walkdir` dep) — matching the existing convention in `reify-kernel-occt/build.rs`.
@@ -199,8 +211,12 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
             // infinite loops on symlink cycles in the workspace.
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                // Skip build artifacts, git internals, worktrees, and all dot-dirs.
-                if name == "target" || name.starts_with('.') {
+                // Skip build artifacts, VCS/worktree noise, JS tooling, and vendored deps.
+                if name == "target"
+                    || name.starts_with('.')
+                    || name == "node_modules"
+                    || name == "vendor"
+                {
                     continue;
                 }
                 stack.push(path);
@@ -215,6 +231,39 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
     }
 
     result
+}
+
+/// Walk `workspace_root` for test `.rs` files and collect every stale
+/// transient-plan-doc pointer found in `#[ignore]` reason strings.
+///
+/// Combines `walk_test_rs_files` + `find_stale_plan_pointers_in_source` into a
+/// single reusable helper so callers (integration tests, CI scripts) don't need
+/// to inline the walk-read-detect loop.
+///
+/// Each returned `String` has the form `"<relative/path>: <violation>"`, where
+/// the relative path is stripped of `workspace_root` as a prefix and the
+/// violation is produced by `find_stale_plan_pointers_in_source` (e.g.
+/// `"line 12: \"known bug: see plan step-3\""`).
+///
+/// I/O errors on individual files are silently skipped — the same policy as
+/// the integration test — so a file deleted mid-walk during a concurrent build
+/// does not produce a spurious violation.
+pub fn collect_workspace_stale_pointers(workspace_root: &Path) -> Vec<String> {
+    walk_test_rs_files(workspace_root)
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok().map(|s| (path, s)))
+        .flat_map(|(path, source)| {
+            let rel = path
+                .strip_prefix(workspace_root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            find_stale_plan_pointers_in_source(&source)
+                .into_iter()
+                .map(move |v| format!("{rel}: {v}"))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Returns true when `path` (relative to `workspace_root`) contains at least
@@ -341,6 +390,11 @@ mod tests {
             "violation {:?} should contain the needle fragment {:?}",
             violations[0],
             expected_fragment
+        );
+        assert!(
+            violations[0].starts_with("line 1:"),
+            "expected violation to report the attribute line (line 1), not the needle line (line 2): {:?}",
+            violations[0]
         );
     }
 
@@ -474,17 +528,18 @@ mod tests {
     #[test]
     fn check_ignore_reasons_rejects_non_known_bug_reason() {
         // A reason string that does NOT begin with "known bug:" must be rejected
-        // by the positive-invariant guard.  The reason deliberately does not
-        // contain the stale-pointer needle so only the positive guard fires.
-        // The error must mention "known bug:" so we can tell the positive-invariant
-        // guard fired (not the bare-ignore guard or the stale-pointer sentinel).
+        // by the positive-invariant guard (guard 2).  The reason deliberately does
+        // not contain the stale-pointer needle so only the positive guard fires.
+        // The error must mention "does not begin with" — a substring unique to
+        // guard 2's error format — to confirm the positive-invariant guard fired
+        // (not the bare-ignore guard or the stale-pointer sentinel).
         // Source assembled at runtime.
         let src = ["#[", "ignore = \"some other prefix here\"]"].concat();
         let err = check_ignore_reasons(&src)
             .expect_err("expected a non-\"known bug:\" reason string to be rejected");
         assert!(
-            err.contains("known bug:"),
-            "expected error message to identify the positive-invariant guard: {err:?}",
+            err.contains("does not begin with"),
+            "expected error to identify the positive-invariant guard via 'does not begin with': {err:?}",
         );
     }
 
@@ -528,12 +583,16 @@ mod tests {
         // Regular `//` line comments are NOT skipped — only `///` and `//!` are.
         // This pins the documented limitation so a future refactor that
         // accidentally starts skipping `//` is caught immediately.
+        // The error must mention "bare" to confirm guard 1 (bare-ignore rejection)
+        // fired — not a different guard — pinning which guard rejects the `//` line.
         // Source assembled at runtime to avoid self-triggering.
         let src = ["// regular comment: ", "#[", "ignore]\n"].concat();
+        let err = check_ignore_reasons(&src)
+            .expect_err("expected bare-ignore inside a regular // comment to be rejected \
+                         (// comments are not skipped; only /// and //! are)");
         assert!(
-            check_ignore_reasons(&src).is_err(),
-            "expected bare-ignore inside a regular // comment to be rejected \
-             (// comments are not skipped; only /// and //! are)",
+            err.contains("bare"),
+            "expected the bare-ignore guard (guard 1) to fire, not a different guard: {err:?}",
         );
     }
 
@@ -547,6 +606,34 @@ mod tests {
             check_ignore_reasons(src).is_ok(),
             "expected source with no ignore attributes to be accepted",
         );
+    }
+
+    #[test]
+    fn check_ignore_reasons_non_canonical_form_is_silently_ignored() {
+        // The scanner recognises only the canonical rustfmt form (space-equals-space-quote:
+        // ` = "`).  Non-canonical attribute forms — no spaces around `=`, space only
+        // before `=`, or space only after `=` — do not match any guard branch and are
+        // silently passed over.  This test pins all three whitespace variants so any
+        // future tightening (e.g. stripping whitespace before matching) must first
+        // update this test.
+        //
+        // The reason string deliberately does NOT start with `known bug:`.  If a future
+        // refactor starts matching non-canonical forms, guard 2 would reject this reason
+        // and the test would fail loudly, providing a clear regression signal.
+        //
+        // Sources assembled at runtime so this file does not contain the guarded adjacent
+        // sequences and does not self-trigger the meta-test scanner.
+        let non_canonical_forms = [
+            ["#[", "ignore=\"not a known bug: test\"]"].concat(),   // no spaces around =
+            ["#[", "ignore =\"not a known bug: test\"]"].concat(),  // space before = only
+            ["#[", "ignore= \"not a known bug: test\"]"].concat(),  // space after = only
+        ];
+        for src in &non_canonical_forms {
+            assert!(
+                check_ignore_reasons(src).is_ok(),
+                "expected non-canonical #[ignore...] form to be silently ignored: {src:?}",
+            );
+        }
     }
 
     /// Guard 3 "no-marker" path: a `///` doc-comment line that contains the
@@ -629,6 +716,85 @@ mod tests {
         );
     }
 
+    // ── collect_workspace_stale_pointers ─────────────────────────────────────
+
+    /// (a) Synthetic workspace with stale plan pointers in two different crate
+    /// test dirs → collect_workspace_stale_pointers returns violations that cite
+    /// both files.  Marker and needle assembled at runtime so this source file
+    /// does not contain the literal guarded sequences.
+    #[test]
+    fn cwsp_synthetic_workspace_with_two_stale_files_returns_both_violations() {
+        use tempfile::TempDir;
+
+        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path();
+
+        let marker = ["#[ignore", " = \""].concat();
+        let needle = ["plan", " step-"].concat();
+        let stale_source = format!("{marker}known bug: see {needle}3 reference\"]");
+        let good_source = format!("{marker}known bug: a clean summary\"]");
+
+        // Two test files with stale pointers in different crates
+        let stale_a = root.join("crates/alpha/tests/foo.rs");
+        let stale_b = root.join("crates/beta/tests/bar.rs");
+        // A clean file that should produce zero violations
+        let clean = root.join("crates/gamma/tests/baz.rs");
+
+        for (path, content) in [
+            (&stale_a, stale_source.as_str()),
+            (&stale_b, stale_source.as_str()),
+            (&clean, good_source.as_str()),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).expect("create parent dirs");
+            std::fs::write(path, content.as_bytes()).expect("write file");
+        }
+
+        let violations = collect_workspace_stale_pointers(root);
+
+        assert_eq!(
+            violations.len(),
+            2,
+            "expected exactly 2 violations (one per stale file), got: {violations:?}"
+        );
+        // Each violation must include a relative path fragment for its file.
+        let combined = violations.join("\n");
+        assert!(
+            combined.contains("crates/alpha/tests/foo.rs")
+                || combined.contains("alpha/tests/foo.rs"),
+            "expected violation to mention the alpha test file: {violations:?}"
+        );
+        assert!(
+            combined.contains("crates/beta/tests/bar.rs")
+                || combined.contains("beta/tests/bar.rs"),
+            "expected violation to mention the beta test file: {violations:?}"
+        );
+    }
+
+    /// (b) Synthetic workspace with only compliant `#[ignore]` reasons →
+    /// collect_workspace_stale_pointers returns an empty Vec.  Marker assembled
+    /// at runtime so this source file does not self-trigger.
+    #[test]
+    fn cwsp_clean_synthetic_workspace_returns_empty_vec() {
+        use tempfile::TempDir;
+
+        let tmp: TempDir = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path();
+
+        let marker = ["#[ignore", " = \""].concat();
+        let clean_source = format!("{marker}known bug: a clean self-contained summary\"]");
+
+        let test_file = root.join("crates/foo/tests/clean.rs");
+        std::fs::create_dir_all(test_file.parent().unwrap()).expect("create parent dirs");
+        std::fs::write(&test_file, clean_source.as_bytes()).expect("write file");
+
+        let violations = collect_workspace_stale_pointers(root);
+
+        assert!(
+            violations.is_empty(),
+            "expected no violations for a clean workspace, got: {violations:?}"
+        );
+    }
+
     // ── walk_test_rs_files ────────────────────────────────────────────────────
 
     /// Build a synthetic workspace tree using tempfile::tempdir() and verify that
@@ -649,10 +815,12 @@ mod tests {
         ];
         // Files that should NOT be returned
         let excluded = [
-            "crates/foo/src/lib.rs",                  // no "tests" component
-            "target/tests/skipme.rs",                 // root-level "target" dir excluded
-            "crates/foo/target/tests/skip_nested.rs", // nested "target" dir also excluded
-            ".git/tests/skip.rs",                     // dot-dir excluded
+            "crates/foo/src/lib.rs",                       // no "tests" component
+            "target/tests/skipme.rs",                      // root-level "target" dir excluded
+            "crates/foo/target/tests/skip_nested.rs",      // nested "target" dir also excluded
+            ".git/tests/skip.rs",                          // dot-dir excluded
+            "node_modules/tests/skip_nm.rs",               // node_modules dir excluded
+            "vendor/tests/skip_vendor.rs",                 // vendor dir excluded
         ];
 
         for rel in included.iter().chain(excluded.iter()) {

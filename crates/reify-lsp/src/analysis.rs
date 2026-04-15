@@ -1437,6 +1437,7 @@ mod tests {
             type_expr: None,
             default: None,
             where_clause: None,
+            annotations: Vec::new(),
             span: dummy_span,
             content_hash: dummy_hash,
         })];

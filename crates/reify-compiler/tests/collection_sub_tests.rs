@@ -426,9 +426,10 @@ fn compile_dynamic_index_collection_member_access() {
 #[test]
 fn compile_indexed_member_access_multi_member_child() {
     // Bolt has two members: diameter (Scalar) and grade (Scalar).
-    // Accessing the SECOND member (grade) via bolts[0].grade must compile to
-    // a ValueRef with the correct member name and type — pinning that
-    // member-type resolution works for non-first members of collection subs.
+    // Accessing BOTH members via bolts[0].diameter and bolts[0].grade must
+    // each compile to a ValueRef with the correct member name and type —
+    // pinning that member-type resolution works for all members of collection
+    // subs, not just the first.
     let source = r#"
         structure Bolt {
             param diameter : Scalar = 10mm
@@ -437,6 +438,7 @@ fn compile_indexed_member_access_multi_member_child() {
         structure S {
             sub bolts : List<Bolt>
             constraint bolts.count == 4
+            let d = bolts[0].diameter
             let g = bolts[0].grade
         }
     "#;
@@ -472,6 +474,33 @@ fn compile_indexed_member_access_multi_member_child() {
         expr.result_type,
         reify_types::Type::length(),
         "grade member should have Scalar/length type matching its 'Scalar' declaration"
+    );
+
+    // Also verify the first member (diameter) resolves correctly in the same
+    // multi-member scenario — both members must compile to ValueRef with the
+    // right entity, member name, and type.
+    let d_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("should have let binding 'd'");
+
+    let d_expr = d_cell
+        .default_expr
+        .as_ref()
+        .expect("d should have an expression");
+
+    match &d_expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(id.entity, "S.bolts[0]", "entity should be S.bolts[0]");
+            assert_eq!(id.member, "diameter", "member should be diameter (the first member)");
+        }
+        other => panic!("expected ValueRef(S.bolts[0].diameter), got {:?}", other),
+    }
+    assert_eq!(
+        d_expr.result_type,
+        reify_types::Type::length(),
+        "diameter member should have Scalar/length type matching its 'Scalar' declaration"
     );
 }
 

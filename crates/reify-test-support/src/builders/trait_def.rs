@@ -397,6 +397,7 @@ mod tests {
                         type_expr: None,
                         default: None,
                         where_clause: None,
+                        annotations: Vec::new(),
                         span: SourceSpan::new(0, 0),
                         content_hash: ContentHash::of_str("d"),
                     },

@@ -968,6 +968,9 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
 /// 2. Emit a Warning: "missing required geometry argument" mentioning 'width'.
 /// 3. Emit an Error: "failed to compile geometry operation".
 /// 4. NOT emit any diagnostic containing "geometry error" (kernel was never reached).
+///
+/// Assertions are delegated to `assert_rejected_at_compile` with `None` for the
+/// primitive predicate, indicating zero preceding kernel calls are expected.
 #[test]
 fn build_primitive_missing_arg_no_kernel_error() {
     use reify_types::Type;
@@ -1003,69 +1006,12 @@ fn build_primitive_missing_arg_no_kernel_error() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (1) Kernel was never called
-    {
-        let ops = ops_ref.lock().unwrap();
-        assert!(
-            ops.is_empty(),
-            "kernel.execute() should never be called when compile_geometry_op returns None, \
-             but got {} kernel ops",
-            ops.len()
-        );
-    }
-
-    // (2) No geometry output — op failed to compile
-    assert!(
-        result.geometry_output.is_none(),
-        "expected geometry_output to be None when a required arg is missing"
-    );
-
-    // (3) Warning about the missing 'width' arg
-    let has_missing_arg_warning = result.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Warning
-            && d.message.contains("missing required geometry argument")
-            && d.message.contains("width")
-    });
-    assert!(
-        has_missing_arg_warning,
-        "expected a Warning diagnostic about missing 'width' arg, got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| (&d.severity, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    // (4) Error about failed compile
-    let has_compile_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("failed to compile geometry operation"));
-    assert!(
-        has_compile_error,
-        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    // (5) No 'geometry error' diagnostic — kernel was never called
-    let has_kernel_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("geometry error"));
-    assert!(
-        !has_kernel_error,
-        "should NOT have a 'geometry error' diagnostic (kernel was never called), \
-         but got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .filter(|d| d.message.contains("geometry error"))
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+    // Only test exercising the None (zero kernel ops) path of assert_rejected_at_compile.
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        None,
+        &["missing required geometry argument", "width"],
     );
 }
 
@@ -1077,8 +1023,8 @@ fn build_primitive_missing_arg_no_kernel_error() {
 /// 1. Call kernel exactly once — for the preceding Box that provides the target
 ///    handle — but never call kernel for the Fillet itself.
 /// 2. Return geometry_output=None (compile failure short-circuits the realization).
-/// 3. Emit a Warning: "missing required geometry argument" mentioning both
-///    'radius' and 'Fillet'.
+/// 3. Emit a Warning whose message contains 'missing required geometry argument',
+///    'radius', and 'Fillet'.
 /// 4. Emit an Error: "failed to compile geometry operation".
 /// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
 ///    called for the Fillet op).
@@ -1140,39 +1086,86 @@ fn build_modify_missing_arg_no_kernel_error() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (1) Kernel was called exactly once — for the Box — but never for the Fillet
-    {
-        let ops = ops_ref.lock().unwrap();
-        assert_eq!(
-            ops.len(),
-            1,
-            "kernel.execute() should be called only for the Box (not the Fillet), \
-             got {} kernel ops",
-            ops.len()
-        );
-        assert!(
-            matches!(ops[0].op, reify_types::GeometryOp::Box { .. }),
-            "expected the only recorded kernel op to be Box, got: {:?}",
-            ops[0].op
-        );
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["missing required geometry argument", "radius", "Fillet"],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Helper: assert compile-time rejection of a geometry operation
+// ---------------------------------------------------------------------------
+
+/// Asserts that a geometry operation was rejected at compile time (before kernel
+/// dispatch), producing the expected 5-signal pattern in `result` / `ops`.
+///
+/// Arguments:
+/// - `result` — the `BuildResult` returned by `engine.build()`.
+/// - `ops` — the slice from `ops_ref.lock().unwrap()` (the kernel's recorded ops).
+/// - `expected_primitive` — `None` means expect zero kernel ops (the rejected op was
+///   a bare primitive — kernel should never be called at all); `Some(f)` means expect
+///   exactly one preceding kernel op whose recorded op satisfies `f`
+///   (e.g. `Some(|op| matches!(op, GeometryOp::Box { .. }))`).
+/// - `warning_needles` — every string that must appear in the Warning message
+///   (e.g. `&["scale dropped", "negative"]`).
+///
+/// The five assertions are:
+/// 1. Kernel received zero ops (`None`) or exactly one op matching `expected_primitive` (`Some`).
+/// 2. `result.geometry_output` is `None`.
+/// 3. A `Severity::Warning` diagnostic exists whose message contains every needle.
+/// 4. An `Error`-level diagnostic exists containing 'failed to compile geometry operation'.
+/// 5. No diagnostic contains 'geometry error' (kernel was never called for the rejected op).
+fn assert_rejected_at_compile(
+    result: &reify_eval::BuildResult,
+    ops: &[reify_test_support::GeometryOpRecord],
+    expected_primitive: Option<fn(&reify_types::GeometryOp) -> bool>,
+    warning_needles: &[&str],
+) {
+    // (1) Kernel op count and identity
+    match expected_primitive {
+        None => {
+            assert!(
+                ops.is_empty(),
+                "kernel.execute() should never be called when compile_geometry_op returns None, \
+                 but got {} kernel ops",
+                ops.len()
+            );
+        }
+        Some(f) => {
+            assert_eq!(
+                ops.len(),
+                1,
+                "kernel.execute() should be called only for the preceding primitive (not the rejected op), \
+                 got {} kernel ops",
+                ops.len()
+            );
+            assert!(
+                f(&ops[0].op),
+                "expected the only recorded kernel op to match expected_primitive, got: {:?}",
+                ops[0].op
+            );
+        }
     }
 
-    // (2) No geometry output — Fillet failed to compile
+    // (2) No geometry output — rejected op caused the whole realization to fail
     assert!(
         result.geometry_output.is_none(),
-        "expected geometry_output to be None when Fillet's required 'radius' arg is missing"
+        "expected geometry_output to be None when the op is rejected at compile time"
     );
 
-    // (3) Warning about the missing 'radius' arg for Fillet
-    let has_missing_arg_warning = result.diagnostics.iter().any(|d| {
+    // (3) Warning containing all provided needles
+    let has_warning = result.diagnostics.iter().any(|d| {
         d.severity == reify_types::Severity::Warning
-            && d.message.contains("missing required geometry argument")
-            && d.message.contains("radius")
-            && d.message.contains("Fillet")
+            && warning_needles
+                .iter()
+                .all(|needle| d.message.contains(needle))
     });
     assert!(
-        has_missing_arg_warning,
-        "expected a Warning diagnostic about missing 'radius' arg for Fillet, got: {:?}",
+        has_warning,
+        "expected a Warning diagnostic containing all needles {:?}, got: {:?}",
+        warning_needles,
         result
             .diagnostics
             .iter()
@@ -1195,14 +1188,14 @@ fn build_modify_missing_arg_no_kernel_error() {
             .collect::<Vec<_>>()
     );
 
-    // (5) No 'geometry error' diagnostic — kernel was never called for the Fillet
+    // (5) No 'geometry error' diagnostic — kernel was never called for the rejected op
     let has_kernel_error = result
         .diagnostics
         .iter()
         .any(|d| d.message.contains("geometry error"));
     assert!(
         !has_kernel_error,
-        "should NOT have a 'geometry error' diagnostic (kernel was never called for Fillet), \
+        "should NOT have a 'geometry error' diagnostic (kernel was never called for the rejected op), \
          but got: {:?}",
         result
             .diagnostics
@@ -1276,75 +1269,11 @@ fn build_scale_negative_factor_emits_diagnostic() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (1) Kernel was called exactly once — for the Box — but never for the Scale
-    {
-        let ops = ops_ref.lock().unwrap();
-        assert_eq!(
-            ops.len(),
-            1,
-            "kernel.execute() should be called only for the Box (not the Scale), \
-             got {} kernel ops",
-            ops.len()
-        );
-        assert!(
-            matches!(ops[0].op, reify_types::GeometryOp::Box { .. }),
-            "expected the only recorded kernel op to be Box, got: {:?}",
-            ops[0].op
-        );
-    }
-
-    // (2) No geometry output — Scale failed to compile
-    assert!(
-        result.geometry_output.is_none(),
-        "expected geometry_output to be None when Scale factor is negative"
-    );
-
-    // (3) Warning: 'scale dropped' and 'negative'
-    let has_scale_warning = result.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Warning
-            && d.message.contains("scale dropped")
-            && d.message.contains("negative")
-    });
-    assert!(
-        has_scale_warning,
-        "expected a Warning diagnostic containing 'scale dropped' and 'negative', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| (&d.severity, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    // (4) Error about failed compile
-    let has_compile_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("failed to compile geometry operation"));
-    assert!(
-        has_compile_error,
-        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    // (5) No 'geometry error' diagnostic — kernel was never called for the Scale
-    let has_kernel_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("geometry error"));
-    assert!(
-        !has_kernel_error,
-        "should NOT have a 'geometry error' diagnostic (kernel was never called for Scale), \
-         but got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .filter(|d| d.message.contains("geometry error"))
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Box { .. })),
+        &["scale dropped", "negative"],
     );
 }
 
@@ -1356,7 +1285,7 @@ fn build_scale_negative_factor_emits_diagnostic() {
 /// 1. Call kernel exactly once — for the preceding Sphere that provides the
 ///    profile handle — but never call kernel for the Extrude op itself.
 /// 2. Return geometry_output=None (the realization as a whole fails).
-/// 3. Emit a Warning whose message contains both 'extrude dropped' and 'degenerate'
+/// 3. Emit a Warning whose message contains 'extrude dropped', 'degenerate', and 'NaN'
 ///    (the site-specific diagnostic from lib.rs:3670).
 /// 4. Emit an Error containing 'failed to compile geometry operation'.
 /// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
@@ -1410,75 +1339,11 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (1) Kernel was called exactly once — for the Sphere — but never for the Extrude
-    {
-        let ops = ops_ref.lock().unwrap();
-        assert_eq!(
-            ops.len(),
-            1,
-            "kernel.execute() should be called only for the Sphere (not the Extrude), \
-             got {} kernel ops",
-            ops.len()
-        );
-        assert!(
-            matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
-            "expected the only recorded kernel op to be Sphere, got: {:?}",
-            ops[0].op
-        );
-    }
-
-    // (2) No geometry output — Extrude failed to compile
-    assert!(
-        result.geometry_output.is_none(),
-        "expected geometry_output to be None when Extrude distance is NaN"
-    );
-
-    // (3) Warning: 'extrude dropped' and 'degenerate'
-    let has_extrude_warning = result.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Warning
-            && d.message.contains("extrude dropped")
-            && d.message.contains("degenerate")
-    });
-    assert!(
-        has_extrude_warning,
-        "expected a Warning diagnostic containing 'extrude dropped' and 'degenerate', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| (&d.severity, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    // (4) Error about failed compile
-    let has_compile_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("failed to compile geometry operation"));
-    assert!(
-        has_compile_error,
-        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    // (5) No 'geometry error' diagnostic — kernel was never called for the Extrude
-    let has_kernel_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("geometry error"));
-    assert!(
-        !has_kernel_error,
-        "should NOT have a 'geometry error' diagnostic (kernel was never called for Extrude), \
-         but got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .filter(|d| d.message.contains("geometry error"))
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        &["extrude dropped", "degenerate", "NaN"],
     );
 }
 
@@ -1546,75 +1411,11 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (1) Kernel was called exactly once — for the Sphere — but never for the Revolve
-    {
-        let ops = ops_ref.lock().unwrap();
-        assert_eq!(
-            ops.len(),
-            1,
-            "kernel.execute() should be called only for the Sphere (not the Revolve), \
-             got {} kernel ops",
-            ops.len()
-        );
-        assert!(
-            matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
-            "expected the only recorded kernel op to be Sphere, got: {:?}",
-            ops[0].op
-        );
-    }
-
-    // (2) No geometry output — Revolve failed to compile
-    assert!(
-        result.geometry_output.is_none(),
-        "expected geometry_output to be None when Revolve axis is degenerate (zero-length)"
-    );
-
-    // (3) Warning: 'revolve dropped' and 'axis'
-    let has_revolve_warning = result.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Warning
-            && d.message.contains("revolve dropped")
-            && d.message.contains("axis")
-    });
-    assert!(
-        has_revolve_warning,
-        "expected a Warning diagnostic containing 'revolve dropped' and 'axis', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| (&d.severity, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    // (4) Error about failed compile
-    let has_compile_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("failed to compile geometry operation"));
-    assert!(
-        has_compile_error,
-        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    // (5) No 'geometry error' diagnostic — kernel was never called for the Revolve
-    let has_kernel_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("geometry error"));
-    assert!(
-        !has_kernel_error,
-        "should NOT have a 'geometry error' diagnostic (kernel was never called for Revolve), \
-         but got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .filter(|d| d.message.contains("geometry error"))
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        &["revolve dropped", "axis"],
     );
 }
 
@@ -1633,11 +1434,11 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
 /// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
 ///    called for the Revolve op).
 ///
-/// Although stress_sweep_degenerate.rs already has a revolve_zero_angle test,
-/// this test lives in geometry_error_handling.rs alongside the other
-/// build_*_emits_diagnostic tests and follows the stricter assertion pattern
-/// (kernel-ops count + specific Warning + compile Error + no kernel error),
-/// ensuring the angle-check site at lib.rs:3710 is guarded by this file's suite.
+/// This is the canonical guard for the angle-degenerate check at lib.rs:3710.
+/// The weaker revolve_zero_angle test that previously existed in
+/// stress_sweep_degenerate.rs has been removed — this test supersedes it with
+/// stricter assertions (kernel-ops count + specific Warning + compile Error +
+/// no kernel error).
 #[test]
 fn build_revolve_zero_angle_emits_diagnostic() {
     use reify_compiler::SweepKind;
@@ -1686,74 +1487,10 @@ fn build_revolve_zero_angle_emits_diagnostic() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (1) Kernel was called exactly once — for the Sphere — but never for the Revolve
-    {
-        let ops = ops_ref.lock().unwrap();
-        assert_eq!(
-            ops.len(),
-            1,
-            "kernel.execute() should be called only for the Sphere (not the Revolve), \
-             got {} kernel ops",
-            ops.len()
-        );
-        assert!(
-            matches!(ops[0].op, reify_types::GeometryOp::Sphere { .. }),
-            "expected the only recorded kernel op to be Sphere, got: {:?}",
-            ops[0].op
-        );
-    }
-
-    // (2) No geometry output — Revolve failed to compile
-    assert!(
-        result.geometry_output.is_none(),
-        "expected geometry_output to be None when Revolve angle is zero"
-    );
-
-    // (3) Warning: 'revolve dropped' and 'angle'
-    let has_revolve_warning = result.diagnostics.iter().any(|d| {
-        d.severity == reify_types::Severity::Warning
-            && d.message.contains("revolve dropped")
-            && d.message.contains("angle")
-    });
-    assert!(
-        has_revolve_warning,
-        "expected a Warning diagnostic containing 'revolve dropped' and 'angle', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| (&d.severity, &d.message))
-            .collect::<Vec<_>>()
-    );
-
-    // (4) Error about failed compile
-    let has_compile_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("failed to compile geometry operation"));
-    assert!(
-        has_compile_error,
-        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-
-    // (5) No 'geometry error' diagnostic — kernel was never called for the Revolve
-    let has_kernel_error = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("geometry error"));
-    assert!(
-        !has_kernel_error,
-        "should NOT have a 'geometry error' diagnostic (kernel was never called for Revolve), \
-         but got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .filter(|d| d.message.contains("geometry error"))
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+    assert_rejected_at_compile(
+        &result,
+        &ops_ref.lock().unwrap(),
+        Some(|op| matches!(op, reify_types::GeometryOp::Sphere { .. })),
+        &["revolve dropped", "angle"],
     );
 }

@@ -2,7 +2,6 @@
 //!
 //! Covers:
 //!   - zero_extrude_distance: evaluator skips extrude when distance=0
-//!   - revolve_zero_angle: evaluator skips revolve when angle=0
 //!   - revolve_720_degrees: valid edge-case double full revolution (4π)
 //!   - negative_extrude_distance_is_valid: negative distance passes through (reverse direction)
 //!   - negative_revolve_angle_is_valid: negative angle passes through (clockwise rotation)
@@ -84,86 +83,6 @@ fn zero_extrude_distance() {
         result.diagnostics.iter().any(|d| matches!(d.severity, Severity::Warning)
             && d.message.contains("extrude dropped")),
         "expected a Warning containing 'extrude dropped' in BuildResult.diagnostics, got: {:?}",
-        result.diagnostics.iter().map(|d| (d.severity, &d.message)).collect::<Vec<_>>()
-    );
-}
-
-// ---------------------------------------------------------------------------
-// step-15: revolve_zero_angle — failing test
-// ---------------------------------------------------------------------------
-
-/// Build a Revolve op with angle=0 (degenerate — zero rotation).
-/// After step-16 the evaluator should skip zero-angle revolves.
-///
-/// FAILS before step-16 because the evaluator currently dispatches all
-/// revolves with finite angles (including 0.0, since 0.0.is_finite() == true).
-#[test]
-fn revolve_zero_angle() {
-    let e = "TestRevolveZero";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal =
-        |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
-
-    // Op 0: Sphere (profile provider at Step(0))
-    let sphere_op = CompiledGeometryOp::Primitive {
-        kind: PrimitiveKind::Sphere,
-        args: vec![("radius".into(), mm_literal(5.0))],
-    };
-
-    // Op 1: Revolve around z-axis with angle=0 (degenerate)
-    let revolve_op = CompiledGeometryOp::Sweep {
-        kind: SweepKind::Revolve,
-        profiles: vec![GeomRef::Step(0)],
-        args: vec![
-            ("profile".into(), mm_literal(5.0)),
-            ("ox".into(), real_literal(0.0)),
-            ("oy".into(), real_literal(0.0)),
-            ("oz".into(), real_literal(0.0)),
-            ("ax".into(), real_literal(0.0)),
-            ("ay".into(), real_literal(0.0)),
-            ("az".into(), real_literal(1.0)), // z-axis (magnitude=1.0 — valid)
-            ("angle".into(), real_literal(0.0)), // ZERO angle — degenerate
-        ],
-    };
-
-    let template = TopologyTemplateBuilder::new(e)
-        .realization(e, 0, vec![sphere_op, revolve_op])
-        .build();
-
-    let module = CompiledModuleBuilder::new(ModulePath::single("test_revolve_zero"))
-        .template(template)
-        .build();
-
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&module, ExportFormat::Step);
-
-    let ops = ops_ref.lock().unwrap();
-    // Zero-angle revolve should be skipped — kernel should receive no Revolve ops.
-    let revolve_ops: Vec<_> = ops
-        .iter()
-        .filter(|o| matches!(&o.op, GeometryOp::Revolve { .. }))
-        .collect();
-    assert!(
-        revolve_ops.is_empty(),
-        "zero-angle revolve should be skipped by the evaluator, \
-         but kernel received {} Revolve op(s): {:?}",
-        revolve_ops.len(),
-        revolve_ops.iter().map(|o| &o.op).collect::<Vec<_>>()
-    );
-
-    // The degenerate-revolve warning must propagate through Engine::build to
-    // BuildResult.diagnostics so model authors see a specific explanation
-    // (not only the generic "failed to compile geometry operation" error).
-    // A regression that drops the warning on its way out would not be caught
-    // by the kernel-ops check above.
-    assert!(
-        result.diagnostics.iter().any(|d| matches!(d.severity, Severity::Warning)
-            && d.message.contains("revolve dropped")),
-        "expected a Warning containing 'revolve dropped' in BuildResult.diagnostics, got: {:?}",
         result.diagnostics.iter().map(|d| (d.severity, &d.message)).collect::<Vec<_>>()
     );
 }

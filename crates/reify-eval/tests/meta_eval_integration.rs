@@ -165,6 +165,7 @@ fn eval_meta_access_in_guarded_group() {
         visibility: Visibility::Public,
         cell_type: Type::String,
         default_expr: Some(meta_expr),
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 
@@ -302,6 +303,7 @@ fn eval_meta_access_in_else_members_when_guard_false() {
         visibility: Visibility::Public,
         cell_type: Type::String,
         default_expr: Some(meta_expr),
+        solver_hints: Vec::new(),
         span: SourceSpan::new(0, 0),
     };
 

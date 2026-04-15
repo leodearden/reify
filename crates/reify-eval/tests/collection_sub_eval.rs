@@ -4,7 +4,7 @@
 //! count-based elaboration, and count re-elaboration.
 
 use reify_compiler::TopologyTemplate;
-use reify_eval::Engine;
+use reify_eval::{Engine, EvalResult};
 use reify_eval::graph::EvaluationGraph;
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
@@ -480,22 +480,42 @@ fn edit_param_count_int_undef_undef_int_transition() {
     let _initial = engine.eval(&module);
 
     // Transition sequence: Int(4) → Undef → Undef → Int(2)
-    // Step 1: Int(4) → Undef removes all 4 instances (new_count=0 via `_ => 0`)
-    engine
+    let assert_no_bolts = |result: &EvalResult, label: &str| {
+        for i in 0..4 {
+            let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+            assert!(
+                result.values.get(&scoped_id).is_none(),
+                "bolts[{}].diameter must be absent after {}",
+                i,
+                label
+            );
+        }
+        assert_eq!(
+            count_bolt_diameter_instances(&result.values),
+            0,
+            "no bolt diameter instances should exist after {}",
+            label
+        );
+    };
+
+    // Int(4) → Undef must clear all bolt instances
+    let r1 = engine
         .edit_param(n_id.clone(), Value::Undef)
         .expect("first edit to Undef should succeed");
+    assert_no_bolts(&r1, "Int(4)->Undef");
 
-    // Step 2: Undef → Undef short-circuits via equality check (no-op)
-    engine
+    // Undef → Undef must be a no-op
+    let r2 = engine
         .edit_param(n_id.clone(), Value::Undef)
         .expect("second edit to Undef should succeed");
+    assert_no_bolts(&r2, "Undef->Undef");
 
-    // Step 3: Undef → Int(2): old_count=0 (via `_ => 0`) → creates bolts[0..2)
+    // Undef → Int(2) must elaborate exactly bolts[0..2)
     let result = engine
         .edit_param(n_id, Value::Int(2))
         .expect("edit to Int(2) should succeed");
 
-    // After Int(4)->Undef->Undef->Int(2): bolts[0..2) must exist with diameter = 10mm
+    // bolts[0..2) must exist with diameter = 10mm
     for i in 0..2 {
         let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         assert_eq!(
@@ -506,7 +526,7 @@ fn edit_param_count_int_undef_undef_int_transition() {
         );
     }
 
-    // bolts[2..4) must be absent — no stale leak from the original Int(4) eval
+    // bolts[2..4) must be absent
     for i in 2..4 {
         let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
         assert!(
@@ -515,6 +535,12 @@ fn edit_param_count_int_undef_undef_int_transition() {
             i
         );
     }
+
+    assert_eq!(
+        count_bolt_diameter_instances(&result.values),
+        2,
+        "exactly 2 bolt diameter instances after Int(2)"
+    );
 }
 
 // ─── step-30: count Int→Undef removes all instances (regression for unreachable!() bug) ───
