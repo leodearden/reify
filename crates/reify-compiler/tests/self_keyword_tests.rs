@@ -720,3 +720,169 @@ fn self_inside_lambda_in_fn_body_errors() {
         );
     }
 }
+
+// ─── task-1281 step-1: self.collection_sub error uses List fallback type ───
+
+#[test]
+fn self_dot_collection_sub_error_has_list_fallback_type() {
+    // `self.items` where `items` is List<Bolt> should emit an error AND
+    // have a cell type of Type::List(Box::new(Type::StructureRef("Bolt")))
+    // rather than Type::Real, so downstream expressions don't get spurious
+    // type-mismatch diagnostics.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let x = self.items
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items` on collection sub"
+    );
+
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let x_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("x value cell");
+
+    assert_eq!(
+        x_cell.cell_type,
+        reify_types::Type::List(Box::new(reify_types::Type::StructureRef("Bolt".to_string()))),
+        "self.items error fallback should be List<StructureRef(Bolt)>, got {:?}",
+        x_cell.cell_type
+    );
+}
+
+// ─── task-1281 step-3: self.collection_sub.member error uses correct fallback type ───
+
+#[test]
+fn self_dot_collection_sub_member_error_has_correct_fallback_type() {
+    // `self.items.diameter` where `items` is List<Bolt> should emit an error AND
+    // have a cell type matching Bolt's diameter type (Scalar with length dimension),
+    // NOT Type::Real.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let d = self.items.diameter
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.diameter` on collection sub"
+    );
+
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let d_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("d value cell");
+
+    // The fallback type should NOT be Type::Real — it should reflect diameter's actual type
+    assert_ne!(
+        d_cell.cell_type,
+        reify_types::Type::Real,
+        "self.items.diameter error fallback should not be Type::Real (cascades spurious diagnostics)"
+    );
+}
+
+// ─── task-1281 step-5: self.collection_sub aggregation recommends drop self ───
+
+#[test]
+fn self_dot_collection_sub_aggregation_recommends_drop_self() {
+    // `self.items.count` should emit an error recommending `items.count`
+    // (drop self.), NOT `items[i].count` (the per-instance recommendation).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let c = self.items.count
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.count` on collection sub"
+    );
+
+    // (a) an error diagnostic exists — checked above
+
+    // (b) error message should contain 'items.count' (correct aggregation recommendation)
+    let has_items_count = errors
+        .iter()
+        .any(|d| d.message.contains("items.count"));
+    assert!(
+        has_items_count,
+        "expected error message containing 'items.count', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (c) error message should NOT contain 'items[i].count' (misleading per-instance recommendation)
+    let has_indexed = errors
+        .iter()
+        .any(|d| d.message.contains("items[i].count"));
+    assert!(
+        !has_indexed,
+        "error message should not recommend 'items[i].count' for aggregation, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1281 step-7: no cascading diagnostics after type fallback fixes ───
+
+#[test]
+fn self_dot_collection_sub_no_cascading_diagnostics() {
+    // `self.items.diameter` used in a constraint should produce exactly 1 error
+    // (the collection sub error), not additional type-mismatch diagnostics from
+    // d being Type::Real and then being compared with 5mm (Scalar{Length}).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let d = self.items.diameter
+    constraint d > 5mm
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error (collection sub access), got {}: {:?}",
+        errors.len(),
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
