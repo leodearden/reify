@@ -853,6 +853,54 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 }
 
+/// Task-384 step-1: Diamond with conflicting param types produces exactly 1 error.
+/// Topology: D {}, B:D { param x : Length }, C:D { param x : Angle }, A:B+C {}, S:A { x provided }.
+/// S provides x : Length to satisfy B's requirement; only the conflict diagnostic remains.
+/// The seen_names conflict detection in collect_all_requirements should fire once.
+#[test]
+fn diamond_type_conflict_produces_error() {
+    let source = r#"
+trait D {
+}
+
+trait B : D {
+    param x : Length
+}
+
+trait C : D {
+    param x : Angle
+}
+
+trait A : B + C {
+}
+
+structure def S : A {
+    param x : Length = 5mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 conflict error, got {}: {:?}",
+        errors.len(),
+        errors
+    );
+
+    assert!(
+        errors[0].message.contains("conflicting trait requirements"),
+        "expected 'conflicting trait requirements' in error message, got: {}",
+        errors[0].message
+    );
+}
+
 /// Step 21b: Trait with constraint and param — both injected correctly.
 #[test]
 fn trait_constraint_and_param_both_injected() {
