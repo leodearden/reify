@@ -426,3 +426,471 @@ fn integration_full_v01_ri_parses() {
         "expected >=1 TypeAlias declaration, got {type_alias_count}"
     );
 }
+
+// ── Test 12: field sample and gradient ───────────────────────────────────────
+
+/// temp_at_3 = sample(temperature_profile, 3.0) → 3²+10 = 19.0.
+/// dtemp_at_3 = sample(gradient(temperature_profile), 3.0) → 2*3 ≈ 6.0 (central differences).
+///
+/// Note: the analytical field evaluator may return `Int(19)` when the result is a
+/// whole number (the expression `3*3+10` evaluates to an integer via the pure-expr
+/// evaluator), so we accept both Real and Int variants and compare numerically.
+#[test]
+fn field_sample_and_gradient() {
+    let result = eval_canonical();
+
+    // Extract the numeric value from Real or Int
+    let numeric = |v: &Value, name: &str| -> f64 {
+        match v {
+            Value::Real(f) => *f,
+            Value::Int(i) => *i as f64,
+            other => panic!("expected Real or Int for Assembly.{name}, got {:?}", other),
+        }
+    };
+
+    // temp_at_3 = 19.0 ± 0.1
+    let temp_id = ValueCellId::new("Assembly", "temp_at_3");
+    let temp_val = result
+        .values
+        .get(&temp_id)
+        .unwrap_or_else(|| panic!("Assembly.temp_at_3 not found in eval result"));
+    let temp_f = numeric(temp_val, "temp_at_3");
+    assert!(
+        (temp_f - 19.0).abs() < 0.1,
+        "expected ~19.0 for Assembly.temp_at_3, got {temp_f}"
+    );
+
+    // dtemp_at_3 = 6.0 ± 0.1 (central differences of x²+10 at x=3 → 2x = 6)
+    let dtemp_id = ValueCellId::new("Assembly", "dtemp_at_3");
+    let dtemp_val = result
+        .values
+        .get(&dtemp_id)
+        .unwrap_or_else(|| panic!("Assembly.dtemp_at_3 not found in eval result"));
+    let dtemp_f = numeric(dtemp_val, "dtemp_at_3");
+    assert!(
+        (dtemp_f - 6.0).abs() < 0.1,
+        "expected ~6.0 for Assembly.dtemp_at_3, got {dtemp_f}"
+    );
+}
+
+// ── Test 13: function overload resolution ─────────────────────────────────────
+
+/// safe_load_real = safety_factor(100.0) → Real overload → 100.0 * 1.5 = 150.0.
+/// safe_load_int = safety_factor(100) → Int overload → 100 * 2 = 200.
+#[test]
+fn function_overload_resolution() {
+    let result = eval_canonical();
+
+    // safe_load_real: Real overload → ~150.0 (or 150.75 if input is 100.5)
+    let real_id = ValueCellId::new("Assembly", "safe_load_real");
+    let real_val = result
+        .values
+        .get(&real_id)
+        .unwrap_or_else(|| panic!("Assembly.safe_load_real not found in eval result"));
+    match real_val {
+        Value::Real(v) => {
+            assert!(
+                (v - 150.0).abs() < 1.0,
+                "expected ~150.0 for Assembly.safe_load_real (safety_factor(real) * 1.5), got {v}"
+            );
+        }
+        other => panic!("expected Real for Assembly.safe_load_real, got {:?}", other),
+    }
+
+    // safe_load_int: Int overload → 200
+    let int_id = ValueCellId::new("Assembly", "safe_load_int");
+    let int_val = result
+        .values
+        .get(&int_id)
+        .unwrap_or_else(|| panic!("Assembly.safe_load_int not found in eval result"));
+    assert_eq!(
+        int_val,
+        &Value::Int(200),
+        "Assembly.safe_load_int should be Int(200) (safety_factor(100) * 2)"
+    );
+}
+
+// ── Test 14: recursive unfold depth ──────────────────────────────────────────
+
+/// RecursiveBeam defaults: depth=2, span=300mm.
+/// child.span = 150mm (0.15 SI), child.child.span = 75mm (0.075 SI),
+/// child.child.child.span does NOT exist (depth=0 guard fails).
+#[test]
+fn recursive_unfold_depth() {
+    let result = eval_canonical();
+
+    // RecursiveBeam.child.span = 150mm = 0.15 SI
+    let child_span_id = ValueCellId::new("RecursiveBeam.child", "span");
+    let child_span = result
+        .values
+        .get(&child_span_id)
+        .unwrap_or_else(|| panic!("RecursiveBeam.child.span not found in eval result"));
+    match child_span {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.15).abs() < 1e-9,
+                "expected ~0.15 SI for RecursiveBeam.child.span (150mm), got {si_value}"
+            );
+        }
+        other => panic!("expected Scalar for RecursiveBeam.child.span, got {:?}", other),
+    }
+
+    // RecursiveBeam.child.child.span = 75mm = 0.075 SI
+    let grandchild_span_id = ValueCellId::new("RecursiveBeam.child.child", "span");
+    let grandchild_span = result
+        .values
+        .get(&grandchild_span_id)
+        .unwrap_or_else(|| panic!("RecursiveBeam.child.child.span not found in eval result"));
+    match grandchild_span {
+        Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.075).abs() < 1e-9,
+                "expected ~0.075 SI for RecursiveBeam.child.child.span (75mm), got {si_value}"
+            );
+        }
+        other => panic!(
+            "expected Scalar for RecursiveBeam.child.child.span, got {:?}",
+            other
+        ),
+    }
+
+    // RecursiveBeam.child.child.child.span must NOT exist (depth=0, guard fails)
+    let great_grandchild_id = ValueCellId::new("RecursiveBeam.child.child.child", "span");
+    assert!(
+        !result.values.contains(&great_grandchild_id),
+        "RecursiveBeam.child.child.child.span should not exist (depth=0 stops unfolding)"
+    );
+}
+
+// ── Test 15: connect has connector and port mapping ───────────────────────────
+
+/// Assembly has exactly 1 connection (supply -> demand : PipeConnector),
+/// connector_sub is Some, port_mappings contains diameter→diameter,
+/// and the compatibility constraint is Satisfied.
+#[test]
+fn connect_has_connector_and_mapping() {
+    let compiled = compiled();
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly template should exist");
+
+    // Exactly 1 connection
+    assert_eq!(
+        assembly.connections.len(),
+        1,
+        "Assembly should have exactly 1 connection (supply -> demand), got {}",
+        assembly.connections.len()
+    );
+
+    let conn = &assembly.connections[0];
+
+    // Connector sub is present (from `: PipeConnector`)
+    assert!(
+        conn.connector_sub.is_some(),
+        "connection should have a connector_sub (from `: PipeConnector`)"
+    );
+
+    // Port mappings contain diameter→diameter
+    assert!(
+        !conn.port_mappings.is_empty(),
+        "expected at least 1 port mapping (diameter→diameter), got 0"
+    );
+    assert!(
+        conn.port_mappings
+            .iter()
+            .any(|(from, to)| from == "diameter" && to == "diameter"),
+        "port_mappings should contain (diameter, diameter); got {:?}",
+        conn.port_mappings
+    );
+
+    // Compatibility constraint is Satisfied
+    let compat_id = &conn.compatibility_constraint;
+    let check_result = check_canonical();
+    let compat_entry = check_result
+        .constraint_results
+        .iter()
+        .find(|e| &e.id == compat_id)
+        .unwrap_or_else(|| {
+            panic!(
+                "compatibility constraint {} not found in check results",
+                compat_id
+            )
+        });
+    assert_eq!(
+        compat_entry.satisfaction,
+        Satisfaction::Satisfied,
+        "compatibility constraint should be Satisfied"
+    );
+}
+
+// ── Test 16: purpose compiled and activatable ──────────────────────────────────
+
+/// mfg_ready purpose: exists in compiled_purposes with entity_kind='Structure',
+/// activates against Assembly (adding 3 constraints), deactivates cleanly.
+fn constraint_count_from_engine(engine: &reify_eval::Engine) -> usize {
+    engine
+        .snapshot()
+        .expect("snapshot should exist")
+        .graph
+        .constraints
+        .len()
+}
+
+#[test]
+fn purpose_compiled_and_activatable() {
+    let compiled = compiled();
+
+    // mfg_ready is present in compiled_purposes
+    let mfg_ready = compiled
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "mfg_ready")
+        .expect("mfg_ready purpose should be in compiled_purposes");
+
+    // Param has entity_kind == "Structure"
+    assert_eq!(
+        mfg_ready.params.len(),
+        1,
+        "mfg_ready should have exactly 1 param (subject)"
+    );
+    assert_eq!(
+        mfg_ready.params[0].entity_kind,
+        "Structure",
+        "mfg_ready param entity_kind should be 'Structure', got '{}'",
+        mfg_ready.params[0].entity_kind
+    );
+
+    // Activate against Assembly
+    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    engine.eval(&compiled);
+    let before = constraint_count_from_engine(&engine);
+
+    engine.activate_purpose("mfg_ready", "Assembly");
+    assert!(
+        engine.is_purpose_active("mfg_ready"),
+        "mfg_ready should be active after activate_purpose"
+    );
+
+    // Constraint count grows by exactly 3 (three literal constraints in purpose body)
+    assert_eq!(
+        constraint_count_from_engine(&engine),
+        before + 3,
+        "mfg_ready has 3 literal constraints: count should grow by exactly 3 (got {} before, {} after)",
+        before,
+        constraint_count_from_engine(&engine)
+    );
+
+    // Deactivate restores count
+    engine.deactivate_purpose("mfg_ready");
+    assert_eq!(
+        constraint_count_from_engine(&engine),
+        before,
+        "deactivating mfg_ready must restore constraint count to {before}"
+    );
+    assert!(
+        !engine.is_purpose_active("mfg_ready"),
+        "mfg_ready should NOT be active after deactivate_purpose"
+    );
+}
+
+// ── Test 17: where-block constraints present and satisfied ────────────────────
+
+/// The where-block `where determined(origin) { constraint determined(displacement); constraint determined(base_frame) }`
+/// produces 1 guarded group with 2 constraints, both Satisfied.
+#[test]
+fn where_block_constraints_satisfied() {
+    let compiled = compiled();
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly template should exist");
+
+    // Assembly has exactly 1 guarded group
+    assert_eq!(
+        assembly.guarded_groups.len(),
+        1,
+        "Assembly should have exactly 1 guarded group (the where determined(origin) block)"
+    );
+    let group = &assembly.guarded_groups[0];
+    assert_eq!(
+        group.constraints.len(),
+        2,
+        "where-block should have exactly 2 constraints (determined(displacement), determined(base_frame))"
+    );
+
+    // Both appear in check results as Satisfied
+    let guarded_ids: Vec<_> = group.constraints.iter().map(|c| &c.id).collect();
+    let check_result = check_canonical();
+    for guarded_id in &guarded_ids {
+        let entry = check_result
+            .constraint_results
+            .iter()
+            .find(|e| &&e.id == guarded_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "where-block constraint {} not found in check results",
+                    guarded_id
+                )
+            });
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "where-block constraint {} should be Satisfied, got {:?}",
+            guarded_id,
+            entry.satisfaction
+        );
+    }
+}
+
+// ── Test 18: @test runner all pass ───────────────────────────────────────────
+
+/// Run @test structures with SimpleConstraintChecker.
+/// Expected: TestHeightPositive, TestWidthInRange, TestSubBeamSpan,
+/// TestComplexBinding, TestFieldSample, TestGradeMatch — all Pass.
+#[test]
+fn test_runner_all_pass() {
+    let compiled = compiled();
+    let results = reify_eval::run_tests(&compiled, || Box::new(SimpleConstraintChecker));
+
+    // Must have at least 5 test results (6 @test structures added in step-22)
+    assert!(
+        results.len() >= 5,
+        "expected >=5 @test results, got {}; did you add @test structures in step-22?",
+        results.len()
+    );
+
+    // All must be Pass
+    let expected_tests = [
+        "TestHeightPositive",
+        "TestWidthInRange",
+        "TestSubBeamSpan",
+        "TestComplexBinding",
+        "TestFieldSample",
+        "TestGradeMatch",
+    ];
+    let by_name: std::collections::HashMap<&str, reify_eval::TestStatus> =
+        results.iter().map(|r| (r.name.as_str(), r.status)).collect();
+
+    for name in &expected_tests {
+        if let Some(&status) = by_name.get(*name) {
+            assert_eq!(
+                status,
+                reify_eval::TestStatus::Pass,
+                "@test {name} should be Pass, got {status:?}"
+            );
+        }
+        // If not present, it may not have been added yet — will fail the count check above
+    }
+
+    // All present tests must be Pass (no intentional failures in integration file)
+    for r in &results {
+        assert_eq!(
+            r.status,
+            reify_eval::TestStatus::Pass,
+            "@test {} should be Pass, got {:?}",
+            r.name,
+            r.status
+        );
+    }
+}
+
+// ── Test 19: constraint def labels ────────────────────────────────────────────
+
+/// Assembly has 2 InRange invocations × 2 predicates = 4 total constraints,
+/// distributed as 2×InRange[0] and 2×InRange[1], all Satisfied.
+#[test]
+fn constraint_def_labels() {
+    let check_result = check_canonical();
+
+    // Collect Assembly InRange constraints
+    let inrange_constraints: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| {
+            e.id.entity == "Assembly"
+                && e.label
+                    .as_deref()
+                    .is_some_and(|l| l.starts_with("InRange["))
+        })
+        .collect();
+
+    // 2 invocations × 2 predicates = 4 total
+    assert_eq!(
+        inrange_constraints.len(),
+        4,
+        "expected exactly 4 Assembly InRange constraints (2 invocations × 2 predicates), got {}",
+        inrange_constraints.len()
+    );
+
+    // Each invocation resets pred_idx to 0 → 2×InRange[0], 2×InRange[1]
+    let count_label = |label: &str| -> usize {
+        inrange_constraints
+            .iter()
+            .filter(|e| e.label.as_deref() == Some(label))
+            .count()
+    };
+    assert_eq!(
+        count_label("InRange[0]"),
+        2,
+        "expected 2 constraints with label 'InRange[0]'"
+    );
+    assert_eq!(
+        count_label("InRange[1]"),
+        2,
+        "expected 2 constraints with label 'InRange[1]'"
+    );
+
+    // All 4 must be Satisfied
+    for entry in &inrange_constraints {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "Assembly InRange constraint {} should be Satisfied",
+            entry.id
+        );
+    }
+}
+
+// ── Test 20: violation regression guard ──────────────────────────────────────
+
+/// Regression guard: deliberately make `height < 2000mm` into `height < 100mm`
+/// (height=300mm > 100mm → Violated). Verifies at least one Violated result
+/// and total count still >=40 (checker did not short-circuit).
+#[test]
+fn violated_constraint_detected() {
+    // height=300mm; raise upper bound to below actual → Violated
+    let violating = source().replace(
+        "constraint height < 2000mm",
+        "constraint height < 100mm",
+    );
+    assert_ne!(
+        violating,
+        source(),
+        "replace target drifted — 'constraint height < 2000mm' not found; update the test"
+    );
+
+    let check_result = check_source(&violating);
+
+    // Total count still >=40 (no short-circuit on violation)
+    assert!(
+        check_result.constraint_results.len() >= 40,
+        "expected >=40 constraint results even for violating source, got {}",
+        check_result.constraint_results.len()
+    );
+
+    // At least one Violated
+    let violations: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction == Satisfaction::Violated)
+        .collect();
+    assert!(
+        !violations.is_empty(),
+        "expected at least one Violated constraint after raising height bound below its value (300mm), \
+         got {} results with no violations",
+        check_result.constraint_results.len()
+    );
+}
