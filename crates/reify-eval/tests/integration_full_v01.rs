@@ -1014,17 +1014,22 @@ fn violated_constraint_detected() {
 
 // ── Test 21: no tautological self-equality constraints ───────────────────────
 
-/// Regression guard: the source must NOT contain any reflexive tautology of the
-/// form `constraint X == X` (where X is the same identifier on both sides).
-/// Such a constraint always holds and tests nothing meaningful.
+/// Regression guard against the specific `height_ok == height_ok` tautology
+/// that existed prior to this fix. The check is intentionally narrow: it guards
+/// against reintroducing the exact known anti-pattern rather than detecting all
+/// possible self-equality constraints. A broader regex-based check (e.g.,
+/// `r"constraint\s+(\w+)\s*==\s*\1"`) would require a `regex` dev-dependency
+/// but is not added here; this targeted string check is sufficient as a
+/// regression guard.
 ///
 /// This test intentionally FAILs on the pre-fix source (which has
 /// `constraint height_ok == height_ok`) and passes after the fix.
 #[test]
 fn no_tautological_self_equality_constraints() {
     let src = source();
-    // Match any "constraint <ident> == <ident>" where both sides are the same token.
-    // We look for the exact string pattern produced by the known tautology.
+    // Targeted regression guard for the known `height_ok == height_ok` pattern.
+    // This would miss variants with different whitespace or a renamed identifier,
+    // which is acceptable — the intent is to prevent re-introducing this exact bug.
     assert!(
         !src.contains("height_ok == height_ok"),
         "source contains a tautological constraint `height_ok == height_ok`; \
@@ -1036,9 +1041,11 @@ fn no_tautological_self_equality_constraints() {
 
 /// Validates that the replacement constraint `determined(height_ok)` is
 /// semantically meaningful:
-/// 1. Assembly.height_ok evaluates to Bool(true) — not Undef.
-/// 2. The check_canonical result contains at least one constraint that is
-///    Satisfied and whose source involves `height_ok` (via the determined call).
+/// 1. Assembly.height_ok evaluates to Bool(true) — not Undef — in both the
+///    eval and check paths.
+/// 2. Because `determined(Bool(true))` is Satisfied by definition, confirming
+///    the value is Bool(true) is sufficient to prove the constraint passes.
+///    The global all_constraints_satisfied (Test 3) covers the constraint sweep.
 ///
 /// This test passes immediately after the step-2 fix because height_ok is the
 /// conjunction `height > 100mm && height < 500mm` with height=300mm → Bool(true),
@@ -1059,16 +1066,21 @@ fn height_ok_determinacy_constraint_satisfied() {
         v
     );
 
-    // 2. All constraints in check_canonical are Satisfied (includes determined(height_ok))
+    // 2. check_canonical() also sees height_ok as Bool(true): the `determined(height_ok)`
+    //    constraint is Satisfied because Bool(true) is a concrete value (not Undef).
+    //    We assert height_ok's value here directly rather than re-iterating all constraints,
+    //    since Test 3 (`all_constraints_satisfied`) already verifies every constraint passes
+    //    globally — duplicating that loop here would produce a misleading failure message
+    //    if an unrelated constraint broke.
     let check_result = check_canonical();
-    for entry in &check_result.constraint_results {
-        assert_eq!(
-            entry.satisfaction,
-            Satisfaction::Satisfied,
-            "constraint {} should be Satisfied after replacing tautology with determined(height_ok), \
-             got {:?}",
-            entry.id,
-            entry.satisfaction
-        );
-    }
+    let v_check = check_result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("Assembly.height_ok not found in check result values"));
+    assert_eq!(
+        v_check,
+        &Value::Bool(true),
+        "check_canonical(): Assembly.height_ok should be Bool(true) (determined), got {:?}",
+        v_check
+    );
 }
