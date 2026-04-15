@@ -35856,11 +35856,11 @@
         "description": "Add `pub fn kg(v: f64) -> Value` to crates/reify-test-support/src/values.rs following the exact pattern of mm()/newton()/kelvin(). Then replace the local kg() in crates/reify-eval/tests/incremental_integration.rs (lines ~63-68) with an import from reify_test_support.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:13:10.691Z"
+        "updatedAt": "2026-04-15T06:22:00.835Z"
       },
       {
         "id": "1719",
@@ -35950,9 +35950,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:20:39.754Z",
+      "lastModified": "2026-04-15T06:22:00.835Z",
       "taskCount": 1721,
-      "completedCount": 1477,
+      "completedCount": 1478,
       "tags": [
         "master"
       ]
