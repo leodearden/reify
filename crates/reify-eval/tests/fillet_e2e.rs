@@ -5,7 +5,7 @@
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind};
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, Type};
+use reify_types::{ExportFormat, GeometryOp, Severity, Type};
 
 // ---------------------------------------------------------------------------
 // step-1: Compiler rejects wrong arg counts, accepts correct count
@@ -154,7 +154,7 @@ fn fillet_through_full_eval_pipeline() {
         kind: ModifyKind::Fillet,
         target: GeomRef::Step(0),
         args: vec![
-            // Mirrors what the compiler emits (geometry.rs:900-907).
+            // Mirrors what the compiler emits in compile_geometry_call() for the "fillet" match arm.
             // The eval layer resolves the target from GeomRef::Step(0), not from this entry.
             ("target".into(), mm_literal(0.0)),
             ("radius".into(), mm_literal(3.0)),
@@ -174,7 +174,9 @@ fn fillet_through_full_eval_pipeline() {
     let ops_ref = kernel.operations_ref();
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let _result = engine.build(&module, ExportFormat::Step);
+    let result = engine.build(&module, ExportFormat::Step);
+    let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "expected no error-level diagnostics from fillet full-pipeline build, got: {:?}", errors);
 
     let ops = ops_ref.lock().unwrap();
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
@@ -245,7 +247,9 @@ fn fillet_modify_only_needs_radius_arg() {
     let ops_ref = kernel.operations_ref();
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let _result = engine.build(&module, ExportFormat::Step);
+    let result = engine.build(&module, ExportFormat::Step);
+    let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors.is_empty(), "expected no error-level diagnostics from fillet minimal build, got: {:?}", errors);
 
     let ops = ops_ref.lock().unwrap();
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
