@@ -36810,10 +36810,11 @@
         "description": "When geometry compilation fails (e.g. undefined variable in a geometry argument), the failure is logged to stderr but the GUI shows no error — the viewport silently shows stale meshes from the last successful evaluation. Users have no way to know their edit broke something.",
         "details": "memory_hints: search \"tessellation error diagnostic GUI\", search \"silent defaults pattern\"\n\nCurrently `build_gui_state` calls `tessellate_snapshot` which returns diagnostics, but these are only printed to stderr (`eprintln!`). The GUI should:\n1. Surface tessellation/compilation errors in the status bar or as inline editor diagnostics\n2. Show a visual indicator (red status bar, error icon) when the last evaluation failed\n3. Distinguish \"no geometry\" from \"geometry compilation failed\"\n\nFiles: gui/src-tauri/src/engine.rs (line ~475, tessellation diagnostics), gui/src/App.tsx (status handling)",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:01:48.386Z"
       },
       {
         "id": "1765",
@@ -36862,7 +36863,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T12:01:47.745Z",
+      "lastModified": "2026-04-15T12:01:48.386Z",
       "taskCount": 1765,
       "completedCount": 1507,
       "tags": [
