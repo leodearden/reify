@@ -226,6 +226,15 @@ fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
     reify_compiler::compile(&parsed)
 }
 
+/// Helper: collect all error-severity diagnostics from a compiled module.
+fn error_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
+    compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
 
 // ─── step-1: geometry let should be in scope for subsequent let ───
 
@@ -1487,11 +1496,7 @@ fn sweep_non_geometry_profile_emits_error() {
     let result = sweep(42, path)
 }"#;
     let compiled = compile_with_diagnostics(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = error_diagnostics(&compiled);
     assert!(
         errors
             .iter()
@@ -1512,11 +1517,7 @@ fn sweep_non_geometry_path_emits_error() {
     let result = sweep(profile, 42)
 }"#;
     let compiled = compile_with_diagnostics(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = error_diagnostics(&compiled);
     assert!(
         errors
             .iter()
@@ -1535,11 +1536,7 @@ fn translate_non_geometry_target_uses_fallback() {
     let result = translate(42, 1, 0, 0)
 }"#;
     let compiled = compile_with_diagnostics(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = error_diagnostics(&compiled);
     // No error expected — the geom_ref closure falls back silently.
     assert!(
         errors.is_empty(),
@@ -1564,11 +1561,7 @@ fn loft_non_geometry_profiles_uses_fallback() {
     let result = loft(42, 43)
 }"#;
     let compiled = compile_with_diagnostics(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = error_diagnostics(&compiled);
     // No error expected — loft silently falls back (consistent with extrude/revolve_full).
     assert!(
         errors.is_empty(),
@@ -1580,5 +1573,32 @@ fn loft_non_geometry_profiles_uses_fallback() {
     assert_op_sequence(
         &template.realizations[0].operations,
         &[ExpectedOp::Sweep(SweepKind::Loft, vec![0, 1])],
+    );
+}
+
+#[test]
+fn extrude_non_geometry_target_uses_fallback() {
+    // extrude(42, 10): arg 0 is a literal number, not a geometry expression.
+    // extrude() uses the same geom_ref fallback path as translate() and other
+    // single-geom-arg functions — it silently falls back to GeomRef::Step(step_offset).
+    // This verifies the silent-fallback behavior is consistent across the category,
+    // not just for transform functions.
+    let source = r#"structure S {
+    let result = extrude(42, 10)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    // No error expected — the geom_ref closure falls back silently.
+    assert!(
+        errors.is_empty(),
+        "extrude() with non-geometry target should not produce errors (silent fallback), got: {:?}",
+        errors
+    );
+    // Should still produce a realization with an Extrude (Sweep) op.
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    assert_op_sequence(
+        &template.realizations[0].operations,
+        &[ExpectedOp::Sweep(SweepKind::Extrude, vec![0])],
     );
 }
