@@ -218,6 +218,76 @@ structure S {
     }
 }
 
+// ─── task-1806 step-1: case-variant builtin names produce 'did you mean' hints
+
+#[test]
+fn pi_uppercase_suggests_pi() {
+    let compiled = compile_source("structure S { let x = Pi }");
+    let errors = errors_only(&compiled);
+    assert!(!errors.is_empty(), "expected a compile error for 'Pi'");
+    assert!(
+        errors.iter().any(|d| d.message.contains("unresolved name") && d.message.contains("did you mean")),
+        "expected 'unresolved name' with 'did you mean' hint, got: {:?}",
+        errors
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("`pi`")),
+        "expected hint to suggest `pi`, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn pi_all_caps_suggests_pi() {
+    let compiled = compile_source("structure S { let x = PI }");
+    let errors = errors_only(&compiled);
+    assert!(!errors.is_empty(), "expected a compile error for 'PI'");
+    assert!(
+        errors.iter().any(|d| d.message.contains("unresolved name") && d.message.contains("did you mean")),
+        "expected 'unresolved name' with 'did you mean' hint, got: {:?}",
+        errors
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("`pi`")),
+        "expected hint to suggest `pi`, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn tau_titlecase_suggests_tau() {
+    let compiled = compile_source("structure S { let x = Tau }");
+    let errors = errors_only(&compiled);
+    assert!(!errors.is_empty(), "expected a compile error for 'Tau'");
+    assert!(
+        errors.iter().any(|d| d.message.contains("unresolved name") && d.message.contains("did you mean")),
+        "expected 'unresolved name' with 'did you mean' hint, got: {:?}",
+        errors
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("`tau`")),
+        "expected hint to suggest `tau`, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn tau_all_caps_suggests_tau() {
+    let compiled = compile_source("structure S { let x = TAU }");
+    let errors = errors_only(&compiled);
+    assert!(!errors.is_empty(), "expected a compile error for 'TAU'");
+    assert!(
+        errors.iter().any(|d| d.message.contains("unresolved name") && d.message.contains("did you mean")),
+        "expected 'unresolved name' with 'did you mean' hint, got: {:?}",
+        errors
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("`tau`")),
+        "expected hint to suggest `tau`, got: {:?}",
+        errors
+    );
+}
+
 // ─── step-7: pi works under #no_prelude ─────────────────────────────────────
 
 #[test]
