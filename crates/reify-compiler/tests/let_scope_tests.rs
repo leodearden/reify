@@ -288,6 +288,217 @@ fn cyclic_geometry_let_references_error() {
     );
 }
 
+// ─── task-1709 step-1: difference op-level assertions ───
+
+#[test]
+fn difference_ops_verify_boolean_variant_and_step_refs() {
+    // Same source as difference_with_let_bound_args.
+    // Verifies the operations Vec of the `result` realization (index 2).
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let hole = cylinder(r2, h)
+    let result = difference(body, hole)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    // result is the 3rd realization (index 2)
+    let ops = &template.realizations[2].operations;
+    assert_eq!(ops.len(), 3, "expected 3 ops, got {}", ops.len());
+    assert!(
+        matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }),
+        "expected Primitive::Cylinder at ops[0], got {:?}",
+        ops[0]
+    );
+    assert!(
+        matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }),
+        "expected Primitive::Cylinder at ops[1], got {:?}",
+        ops[1]
+    );
+    assert!(
+        matches!(
+            ops[2],
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Difference,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1)
+            }
+        ),
+        "expected Boolean{{Difference, Step(0), Step(1)}} at ops[2], got {:?}",
+        ops[2]
+    );
+}
+
+// ─── task-1709 step-2: nested boolean ops step-index assertions ───
+
+#[test]
+fn nested_boolean_ops_verify_step_indices() {
+    // Same source as nested_boolean_ops_with_let_args.
+    // combined=difference(a,b), result=union(combined,c).
+    // result is the 5th realization (index 4).
+    // Its operations Vec inlines: [Cylinder(a), Cylinder(b), Diff(0,1), Sphere(c), Union(2,3)]
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let a = cylinder(r, h)
+    let b = cylinder(r2, h)
+    let combined = difference(a, b)
+    let c = sphere(r)
+    let result = union(combined, c)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let ops = &template.realizations[4].operations;
+    assert_eq!(ops.len(), 5, "expected 5 ops, got {}", ops.len());
+    assert!(
+        matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }),
+        "expected Primitive::Cylinder at ops[0], got {:?}",
+        ops[0]
+    );
+    assert!(
+        matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }),
+        "expected Primitive::Cylinder at ops[1], got {:?}",
+        ops[1]
+    );
+    assert!(
+        matches!(
+            ops[2],
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Difference,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1)
+            }
+        ),
+        "expected Boolean{{Difference, Step(0), Step(1)}} at ops[2], got {:?}",
+        ops[2]
+    );
+    assert!(
+        matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }),
+        "expected Primitive::Sphere at ops[3], got {:?}",
+        ops[3]
+    );
+    assert!(
+        matches!(
+            ops[4],
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(2),
+                right: GeomRef::Step(3)
+            }
+        ),
+        "expected Boolean{{Union, Step(2), Step(3)}} at ops[4], got {:?}",
+        ops[4]
+    );
+}
+
+// ─── task-1709 step-3: mixed let-bound + inline op assertions ───
+
+#[test]
+fn mixed_let_and_inline_ops_verify_step_refs() {
+    // Same source as mixed_let_and_inline_in_boolean_op.
+    // body is let-bound; right arg is inline cylinder(r2,h).
+    // result is the 2nd realization (index 1).
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = difference(body, cylinder(r2, h))
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let ops = &template.realizations[1].operations;
+    assert_eq!(ops.len(), 3, "expected 3 ops, got {}", ops.len());
+    assert!(
+        matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }),
+        "expected Primitive::Cylinder at ops[0], got {:?}",
+        ops[0]
+    );
+    assert!(
+        matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }),
+        "expected Primitive::Cylinder at ops[1], got {:?}",
+        ops[1]
+    );
+    assert!(
+        matches!(
+            ops[2],
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Difference,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1)
+            }
+        ),
+        "expected Boolean{{Difference, Step(0), Step(1)}} at ops[2], got {:?}",
+        ops[2]
+    );
+}
+
+// ─── task-1709 step-4: union_all left-fold structure assertions ───
+
+#[test]
+fn union_all_ops_verify_left_fold_structure() {
+    // Same source as union_all_with_let_bound_args.
+    // d_geom = union_all(a, b, c) — left-fold of 3 args.
+    // d_geom is the 4th realization (index 3).
+    // Expected ops: [Cylinder, Sphere, Union(0,1), Box, Union(2,3)]
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    param w: Scalar = 8mm
+    param d: Scalar = 8mm
+    let a = cylinder(r, h)
+    let b = sphere(r)
+    let c = box(w, h, d)
+    let d_geom = union_all(a, b, c)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let ops = &template.realizations[3].operations;
+    assert_eq!(ops.len(), 5, "expected 5 ops, got {}", ops.len());
+    assert!(
+        matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }),
+        "expected Primitive::Cylinder at ops[0], got {:?}",
+        ops[0]
+    );
+    assert!(
+        matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }),
+        "expected Primitive::Sphere at ops[1], got {:?}",
+        ops[1]
+    );
+    assert!(
+        matches!(
+            ops[2],
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1)
+            }
+        ),
+        "expected Boolean{{Union, Step(0), Step(1)}} at ops[2], got {:?}",
+        ops[2]
+    );
+    assert!(
+        matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+        "expected Primitive::Box at ops[3], got {:?}",
+        ops[3]
+    );
+    assert!(
+        matches!(
+            ops[4],
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(2),
+                right: GeomRef::Step(3)
+            }
+        ),
+        "expected Boolean{{Union, Step(2), Step(3)}} at ops[4], got {:?}",
+        ops[4]
+    );
+}
+
 // ─── step-4: geometry let still produces realization ───
 
 #[test]
