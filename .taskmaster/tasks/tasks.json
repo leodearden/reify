@@ -35577,11 +35577,11 @@
         "description": "The solver_hint_tests.rs test suite is missing a test for @solver_hint with no arguments at all (e.g. `@solver_hint param x : Real`), which exercises the 'missing kind' diagnostic branch differently than the existing missing-collection test. Add a test case verifying the diagnostic is emitted for zero-arg @solver_hint.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T00:53:36.026Z",
+        "updatedAt": "2026-04-15T16:35:03.265Z",
         "metadata": {
           "memory_hints": {
             "searches": [
@@ -37506,7 +37506,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T16:34:19.819Z",
+      "lastModified": "2026-04-15T16:35:03.275Z",
       "taskCount": 1784,
       "completedCount": 1523,
       "tags": [
