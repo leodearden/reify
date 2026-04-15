@@ -408,6 +408,24 @@ impl Engine {
             return Vec::new();
         }
 
+        // Fast path: when no optimized impls are registered every entry goes to
+        // the language-level fallback. Skip the BTreeMap/Option-Vec/unzip
+        // allocations and go directly to the checker — same code path as before
+        // Task 273 introduced the bucketing logic.
+        if self.optimization_registry.is_empty() {
+            let constraints = entries
+                .into_iter()
+                .map(|(id, expr, _target)| (id, expr))
+                .collect();
+            let input = ConstraintInput {
+                constraints,
+                values,
+                functions,
+                determinacy,
+            };
+            return self.constraint_checker.check(&input);
+        }
+
         // Results in input order. We fill slots as each path completes.
         let mut results: Vec<Option<ConstraintResult>> =
             (0..entries.len()).map(|_| None).collect();
