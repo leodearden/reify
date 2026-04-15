@@ -1778,3 +1778,48 @@ fn test_expect_scalar_extracts_si_value_and_dimension() {
     );
     assert_eq!(dimension, DimensionVector::LENGTH);
 }
+
+#[test]
+fn test_expect_binop_extracts_op_and_operands() {
+    // Compile a source with a let-binding BinOp expression and verify that
+    // common::expect_binop can extract op/left/right without nested if-let boilerplate.
+    let module = parse_and_compile(
+        "unit thou : Length = 0.0000254\n\
+         structure S {\n\
+             param w : Length = 10thou\n\
+             let x = w + 5thou\n\
+         }",
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "x")
+        .expect("x not found");
+    let expr = cell.default_expr.as_ref().expect("x has no default_expr");
+    let (op, _left, right) = common::expect_binop(expr);
+    assert!(
+        matches!(op, reify_types::BinOp::Add),
+        "expected Add op for w + 5thou, got {:?}",
+        op
+    );
+    // The right operand is `5thou` — verify si_value and dimension via expect_scalar.
+    let (si_value, dimension) = common::expect_scalar(right);
+    let expected = 5.0 * 0.0000254;
+    assert!(
+        (si_value - expected).abs() < common::UNIT_EPSILON,
+        "expected si_value≈{} (5 * 0.0000254), got {}",
+        expected,
+        si_value
+    );
+    assert_eq!(dimension, DimensionVector::LENGTH);
+}
