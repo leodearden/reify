@@ -35388,11 +35388,11 @@
         "description": "In crates/reify-eval/tests/integration_full_v01.rs, eval_canonical() and check_canonical() each create a new Engine and re-evaluate/re-check the compiled module on every call. Tests 3-19 call these independently, resulting in ~15+ full engine evaluations of the same immutable compiled module.\n\nFix: Cache both results in OnceLock (same pattern as source() and compiled()) if EvalResult/CheckResult are Send+Sync. If they aren't, either wrap in Mutex or document the intentional cost. This will significantly reduce test execution time.\n\nAffected lines: 45-54 (eval_canonical and check_canonical helpers).\n\nmemory_hints: search \"OnceLock test caching pattern reify\"; get_entity \"integration_full_v01\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T01:04:05.605Z",
+        "updatedAt": "2026-04-15T01:12:11.058Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/integration_full_v01.rs"
@@ -35436,7 +35436,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:10:26.069Z",
+      "lastModified": "2026-04-15T01:12:11.058Z",
       "taskCount": 1698,
       "completedCount": 1446,
       "tags": [
