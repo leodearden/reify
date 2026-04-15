@@ -37314,6 +37314,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1784,
+        "title": "Remove dead builder fixtures from get_entity_tree test cases",
+        "description": "In gui/src-tauri/src/tests/engine_tests.rs: (1) In get_entity_tree_no_realization_has_mesh_false (lines 2254-2278), remove the TopologyTemplateBuilder/CompiledModuleBuilder setup and the bracket_compiled_module() call — they are suppressed with let _ = ... and contribute nothing to the test assertions. (2) In get_entity_tree_sub_component_produces_nested_node (lines 2283-2318), remove the bolt_template/assembly_template/compiled builder code and the let _ = vcid(...) line for the same reason. If builder-based coverage is desired, add a separate focused test using build_template_node directly.\n\n### memory_hints\n- search: \"get_entity_tree_no_realization_has_mesh_false get_entity_tree_sub_component_produces_nested_node\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37326,7 +37337,7 @@
       ],
       "created": "2026-04-15T12:40:45.349Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T12:41:52.338Z"
+      "updated": "2026-04-15T12:42:32.972Z"
     }
   }
 }
