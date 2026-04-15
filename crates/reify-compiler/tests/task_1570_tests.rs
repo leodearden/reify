@@ -157,6 +157,93 @@ fn deprecated_sub_resolves_members_and_emits_warning() {
     );
 }
 
+// ── amend: collection sub bare-identifier test ───────────────────────────────
+
+/// Regression test: verify that `sub_member_types` is populated correctly for
+/// **collection** subs (not just non-collection subs).
+///
+/// The entity.rs dedup refactor collapsed two `compiled_templates.iter().find(...)`
+/// blocks into one.  Both blocks populated `sub_member_types`, but one was gated
+/// on the non-collection path.  If the refactor accidentally restricted
+/// `sub_member_types` population to one class of sub, the bare-identifier
+/// resolution path in expr.rs (~line 127) would fall through to the fallback
+/// (`__list_{name}` without a member suffix, wrong type).
+///
+/// This test uses a collection sub (`sub parts : List<Inner>`) and accesses it
+/// via a bare identifier (`let gs = parts`), which exercises the
+/// `scope.collection_sub_names` / `scope.sub_member_types` path in expr.rs.
+///
+/// Expected: `gs` compiles to `ValueRef { entity: "Outer", member: "__list_parts__radius" }`
+/// with type `List(Real)` — i.e. the per-member list for the lex-first member of `Inner`.
+#[test]
+fn collection_sub_bare_identifier_populates_member_types() {
+    let source = r#"
+        structure Inner { param radius : Real = 1.0 }
+        structure Outer {
+            sub parts : List<Inner>
+            let gs = parts
+        }
+    "#;
+    let module = compile_module(source);
+
+    // No errors — the collection sub should compile cleanly.
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no compile errors for collection sub, got: {:?}",
+        errs
+    );
+
+    // Find the 'Outer' template.
+    let outer_tmpl = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer")
+        .expect("should have template 'Outer'");
+
+    // Find the 'gs' value cell.
+    let gs_cell = outer_tmpl
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "gs")
+        .expect("should have let binding 'gs'");
+
+    let gs_expr = gs_cell
+        .default_expr
+        .as_ref()
+        .expect("'gs' should have a default expression");
+
+    // Bare collection sub identifier resolves to the lex-first member's per-member list.
+    // `Inner` has exactly one member: `radius` (Real).  BTreeMap ordering is deterministic.
+    match &gs_expr.kind {
+        CompiledExprKind::ValueRef(id) => {
+            assert_eq!(
+                id.entity, "Outer",
+                "entity should be 'Outer' (parent structure), got '{}'",
+                id.entity
+            );
+            assert_eq!(
+                id.member, "__list_parts__radius",
+                "member should be '__list_parts__radius' (lex-first member of Inner), got '{}'",
+                id.member
+            );
+        }
+        other => panic!(
+            "expected ValueRef for bare collection sub 'parts', got {:?}",
+            other
+        ),
+    }
+
+    // Result type must be List(...) — the element type comes from sub_member_types.
+    match &gs_expr.result_type {
+        Type::List(_) => {}
+        other => panic!(
+            "expected List type for bare collection sub identifier, got {:?}",
+            other
+        ),
+    }
+}
+
 // ── step-3: test for expr.rs QualifiedAccess ICE fallback ────────────────────
 
 /// Test: when a structure claims trait conformance (`: MechTrait`) but does NOT
