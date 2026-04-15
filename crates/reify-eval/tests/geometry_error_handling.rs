@@ -93,9 +93,11 @@ fn make_sentinel_module(
 }
 
 /// Assert the sentinel-path invariants shared by all three sentinel-continuation
-/// tests: (a) the kernel received exactly 2 Sphere calls (ops 0 and 2 both
-/// reached the kernel), and (b) exactly 1 compile-failure diagnostic was
-/// produced by op 1.
+/// tests. Accepts the recorded kernel ops and the full diagnostics slice from
+/// the eval result. Asserts: (a) the kernel received exactly 2 Sphere calls
+/// (ops 0 and 2 both reached the kernel), and (b) exactly 1 diagnostic whose
+/// message contains "failed to compile geometry operation" was produced (counted
+/// internally by filtering `diagnostics`).
 fn assert_sentinel_invariants(kernel_ops: &[GeometryOpRecord], diagnostics: &[Diagnostic]) {
     let sphere_ops: Vec<_> = kernel_ops
         .iter()
