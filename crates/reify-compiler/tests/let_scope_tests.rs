@@ -1,7 +1,8 @@
 //! Tests for let-binding scope resolution, especially geometry lets.
 
-use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, RealizationDecl,
-                     TopologyTemplate};
+use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, ModifyKind, PatternKind,
+                     PrimitiveKind, RealizationDecl, SweepKind, TopologyTemplate,
+                     TransformKind};
 use reify_types::Severity;
 
 // ─── Source-string constants (shared between existing and op-level tests) ─────
@@ -55,6 +56,10 @@ enum ExpectedOp {
     Box_,
     BoolDiff(usize, usize),
     BoolUnion(usize, usize),
+    Transform(TransformKind, usize),
+    Pattern(PatternKind, usize),
+    Sweep(SweepKind, Vec<usize>),
+    Modify(ModifyKind, usize),
 }
 
 fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
@@ -78,6 +83,28 @@ fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
             },
             ExpectedOp::BoolUnion(el, er),
         ) => l == el && r == er,
+        (
+            CompiledGeometryOp::Transform { kind, target: GeomRef::Step(t), .. },
+            ExpectedOp::Transform(ek, es),
+        ) => kind == ek && t == es,
+        (
+            CompiledGeometryOp::Pattern { kind, target: GeomRef::Step(t), .. },
+            ExpectedOp::Pattern(ek, es),
+        ) => kind == ek && t == es,
+        (
+            CompiledGeometryOp::Sweep { kind, profiles, .. },
+            ExpectedOp::Sweep(ek, ep),
+        ) => {
+            kind == ek
+                && profiles.len() == ep.len()
+                && profiles.iter().zip(ep.iter()).all(|(p, &es)| {
+                    matches!(p, GeomRef::Step(s) if *s == es)
+                })
+        }
+        (
+            CompiledGeometryOp::Modify { kind, target: GeomRef::Step(t), .. },
+            ExpectedOp::Modify(ek, es),
+        ) => kind == ek && t == es,
         _ => false,
     }
 }
@@ -586,6 +613,31 @@ fn multiple_geometry_lets_all_produce_realizations() {
         3,
         "expected 3 realizations, got {}",
         template.realizations.len()
+    );
+}
+
+// ─── task-1715 pre-1 + step-1: translate with let-bound target emits sub-op ───
+
+#[test]
+fn translate_let_bound_target_ops() {
+    // translate(hole, 1, 0, 0) where hole is a let-bound cylinder.
+    // Expected: cylinder sub-op at step 0, translate op referencing step 0.
+    // Currently FAILS: translate compiles hole as scalar, no sub-op emitted.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let hole = cylinder(r, h)
+    let result = translate(hole, 1, 0, 0)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["hole", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::Translate, 0),
+        ],
     );
 }
 
