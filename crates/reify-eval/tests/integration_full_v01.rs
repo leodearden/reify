@@ -882,6 +882,48 @@ fn constraint_def_labels() {
     }
 }
 
+// ── Test 21: Option some/none values ─────────────────────────────────────────
+
+/// Assert `Assembly.maybe_load` evaluates to `Value::Option(Some(Value::Real(100.0)))`
+/// and `Assembly.no_load` evaluates to `Value::Option(None)`.
+/// The .ri file defines: `let maybe_load = some(100.0)` and `let no_load = none`.
+#[test]
+fn option_some_none_values() {
+    let result = eval_canonical();
+
+    // maybe_load = some(100.0) → Value::Option(Some(Value::Real(100.0)))
+    let maybe_id = ValueCellId::new("Assembly", "maybe_load");
+    let maybe_val = result
+        .values
+        .get(&maybe_id)
+        .unwrap_or_else(|| panic!("Assembly.maybe_load not found in eval result"));
+    assert!(
+        matches!(maybe_val, Value::Option(Some(_))),
+        "Assembly.maybe_load should be Value::Option(Some(_)), got {:?}",
+        maybe_val
+    );
+    // Verify the wrapped value is Real(100.0)
+    if let Value::Option(Some(inner)) = maybe_val {
+        assert!(
+            matches!(inner.as_ref(), Value::Real(v) if (*v - 100.0).abs() < 1e-12),
+            "Assembly.maybe_load inner should be Real(100.0), got {:?}",
+            inner
+        );
+    }
+
+    // no_load = none → Value::Option(None)
+    let no_id = ValueCellId::new("Assembly", "no_load");
+    let no_val = result
+        .values
+        .get(&no_id)
+        .unwrap_or_else(|| panic!("Assembly.no_load not found in eval result"));
+    assert!(
+        matches!(no_val, Value::Option(None)),
+        "Assembly.no_load should be Value::Option(None), got {:?}",
+        no_val
+    );
+}
+
 // ── Test 20: violation regression guard ──────────────────────────────────────
 
 /// Regression guard: deliberately make `height < 2000mm` into `height < 100mm`
