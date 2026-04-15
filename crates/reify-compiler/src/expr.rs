@@ -667,7 +667,14 @@ pub(crate) fn compile_expr_guarded(
                                 "collection sub requires indexing",
                             )),
                         );
-                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                        // Use List<StructureRef(element_type)> as fallback so downstream
+                        // expressions do not cascade spurious type-mismatch diagnostics.
+                        let fallback_type = scope
+                            .sub_component_types
+                            .get(member.as_str())
+                            .map(|sn| Type::List(Box::new(Type::StructureRef(sn.clone()))))
+                            .unwrap_or(Type::Real);
+                        return CompiledExpr::literal(Value::Undef, fallback_type);
                     }
                     // Resolve member from the entity scope (same as bare identifier).
                     match scope.resolve(member) {
@@ -736,18 +743,43 @@ pub(crate) fn compile_expr_guarded(
                     && self_name == "self"
                     && scope.collection_sub_names.contains(sub_name.as_str())
                 {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "cannot access member '{}' of collection sub '{}' directly through self; \
-                             use `{}[i].{}` for a specific instance",
-                            member, sub_name, sub_name, member
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            expr.span,
-                            "collection sub member requires indexing",
-                        )),
-                    );
-                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                    // Aggregation members (count/sum/keys/values) should use bare sub access,
+                    // not indexed access — emit a distinct recommendation for each case.
+                    let aggregation_members = ["count", "sum", "keys", "values"];
+                    if aggregation_members.contains(&member.as_str()) {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "cannot access aggregation '{}' of collection sub '{}' through self; \
+                                 use `{}.{}` directly",
+                                member, sub_name, sub_name, member
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "collection sub aggregation: drop `self.`",
+                            )),
+                        );
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "cannot access member '{}' of collection sub '{}' directly through self; \
+                                 use `{}[i].{}` for a specific instance",
+                                member, sub_name, sub_name, member
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "collection sub member requires indexing",
+                            )),
+                        );
+                    }
+                    // Use the member's actual type as fallback so downstream expressions
+                    // do not cascade spurious type-mismatch diagnostics.
+                    let fallback_type = scope
+                        .sub_member_types
+                        .get(sub_name.as_str())
+                        .and_then(|m| m.get(member.as_str()))
+                        .cloned()
+                        .unwrap_or(Type::Real);
+                    return CompiledExpr::literal(Value::Undef, fallback_type);
                 }
             }
 
