@@ -174,9 +174,16 @@ pub fn check_ignore_reasons(source: &str) -> Result<(), String> {
 }
 
 /// Recursively walk `workspace_root` collecting every `.rs` file whose path
-/// contains a directory component named `tests`. Skips `target` and any
-/// directory whose name starts with `.` (which covers `.git`, `.worktrees`,
-/// etc.).
+/// contains a directory component named `tests`. Skips the following directories:
+///
+/// - `target` — Cargo build artifacts
+/// - Dot-dirs (any name starting with `.`) — VCS internals (`.git`), worktrees
+///   (`.worktrees`), and similar tooling directories
+/// - `node_modules` — JS/Node tooling output; `tree-sitter-reify/` can acquire
+///   this directory from JS build steps, and `.rs` files inside it would produce
+///   false matches
+/// - `vendor` — Cargo vendored dependency trees; vendored crate source is not
+///   project-owned test code and scanning it wastes time
 ///
 /// Uses `std::fs::read_dir` with an explicit stack (no recursion, no external
 /// `walkdir` dep) — matching the existing convention in `reify-kernel-occt/build.rs`.
@@ -199,8 +206,12 @@ pub fn walk_test_rs_files(workspace_root: &Path) -> Vec<PathBuf> {
             // infinite loops on symlink cycles in the workspace.
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                // Skip build artifacts, git internals, worktrees, and all dot-dirs.
-                if name == "target" || name.starts_with('.') {
+                // Skip build artifacts, VCS/worktree noise, JS tooling, and vendored deps.
+                if name == "target"
+                    || name.starts_with('.')
+                    || name == "node_modules"
+                    || name == "vendor"
+                {
                     continue;
                 }
                 stack.push(path);
@@ -374,6 +385,11 @@ mod tests {
             "violation {:?} should contain the needle fragment {:?}",
             violations[0],
             expected_fragment
+        );
+        assert!(
+            violations[0].starts_with("line 1:"),
+            "expected violation to report the attribute line (line 1), not the needle line (line 2): {:?}",
+            violations[0]
         );
     }
 
@@ -761,10 +777,12 @@ mod tests {
         ];
         // Files that should NOT be returned
         let excluded = [
-            "crates/foo/src/lib.rs",                  // no "tests" component
-            "target/tests/skipme.rs",                 // root-level "target" dir excluded
-            "crates/foo/target/tests/skip_nested.rs", // nested "target" dir also excluded
-            ".git/tests/skip.rs",                     // dot-dir excluded
+            "crates/foo/src/lib.rs",                       // no "tests" component
+            "target/tests/skipme.rs",                      // root-level "target" dir excluded
+            "crates/foo/target/tests/skip_nested.rs",      // nested "target" dir also excluded
+            ".git/tests/skip.rs",                          // dot-dir excluded
+            "node_modules/tests/skip_nm.rs",               // node_modules dir excluded
+            "vendor/tests/skip_vendor.rs",                 // vendor dir excluded
         ];
 
         for rel in included.iter().chain(excluded.iter()) {
