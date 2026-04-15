@@ -37,21 +37,31 @@ fn msgs_mention_self(msgs: &[String]) -> bool {
 
 /// Asserts that `ty` is `Type::List(Box::new(Type::StructureRef(expected_name)))`.
 ///
+/// `label` is an optional context prefix (e.g. `"via_self:"`) that is prepended
+/// to failure messages to distinguish calls when the same helper is invoked
+/// multiple times in one test.  Pass `""` when no label is needed.
+///
 /// Panics with a descriptive message if the type does not match.
 /// Extracted from duplicated match-assert blocks that appeared in the three
 /// collection-sub fallback tests added in task 1770.
-fn assert_list_of_struct_ref(ty: &reify_types::Type, expected_name: &str) {
+fn assert_list_of_struct_ref(ty: &reify_types::Type, expected_name: &str, label: &str) {
+    let prefix = if label.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", label)
+    };
     match ty {
         reify_types::Type::List(inner) => {
             assert_eq!(
                 inner.as_ref(),
                 &reify_types::Type::StructureRef(expected_name.to_string()),
-                "expected List(StructureRef({:?})), got List({:?})",
+                "{}expected List(StructureRef({:?})), got List({:?})",
+                prefix,
                 expected_name,
                 inner,
             );
         }
-        other => panic!("expected List type, got: {:?}", other),
+        other => panic!("{}expected List type, got: {:?}", prefix, other),
     }
 }
 
@@ -96,7 +106,7 @@ fn test_mentions_word() {
 fn test_assert_list_of_struct_ref_valid() {
     // Calling with a List(StructureRef("Foo")) and expected name "Foo" should not panic.
     let ty = reify_types::Type::List(Box::new(reify_types::Type::StructureRef("Foo".to_string())));
-    assert_list_of_struct_ref(&ty, "Foo");
+    assert_list_of_struct_ref(&ty, "Foo", "");
 }
 
 #[test]
@@ -104,7 +114,16 @@ fn test_assert_list_of_struct_ref_valid() {
 fn test_assert_list_of_struct_ref_non_list_panics() {
     // Calling with a non-List type should panic with "expected List type".
     let ty = reify_types::Type::Bool;
-    assert_list_of_struct_ref(&ty, "Foo");
+    assert_list_of_struct_ref(&ty, "Foo", "");
+}
+
+#[test]
+#[should_panic(expected = "expected List(StructureRef")]
+fn test_assert_list_of_struct_ref_wrong_name_panics() {
+    // Calling with List(StructureRef("Bar")) but expecting "Foo" should panic with
+    // a message that includes "expected List(StructureRef".
+    let ty = reify_types::Type::List(Box::new(reify_types::Type::StructureRef("Bar".into())));
+    assert_list_of_struct_ref(&ty, "Foo", "");
 }
 
 // ─── step-1: self.param resolves to correct ValueRef ───
@@ -940,7 +959,7 @@ structure S {
         .as_ref()
         .expect("x default_expr")
         .result_type;
-    assert_list_of_struct_ref(x_ty, "Empty");
+    assert_list_of_struct_ref(x_ty, "Empty", "");
 }
 
 // ─── task-1770 step-3: fallback path — forward reference (sub_member_types returns None) ───
@@ -995,7 +1014,7 @@ structure Bolt {
         .as_ref()
         .expect("x default_expr")
         .result_type;
-    assert_list_of_struct_ref(x_ty, "Bolt");
+    assert_list_of_struct_ref(x_ty, "Bolt", "");
 }
 
 // ─── task-1770 step-4: self/bare equivalence on the fallback path ───
@@ -1070,8 +1089,8 @@ structure S {
         .expect("via_bare default_expr")
         .result_type;
 
-    assert_list_of_struct_ref(self_ty, "Empty");
-    assert_list_of_struct_ref(bare_ty, "Empty");
+    assert_list_of_struct_ref(self_ty, "Empty", "via_self:");
+    assert_list_of_struct_ref(bare_ty, "Empty", "via_bare:");
 }
 
 // ─── task-1281 step-3: self.collection_sub.member error uses correct fallback type ───
