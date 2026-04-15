@@ -340,7 +340,21 @@ fn test_assert_real_approx_passes_within_tolerance() {
     assert_real_approx(&Value::Real(0.0), 0.0, "zero");
     // Verify REAL_TOLERANCE constant exists and has the expected magnitude
     assert!(REAL_TOLERANCE > 0.0, "REAL_TOLERANCE must be positive");
-    assert!(REAL_TOLERANCE < 1e-8, "REAL_TOLERANCE should be small (≤1e-10)");
+    assert!(REAL_TOLERANCE <= 1e-10, "REAL_TOLERANCE should be small (≤1e-10)");
+}
+
+#[test]
+#[should_panic]
+fn test_assert_real_approx_panics_outside_tolerance() {
+    // Difference of 1.0 is far beyond REAL_TOLERANCE — must panic
+    assert_real_approx(&Value::Real(1.0), 2.0, "should fail");
+}
+
+#[test]
+#[should_panic]
+fn test_assert_real_approx_panics_for_non_real_variant() {
+    // Bool is not a Real — must panic with a descriptive message
+    assert_real_approx(&Value::Bool(true), 0.0, "should fail");
 }
 
 // ── step-1: von_mises dispatch ────────────────────────────────────────────────
