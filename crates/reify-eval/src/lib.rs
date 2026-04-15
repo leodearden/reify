@@ -3555,6 +3555,39 @@ fn eval_named_arg_f64(
     }
 }
 
+/// Evaluate all args in a variadic curve constructor to f64 values.
+///
+/// Returns `None` if any arg evaluates to a non-finite value, pushing a
+/// warning diagnostic for each bad arg.  Used by InterpCurve, BezierCurve,
+/// and NurbsCurve to avoid duplicating the same eval-and-collect loop.
+fn eval_all_args_to_f64(
+    label: &str,
+    args: &[(String, reify_types::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<f64>> {
+    args.iter()
+        .map(|(name, expr)| {
+            let v = reify_expr::eval_expr(
+                expr,
+                &reify_expr::EvalContext::new(values, functions)
+                    .with_meta(meta_map),
+            );
+            match v.as_f64() {
+                Some(f) if f.is_finite() => Some(f),
+                _ => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{} arg '{}' is non-finite", label, name
+                    )));
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 /// Compile a CompiledGeometryOp into a GeometryOp by evaluating expressions.
 /// Translate a compiled geometry operation into a runtime `GeometryOp`.
 ///
@@ -3907,6 +3940,132 @@ fn compile_geometry_op(
                     Some(reify_types::GeometryOp::Sweep {
                         profile: profile_handle,
                         path: path_handle,
+                    })
+                }
+            }
+        }
+        CompiledGeometryOp::Curve { kind, args } => {
+            use reify_compiler::CurveKind;
+            match kind {
+                CurveKind::LineSegment => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    Some(reify_types::GeometryOp::LineSegment {
+                        x1: f64_arg("x1")?,
+                        y1: f64_arg("y1")?,
+                        z1: f64_arg("z1")?,
+                        x2: f64_arg("x2")?,
+                        y2: f64_arg("y2")?,
+                        z2: f64_arg("z2")?,
+                    })
+                }
+                CurveKind::Arc => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    Some(reify_types::GeometryOp::Arc {
+                        center: [f64_arg("cx")?, f64_arg("cy")?, f64_arg("cz")?],
+                        radius: f64_arg("radius")?,
+                        start_angle: f64_arg("start_angle")?,
+                        end_angle: f64_arg("end_angle")?,
+                        axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
+                    })
+                }
+                CurveKind::Helix => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    Some(reify_types::GeometryOp::Helix {
+                        radius: f64_arg("radius")?,
+                        pitch: f64_arg("pitch")?,
+                        height: f64_arg("height")?,
+                    })
+                }
+                CurveKind::InterpCurve => {
+                    let coords = eval_all_args_to_f64("interp", args, values, functions, meta_map, diagnostics)?;
+                    let points: Vec<[f64; 3]> = coords
+                        .chunks_exact(3)
+                        .map(|c| [c[0], c[1], c[2]])
+                        .collect();
+                    Some(reify_types::GeometryOp::InterpCurve { points })
+                }
+                CurveKind::BezierCurve => {
+                    let coords = eval_all_args_to_f64("bezier", args, values, functions, meta_map, diagnostics)?;
+                    let control_points: Vec<[f64; 3]> = coords
+                        .chunks_exact(3)
+                        .map(|c| [c[0], c[1], c[2]])
+                        .collect();
+                    Some(reify_types::GeometryOp::BezierCurve { control_points })
+                }
+                CurveKind::NurbsCurve => {
+                    // For NURBS, all args are passed positionally as c0,c1,...
+                    // Format: first arg = degree, second = n_points, then
+                    // n_points*3 pole coords, n_points weights, remaining knots.
+                    let vals = eval_all_args_to_f64("nurbs", args, values, functions, meta_map, diagnostics)?;
+                    if vals.len() < 2 {
+                        diagnostics.push(Diagnostic::error(
+                            "nurbs() requires at least degree and n_points arguments".to_string(),
+                        ));
+                        return None;
+                    }
+                    // Validate degree is a positive integer
+                    if vals[0] < 1.0 || vals[0] != vals[0].trunc() || vals[0] > 25.0 {
+                        diagnostics.push(Diagnostic::error(
+                            format!("nurbs() degree must be a positive integer (1..25), got {}", vals[0]),
+                        ));
+                        return None;
+                    }
+                    let degree = vals[0] as usize;
+                    // Remaining: need to know n_points to split.
+                    // Convention: second val is n_points.
+                    // Validate n_points is a positive integer within a sensible range
+                    if vals[1] < 2.0 || vals[1] != vals[1].trunc() || vals[1] > (vals.len() as f64) {
+                        diagnostics.push(Diagnostic::error(
+                            format!(
+                                "nurbs() n_points must be a positive integer >= 2 and consistent with argument count, got {}",
+                                vals[1]
+                            ),
+                        ));
+                        return None;
+                    }
+                    let n_points = vals[1] as usize;
+                    let expected_min = 2 + n_points * 3 + n_points; // degree + n + poles + weights
+                    if vals.len() < expected_min {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "nurbs() got fewer arguments than expected for {} control points",
+                            n_points,
+                        )));
+                        return None;
+                    }
+                    let pole_start = 2;
+                    let pole_end = pole_start + n_points * 3;
+                    let weight_end = pole_end + n_points;
+                    let control_points: Vec<[f64; 3]> = vals[pole_start..pole_end]
+                        .chunks_exact(3)
+                        .map(|c| [c[0], c[1], c[2]])
+                        .collect();
+                    let weights: Vec<f64> = vals[pole_end..weight_end].to_vec();
+                    let knots: Vec<f64> = vals[weight_end..].to_vec();
+                    if knots.is_empty() {
+                        diagnostics.push(Diagnostic::error(
+                            "nurbs() requires at least 1 knot value".to_string(),
+                        ));
+                        return None;
+                    }
+                    let expected_knots = n_points + degree + 1;
+                    if knots.len() != expected_knots {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "nurbs() expected {} knots (n_points + degree + 1 = {} + {} + 1), got {}",
+                            expected_knots, n_points, degree, knots.len(),
+                        )));
+                        return None;
+                    }
+                    Some(reify_types::GeometryOp::NurbsCurve {
+                        control_points,
+                        weights,
+                        knots,
+                        degree,
                     })
                 }
             }

@@ -278,8 +278,8 @@ structure def Assembly : Physical + Locatable {
     constraint safe_load_int < 300
     constraint grade_code <= 3
 
-    // Complex number non-undef
-    constraint height_ok == height_ok
+    // Sanity: height_ok is determined
+    constraint determined(height_ok)
 
     // Minimize objective
     minimize mass

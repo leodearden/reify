@@ -145,6 +145,30 @@ pub mod ffi {
             y2: f64,
             z2: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+
+        // --- Curve constructors ---
+        fn make_arc_wire(
+            cx: f64, cy: f64, cz: f64,
+            radius: f64,
+            start_angle: f64, end_angle: f64,
+            ax: f64, ay: f64, az: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_helix_wire(
+            radius: f64, pitch: f64, height: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_interp_curve(
+            coords: &[f64], n_points: usize,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_bezier_curve(
+            coords: &[f64], n_points: usize,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_nurbs_curve(
+            pole_coords: &[f64], n_poles: usize,
+            weights: &[f64],
+            flat_knots: &[f64],
+            degree: i32,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         fn loft_profiles(profiles: &OcctShapeVec) -> Result<UniquePtr<OcctShape>>;
 
         // --- Sweep ---

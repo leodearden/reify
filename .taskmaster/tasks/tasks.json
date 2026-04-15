@@ -5970,7 +5970,7 @@
         "dependencies": [
           "291"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             ".task/plan.json",
@@ -5993,7 +5993,7 @@
           "_causation_id": "8a9210de-78df-4834-a133-09f74785f437"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-15T00:50:00.119Z"
+        "updatedAt": "2026-04-15T02:22:30.027Z"
       },
       {
         "id": "296",
@@ -6623,7 +6623,7 @@
         "dependencies": [
           "227"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6656,7 +6656,7 @@
           "_causation_id": "8a9210de-78df-4834-a133-09f74785f437"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-15T00:53:34.488Z"
+        "updatedAt": "2026-04-15T02:05:51.613Z"
       },
       {
         "id": "321",
@@ -6790,7 +6790,7 @@
           "318",
           "320"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6802,10 +6802,16 @@
             "examples/advanced_geometry.ri",
             "examples/measurement_queries.ri",
             "crates/reify-eval/tests/m8_2_stdlib_integration.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib M8.2 integration: advanced_geometry.ri + measurement_queries.ri"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-15T05:22:44.765Z"
       },
       {
         "id": "326",
@@ -17382,7 +17388,7 @@
         "description": "Consolidates assert_no_eval_errors helper extraction for m9_trait_conformance, assertion strengthening (dedup comment, inherited-let coverage, double-eval), and recursive_unfold.rs test quality cleanup (dedup, naming, missing assertions).",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 787 plus 2 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 787: Extract assert_no_eval_errors helper and eliminate duplication in m9_trait_conformance tests\n\n\nAdd assert_no_eval_errors helper to test module or reify-test-support; use it in all 5 test functions (including refinement_chain_values and diamond_merging_values which currently lack it). Rename shadowed `result` to `eval_result`. Consider reusing field_eval_tests.rs eval_source helper pattern.\n\n\n\nSource: escalation esc-434-29 (task 434 review). File: crates/reify-eval/tests/m9_trait_conformance.rs. Eval-error assertion block copy-pasted 3 times at lines 69-85, 448-464, 488-504.\n\n### Absorbed from task 788: Strengthen m9_trait_conformance assertions: dedup comment, inherited-let coverage, double-eval\nAdd explanatory comment on merged_constraints.len()==2 identifying which 2 constraints are expected. Add Component.half_size assertion in refinement_chain_values. Either use check_result.diagnostics for error assertion or restructure to avoid double eval.\n\nSource: escalation esc-434-29 (task 434 review). File: crates/reify-eval/tests/m9_trait_conformance.rs:245,421.\n\n### Absorbed from task 790: Clean up recursive_unfold.rs test quality: dedup, naming, missing assertions\nFold cyclic_let_binding_diagnostic_includes_template_name into cyclic_let_bindings_emit_diagnostic. Rename has_only_warning to has_any_warning_about_unknown_structure. Replace redundant negative assertion with count==1 check. Add assert!(result.diagnostics.is_empty()) to bfs_traverses_through_wrapper test.\n\nSource: escalation esc-550-13 (task 550 review). File: crates/reify-eval/tests/recursive_unfold.rs:1390-1609.\n",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17403,7 +17409,7 @@
           "bundled_at": "2026-04-11",
           "bundle_key": "J"
         },
-        "updatedAt": "2026-04-15T01:38:58.274Z"
+        "updatedAt": "2026-04-15T05:12:45.698Z"
       },
       {
         "id": "788",
@@ -18157,7 +18163,7 @@
         "description": "Convention violation + cross-module inconsistency. Value::infer_type() in reify-types/src/value.rs defaults empty List/Set to Type::Int (lines 504, 512) and empty Map keys to Type::String (line 520). The compiler in reify-compiler/src/lib.rs defaults empty List/Set to Type::Real (lines 2705, 2727) and empty Map values to Type::Real (line 2763). This means compile-time and runtime type inference disagree for empty collections.\n\nFix: either make both consistent (both Type::Real or both Type::Int), or — better — emit a diagnostic / return Option<Type> for the ambiguous case rather than silently picking a default. Task #368 (done) fixed the builders.rs path but missed these value.rs sites.\n\nLocations:\n- crates/reify-types/src/value.rs:504, 512, 520\n- Also line 524: Value::Option(None) defaults to Type::Option(Box::new(Type::Bool))\n\nmemory_hints: search(\"infer_type empty collection type default convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -18171,7 +18177,7 @@
             "crates/reify-types/src/value.rs"
           ]
         },
-        "updatedAt": "2026-04-15T01:21:45.336Z"
+        "updatedAt": "2026-04-15T02:07:30.589Z"
       },
       {
         "id": "826",
@@ -23798,7 +23804,7 @@
         "description": "Enhance the robustness and coverage of the `nan_payload_canonicalized_in_content_hash` test in `crates/reify-types/src/value.rs`.",
         "details": "Address the weaknesses identified in Task 1078 review by implementing the following changes:\n\n1. **Fix S2 - Test Robustness:**\n   - Replace `debug_assert!` with `assert!` to ensure the test remains valid in release builds.\n   - Add an assertion to verify that the sentinel bits are distinct from the canonical NaN bits:\n     ```rust\n     let non_canon_nan = f64::from_bits(f64::NAN.to_bits() ^ 1);\n     assert!(non_canon_nan.is_nan(), \"sentinel must be NaN\");\n     assert_ne!(\n         non_canon_nan.to_bits(),\n         f64::NAN.to_bits(),\n         \"sentinel must be a non-canonical NaN bit pattern\"\n     );\n     ```\n\n2. **Fix S4 - Test Coverage Gap:**\n   - Add negative assertions to ensure NaN hashes differ from finite-value hashes:\n     ```rust\n     assert_ne!(Value::Real(f64::NAN).content_hash(), Value::Real(0.0).content_hash());\n     assert_ne!(Value::Scalar { si_value: f64::NAN, ... }.content_hash(), Value::Scalar { si_value: 0.0, ... }.content_hash());\n     ```\n   - Extend similar assertions for complex numbers and orientations.",
         "testStrategy": "Run the test suite with `cargo test -p reify-types nan_payload_canonicalized_in_content_hash` to verify the changes. Additionally, execute the tests in release mode using `cargo test -p reify-types --release nan_payload_canonicalized_in_content_hash` to ensure robustness in optimized builds.",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "978"
         ],
@@ -23812,7 +23818,7 @@
             "crates/reify-types/src"
           ]
         },
-        "updatedAt": "2026-04-11T07:45:52.000Z"
+        "updatedAt": "2026-04-15T05:03:23.436Z"
       },
       {
         "id": "1094",
@@ -23897,17 +23903,18 @@
         "description": "Extend the OptionNone-at-binding-site fixup (currently applied only to top-level entity params, and via task 1083 to top-level entity lets) to cover port-scoped and guarded-group-scoped param/let bindings. Test-first: write failing tests before touching the compiler.",
         "details": "## Background\n\nA bare `none` literal is compiled with a fallback `result_type = Option[Real]` at `crates/reify-compiler/src/lib.rs:2161-2164`, because the parser has no contextual type information. Binding sites with an explicit annotation (`param x: Option[T] = none` / `let x: Option[T] = none`) must re-stamp the `OptionNone`'s `result_type` to match, or downstream type queries, goto-def, and qualified access see the wrong inner type. The port-let case is especially bad because the wrong type is also propagated into the scope entry at `lib.rs:5505`, poisoning every later name resolution in that scope.\n\nThe reference fix for top-level entity params lives at `crates/reify-compiler/src/lib.rs:5176-5186`. Task 1083 extends it to top-level entity lets. This task covers the remaining four arms.\n\n## Four sites to cover\n\nAll in `crates/reify-compiler/src/lib.rs`:\n\n1. **Port member param arm** (~`lib.rs:5476-5478`): `compile_expr(...)` with no OptionNone fixup. A port-scoped `param x: Option[Vec2] = none` would stamp the default with `Option[Real]`.\n2. **Port member let arm** (~`lib.rs:5491-5520`): `cell_type` is derived from `compiled_expr.result_type` at `lib.rs:5500` with no annotation check. The wrong type also enters the scope at `lib.rs:5505`.\n3. **Guarded member param arm** in `compile_guarded_members` (~`lib.rs:6875-6886`): `compile_expr_guarded(...)` with no fixup.\n4. **Guarded member let arm** (~`lib.rs:6898-6930`): `cell_type = compiled_expr.result_type.clone()` at `lib.rs:6914` with no annotation check.\n\n## Approach (test-first)\n\n**Step 1 — Write failing tests.** Add one test per site (4 tests total) to the appropriate test file (likely `crates/reify-compiler/tests/qualified_access_compile_tests.rs` alongside the task-1083 test, or `option_compile_tests.rs`). Each test should:\n- Construct source exercising the site (e.g., `entity E { port p: Bar { param x: Option[Vec2] = none } }`).\n- Compile it.\n- Assert the resulting `ValueCellDecl`'s `cell_type` (and where applicable, the `default_expr`'s `result_type`) matches the annotated `Option[T]` — NOT the fallback `Option[Real]`.\n\n**Step 1b — Grammar reachability check.** If any of the four constructs is not admitted by the current grammar (`tree-sitter-reify`), mark that site unreachable, close out its sub-scope, and document it in the PR. Do not write compiler logic for an unreachable path.\n\n**Step 2 — Fix the reachable sites.** Mirror the `lib.rs:5181-5184` pattern:\n```rust\nif matches!(&compiled.kind, CompiledExprKind::OptionNone)\n    && matches!(&cell_type, Type::Option(_))\n{\n    compiled = CompiledExpr::option_none(cell_type.clone());\n}\n```\nFor the let arms, the fixup needs to happen *before* `cell_type` is derived from `compiled_expr.result_type` — resolve the annotation from `let_decl.type_expr` first (mirroring the pattern task 1083 establishes for the top-level entity let arm), then fix up.\n\n**Step 2b — Consider extraction.** If the four fixups look identical, extract a `fixup_option_none(compiled, declared_type) -> CompiledExpr` helper. Do not extract if sites diverge; three similar call sites is fine.\n\n## Dependencies\n\n- Task 1083 (top-level entity let fix) establishes the annotation-resolution pattern for let arms. This task should land *after* 1083 so the let-arm pattern has a reference implementation.\n\n## Acceptance\n\n- 4 new tests (or fewer if some sites are unreachable), each failing on main before the fix and passing after.\n- Fix mirrors task 1083 / `lib.rs:5181-5184` without introducing new behavior.\n- No drive-by refactoring of unrelated code.\n- `cargo test -p reify-compiler` clean, no clippy warnings in the touched file.\n\n## Memory hints\n\n- Search: \"OptionNone typed annotation let binding\"\n- Related task: 1083 (top-level entity let fix)\n- Related files: `crates/reify-compiler/src/lib.rs`, `crates/reify-compiler/tests/qualified_access_compile_tests.rs`, `crates/reify-types/src/expr.rs`\n- Prior context: task 162 restored some/none compilation interception (commit 81d333299)\n- Feedback: `feedback_silent_defaults_pattern` — avoid silent fallback types on error/uncovered paths",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1083"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T01:57:38.795Z",
+        "updatedAt": "2026-04-15T02:08:50.129Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/guards.rs",
+            "crates/reify-compiler/tests/option_compile_tests.rs"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
@@ -25660,11 +25667,11 @@
         "description": "The unit tests added in Task 1167 (crates/reify-eval/src/lib.rs lines ~4863-5054) cover only `Primitive::Box` (1 of 3 primitive variants) and `Modify::Fillet` (1 of 5 modify variants). The shared `eval_arg` closures are exercised but the per-kind formatting and other variant code paths are not validated. There is also no end-to-end test confirming that the warning actually reaches `BuildResult.diagnostics` / `TessellateResult.diagnostics` via `Engine::build()`, `Engine::build_snapshot()`, or `Engine::tessellate_realizations()` (call sites at lib.rs lines ~2899-2906, 2979-2986, 3099-3107). Future refactors that break the `&mut diagnostics` plumbing would not be caught by the new unit tests.\n\n**Add the following tests:**\n\n1. `compile_geometry_op_primitive_cylinder_missing_radius_emits_diagnostic` — `Primitive::Cylinder` missing `radius`.\n2. `compile_geometry_op_primitive_sphere_missing_radius_emits_diagnostic` — `Primitive::Sphere` missing `radius`.\n3. `compile_geometry_op_modify_chamfer_missing_distance_emits_diagnostic` — `Modify::Chamfer` missing `distance`.\n4. `compile_geometry_op_modify_shell_missing_thickness_emits_diagnostic` — `Modify::Shell` missing `thickness` while a `face_0` arg is present (confirms only the required-arg path warns, not the optional `face_*` collection).\n5. `compile_geometry_op_modify_draft_missing_angle_emits_diagnostic` — `Modify::Draft` missing `angle`.\n6. `compile_geometry_op_modify_thicken_missing_offset_emits_diagnostic` — `Modify::Thicken` missing `offset`.\n7. `compile_geometry_op_box_two_missing_args_emits_two_diagnostics_in_order` — `Primitive::Box` missing both `width` and `height`; assert `diagnostics.len() == 2` and verify message order matches caller iteration order (`width` before `height`).\n8. **End-to-end plumbing test** in the same module: construct a `CompiledModule` containing a `Primitive::Box` op with an intentionally missing required arg, run `engine.build(...)`, and assert the resulting `BuildResult.diagnostics` contains a `Severity::Warning` mentioning the missing arg name. Doing this for one of the three call sites is sufficient to lock the wiring in place.\n\nTests (1)–(7) can reuse the helpers in the existing module; (8) needs an `Engine` fixture — look at sibling tests for the right setup.\n\n**Source review suggestions:** S5 (test_coverage) + S6 (test_coverage) from Task 1167 review.\n\nmemory_hints: search \"compile_geometry_op test coverage primitive modify\" entity \"BuildResult\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T09:52:24.575Z",
+        "updatedAt": "2026-04-15T05:08:17.549Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src",
@@ -29209,7 +29216,14 @@
           "files": [
             "crates/reify-compiler/src/entity.rs",
             "crates/reify-compiler/src/guards.rs"
-          ]
+          ],
+          "memory_hints": {
+            "queries": [
+              "ICE diagnostic pattern entity guards unresolved pass 2 reify",
+              "emit_ice_unresolved helper function reify-compiler",
+              "stash-fail pattern task 1368 revert history"
+            ]
+          }
         }
       },
       {
@@ -33152,11 +33166,11 @@
         "description": "In crates/reify-eval/src/lib.rs line 2151, the `old_count` match has a silent `_ => 0` catch-all that mirrors the new_count silent default addressed by task 957. This path runs during edit_param's collection count re-elaboration, iterating `0..old_count` to remove stale instances. If old_count_val is any non-Int (e.g. Value::Undef from a previously-undetermined count cell), the code silently defaults to removing 0 instances, which can leave stale child value cells behind in the graph. Replace `_ => 0,` with either unreachable!() (if the guard at line 2144 makes this truly unreachable) or an explicit warning-emitting branch. Co-ordinate with task 957 so both old_count and new_count fallbacks are handled consistently.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T00:12:28.293Z",
+        "updatedAt": "2026-04-15T05:08:19.662Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -33548,11 +33562,11 @@
         "description": "The compiler's `compile_geometry_call` in `crates/reify-compiler/src/geometry.rs` only accepts inline geometry function calls as arguments to `difference()`, `union()`, and `intersection()`. It does not resolve `let`-bound geometry variable references, forcing users to inline all geometry expressions.\n\nCurrently fails:\n```\nlet body = cylinder(outer_radius, height)\nlet hole = cylinder(hole_radius, height)\nlet result = difference(body, holes)  // ERROR: argument 1 must be a geometry expression\n```\n\nCurrently works (but unreadable for complex models):\n```\nlet result = difference(cylinder(outer_radius, height), cylinder(hole_radius, height))\n```\n\nThis also blocks `circular_pattern` + `difference` compositions needed for the flange example (`examples/m5_geometry_flange.ri`).",
         "details": "## Root cause\n\nIn `geometry.rs:54-74`, when `compile_geometry_call` encounters a boolean op argument, it calls itself recursively on the argument AST node. If the argument is an `ExprKind::Identifier` (a variable reference), the recursive call fails because identifiers aren't geometry function calls. The fix is to resolve identifiers by looking up the `let` binding in scope and recursively compiling its initializer expression.\n\n## Implementation approach\n\n1. In `compile_geometry_call`, when an argument is an `ExprKind::Identifier`, look it up in `scope` to find the `let` binding's initializer expression\n2. Recursively call `compile_geometry_call` on the initializer\n3. Handle the case where the binding's initializer is itself a variable reference (transitive resolution)\n4. Same fix needed for `circular_pattern`'s target argument (line 273+)\n\n## Files to modify\n- `crates/reify-compiler/src/geometry.rs` — main fix\n- `crates/reify-compiler/tests/let_scope_tests.rs` — add tests for variable-ref boolean ops\n\n## memory_hints\n- search: \"compile_geometry_call boolean op arguments\"\n- search: \"geometry variable reference let binding\"\n- entity: \"compile_geometry_call\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-14T19:26:35.798Z",
+        "updatedAt": "2026-04-15T02:08:50.782Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -35376,13 +35390,13 @@
         "description": "In examples/integration_full_v01.ri, the constraint `constraint height_ok == height_ok` is commented as `// Complex number non-undef` but actually just checks boolean self-equality — a tautology that always holds. It tests neither complex numbers nor provides meaningful validation.\n\nFix: Replace with a meaningful complex-number assertion (e.g. `constraint determined(impedance)` which is already present) or update the comment to `// Sanity: height_ok is determined` and change the constraint to `constraint determined(height_ok)`.\n\nmemory_hints: search \"tautological constraint integration\"; get_entity \"integration_full_v01\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "1693"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T00:46:24.713Z",
+        "updatedAt": "2026-04-15T05:21:48.143Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/integration_full_v01.rs",
@@ -35501,11 +35515,11 @@
         "description": "Two test coverage gaps in crates/reify-eval/tests/integration_full_v01.rs:\n\n1. **Option/lambda coverage (docstring lines 3-9):** The module docstring lists 'some/none' and 'lambda' as exercised features, but no test explicitly asserts Option::Some/None values or lambda evaluation results. Either add dedicated assertions for these features or remove them from the docstring until tested.\n\n2. **Diagnostic-absence assertions:** Neither eval_canonical() nor check_canonical() results are inspected for diagnostics. Other integration test files (e.g., integration_corner_cases.rs) explicitly check for absence of error-severity diagnostics. Add: `assert!(result.diagnostics.iter().all(|d| d.severity != Severity::Error), \"unexpected error diagnostics: {:?}\", result.diagnostics);`\n\nmemory_hints: search \"diagnostic assertions integration test pattern\"; search \"Option Some None lambda test coverage\"",
         "details": "<info added on 2026-04-15T01:50:36.947Z>\nThis task is currently under reconciliation watch due to a stash-fail revert observed in run 5f459407 on 2026-04-15, Stage 2. It reverted from in-progress to pending during reconciliation run ed46c158 but then recovered. If it reverts again in the next cycle, escalate immediately as a branch surgery case, similar to task 1675. Do not allow it to cycle a third time. Before the next automated attempt, check branch task/1698 for any dirty state or persistent merge conflicts.\n</info added on 2026-04-15T01:50:36.947Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T01:46:14.411Z",
+        "updatedAt": "2026-04-15T02:24:12.193Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/integration_full_v01.rs"
@@ -35577,63 +35591,12 @@
         }
       },
       {
-        "id": "1702",
-        "title": "DRY sample() test boilerplate in field_eval_tests.rs and fix stale doc comment",
-        "description": "Two small improvements in crates/reify-expr/tests/field_eval_tests.rs from task 1674 review:\n\n1. **Extract test helper**: The four 3-param `(x+y)+z` sample() tests (`sample_multi_param_lambda_binds_unpacked_point_components`, `sample_multi_param_lambda_with_mismatched_point_returns_undef`, `sample_multi_param_lambda_with_vector_input`, `sample_multi_param_lambda_with_mismatched_vector_returns_undef`) duplicate ~80% of their setup boilerplate (lambda body construction, field/field_type assembly). Extract a helper like `make_3param_add_field(domain_type: Type) -> (Value, Type)` that builds the 3-param `(x+y)+z` lambda field given a domain type, reducing each test to a one-liner for setup.\n\n2. **Fix stale doc comment**: The doc comment for `sample_multi_param_lambda_with_mismatched_point_returns_undef` (around line 506) says condition (1) is '`evaluated_args[1]` is `Value::Point`'. After task 1674 added the or-pattern, this should read '`evaluated_args[1]` is `Value::Point` or `Value::Vector`'.\n\nLow priority — the existing Point tests already follow the verbose pattern, so the duplication is a pre-existing style. Both changes are in the same file.",
-        "details": "",
-        "testStrategy": "",
-        "status": "pending",
-        "dependencies": [],
-        "priority": "low",
-        "subtasks": [],
-        "updatedAt": "2026-04-15T02:01:26.547Z",
-        "metadata": {
-          "modules": [
-            "crates/reify-expr/tests/field_eval_tests.rs"
-          ]
-        }
-      },
-      {
-        "id": "1703",
-        "title": "DRY sample() test boilerplate and fix stale doc comment in field_eval_tests.rs",
-        "description": "Two improvements in crates/reify-expr/tests/field_eval_tests.rs from task 1674 review:\n\n1. Extract helper like `make_3param_add_field(domain_type) -> (Value, Type)` to DRY the four 3-param sample() tests that duplicate lambda body + field setup boilerplate.\n\n2. Fix stale doc comment at ~line 506: condition (1) should say `Value::Point or Value::Vector` (not just `Value::Point`) after the or-pattern added in task 1674.",
-        "details": "",
-        "testStrategy": "",
-        "status": "pending",
-        "dependencies": [],
-        "priority": "low",
-        "subtasks": [],
-        "updatedAt": "2026-04-15T02:00:56.093Z",
-        "metadata": {
-          "modules": [
-            "crates/reify-expr/tests/field_eval_tests.rs"
-          ]
-        }
-      },
-      {
-        "id": "1704",
-        "title": "DRY sample() test boilerplate and fix stale doc in field_eval_tests",
-        "description": "From task 1674 review: (1) Extract helper for 3-param lambda field setup shared by 4 sample() tests. (2) Fix doc comment at line 506 to say Point or Vector.",
-        "details": "",
-        "testStrategy": "",
-        "status": "pending",
-        "dependencies": [],
-        "priority": "low",
-        "subtasks": [],
-        "updatedAt": "2026-04-15T02:01:03.283Z",
-        "metadata": {
-          "modules": [
-            "crates/reify-expr/tests/field_eval_tests.rs"
-          ]
-        }
-      },
-      {
         "id": "1705",
         "title": "DRY sample() test helpers and fix stale doc comment",
         "description": "Task 1674 review: extract shared 3-param lambda field helper in field_eval_tests.rs; fix doc comment at line 506 (Point -> Point or Vector).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -35645,7 +35608,7 @@
             "crates/reify-expr/tests/field_eval_tests.rs"
           ]
         },
-        "updatedAt": "2026-04-15T01:57:53.138Z"
+        "updatedAt": "2026-04-15T05:07:40.846Z"
       },
       {
         "id": "1706",
@@ -35657,7 +35620,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T02:04:16.479Z"
+        "updatedAt": "2026-04-15T05:15:18.895Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/m8_4_stdlib_integration.rs"
+          ]
+        }
       },
       {
         "id": "1707",
@@ -35665,17 +35633,18 @@
         "description": "Two test coverage gaps in crates/reify-eval/tests/m8_4_stdlib_integration.rs from task 344 review:\n\n1. **linalg complex conjugate and phase** — linalg.ri defines z_conj = conjugate(z) and z_phase = phase(z) (lines 64-65 of examples/linalg.ri) but no Rust tests assert on them. Add:\n   - `linalg_complex_conjugate`: Assert LinalgDemo.z_conj has re=3.0, im=-4.0 (conjugate of 3+4i)\n   - `linalg_complex_phase`: Assert LinalgDemo.z_phase ≈ atan2(4,3) ≈ 0.9273 rad (may be Value::Scalar with ANGLE dimension)\n\n2. **io_export sub-component assertions** — io_export.ri declares sub-components `flat` (Flatness) and `finish` (SurfaceFinish) but no Rust tests verify their values. Add at least:\n   - `io_export_flatness_tolerance`: Assert ExportPart.flat.tolerance_value ≈ 0.00002m (0.02mm)\n   - `io_export_surface_finish`: Assert ExportPart.finish.value ≈ 0.0000008m (0.8μm Ra)\n\nmemory_hints: search \"linalg.ri z_conj z_phase conjugate phase\" search \"io_export.ri flat finish sub-component\" entity \"LinalgDemo\" entity \"ExportPart\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T05:01:12.722Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T02:04:16.479Z",
-      "taskCount": 1707,
-      "completedCount": 1457,
+      "lastModified": "2026-04-15T05:22:44.766Z",
+      "taskCount": 1704,
+      "completedCount": 1468,
       "tags": [
         "master"
       ]

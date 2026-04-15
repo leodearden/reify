@@ -142,6 +142,44 @@ pub enum GeometryOp {
         profile: GeometryHandleId,
         path: GeometryHandleId,
     },
+    /// Create a line segment wire between two points.
+    LineSegment {
+        x1: f64,
+        y1: f64,
+        z1: f64,
+        x2: f64,
+        y2: f64,
+        z2: f64,
+    },
+    /// Create a circular arc wire.
+    Arc {
+        center: [f64; 3],
+        radius: f64,
+        start_angle: f64,
+        end_angle: f64,
+        axis: [f64; 3],
+    },
+    /// Create a helix wire.
+    Helix {
+        radius: f64,
+        pitch: f64,
+        height: f64,
+    },
+    /// Create an interpolated curve through points.
+    InterpCurve {
+        points: Vec<[f64; 3]>,
+    },
+    /// Create a Bézier curve from control points.
+    BezierCurve {
+        control_points: Vec<[f64; 3]>,
+    },
+    /// Create a NURBS curve.
+    NurbsCurve {
+        control_points: Vec<[f64; 3]>,
+        weights: Vec<f64>,
+        knots: Vec<f64>,
+        degree: usize,
+    },
     /// Apply draft angle to faces.
     Draft {
         target: GeometryHandleId,
@@ -380,5 +418,106 @@ mod tests {
         assert!(GeometryHandleId(5) > GeometryHandleId(3));
         assert!(GeometryHandleId(7) <= GeometryHandleId(7));
         assert!(GeometryHandleId(7) >= GeometryHandleId(7));
+    }
+
+    #[test]
+    fn geometry_op_line_segment_variant_exists() {
+        let op = GeometryOp::LineSegment {
+            x1: 0.0, y1: 0.0, z1: 0.0,
+            x2: 1.0, y2: 2.0, z2: 3.0,
+        };
+        match &op {
+            GeometryOp::LineSegment { x1, y1, z1, x2, y2, z2 } => {
+                assert_eq!((*x1, *y1, *z1), (0.0, 0.0, 0.0));
+                assert_eq!((*x2, *y2, *z2), (1.0, 2.0, 3.0));
+            }
+            _ => panic!("expected LineSegment variant"),
+        }
+    }
+
+    #[test]
+    fn geometry_op_arc_variant_exists() {
+        let op = GeometryOp::Arc {
+            center: [1.0, 2.0, 3.0],
+            radius: 5.0,
+            start_angle: 0.0,
+            end_angle: std::f64::consts::FRAC_PI_2,
+            axis: [0.0, 0.0, 1.0],
+        };
+        match &op {
+            GeometryOp::Arc { center, radius, start_angle, end_angle, axis } => {
+                assert_eq!(*center, [1.0, 2.0, 3.0]);
+                assert_eq!(*radius, 5.0);
+                assert_eq!(*start_angle, 0.0);
+                assert!((*end_angle - std::f64::consts::FRAC_PI_2).abs() < 1e-15);
+                assert_eq!(*axis, [0.0, 0.0, 1.0]);
+            }
+            _ => panic!("expected Arc variant"),
+        }
+    }
+
+    #[test]
+    fn geometry_op_helix_variant_exists() {
+        let op = GeometryOp::Helix {
+            radius: 10.0,
+            pitch: 2.0,
+            height: 20.0,
+        };
+        match &op {
+            GeometryOp::Helix { radius, pitch, height } => {
+                assert_eq!(*radius, 10.0);
+                assert_eq!(*pitch, 2.0);
+                assert_eq!(*height, 20.0);
+            }
+            _ => panic!("expected Helix variant"),
+        }
+    }
+
+    #[test]
+    fn geometry_op_interp_curve_variant_exists() {
+        let op = GeometryOp::InterpCurve {
+            points: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0], [3.0, 1.0, 0.0]],
+        };
+        match &op {
+            GeometryOp::InterpCurve { points } => {
+                assert_eq!(points.len(), 4);
+                assert_eq!(points[0], [0.0, 0.0, 0.0]);
+                assert_eq!(points[3], [3.0, 1.0, 0.0]);
+            }
+            _ => panic!("expected InterpCurve variant"),
+        }
+    }
+
+    #[test]
+    fn geometry_op_bezier_curve_variant_exists() {
+        let op = GeometryOp::BezierCurve {
+            control_points: vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [3.0, 2.0, 0.0], [4.0, 0.0, 0.0]],
+        };
+        match &op {
+            GeometryOp::BezierCurve { control_points } => {
+                assert_eq!(control_points.len(), 4);
+                assert_eq!(control_points[0], [0.0, 0.0, 0.0]);
+            }
+            _ => panic!("expected BezierCurve variant"),
+        }
+    }
+
+    #[test]
+    fn geometry_op_nurbs_curve_variant_exists() {
+        let op = GeometryOp::NurbsCurve {
+            control_points: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0], [3.0, 1.0, 0.0]],
+            weights: vec![1.0, 1.0, 1.0, 1.0],
+            knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            degree: 3,
+        };
+        match &op {
+            GeometryOp::NurbsCurve { control_points, weights, knots, degree } => {
+                assert_eq!(control_points.len(), 4);
+                assert_eq!(weights.len(), 4);
+                assert_eq!(knots.len(), 8);
+                assert_eq!(*degree, 3);
+            }
+            _ => panic!("expected NurbsCurve variant"),
+        }
     }
 }

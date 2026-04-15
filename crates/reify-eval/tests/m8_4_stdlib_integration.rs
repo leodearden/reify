@@ -15,7 +15,7 @@
 //!                        subs, and geometry (box) for export-ready parts
 
 use reify_test_support::make_simple_engine;
-use reify_types::{Severity, Value, ValueCellId};
+use reify_types::{DimensionVector, Severity, Value, ValueCellId};
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
 
@@ -90,6 +90,68 @@ fn expect_real_or_int(val: &Value, label: &str) -> f64 {
         Value::Real(v) => *v,
         Value::Int(i) => *i as f64,
         other => panic!("{label} should be Real or Int, got {other:?}"),
+    }
+}
+
+/// Assert that the `Value::Scalar` stored at `entity.member` in `result` matches
+/// `expected` within `tol` and has dimension `dim`.
+fn assert_scalar(
+    result: &reify_eval::EvalResult,
+    entity: &str,
+    member: &str,
+    expected: f64,
+    tol: f64,
+    dim: DimensionVector,
+) {
+    let id = ValueCellId::new(entity, member);
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("{}.{} not found in eval result", entity, member));
+    match val {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - expected).abs() < tol,
+                "{}.{} should be ≈{} (tol {}), got {}",
+                entity, member, expected, tol, si_value
+            );
+            assert_eq!(*dimension, dim, "{}.{} dimension mismatch", entity, member);
+        }
+        other => panic!("{}.{} should be Value::Scalar, got {:?}", entity, member, other),
+    }
+}
+
+/// Assert that the `Value::Complex` stored at `entity.member` in `result` matches
+/// `expected_re`/`expected_im` within `tol` and has dimension `dim`.
+fn assert_complex(
+    result: &reify_eval::EvalResult,
+    entity: &str,
+    member: &str,
+    expected_re: f64,
+    expected_im: f64,
+    tol: f64,
+    dim: DimensionVector,
+) {
+    let id = ValueCellId::new(entity, member);
+    let val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("{}.{} not found in eval result", entity, member));
+    match val {
+        Value::Complex { re, im, dimension } => {
+            assert!(
+                (re - expected_re).abs() < tol,
+                "{}.{}.re should be ≈{} (tol {}), got {}",
+                entity, member, expected_re, tol, re
+            );
+            assert!(
+                (im - expected_im).abs() < tol,
+                "{}.{}.im should be ≈{} (tol {}), got {}",
+                entity, member, expected_im, tol, im
+            );
+            assert_eq!(*dimension, dim, "{}.{} dimension mismatch", entity, member);
+        }
+        other => panic!("{}.{} should be Value::Complex, got {:?}", entity, member, other),
     }
 }
 
@@ -318,6 +380,27 @@ fn linalg_complex_magnitude() {
     }
 }
 
+// ── step-1: linalg_complex_conjugate ─────────────────────────────────────────
+
+/// Asserts LinalgDemo.z_conj = conjugate(z) = Complex{re:3.0, im:-4.0, DIMENSIONLESS}.
+/// z = complex(3.0, 4.0) → conjugate flips the sign of the imaginary part.
+#[test]
+fn linalg_complex_conjugate() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+    assert_complex(&result, "LinalgDemo", "z_conj", 3.0, -4.0, 1e-9, DimensionVector::DIMENSIONLESS);
+}
+
+// ── step-2: linalg_complex_phase ─────────────────────────────────────────────
+
+/// Asserts LinalgDemo.z_phase = phase(z) ≈ atan2(4,3) ≈ 0.9273 rad (Value::Scalar, ANGLE).
+/// z = complex(3.0, 4.0) → phase = atan2(im, re) = atan2(4, 3).
+#[test]
+fn linalg_complex_phase() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let expected = (4.0_f64).atan2(3.0);
+    assert_scalar(&result, "LinalgDemo", "z_phase", expected, 1e-9, DimensionVector::ANGLE);
+}
+
 // ── Section 2: fields_analysis.ri ────────────────────────────────────────────
 
 /// Smoke test: fields_analysis.ri parses, compiles (stdlib), evals without
@@ -468,34 +551,8 @@ fn io_export_mass_computed() {
 /// upper_limit = nominal + upper_deviation = 0.100 + 0.00005 = 0.10005m.
 #[test]
 fn io_export_tolerance_upper_limit() {
-    use reify_types::DimensionVector;
-
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
-
-    let ul_id = ValueCellId::new("ExportPart.tol", "upper_limit");
-    let ul_val = result
-        .values
-        .get(&ul_id)
-        .unwrap_or_else(|| panic!("ExportPart.tol.upper_limit not found in eval result"));
-
-    match ul_val {
-        Value::Scalar { si_value, dimension } => {
-            assert!(
-                (si_value - 0.10005).abs() < 1e-9,
-                "ExportPart.tol.upper_limit should be ≈0.10005m (100mm+0.05mm), got {}",
-                si_value
-            );
-            assert_eq!(
-                *dimension,
-                DimensionVector::LENGTH,
-                "ExportPart.tol.upper_limit should have LENGTH dimension"
-            );
-        }
-        other => panic!(
-            "ExportPart.tol.upper_limit should be Value::Scalar, got {:?}",
-            other
-        ),
-    }
+    assert_scalar(&result, "ExportPart.tol", "upper_limit", 0.10005, 1e-9, DimensionVector::LENGTH);
 }
 
 // ── step-11: io_export_tolerance_band ────────────────────────────────────────
@@ -505,34 +562,28 @@ fn io_export_tolerance_upper_limit() {
 /// tolerance_band = upper_deviation - lower_deviation = 0.05mm - (-0.05mm) = 0.1mm.
 #[test]
 fn io_export_tolerance_band() {
-    use reify_types::DimensionVector;
-
     let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    assert_scalar(&result, "ExportPart.tol", "tolerance_band", 0.0001, 1e-12, DimensionVector::LENGTH);
+}
 
-    let tb_id = ValueCellId::new("ExportPart.tol", "tolerance_band");
-    let tb_val = result
-        .values
-        .get(&tb_id)
-        .unwrap_or_else(|| panic!("ExportPart.tol.tolerance_band not found in eval result"));
+// ── step-3: io_export_flatness_tolerance ─────────────────────────────────────
 
-    match tb_val {
-        Value::Scalar { si_value, dimension } => {
-            assert!(
-                (si_value - 0.0001).abs() < 1e-12,
-                "ExportPart.tol.tolerance_band should be ≈0.0001m (0.1mm), got {}",
-                si_value
-            );
-            assert_eq!(
-                *dimension,
-                reify_types::DimensionVector::LENGTH,
-                "ExportPart.tol.tolerance_band should have LENGTH dimension"
-            );
-        }
-        other => panic!(
-            "ExportPart.tol.tolerance_band should be Value::Scalar, got {:?}",
-            other
-        ),
-    }
+/// Asserts ExportPart.flat.tolerance_value ≈ 0.00002m (0.02mm in SI).
+/// Flatness sub: tolerance_value: 0.02mm → 2e-5 m.
+#[test]
+fn io_export_flatness_tolerance() {
+    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    assert_scalar(&result, "ExportPart.flat", "tolerance_value", 0.00002, 1e-12, DimensionVector::LENGTH);
+}
+
+// ── step-4: io_export_surface_finish ─────────────────────────────────────────
+
+/// Asserts ExportPart.finish.value ≈ 8e-7m (Ra 0.8 μm per ISO 1302).
+/// SurfaceFinish sub: value: 0.8um → 0.8e-6 m = 8e-7 m.
+#[test]
+fn io_export_surface_finish() {
+    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    assert_scalar(&result, "ExportPart.finish", "value", 8e-7, 1e-12, DimensionVector::LENGTH);
 }
 
 // ── Helper unit tests ────────────────────────────────────────────────────────

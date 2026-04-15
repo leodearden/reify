@@ -42,6 +42,57 @@ fn make_value_lambda(
     }
 }
 
+/// Helper that builds a 3-param `|x, y, z| → (x + y) + z` analytical field and
+/// its corresponding `Type::Field`, parameterised only on `domain_type`.
+///
+/// The four `sample_multi_param_lambda_*` tests share this construction — the only
+/// variation between them is whether the domain is `point3(Real)` or `vec3(Real)`.
+/// Codomain is always `Type::Real` and the source is always `Analytical`.
+///
+/// Returns `(Value::Field { .. }, Type::Field { .. })` ready for use in a
+/// `make_function_call("sample", …)` expression.
+fn make_xyz_sum_field(domain_type: Type) -> (Value, Type) {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda body: (x + y) + z  (left-associative; BinOp is binary)
+    let xy = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        xy,
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
+    (field, field_type)
+}
+
 /// Build the unevaluated `gradient(field)` expression shared by the three
 /// String-codomain gradient tests:
 /// - `gradient_of_field_with_non_numeric_lambda`
@@ -433,44 +484,8 @@ fn sample_multi_param_lambda_with_scalar_input_returns_undef() {
 /// and returns exactly `Value::Real(6.0)` (not `Value::Scalar { .. }`).
 #[test]
 fn sample_multi_param_lambda_binds_unpacked_point_components() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    // Lambda body: (x + y) + z  (left-associative; BinOp is binary)
-    let xy = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let body = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        xy,
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
-    );
-
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
     let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
-    };
+    let (field, field_type) = make_xyz_sum_field(domain_type.clone());
 
     // sample(field, Point([1.0, 2.0, 3.0])) -> Real(6.0)
     // sample() unpacks Point([1.0, 2.0, 3.0]) into [x=1.0, y=2.0, z=3.0].
@@ -503,7 +518,7 @@ fn sample_multi_param_lambda_binds_unpacked_point_components() {
 /// # Contract pinned
 ///
 /// The unpacking guard in sample() fires only when **all three** conditions hold:
-/// 1. `evaluated_args[1]` is `Value::Point`,
+/// 1. `evaluated_args[1]` is `Value::Point` or `Value::Vector`,
 /// 2. `params.len() > 1`, and
 /// 3. `params.len() == items.len()` (arity matches).
 ///
@@ -519,46 +534,8 @@ fn sample_multi_param_lambda_binds_unpacked_point_components() {
 ///   (non-Point) + 3-param lambda → `Undef` because the Point-guard never fires.
 #[test]
 fn sample_multi_param_lambda_with_mismatched_point_returns_undef() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    // Lambda body: (x + y) + z  — identical to the matching-arity test, body is
-    // irrelevant here because the arity check fires first.
-    let xy = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let body = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        xy,
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
-    );
-
-    // 3-param lambda — params.len() == 3
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
     let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
-    };
+    let (field, field_type) = make_xyz_sum_field(domain_type.clone());
 
     // Point has 2 elements but lambda expects 3 params → guard condition (3) fails.
     // Fallback: apply_lambda sees 1 forwarded arg (the whole Point) vs 3 params → Undef.
@@ -606,45 +583,8 @@ fn sample_multi_param_lambda_with_mismatched_point_returns_undef() {
 /// - Expected: `Real(6.0)` — vector unpacked into x=1.0, y=2.0, z=3.0; (1+2)+3=6
 #[test]
 fn sample_multi_param_lambda_with_vector_input() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    // Lambda body: (x + y) + z  — same body as the matching-arity Point test.
-    let xy = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let body = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        xy,
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
-    );
-
-    // 3-param lambda — params.len() == 3
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
     let domain_type = Type::vec3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
-    };
+    let (field, field_type) = make_xyz_sum_field(domain_type.clone());
 
     // sample(field, Vector([1.0, 2.0, 3.0])) -> Real(6.0)
     // sample() must unpack Vector([1.0, 2.0, 3.0]) into [x=1.0, y=2.0, z=3.0].
@@ -757,45 +697,8 @@ fn sample_one_param_lambda_binds_entire_vector_as_single_value() {
 ///   which then fails the arity check in `apply_lambda`
 #[test]
 fn sample_multi_param_lambda_with_mismatched_vector_returns_undef() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    // Lambda body: (x + y) + z — same body as sample_multi_param_lambda_with_vector_input.
-    let xy = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let body = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        xy,
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
-    );
-
-    // 3-param lambda — params.len() == 3
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
     let domain_type = Type::vec3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
-    };
+    let (field, field_type) = make_xyz_sum_field(domain_type.clone());
 
     // Vector has 2 elements but lambda expects 3 params → guard condition (3) fails.
     // Fallback: apply_lambda sees 1 forwarded arg (the whole Vector) vs 3 params → Undef.
@@ -1230,4 +1133,102 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug() {
     );
     // In debug mode the result_dim debug_assert fires before any numeric work.
     let _sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+}
+
+/// Characterization test: `make_xyz_sum_field` returns a correctly-structured
+/// `(Value, Type)` pair for the given domain type.
+///
+/// Verifies that:
+/// - The returned `Value` is a `Value::Field` with `source=Analytical` and
+///   `codomain_type=Type::Real`.
+/// - The returned `Type` is a `Type::Field` with `domain=Type::point3(Type::Real)`
+///   and `codomain=Type::Real`.
+#[test]
+fn xyz_sum_field_helper_returns_expected_structure() {
+    let domain_type = Type::point3(Type::Real);
+    let (field_val, field_type) = make_xyz_sum_field(domain_type);
+
+    // Check the Value side
+    match &field_val {
+        Value::Field {
+            domain_type: d,
+            codomain_type: c,
+            source,
+            ..
+        } => {
+            assert_eq!(d, &Type::point3(Type::Real), "domain_type must be point3(Real)");
+            assert_eq!(c, &Type::Real, "codomain_type must be Real");
+            assert_eq!(
+                source,
+                &FieldSourceKind::Analytical,
+                "source must be Analytical"
+            );
+        }
+        other => panic!("expected Value::Field, got {:?}", other),
+    }
+
+    // Check the Type side
+    match &field_type {
+        Type::Field { domain, codomain } => {
+            assert_eq!(
+                domain.as_ref(),
+                &Type::point3(Type::Real),
+                "field_type domain must be point3(Real)"
+            );
+            assert_eq!(
+                codomain.as_ref(),
+                &Type::Real,
+                "field_type codomain must be Real"
+            );
+        }
+        other => panic!("expected Type::Field, got {:?}", other),
+    }
+}
+
+/// Verifies that `make_xyz_sum_field` produces the correct structure when
+/// called with `Type::vec3(Type::Real)` as the domain type.
+///
+/// This guards against a regression where the helper might accidentally
+/// hardcode a domain type (e.g., always returning `point3`) regardless of
+/// the argument passed.
+#[test]
+fn xyz_sum_field_helper_with_vec3_domain() {
+    let domain_type = Type::vec3(Type::Real);
+    let (field_val, field_type) = make_xyz_sum_field(domain_type);
+
+    // Check the Value side
+    match &field_val {
+        Value::Field {
+            domain_type: d,
+            codomain_type: c,
+            source,
+            ..
+        } => {
+            assert_eq!(d, &Type::vec3(Type::Real), "domain_type must be vec3(Real)");
+            assert_eq!(c, &Type::Real, "codomain_type must be Real");
+            assert_eq!(
+                source,
+                &FieldSourceKind::Analytical,
+                "source must be Analytical"
+            );
+        }
+        other => panic!("expected Value::Field, got {:?}", other),
+    }
+
+    // Check the Type side
+    match &field_type {
+        Type::Field { domain, codomain } => {
+            assert_eq!(
+                domain.as_ref(),
+                &Type::vec3(Type::Real),
+                "field_type domain must be vec3(Real)"
+            );
+            assert_eq!(
+                codomain.as_ref(),
+                &Type::Real,
+                "field_type codomain must be Real"
+            );
+        }
+        other => panic!("expected Type::Field, got {:?}", other),
+    }
 }

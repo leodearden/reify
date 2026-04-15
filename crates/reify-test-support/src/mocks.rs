@@ -471,10 +471,17 @@ impl GeometryKernel for MockGeometryKernel {
             result_handle: id,
         });
 
-        Ok(GeometryHandle {
-            id,
-            repr: ReprKind::Solid,
-        })
+        let repr = match op {
+            GeometryOp::LineSegment { .. }
+            | GeometryOp::Arc { .. }
+            | GeometryOp::Helix { .. }
+            | GeometryOp::InterpCurve { .. }
+            | GeometryOp::BezierCurve { .. }
+            | GeometryOp::NurbsCurve { .. } => ReprKind::Wire,
+            _ => ReprKind::Solid,
+        };
+
+        Ok(GeometryHandle { id, repr })
     }
 
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
