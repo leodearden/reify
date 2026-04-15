@@ -1346,6 +1346,7 @@ impl<'a> Lowering<'a> {
         let mut main_members = Vec::new();
         let mut else_members = Vec::new();
         let mut in_else = false;
+        let mut pending_annotations: Vec<Annotation> = Vec::new();
         let mut cursor = node.walk();
 
         for child in node.children(&mut cursor) {
@@ -1355,11 +1356,33 @@ impl<'a> Lowering<'a> {
                 continue;
             }
 
-            if let Some(member) = self.lower_member(child) {
-                if in_else {
-                    else_members.push(member);
-                } else {
-                    main_members.push(member);
+            match child.kind() {
+                "annotation" => {
+                    if let Some(annotation) = self.lower_annotation(child) {
+                        pending_annotations.push(annotation);
+                    }
+                }
+                "ERROR" => {
+                    let _ = std::mem::take(&mut pending_annotations);
+                    self.push_error(
+                        format!("syntax error: {}", self.node_text(child)),
+                        self.span(child),
+                    );
+                }
+                _ => {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    if let Some(mut member) = self.lower_member(child) {
+                        match &mut member {
+                            MemberDecl::Param(p) => p.annotations = annotations,
+                            MemberDecl::Let(l) => l.annotations = annotations,
+                            _ => {}
+                        }
+                        if in_else {
+                            else_members.push(member);
+                        } else {
+                            main_members.push(member);
+                        }
+                    }
                 }
             }
         }

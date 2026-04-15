@@ -153,12 +153,13 @@ fn solver_hint_in_guarded_block_compiles() {
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
 
     let template = &module.templates[0];
-    // Find the guarded "width" value cell
+    // Guarded members live in guarded_groups, not value_cells
     let width_cell = template
-        .value_cells
+        .guarded_groups
         .iter()
+        .flat_map(|g| g.members.iter())
         .find(|c| c.id.member == "width")
-        .expect("expected a 'width' value cell");
+        .expect("expected a 'width' value cell in guarded groups");
 
     assert_eq!(
         width_cell.solver_hints.len(),
