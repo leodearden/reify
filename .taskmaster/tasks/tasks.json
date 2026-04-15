@@ -37696,6 +37696,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1801,
+        "title": "Strengthen constraint coexistence test assertion + add debug trace for scope conflicts",
+        "description": "Two small polish items from task-1776 review: (1) trait_merge_tests.rs ~line 1195: Change `template.constraints.len() >= 1` to `== 1` — the current assertion is too weak and could mask regressions. (2) conformance.rs ~line 280: Add `tracing::debug!` when `_was_new` is false to surface trait-merge type conflicts during development.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37708,7 +37719,7 @@
       ],
       "created": "2026-04-15T17:07:56.727Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T17:07:56.757Z"
+      "updated": "2026-04-15T17:08:50.043Z"
     }
   }
 }
