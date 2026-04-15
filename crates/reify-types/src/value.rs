@@ -6674,4 +6674,62 @@ mod tests {
             "empty Map should default value type to Real (key stays String, matching compiler)"
         );
     }
+
+    // ── infer_type() on Option(Some(ambiguous_inner)): regression tests ──────
+
+    #[test]
+    fn infer_type_option_some_empty_list() {
+        use crate::ty::Type;
+        // Option(Some([])) — inner is an empty list, so try_infer_type returns
+        // None for the inner value and then None for the whole Option.
+        // infer_type() must NOT panic; it should recurse into infer_type() on
+        // the inner value (applying the Real fallback) to produce Option(List(Real)).
+        let v = Value::Option(Some(Box::new(Value::List(vec![]))));
+        assert_eq!(
+            v.infer_type(),
+            Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+            "Option(Some(empty List)) should produce Option(List(Real)) via inner infer_type()"
+        );
+    }
+
+    #[test]
+    fn infer_type_option_some_option_none() {
+        use crate::ty::Type;
+        // Option(Some(Option(None))) — the inner Option(None) is ambiguous.
+        // infer_type() on the inner value yields Option(Bool) via the Bool fallback,
+        // so the outer result is Option(Option(Bool)).
+        let v = Value::Option(Some(Box::new(Value::Option(None))));
+        assert_eq!(
+            v.infer_type(),
+            Type::Option(Box::new(Type::Option(Box::new(Type::Bool)))),
+            "Option(Some(Option(None))) should produce Option(Option(Bool)) via inner infer_type()"
+        );
+    }
+
+    #[test]
+    fn infer_type_option_some_empty_set() {
+        use crate::ty::Type;
+        // Option(Some(Set{})) — inner is an empty set, try_infer_type returns None.
+        // infer_type() on the inner applies the Real fallback → Set(Real),
+        // so outer result is Option(Set(Real)).
+        let v = Value::Option(Some(Box::new(Value::Set(BTreeSet::new()))));
+        assert_eq!(
+            v.infer_type(),
+            Type::Option(Box::new(Type::Set(Box::new(Type::Real)))),
+            "Option(Some(empty Set)) should produce Option(Set(Real)) via inner infer_type()"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_option_some_ambiguous_returns_none() {
+        // try_infer_type() propagates None upward for nested ambiguous cases.
+        // Option(Some(empty List)) — the inner try_infer_type() returns None
+        // (empty list is ambiguous), and the ? propagates that None outward.
+        let v = Value::Option(Some(Box::new(Value::List(vec![]))));
+        assert_eq!(
+            v.try_infer_type(),
+            None,
+            "try_infer_type() on Option(Some(empty List)) should return None (inner is ambiguous)"
+        );
+    }
 }
