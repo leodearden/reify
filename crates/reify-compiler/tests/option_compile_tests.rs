@@ -875,3 +875,76 @@ structure def S {
         default.kind
     );
 }
+
+// ---------------------------------------------------------------------------
+// task 1726 amend: guarded let Option<MyLen> = none with type alias → typed OptionNone
+// (the missing counterpart to guarded_param_option_type_alias_none_gets_correct_type)
+// ---------------------------------------------------------------------------
+
+/// Guarded let using a type alias `Option<MyLen> = none` should resolve the
+/// alias and produce cell_type == Option<Length> with OptionNone result_type ==
+/// Option<Length>.
+///
+/// This exercises the `fixup_option_none_for_let` path inside guarded blocks
+/// when the annotation references a user-defined type alias rather than a
+/// built-in type name directly.  The non-alias variant is covered by
+/// `guarded_let_none_with_typed_annotation_gets_correct_type`; this test
+/// specifically exercises the alias-resolution code path.
+#[test]
+fn guarded_let_option_type_alias_none_gets_correct_type() {
+    let source = r#"
+type MyLen = Length
+
+structure S {
+    param active : Bool = true
+    where active {
+        let y : Option<MyLen> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(
+        template.guarded_groups.len(),
+        1,
+        "expected 1 guarded group"
+    );
+    let group: &CompiledGuardedGroup = &template.guarded_groups[0];
+
+    let member = group
+        .members
+        .iter()
+        .find(|m| m.id.member == "y")
+        .expect("should have guarded member 'y'");
+
+    // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "guarded let (alias) cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("guarded member 'y' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "guarded let (alias) default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone for guarded let with type alias, got {:?}",
+        default.kind
+    );
+}
