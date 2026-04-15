@@ -36806,6 +36806,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 1765,
+        "title": "Editor store content doesn't sync with live CodeMirror edits — F5 re-sends stale content",
+        "description": "The `editorStore.openFiles[].content` is set once when a file is opened but never updated as the user types. The F5 (re-evaluate) shortcut reads from the store, so it re-sends the original file content instead of the current editor content.",
+        "details": "memory_hints: search \"editorStore updateFileContent\", search \"F5 re-evaluate\"\n\nIn Editor.tsx, the `updateListener` calls `markDirty()` and the debounced `updateSource(path, doc.toString())` on keystroke, but never calls `updateFileContent()` to sync the store. The F5 handler in App.tsx reads `file.content` from the store, getting stale content.\n\nFix: Either (a) call `store.updateFileContent(path, doc.toString())` in the updateListener alongside markDirty, or (b) have F5 read content from the CodeMirror view directly instead of the store.\n\nFiles: gui/src/editor/Editor.tsx (line ~134, updateListener), gui/src/App.tsx (line ~171, onReEvaluate), gui/src/stores/editorStore.ts",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -36818,7 +36829,7 @@
       ],
       "created": "2026-04-15T11:58:49.757Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T11:59:25.442Z"
+      "updated": "2026-04-15T11:59:50.932Z"
     }
   }
 }
