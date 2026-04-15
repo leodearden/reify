@@ -663,31 +663,1809 @@ pub(crate) fn compile_geometry_op(
 
 #[cfg(test)]
 mod tests {
-    use super::compile_geometry_op;
-    use reify_types::{GeometryHandleId, ValueMap};
-    use std::collections::HashMap;
+    use super::*;
+    use reify_compiler::{CompiledGeometryOp, GeomRef, PatternKind, SweepKind, TransformKind};
+    use reify_types::GeometryHandleId;
 
-    /// Smoke test: compile_geometry_op is accessible from this module and can
-    /// evaluate a trivial Box primitive.
+    /// Helper: build a CompiledExpr literal from a constant f64.
+    fn literal_f64(v: f64) -> reify_types::CompiledExpr {
+        reify_types::CompiledExpr::literal(reify_types::Value::Real(v), reify_types::Type::Real)
+    }
+
+    /// Helper: build a CompiledExpr literal from a Scalar with LENGTH dimension.
+    fn literal_length(meters: f64) -> reify_types::CompiledExpr {
+        reify_types::CompiledExpr::literal(
+            reify_types::Value::Scalar {
+                si_value: meters,
+                dimension: reify_types::DimensionVector::LENGTH,
+            },
+            reify_types::Type::length(),
+        )
+    }
+
+    /// Helper: build a CompiledExpr literal from a Scalar with ANGLE dimension (radians).
+    fn literal_angle(radians: f64) -> reify_types::CompiledExpr {
+        reify_types::CompiledExpr::literal(
+            reify_types::Value::Scalar {
+                si_value: radians,
+                dimension: reify_types::DimensionVector::ANGLE,
+            },
+            reify_types::Type::angle(),
+        )
+    }
+
     #[test]
-    fn smoke_compile_geometry_op_box() {
-        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+    fn compile_geometry_op_scale_produces_scale_variant() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
 
-        let op = CompiledGeometryOp::Primitive {
-            kind: PrimitiveKind::Box,
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Scale,
+            target: GeomRef::Step(0),
+            args: vec![("factor".into(), literal_f64(2.0))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let result = result.expect("compile_geometry_op should return Some for Scale");
+
+        match result {
+            reify_types::GeometryOp::Scale { target, factor } => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert!((factor - 2.0).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::Scale, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_rotate_around_produces_rotate_around_variant() {
+        let step_handles = vec![GeometryHandleId(99)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::RotateAround,
+            target: GeomRef::Step(0),
             args: vec![
-                ("width".to_string(), reify_types::CompiledExpr::literal(reify_types::Value::Real(1.0), reify_types::Type::Real)),
-                ("height".to_string(), reify_types::CompiledExpr::literal(reify_types::Value::Real(2.0), reify_types::Type::Real)),
-                ("depth".to_string(), reify_types::CompiledExpr::literal(reify_types::Value::Real(3.0), reify_types::Type::Real)),
+                ("px".into(), literal_f64(0.05)),
+                ("py".into(), literal_f64(0.0)),
+                ("pz".into(), literal_f64(0.0)),
+                ("axis_x".into(), literal_f64(0.0)),
+                ("axis_y".into(), literal_f64(0.0)),
+                ("axis_z".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
             ],
         };
-        let values = ValueMap::new();
-        let step_handles: Vec<GeometryHandleId> = vec![];
-        let functions = vec![];
-        let meta_map = HashMap::new();
-        let mut diagnostics = Vec::new();
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &functions, &meta_map, &mut diagnostics);
-        assert!(result.is_some(), "Box with valid args should compile to a GeometryOp");
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let result = result.expect("compile_geometry_op should return Some for RotateAround");
+
+        match result {
+            reify_types::GeometryOp::RotateAround {
+                target,
+                point,
+                axis,
+                angle_rad,
+            } => {
+                assert_eq!(target, GeometryHandleId(99));
+                assert!((point[0] - 0.05).abs() < 1e-12);
+                assert!((point[1]).abs() < 1e-12);
+                assert!((point[2]).abs() < 1e-12);
+                assert!((axis[0]).abs() < 1e-12);
+                assert!((axis[1]).abs() < 1e-12);
+                assert!((axis[2] - 1.0).abs() < 1e-12);
+                assert!((angle_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::RotateAround, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_sweep_resolves_distinct_profiles() {
+        // Two distinct step handles representing two wire profiles
+        let step_handles = vec![GeometryHandleId(100), GeometryHandleId(200)];
+        let values = ValueMap::new();
+
+        // Create a Loft sweep that references Step(0) and Step(1)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Loft,
+            profiles: vec![GeomRef::Step(0), GeomRef::Step(1)],
+            args: vec![],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let result = result.expect("compile_geometry_op should return Some for Loft");
+
+        match result {
+            reify_types::GeometryOp::Loft { profiles } => {
+                assert_eq!(
+                    profiles,
+                    vec![GeometryHandleId(100), GeometryHandleId(200)],
+                    "Loft profiles should resolve Step(0) -> handle 100, Step(1) -> handle 200"
+                );
+            }
+            other => panic!("expected GeometryOp::Loft, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_preserves_value_type() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(0.05))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let result = result.expect("compile_geometry_op should return Some for Extrude");
+
+        match result {
+            reify_types::GeometryOp::Extrude { profile, distance } => {
+                assert_eq!(profile, GeometryHandleId(10));
+                // The distance must preserve Scalar type (not be converted to Value::Real)
+                match distance {
+                    reify_types::Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert!((si_value - 0.05).abs() < 1e-12, "SI value should be 0.05m");
+                        assert_eq!(
+                            dimension,
+                            reify_types::DimensionVector::LENGTH,
+                            "dimension should be LENGTH"
+                        );
+                    }
+                    other => panic!(
+                        "expected Value::Scalar, got {:?} — Extrude distance must preserve SI unit info",
+                        other
+                    ),
+                }
+            }
+            other => panic!("expected GeometryOp::Extrude, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_missing_arg_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Revolve with missing 'ox' arg — should return None, not silently use 0.0
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                // Deliberately omit "ox"
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "expected None for missing 'ox' arg, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_missing_distance_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "expected None for missing 'distance' arg, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_nan_distance_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with NaN distance — should return None (runtime edge case, not invariant)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_f64(f64::NAN))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(result.is_none(), "NaN extrude distance should return None");
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_inf_distance_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with Inf distance — should return None (runtime edge case, not invariant)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_f64(f64::INFINITY))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(result.is_none(), "Inf extrude distance should return None");
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_near_zero_distance_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with a near-zero (1e-15 m) distance — should return None (degenerate geometry)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(1e-15))],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "near-zero extrude distance should return None"
+        );
+        // A warning diagnostic must be emitted so model authors see why the
+        // op was dropped rather than only the caller's generic error.
+        assert!(
+            diagnostics.iter().any(|d| matches!(d.severity, reify_types::Severity::Warning)
+                && d.message.contains("extrude dropped")
+                && d.message.contains("degenerate")),
+            "expected degenerate-extrude warning, got {:?}",
+            diagnostics,
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_zero_axis_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // All 7 args present and numeric, but ax=ay=az=0.0 (zero-length rotation axis)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(0.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "zero-length rotation axis should return None"
+        );
+        assert!(
+            diagnostics.iter().any(|d| matches!(d.severity, reify_types::Severity::Warning)
+                && d.message.contains("revolve dropped")
+                && d.message.contains("axis")),
+            "expected degenerate-revolve-axis warning, got {:?}",
+            diagnostics,
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_nan_axis_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // All 7 args present and numeric, but ax=NaN (non-finite rotation axis)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(f64::NAN)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(0.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        assert!(result.is_none(), "NaN rotation axis should return None");
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("ax")
+                    && d.message.contains("Revolve")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'ax', and 'Revolve', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_near_zero_angle_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Revolve with a near-zero (1e-15 rad) angle — should return None (degenerate geometry)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(1e-15)),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "near-zero revolve angle should return None"
+        );
+        assert!(
+            diagnostics.iter().any(|d| matches!(d.severity, reify_types::Severity::Warning)
+                && d.message.contains("revolve dropped")
+                && d.message.contains("angle")),
+            "expected degenerate-revolve-angle warning, got {:?}",
+            diagnostics,
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_produces_revolve_variant() {
+        let step_handles = vec![GeometryHandleId(55)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::TAU)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let result =
+            result.expect("compile_geometry_op should return Some for Revolve with valid axis");
+
+        match result {
+            reify_types::GeometryOp::Revolve {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            } => {
+                assert_eq!(profile, GeometryHandleId(55));
+                assert!((axis_origin[0]).abs() < 1e-12);
+                assert!((axis_origin[1]).abs() < 1e-12);
+                assert!((axis_origin[2]).abs() < 1e-12);
+                assert!((axis_dir[0]).abs() < 1e-12);
+                assert!((axis_dir[1]).abs() < 1e-12);
+                assert!((axis_dir[2] - 1.0).abs() < 1e-12);
+                assert!((angle_rad - std::f64::consts::TAU).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::Revolve, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_produces_extrude_variant() {
+        let step_handles = vec![GeometryHandleId(77)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(0.03))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let result = result.expect("compile_geometry_op should return Some for Extrude");
+
+        match result {
+            reify_types::GeometryOp::Extrude { profile, distance } => {
+                assert_eq!(profile, GeometryHandleId(77));
+                match distance {
+                    reify_types::Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert!(
+                            (si_value - 0.03).abs() < 1e-12,
+                            "SI value should be 0.03m (30mm)"
+                        );
+                        assert_eq!(dimension, reify_types::DimensionVector::LENGTH);
+                    }
+                    other => panic!("expected Value::Scalar for distance, got {:?}", other),
+                }
+            }
+            other => panic!("expected GeometryOp::Extrude, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_scale_negative_factor_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Scale,
+            target: GeomRef::Step(0),
+            args: vec![("factor".into(), literal_f64(-1.0))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        assert!(result.is_none(), "negative scale factor should return None (inside-out geometry)");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for negative scale factor, got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("scale dropped")
+                    && d.message.contains("negative")
+            }),
+            "expected a Warning mentioning 'scale dropped' and 'negative', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_translate_missing_arg_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // Translate with only dx — missing dy, dz
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![("dx".into(), literal_f64(1.0))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "missing dy/dz should return None, not silently default to 0.0"
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_scale_nan_factor_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Scale,
+            target: GeomRef::Step(0),
+            args: vec![("factor".into(), literal_f64(f64::NAN))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        assert!(result.is_none(), "NaN scale factor should return None");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for NaN scale factor, got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("factor")
+                    && d.message.contains("Scale")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'factor', and 'Scale', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_rotate_around_missing_axis_returns_none() {
+        let step_handles = vec![GeometryHandleId(99)];
+        let values = ValueMap::new();
+
+        // RotateAround with missing axis_z
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::RotateAround,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("px".into(), literal_f64(0.0)),
+                ("py".into(), literal_f64(0.0)),
+                ("pz".into(), literal_f64(0.0)),
+                ("axis_x".into(), literal_f64(0.0)),
+                ("axis_y".into(), literal_f64(1.0)),
+                // axis_z deliberately omitted
+                ("angle".into(), literal_f64(1.0)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(result.is_none(), "missing axis_z should return None");
+    }
+
+    #[test]
+    fn compile_geometry_op_linear_pattern_missing_spacing_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // LinearPattern with dx/dy/dz/count but OMITS spacing
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                // spacing deliberately omitted
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "missing spacing should return None, not silently default to Value::Undef"
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_missing_angle_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // CircularPattern with ox/oy/oz/ax/ay/az/count but OMITS angle
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(4.0)),
+                // angle deliberately omitted
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "missing angle should return None, not silently default to Value::Undef"
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_linear_pattern_valid_args() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                ("spacing".into(), literal_length(0.02)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        match result {
+            Some(reify_types::GeometryOp::LinearPattern {
+                target,
+                direction,
+                count,
+                spacing,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(direction, [10.0, 0.0, 0.0]);
+                assert_eq!(count, 3);
+                // spacing should be a Scalar value, not Undef
+                assert!(
+                    !matches!(spacing, reify_types::Value::Undef),
+                    "spacing should not be Undef when arg is present"
+                );
+            }
+            other => panic!("expected Some(LinearPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_valid_args() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(4.0)),
+                // Use an explicitly-dimensioned angle literal to test the pass-through path.
+                // A bare f64 would now trigger the degrees→radians conversion path instead.
+                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        match result {
+            Some(reify_types::GeometryOp::CircularPattern {
+                target,
+                axis_origin,
+                axis_dir,
+                count,
+                angle,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(axis_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(axis_dir, [0.0, 0.0, 1.0]);
+                assert_eq!(count, 4);
+                // angle should be a Scalar value (with ANGLE dimension), not Undef
+                assert!(
+                    !matches!(angle, reify_types::Value::Undef),
+                    "angle should not be Undef when arg is present"
+                );
+                // The explicit-unit path must NOT emit a degree-conversion warning
+                let has_deg_warning = diagnostics.iter().any(|d| {
+                    d.severity == reify_types::Severity::Warning
+                        && (d.message.contains("deg") || d.message.contains("degree"))
+                });
+                assert!(
+                    !has_deg_warning,
+                    "explicit angle unit should not trigger a degree-conversion warning, got: {:?}",
+                    diagnostics
+                );
+            }
+            other => panic!("expected Some(CircularPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_bare_f64_converts_to_radians() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = reify_compiler::CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(6.0)),
+                // Bare f64 without unit — should be interpreted as degrees and
+                // converted to radians: 360° → 2π rad.
+                ("angle".into(), literal_f64(360.0)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        match result {
+            Some(reify_types::GeometryOp::CircularPattern { angle, .. }) => {
+                let angle_f64 = angle.as_f64().expect("angle should be numeric");
+                assert!(
+                    (angle_f64 - std::f64::consts::TAU).abs() < 1e-9,
+                    "360.0 (bare f64) should convert to 2π radians, got {}",
+                    angle_f64
+                );
+            }
+            other => panic!("expected Some(CircularPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_bare_int_converts_to_radians() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // Bare integer 360 — should be interpreted as 360° and converted to 2π rad.
+        let angle_int_expr = reify_types::CompiledExpr::literal(
+            reify_types::Value::Int(360),
+            reify_types::Type::Int,
+        );
+
+        let op = reify_compiler::CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(6.0)),
+                ("angle".into(), angle_int_expr),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        match result {
+            Some(reify_types::GeometryOp::CircularPattern { angle, .. }) => {
+                let angle_f64 = angle.as_f64().expect("angle should be numeric");
+                assert!(
+                    (angle_f64 - std::f64::consts::TAU).abs() < 1e-9,
+                    "Int(360) should convert to 2π radians, got {}",
+                    angle_f64
+                );
+            }
+            other => panic!("expected Some(CircularPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_bare_number_emits_deprecation_warning() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = reify_compiler::CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(6.0)),
+                ("angle".into(), literal_f64(360.0)),
+            ],
+        };
+
+        let _result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+
+        let has_degree_warning = diagnostics.iter().any(|d| {
+            d.severity == reify_types::Severity::Warning
+                && (d.message.contains("deg") || d.message.contains("degree"))
+        });
+        assert!(
+            has_degree_warning,
+            "expected a Warning diagnostic about implicit degree conversion, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_angle_scalar_passes_through() {
+        // An explicitly-dimensioned angle (Value::Scalar with ANGLE dimension) must
+        // pass through the CircularPattern arm unchanged — no double-conversion,
+        // no degree-conversion warning.
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = reify_compiler::CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(6.0)),
+                // Explicit angle unit: PI radians
+                ("angle".into(), literal_angle(std::f64::consts::PI)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        match result {
+            Some(reify_types::GeometryOp::CircularPattern { angle, .. }) => {
+                let angle_f64 = angle.as_f64().expect("angle should be numeric");
+                assert!(
+                    (angle_f64 - std::f64::consts::PI).abs() < 1e-12,
+                    "explicit PI rad angle should pass through as PI, got {}",
+                    angle_f64
+                );
+                // No degree-conversion warning should be emitted for explicit units
+                let has_deg_warning = diagnostics.iter().any(|d| {
+                    d.severity == reify_types::Severity::Warning
+                        && (d.message.contains("deg") || d.message.contains("degree"))
+                });
+                assert!(
+                    !has_deg_warning,
+                    "explicit angle unit should not trigger a degree-conversion warning, got: {:?}",
+                    diagnostics
+                );
+            }
+            other => panic!("expected Some(CircularPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_mirror_valid_args() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Mirror,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("nx".into(), literal_f64(1.0)),
+                ("ny".into(), literal_f64(0.0)),
+                ("nz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        match result {
+            Some(reify_types::GeometryOp::Mirror {
+                target,
+                plane_origin,
+                plane_normal,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(plane_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(plane_normal, [1.0, 0.0, 0.0]);
+            }
+            other => panic!("expected Some(Mirror), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_linear_pattern_2d_valid_args() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear2D,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx1".into(), literal_f64(1.0)),
+                ("dy1".into(), literal_f64(0.0)),
+                ("dz1".into(), literal_f64(0.0)),
+                ("count1".into(), literal_f64(3.0)),
+                ("spacing1".into(), literal_length(0.02)),
+                ("dx2".into(), literal_f64(0.0)),
+                ("dy2".into(), literal_f64(1.0)),
+                ("dz2".into(), literal_f64(0.0)),
+                ("count2".into(), literal_f64(4.0)),
+                ("spacing2".into(), literal_length(0.03)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        match result {
+            Some(reify_types::GeometryOp::LinearPattern2D {
+                target,
+                direction1,
+                count1,
+                spacing1,
+                direction2,
+                count2,
+                spacing2,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(direction1, [1.0, 0.0, 0.0]);
+                assert_eq!(count1, 3);
+                assert!(
+                    !matches!(spacing1, reify_types::Value::Undef),
+                    "spacing1 should not be Undef"
+                );
+                assert_eq!(direction2, [0.0, 1.0, 0.0]);
+                assert_eq!(count2, 4);
+                assert!(
+                    !matches!(spacing2, reify_types::Value::Undef),
+                    "spacing2 should not be Undef"
+                );
+            }
+            other => panic!("expected Some(LinearPattern2D), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_arbitrary_pattern_valid_3_transforms() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Arbitrary,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("t0_dx".into(), literal_f64(0.01)),
+                ("t0_dy".into(), literal_f64(0.0)),
+                ("t0_dz".into(), literal_f64(0.0)),
+                ("t1_dx".into(), literal_f64(0.0)),
+                ("t1_dy".into(), literal_f64(0.02)),
+                ("t1_dz".into(), literal_f64(0.0)),
+                ("t2_dx".into(), literal_f64(0.01)),
+                ("t2_dy".into(), literal_f64(0.02)),
+                ("t2_dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        match result {
+            Some(reify_types::GeometryOp::ArbitraryPattern {
+                target,
+                transforms,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(transforms.len(), 3);
+                assert_eq!(transforms[0], [0.01, 0.0, 0.0]);
+                assert_eq!(transforms[1], [0.0, 0.02, 0.0]);
+                assert_eq!(transforms[2], [0.01, 0.02, 0.0]);
+            }
+            other => panic!("expected Some(ArbitraryPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_linear_pattern_2d_missing_spacing2_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear2D,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx1".into(), literal_f64(1.0)),
+                ("dy1".into(), literal_f64(0.0)),
+                ("dz1".into(), literal_f64(0.0)),
+                ("count1".into(), literal_f64(3.0)),
+                ("spacing1".into(), literal_length(0.02)),
+                ("dx2".into(), literal_f64(0.0)),
+                ("dy2".into(), literal_f64(1.0)),
+                ("dz2".into(), literal_f64(0.0)),
+                ("count2".into(), literal_f64(4.0)),
+                // spacing2 deliberately omitted
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "missing spacing2 should return None"
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_arbitrary_pattern_missing_transform_coord_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // Only 2 coords for what should be a complete triple
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Arbitrary,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("t0_dx".into(), literal_f64(0.01)),
+                ("t0_dy".into(), literal_f64(0.0)),
+                // t0_dz deliberately omitted
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "missing transform coord should return None"
+        );
+    }
+
+    // ── compile_geometry_op diagnostic tests ─────────────────────────────────
+
+    #[test]
+    fn compile_geometry_op_primitive_missing_arg_returns_none() {
+        let step_handles: Vec<GeometryHandleId> = vec![];
+        let values = ValueMap::new();
+
+        // Box with height and depth present, but 'width' deliberately omitted
+        let op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![
+                ("height".into(), literal_length(0.05)),
+                ("depth".into(), literal_length(0.04)),
+                // width deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // When a required arg is missing, compile_geometry_op should short-circuit and return None
+        assert!(
+            result.is_none(),
+            "compile_geometry_op should return None when a required arg is missing"
+        );
+
+        // Exactly one diagnostic warning should have been emitted for the missing 'width'
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'width', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("width"),
+            "diagnostic message should mention 'width', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Box"),
+            "diagnostic message should mention 'Box', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_modify_missing_arg_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Fillet with target but 'radius' deliberately omitted
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                // radius deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // When a required arg is missing, compile_geometry_op should short-circuit and return None
+        assert!(
+            result.is_none(),
+            "compile_geometry_op should return None when a required arg is missing"
+        );
+
+        // Exactly one diagnostic warning should have been emitted for the missing 'radius'
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'radius', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("radius"),
+            "diagnostic message should mention 'radius', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Fillet"),
+            "diagnostic message should mention 'Fillet', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_present_args_emit_no_diagnostics() {
+        let step_handles = vec![GeometryHandleId(1)];
+        let values = ValueMap::new();
+
+        // Primitive::Box with all required args present
+        let box_op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), literal_length(0.10)),
+                ("height".into(), literal_length(0.05)),
+                ("depth".into(), literal_length(0.04)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &box_op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Box with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected when all Primitive args are present, got: {:?}",
+            diagnostics
+        );
+
+        // Modify::Fillet with target and radius present
+        let fillet_op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![("radius".into(), literal_length(0.005))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &fillet_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Fillet with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected when all Modify args are present, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_transform_pattern_sweep_present_args_emit_no_diagnostics() {
+        let step_handles = vec![GeometryHandleId(1)];
+        let values = ValueMap::new();
+
+        // Transform::Translate — all three required args present
+        let translate_op = CompiledGeometryOp::Transform {
+            kind: reify_compiler::TransformKind::Translate,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(1.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &translate_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Translate with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for Translate with all args, got: {:?}",
+            diagnostics
+        );
+
+        // Pattern::LinearPattern — all required args present
+        let linear_op = CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Linear,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                ("spacing".into(), literal_length(0.02)),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &linear_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "LinearPattern with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for LinearPattern with all args, got: {:?}",
+            diagnostics
+        );
+
+        // Sweep::Extrude — distance present
+        let extrude_op = CompiledGeometryOp::Sweep {
+            kind: reify_compiler::SweepKind::Extrude,
+            profiles: vec![reify_compiler::GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(0.05))],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &extrude_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Extrude with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for Extrude with all args, got: {:?}",
+            diagnostics
+        );
+
+        // Sweep::Revolve — all seven args present with a valid axis
+        let revolve_op = CompiledGeometryOp::Sweep {
+            kind: reify_compiler::SweepKind::Revolve,
+            profiles: vec![reify_compiler::GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &revolve_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Revolve with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for Revolve with all args, got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ── missing-arg diagnostic tests for Transform/Pattern/Sweep ─────────────
+
+    #[test]
+    fn compile_geometry_op_sweep_extrude_missing_distance_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with no args at all — 'distance' is missing
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![reify_compiler::GeomRef::Step(0)],
+            args: vec![],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Still returns None
+        assert!(
+            result.is_none(),
+            "missing 'distance' should still return None, got {:?}",
+            result
+        );
+
+        // Exactly one diagnostic warning for the missing 'distance' arg
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'distance', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("distance"),
+            "diagnostic message should mention 'distance', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Extrude"),
+            "diagnostic message should mention 'Extrude', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_sweep_revolve_missing_ox_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Revolve with all args except 'ox' — should return None AND emit a diagnostic
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![reify_compiler::GeomRef::Step(0)],
+            args: vec![
+                // ox deliberately omitted
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Still returns None
+        assert!(
+            result.is_none(),
+            "missing 'ox' should still return None, got {:?}",
+            result
+        );
+
+        // Exactly one diagnostic warning for the missing 'ox' arg
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'ox', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("ox"),
+            "diagnostic message should mention 'ox', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Revolve"),
+            "diagnostic message should mention 'Revolve', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_pattern_linear_missing_spacing_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // LinearPattern with dx/dy/dz/count but OMITS spacing
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                // spacing deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Still returns None (Pattern short-circuits on missing args)
+        assert!(
+            result.is_none(),
+            "missing spacing should still return None, got {:?}",
+            result
+        );
+
+        // Exactly one diagnostic warning for the missing 'spacing' arg
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'spacing', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("spacing"),
+            "diagnostic message should mention 'spacing', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Linear"),
+            "diagnostic message should mention 'Linear', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_transform_translate_missing_arg_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // Translate with only dx — missing dy, dz
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![("dx".into(), literal_f64(1.0))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Still returns None (Transform short-circuits on missing f64 args)
+        assert!(
+            result.is_none(),
+            "missing dy/dz should still return None, got {:?}",
+            result
+        );
+
+        // But now exactly one diagnostic warning should be emitted for the first missing arg 'dy'
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'dy', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("dy"),
+            "diagnostic message should mention 'dy', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Translate"),
+            "diagnostic message should mention 'Translate', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    // ── non-numeric/non-finite diagnostic tests ──────────────────────────────
+
+    #[test]
+    fn compile_geometry_op_translate_wrong_type_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // dx is a String value, not a numeric f64 — should trigger a non-numeric diagnostic
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                (
+                    "dx".into(),
+                    reify_types::CompiledExpr::literal(
+                        reify_types::Value::String("oops".into()),
+                        reify_types::Type::String,
+                    ),
+                ),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "wrong-type dx should return None, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("dx")
+                    && d.message.contains("Translate")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_translate_nan_dx_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // dx is NaN — non-finite, should trigger a diagnostic
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(f64::NAN)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "NaN dx should return None, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("dx")
+                    && d.message.contains("Translate")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_translate_infinity_dx_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // dx is +Infinity — non-finite, should trigger a diagnostic
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(f64::INFINITY)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "Infinity dx should return None, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("dx")
+                    && d.message.contains("Translate")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_translate_finite_args_no_false_positive_warning() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // All finite args — should succeed with no non-numeric/non-finite warning
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(1.0)),
+                ("dy".into(), literal_f64(2.0)),
+                ("dz".into(), literal_f64(3.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_some(),
+            "finite Translate args should return Some, got None; diagnostics: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("non-numeric/non-finite")),
+            "no 'non-numeric/non-finite' warning expected for finite args, got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests: INVALID sentinel preserves step index alignment (task-612, step-9)
+    // ---------------------------------------------------------------------------
+
+    /// Verifies that an INVALID sentinel at step index 1 does not shift subsequent
+    /// valid handles. With step_handles = [42, INVALID, 100]:
+    /// - Boolean(Step(0), Step(2)) → Some(Union { left: 42, right: 100 })
+    ///   Step(0) resolves to 42 and Step(2) resolves to 100, both correct.
+    ///   The INVALID at index 1 is skipped; indices ≥ 2 are unaffected.
+    /// - Boolean(Step(0), Step(1)) → None
+    ///   Step(1) is INVALID, filtered out by the sentinel check, so the op fails.
+    ///
+    /// Together these two assertions confirm that:
+    /// (a) the sentinel at index 1 maintains index alignment for subsequent handles,
+    /// (b) the INVALID value correctly blocks resolution of its own index.
+    #[test]
+    fn compile_geometry_op_invalid_sentinel_preserves_index_alignment() {
+        use reify_compiler::BooleanOp;
+        let values = ValueMap::new();
+
+        // step_handles[0] = 42 (valid sphere handle)
+        // step_handles[1] = INVALID (sentinel for a failed op)
+        // step_handles[2] = 100 (valid handle — must remain at index 2)
+        let step_handles = vec![
+            GeometryHandleId(42),
+            GeometryHandleId::INVALID,
+            GeometryHandleId(100),
+        ];
+
+        // (a) Union(Step(0), Step(2)): both resolve correctly despite sentinel at index 1
+        let op_ok = CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(2),
+        };
+        let result_ok = compile_geometry_op(
+            &op_ok,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut Vec::new(),
+        );
+        let result_ok = result_ok.expect(
+            "Boolean(Step(0), Step(2)) should succeed: both indices hold valid handles",
+        );
+        match result_ok {
+            reify_types::GeometryOp::Union { left, right } => {
+                assert_eq!(
+                    left,
+                    GeometryHandleId(42),
+                    "Step(0) should resolve to handle 42 (not shifted by sentinel at index 1)"
+                );
+                assert_eq!(
+                    right,
+                    GeometryHandleId(100),
+                    "Step(2) should resolve to handle 100 (aligned correctly despite sentinel at 1)"
+                );
+            }
+            other => panic!(
+                "expected GeometryOp::Union from Boolean(Step(0), Step(2)), got {:?}",
+                other
+            ),
+        }
+
+        // (b) Union(Step(0), Step(1)): Step(1) is INVALID → filtered out → returns None
+        let op_fail = CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(0),
+            right: GeomRef::Step(1),
+        };
+        let result_fail = compile_geometry_op(
+            &op_fail,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut Vec::new(),
+        );
+        assert!(
+            result_fail.is_none(),
+            "Boolean(Step(0), Step(1)) should return None: Step(1) is INVALID and filtered out"
+        );
     }
 }
