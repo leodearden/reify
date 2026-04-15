@@ -521,6 +521,24 @@ impl OcctKernel {
                 let shape = self.get_shape(*target)?;
                 let sp1 = extract_f64(spacing1)?;
                 let sp2 = extract_f64(spacing2)?;
+                // Validate direction vectors are finite (NaN/Inf would cause
+                // undefined OCCT behavior).  Consistent with Mirror arm.
+                if !direction1[0].is_finite()
+                    || !direction1[1].is_finite()
+                    || !direction1[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(
+                        "linear_pattern_2d direction1 must contain finite values".into(),
+                    ));
+                }
+                if !direction2[0].is_finite()
+                    || !direction2[1].is_finite()
+                    || !direction2[2].is_finite()
+                {
+                    return Err(GeometryError::OperationFailed(
+                        "linear_pattern_2d direction2 must contain finite values".into(),
+                    ));
+                }
                 if *count1 == 0 {
                     return Err(GeometryError::OperationFailed(
                         "linear_pattern_2d count1 must be >= 1".into(),
@@ -2068,61 +2086,6 @@ mod tests {
     }
 
     #[test]
-    fn linear_pattern_2d_count_zero_errors() {
-        let mut kernel = OcctKernel::new();
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
-            })
-            .unwrap();
-        // count1 == 0 should fail
-        let result = kernel.execute(&GeometryOp::LinearPattern2D {
-            target: box_h.id,
-            direction1: [1.0, 0.0, 0.0],
-            count1: 0,
-            spacing1: Value::Real(20.0),
-            direction2: [0.0, 1.0, 0.0],
-            count2: 4,
-            spacing2: Value::Real(20.0),
-        });
-        assert!(result.is_err(), "count1==0 should produce OperationFailed");
-        // count2 == 0 should fail
-        let result = kernel.execute(&GeometryOp::LinearPattern2D {
-            target: box_h.id,
-            direction1: [1.0, 0.0, 0.0],
-            count1: 3,
-            spacing1: Value::Real(20.0),
-            direction2: [0.0, 1.0, 0.0],
-            count2: 0,
-            spacing2: Value::Real(20.0),
-        });
-        assert!(result.is_err(), "count2==0 should produce OperationFailed");
-    }
-
-    #[test]
-    fn arbitrary_pattern_empty_errors() {
-        let mut kernel = OcctKernel::new();
-        let box_h = kernel
-            .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
-            })
-            .unwrap();
-        // Empty transforms should fail
-        let result = kernel.execute(&GeometryOp::ArbitraryPattern {
-            target: box_h.id,
-            transforms: vec![],
-        });
-        assert!(
-            result.is_err(),
-            "empty transforms should produce OperationFailed"
-        );
-    }
-
-    #[test]
     fn linear_pattern_2d_count1_zero_errors() {
         let mut kernel = OcctKernel::new();
         let box_h = kernel
@@ -2179,6 +2142,56 @@ mod tests {
                 );
             }
             other => panic!("expected OperationFailed for count2==0, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn linear_pattern_2d_nan_direction_errors() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // NaN in direction1 should fail
+        let result = kernel.execute(&GeometryOp::LinearPattern2D {
+            target: box_h.id,
+            direction1: [f64::NAN, 0.0, 0.0],
+            count1: 3,
+            spacing1: Value::Real(20.0),
+            direction2: [0.0, 1.0, 0.0],
+            count2: 3,
+            spacing2: Value::Real(20.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("direction1"),
+                    "error should mention direction1, got: {msg}"
+                );
+            }
+            other => panic!("expected OperationFailed for NaN direction1, got {:?}", other),
+        }
+        // Inf in direction2 should fail
+        let result = kernel.execute(&GeometryOp::LinearPattern2D {
+            target: box_h.id,
+            direction1: [1.0, 0.0, 0.0],
+            count1: 3,
+            spacing1: Value::Real(20.0),
+            direction2: [0.0, f64::INFINITY, 0.0],
+            count2: 3,
+            spacing2: Value::Real(20.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("direction2"),
+                    "error should mention direction2, got: {msg}"
+                );
+            }
+            other => panic!("expected OperationFailed for Inf direction2, got {:?}", other),
         }
     }
 

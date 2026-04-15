@@ -358,14 +358,11 @@ pub(crate) fn compile_geometry_call(
             }
             let mut it = compiled_args.into_iter();
             let mut args = vec![("target".to_string(), it.next().unwrap())];
-            let mut idx = 0;
-            while let Some(dx) = it.next() {
-                let dy = it.next().unwrap();
-                let dz = it.next().unwrap();
-                args.push((format!("t{}_dx", idx), dx));
-                args.push((format!("t{}_dy", idx), dy));
-                args.push((format!("t{}_dz", idx), dz));
-                idx += 1;
+            let coords: Vec<_> = it.collect();
+            for (idx, chunk) in coords.chunks_exact(3).enumerate() {
+                args.push((format!("t{}_dx", idx), chunk[0].clone()));
+                args.push((format!("t{}_dy", idx), chunk[1].clone()));
+                args.push((format!("t{}_dz", idx), chunk[2].clone()));
             }
             Some(vec![CompiledGeometryOp::Pattern {
                 kind: PatternKind::Arbitrary,
