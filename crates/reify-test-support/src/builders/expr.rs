@@ -412,6 +412,26 @@ mod tests {
         assert_eq!(expr.result_type, Type::List(Box::new(Type::Real)));
     }
 
+    #[test]
+    fn literal_empty_set_uses_real_fallback() {
+        let expr = literal(Value::Set(BTreeSet::new()));
+        assert_eq!(
+            expr.result_type,
+            Type::Set(Box::new(Type::Real)),
+            "empty Set should produce Set(Real)"
+        );
+    }
+
+    #[test]
+    fn literal_empty_map_uses_string_real_fallback() {
+        let expr = literal(Value::Map(BTreeMap::new()));
+        assert_eq!(
+            expr.result_type,
+            Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+            "empty Map should produce Map(String, Real)"
+        );
+    }
+
     // --- Collection expression builder tests ---
 
     #[test]
