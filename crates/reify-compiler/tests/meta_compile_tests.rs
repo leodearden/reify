@@ -188,7 +188,7 @@ fn duplicate_meta_key_error() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected at least one error for duplicate meta key");
+    assert_eq!(errors.len(), 1, "expected exactly one error for duplicate meta key, got: {:?}", errors);
     assert!(
         errors.iter().any(|d| d.message.contains("duplicate meta key")),
         "expected 'duplicate meta key' error, got: {:?}",

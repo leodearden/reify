@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 
 /// Shared reference to entity definition fields (used by both StructureDef and OccurrenceDef).
 pub(crate) struct EntityDefRef<'a> {
@@ -448,10 +449,9 @@ pub(crate) fn compile_entity(
                     );
                 } else {
                     first_meta_span = Some(meta.span);
-                    let mut seen_meta_keys: std::collections::HashMap<&str, ()> =
-                        std::collections::HashMap::new();
+                    let mut seen_meta_keys: HashSet<&str> = HashSet::new();
                     for (key, value) in &meta.entries {
-                        if seen_meta_keys.contains_key(key.as_str()) {
+                        if !seen_meta_keys.insert(key.as_str()) {
                             diagnostics.push(
                                 Diagnostic::error(format!("duplicate meta key '{}'", key))
                                     .with_label(DiagnosticLabel::new(
@@ -460,7 +460,6 @@ pub(crate) fn compile_entity(
                                     )),
                             );
                         } else {
-                            seen_meta_keys.insert(key.as_str(), ());
                             scope.meta_entries.insert(key.clone(), value.clone());
                         }
                     }
