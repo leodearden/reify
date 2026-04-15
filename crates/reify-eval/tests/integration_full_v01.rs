@@ -41,10 +41,14 @@ fn compiled() -> &'static CompiledModule {
     C.get_or_init(|| parse_and_compile_with_stdlib(source()))
 }
 
-/// Eval the canonical source with SimpleConstraintChecker.
-fn eval_canonical() -> reify_eval::EvalResult {
-    let mut engine = make_simple_engine();
-    engine.eval(compiled())
+/// Eval the canonical source with SimpleConstraintChecker, caching the result.
+/// Returns a `&'static EvalResult` — no recompute or clone on subsequent calls.
+fn eval_canonical() -> &'static reify_eval::EvalResult {
+    static E: std::sync::OnceLock<reify_eval::EvalResult> = std::sync::OnceLock::new();
+    E.get_or_init(|| {
+        let mut engine = make_simple_engine();
+        engine.eval(compiled())
+    })
 }
 
 /// Check the canonical source with SimpleConstraintChecker.
