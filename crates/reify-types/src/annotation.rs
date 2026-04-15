@@ -134,4 +134,19 @@ mod tests {
         let ann = make_annotation("deprecated");
         assert!(!ann.is_test());
     }
+
+    #[test]
+    fn constants_are_usable_in_annotation_construction() {
+        // Constants can be used directly in make_annotation() and is_test() works correctly.
+        let dep = make_annotation(DEPRECATED_ANNOTATION);
+        let opt = make_annotation(OPTIMIZED_ANNOTATION);
+        let hint = make_annotation(SOLVER_HINT_ANNOTATION);
+        assert!(!dep.is_test());
+        assert!(!opt.is_test());
+        assert!(!hint.is_test());
+        // Names round-trip through the Annotation struct.
+        assert_eq!(dep.name, "deprecated");
+        assert_eq!(opt.name, "optimized");
+        assert_eq!(hint.name, "solver_hint");
+    }
 }
