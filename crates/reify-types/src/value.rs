@@ -790,6 +790,110 @@ impl Value {
         }
     }
 
+    /// Returns the type of this value if it can be unambiguously inferred,
+    /// or `None` for genuinely ambiguous cases.
+    ///
+    /// The ambiguous cases are:
+    /// - Empty `List` — element type is unknown
+    /// - Empty `Set` — element type is unknown
+    /// - Empty `Map` — key and value types are unknown
+    /// - `Option(None)` — inner type is unknown
+    ///
+    /// For all other variants this returns `Some(type)`, using the same logic
+    /// as [`infer_type()`]. Internal recursive calls propagate ambiguity: if a
+    /// non-empty `List` contains an element that is itself ambiguous, the result
+    /// will still be deterministic because the element type is derived from the
+    /// first element's type, not its contents.
+    pub fn try_infer_type(&self) -> Option<crate::ty::Type> {
+        use crate::ty::Type;
+        match self {
+            Value::Bool(_) => Some(Type::Bool),
+            Value::Int(_) => Some(Type::Int),
+            Value::Real(_) => Some(Type::Real),
+            Value::String(_) => Some(Type::String),
+            Value::Scalar { dimension, .. } => Some(Type::Scalar {
+                dimension: *dimension,
+            }),
+            Value::Enum { type_name, .. } => Some(Type::Enum(type_name.clone())),
+            Value::List(items) => {
+                let first = items.first()?;
+                let elem_ty = first.try_infer_type()?;
+                Some(Type::List(Box::new(elem_ty)))
+            }
+            Value::Set(items) => {
+                let first = items.iter().next()?;
+                let elem_ty = first.try_infer_type()?;
+                Some(Type::Set(Box::new(elem_ty)))
+            }
+            Value::Map(m) => {
+                let (k, v) = m.iter().next()?;
+                let k_ty = k.try_infer_type()?;
+                let v_ty = v.try_infer_type()?;
+                Some(Type::Map(Box::new(k_ty), Box::new(v_ty)))
+            }
+            Value::Option(Some(inner)) => {
+                let inner_ty = inner.try_infer_type()?;
+                Some(Type::Option(Box::new(inner_ty)))
+            }
+            Value::Option(None) => None,
+            Value::Lambda { params, body, .. } => {
+                let param_types = params.iter().map(|_| Type::Real).collect();
+                Some(Type::Function {
+                    params: param_types,
+                    return_type: Box::new(body.result_type.clone()),
+                })
+            }
+            Value::Field {
+                domain_type,
+                codomain_type,
+                ..
+            } => Some(Type::Field {
+                domain: Box::new(domain_type.clone()),
+                codomain: Box::new(codomain_type.clone()),
+            }),
+            Value::Tensor(_) => None,
+            Value::Complex { dimension, .. } => Some(Type::complex(Type::Scalar {
+                dimension: *dimension,
+            })),
+            Value::Matrix(_) => None,
+            Value::Point(components) => {
+                let q = components
+                    .first()
+                    .and_then(Value::try_infer_type)
+                    .unwrap_or(Type::Real);
+                Some(Type::Point {
+                    n: components.len(),
+                    quantity: Box::new(q),
+                })
+            }
+            Value::Vector(components) => {
+                let q = components
+                    .first()
+                    .and_then(Value::try_infer_type)
+                    .unwrap_or(Type::Real);
+                Some(Type::Vector {
+                    n: components.len(),
+                    quantity: Box::new(q),
+                })
+            }
+            Value::Orientation { .. } => Some(Type::Orientation(3)),
+            Value::Frame { .. } => None,
+            Value::Transform { .. } => None,
+            Value::Plane { .. } => Some(Type::Plane),
+            Value::Axis { .. } => Some(Type::Axis),
+            Value::BoundingBox { .. } => Some(Type::BoundingBox),
+            Value::Range { lower, upper, .. } => {
+                let elem_ty = lower
+                    .as_ref()
+                    .or(upper.as_ref())
+                    .and_then(|v| v.try_infer_type())
+                    .unwrap_or(Type::Real);
+                Some(Type::Range(Box::new(elem_ty)))
+            }
+            Value::Undef => Some(Type::Bool),
+        }
+    }
+
     /// Returns `true` if this value is a numeric leaf for constraint
     /// domain classification (Int, Real, or Scalar).
     pub fn is_domain_numeric_leaf(&self) -> bool {
