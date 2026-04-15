@@ -35186,7 +35186,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T20:54:17.466Z"
+        "updatedAt": "2026-04-14T20:54:17.466Z",
+        "metadata": {
+          "files": [
+            "crates/reify-cli/tests/cli_lsp_protocol.rs"
+          ],
+          "modules": [
+            "crates/reify-cli/tests"
+          ]
+        }
       },
       {
         "id": 1686,
