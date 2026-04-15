@@ -100,14 +100,20 @@ export function Viewport(props: ViewportProps) {
       requestRender();
     });
 
-    // Sync entity visibility reactively
+    // Sync entity visibility reactively, resetting removed entities to 'show'
+    let prevVisKeys = new Set<string>();
     createEffect(() => {
-      const visibility = props.entityVisibility;
-      if (visibility) {
-        for (const [entityPath, state] of Object.entries(visibility)) {
-          meshManager.setVisibility(entityPath, state);
+      const visibility = props.entityVisibility ?? {};
+      const currentKeys = new Set(Object.keys(visibility));
+      for (const [entityPath, state] of Object.entries(visibility)) {
+        meshManager.setVisibility(entityPath, state);
+      }
+      for (const key of prevVisKeys) {
+        if (!currentKeys.has(key)) {
+          meshManager.setVisibility(key, 'show');
         }
       }
+      prevVisKeys = currentKeys;
       requestRender();
     });
 
