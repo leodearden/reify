@@ -168,6 +168,42 @@ fn duplicate_meta_block_error() {
 }
 
 // ---------------------------------------------------------------------------
+// step-1: duplicate meta key within a single meta block produces error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn duplicate_meta_key_error() {
+    let source = r#"
+        structure def Bracket {
+            meta {
+                a = "1",
+                a = "2"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected at least one error for duplicate meta key");
+    assert!(
+        errors.iter().any(|d| d.message.contains("duplicate meta key")),
+        "expected 'duplicate meta key' error, got: {:?}",
+        errors
+    );
+
+    // First occurrence should be kept; second (duplicate) should be discarded.
+    assert_eq!(
+        template.meta.get("a").map(|s| s.as_str()),
+        Some("1"),
+        "first value should be kept, not the duplicate"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // step-11: meta.key works inside constraint expressions
 // ---------------------------------------------------------------------------
 
