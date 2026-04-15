@@ -36859,7 +36859,19 @@
             "gui/src/panels/StatusBar.tsx",
             "gui/src/stores/engineStore.ts",
             "gui/src/types.ts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "compile_geometry_op",
+              "DiagnosticInfo"
+            ],
+            "queries": [
+              "show visible compile tessellation errors GUI geometry compilation fails",
+              "sentinel error placeholder step_handles compile_geometry_op returns None",
+              "geometry-arg resolution task 1715 error-path fallbacks GeomRef::Step",
+              "GUI uses DiagnosticInfo SelectionInfo directly MCP types"
+            ]
+          }
         }
       },
       {
@@ -36919,7 +36931,20 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T12:01:49.195Z"
+        "updatedAt": "2026-04-15T12:01:49.195Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "GUI Editor",
+              "CodeMirror"
+            ],
+            "queries": [
+              "editor color contrast cursor visibility dark background",
+              "GUI editor color theme styling",
+              "reify-debug MCP server viewport state tool camera mesh bounds"
+            ]
+          }
+        }
       },
       {
         "id": 1768,
