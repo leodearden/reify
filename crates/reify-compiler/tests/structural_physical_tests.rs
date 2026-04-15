@@ -579,6 +579,11 @@ structure def PlasticBody : Plastic {
     // plastic_strain (should use Ge, RHS=0).
     let mut found_hm_gt = false;
     let mut found_ps_ge = false;
+    // Collect (member, op) pairs for diagnostic messages if assertions fail.
+    let mut found_pairs: Vec<(String, String)> = Vec::new();
+    // Collect any constraint shapes that are not BinOp; the test asserts this
+    // stays empty so IR changes produce an explicit failure rather than silence.
+    let mut unrecognised: Vec<String> = Vec::new();
 
     for cc in &template.constraints {
         match &cc.expr.kind {
@@ -587,6 +592,7 @@ structure def PlasticBody : Plastic {
                     CompiledExprKind::ValueRef(id) => id.member.as_str(),
                     _ => continue,
                 };
+                found_pairs.push((member.to_string(), format!("{:?}", op)));
                 let rhs_is_zero = match &right.kind {
                     CompiledExprKind::Literal(Value::Int(v)) => *v == 0,
                     CompiledExprKind::Literal(Value::Real(v)) => v.abs() < 1e-9,
@@ -598,27 +604,27 @@ structure def PlasticBody : Plastic {
                     _ => {}
                 }
             }
-            _ => {}
+            other => {
+                unrecognised.push(format!("{:?}", other));
+            }
         }
     }
 
     assert!(
+        unrecognised.is_empty(),
+        "expected all Plastic constraint expressions to be BinOp, \
+         got unrecognised shapes: {:?}",
+        unrecognised
+    );
+    assert!(
         found_hm_gt,
-        "expected BinOp(Gt, hardening_modulus, 0), constraints: {:?}",
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
+        "expected BinOp(Gt, hardening_modulus, 0), found_pairs: {:?}",
+        found_pairs
     );
     assert!(
         found_ps_ge,
-        "expected BinOp(Ge, plastic_strain, 0), constraints: {:?}",
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
+        "expected BinOp(Ge, plastic_strain, 0), found_pairs: {:?}",
+        found_pairs
     );
 }
 
