@@ -42,6 +42,57 @@ fn make_value_lambda(
     }
 }
 
+/// Helper that builds a 3-param `|x, y, z| → (x + y) + z` analytical field and
+/// its corresponding `Type::Field`, parameterised only on `domain_type`.
+///
+/// The four `sample_multi_param_lambda_*` tests share this construction — the only
+/// variation between them is whether the domain is `point3(Real)` or `vec3(Real)`.
+/// Codomain is always `Type::Real` and the source is always `Analytical`.
+///
+/// Returns `(Value::Field { .. }, Type::Field { .. })` ready for use in a
+/// `make_function_call("sample", …)` expression.
+fn make_xyz_sum_field(domain_type: Type) -> (Value, Type) {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda body: (x + y) + z  (left-associative; BinOp is binary)
+    let xy = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        xy,
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
+    (field, field_type)
+}
+
 /// Build the unevaluated `gradient(field)` expression shared by the three
 /// String-codomain gradient tests:
 /// - `gradient_of_field_with_non_numeric_lambda`
