@@ -12,7 +12,7 @@
 use std::fs;
 
 use reify_compiler::PatternKind;
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_test_support::{compile_source_named, mocks::MockConstraintChecker};
 use reify_types::{ModulePath, Severity};
 
 /// Absolute path to the fixture file.
@@ -68,14 +68,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
 fn compile_ri_file(path: &str, module_name: &str) -> reify_compiler::CompiledModule {
     let source = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
-    let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors in {}: {:?}",
-        path,
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
+    compile_source_named(&source, module_name)
 }
 
 // ── step-1: smoke test ────────────────────────────────────────────────────────
