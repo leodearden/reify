@@ -9,20 +9,11 @@ mod common;
 use std::fs;
 use std::path::PathBuf;
 
-use reify_compiler::{CompiledModule, compile, compile_with_prelude};
-use reify_types::{ModulePath, Severity};
+use reify_compiler::{CompiledModule, compile_with_prelude};
+use reify_test_support::{compile_source, compile_source_named, errors_only};
+use reify_types::ModulePath;
 
 // ─── helpers ───────────────────────────────────────────────────────────────────
-
-fn parse_and_compile(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile(&parsed)
-}
 
 fn compile_with_prelude_helper(source: &str, prelude: &[CompiledModule]) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
@@ -32,14 +23,6 @@ fn compile_with_prelude_helper(source: &str, prelude: &[CompiledModule]) -> Comp
         parsed.errors
     );
     compile_with_prelude(&parsed, prelude)
-}
-
-fn errors_only(module: &CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
 }
 
 /// Create a unique temp directory for filesystem-based tests.
@@ -92,7 +75,7 @@ fn user_unit_in_let_binding() {
     // resolves to the correct user-defined SI value (5 * 0.0000254 = 0.000127),
     // not merely that an expression exists. A hardcoded-fallback regression
     // would yield a different si_value (e.g. ≈0.005 for mm) rather than 0.000127.
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit thou : Length = 0.0000254\n\
          structure S {\n\
              param w : Length = 10thou\n\
@@ -144,7 +127,7 @@ fn user_unit_overrides_hardcoded_fallback() {
     // Redeclare `mm` with factor 0.005 (intentionally different from the
     // hardcoded 0.001). The registry-first lookup in expr.rs should pick up
     // the user's value, NOT the hardcoded fallback.
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit mm : Length = 0.005\n\
          structure S { param w : Length = 10mm }",
     );
@@ -175,7 +158,7 @@ fn user_unit_overrides_hardcoded_fallback() {
 #[test]
 fn cross_module_pub_unit_visible_via_compile_with_prelude() {
     // Compile a "library" module that exports `pub unit mil`.
-    let prelude_module = parse_and_compile("pub unit mil : Length = 0.0000254");
+    let prelude_module = compile_source("pub unit mil : Length = 0.0000254");
     assert!(
         errors_only(&prelude_module).is_empty(),
         "prelude errors: {:?}",
@@ -214,7 +197,7 @@ fn cross_module_pub_unit_visible_via_compile_with_prelude() {
 #[test]
 fn cross_module_private_unit_not_visible_via_compile_with_prelude() {
     // Compile a module with a PRIVATE unit (no `pub`).
-    let prelude_module = parse_and_compile("unit privmil : Length = 0.0000254");
+    let prelude_module = compile_source("unit privmil : Length = 0.0000254");
     assert!(
         errors_only(&prelude_module).is_empty(),
         "prelude errors: {:?}",
@@ -400,7 +383,8 @@ fn compile_project_entry_does_not_see_imported_private_unit() {
 #[test]
 fn local_unit_duplicating_imported_pub_unit_produces_error() {
     // Prelude module exports pub unit `mil`.
-    let prelude_module = parse_and_compile("pub unit mil : Length = 0.0000254");
+    // Use a distinctive module name so we can assert the diagnostic references it.
+    let prelude_module = compile_source_named("pub unit mil : Length = 0.0000254", "imported_mod");
     assert!(
         errors_only(&prelude_module).is_empty(),
         "prelude errors: {:?}",
@@ -415,13 +399,32 @@ fn local_unit_duplicating_imported_pub_unit_produces_error() {
         !errors.is_empty(),
         "expected duplicate unit error when redeclaring an imported pub unit"
     );
+
+    // (1) Bind the specific duplicate diagnostic
+    let dup_diag = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate") && d.message.contains("mil"));
+    let dup_diag = dup_diag.unwrap_or_else(|| {
+        panic!("error should mention 'duplicate' and 'mil'; got: {:?}", errors)
+    });
+
+    // (a) The message must NOT say 'stdlib' — the source module is 'imported_mod', not 'std/*'
     assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("duplicate") && d.message.contains("mil")),
-        "error should mention 'duplicate' and 'mil'; got: {:?}",
-        errors
+        !dup_diag.message.contains("stdlib"),
+        "diagnostic should NOT mention 'stdlib' for user-module collision, got: {:?}",
+        dup_diag.message
     );
+
+    // (b) The message must name the source module 'imported_mod' (where `mil` was declared)
+    assert!(
+        dup_diag.message.contains("imported_mod"),
+        "diagnostic should mention 'imported_mod' as the source module, got: {:?}",
+        dup_diag.message
+    );
+
+    // (c) Exactly one label with a non-empty span — the user-module branch emits
+    // only the duplicate decl span and omits the original's SourceSpan::empty(0).
+    common::assert_single_non_empty_label(dup_diag);
 }
 
 // ─── step-17: transitive pub unit NOT visible two hops via compile_with_prelude ─
@@ -433,7 +436,7 @@ fn transitive_pub_unit_not_visible_via_compile_with_prelude() {
     // C is compiled with prelude=[B] and tries to use `5mil`.
     // Since B.units is empty (no locally-declared units), the prelude-seeding loop
     // for C finds nothing in B.units, so `mil` is invisible to C.
-    let module_a = parse_and_compile("pub unit mil : Length = 0.0000254");
+    let module_a = compile_source("pub unit mil : Length = 0.0000254");
     assert!(
         errors_only(&module_a).is_empty(),
         "module_a errors: {:?}",

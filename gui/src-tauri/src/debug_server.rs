@@ -150,6 +150,20 @@ fn tool_defs() -> Vec<ToolDef> {
             description: "Reset the camera to fit all geometry in the viewport.",
             input_schema: json!({"type": "object", "properties": {}}),
         },
+        ToolDef {
+            name: "open_file",
+            description: "Open a .ri file from disk into the editor and engine. Reads the file, loads it into the engine for evaluation, and opens it in the frontend editor.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the .ri file to open"
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
     ]
 }
 
@@ -219,8 +233,9 @@ async fn dispatch_tool(
 ) -> Result<Value, String> {
     match name {
         "health" => Ok(json!({"ok": true})),
-        "engine_state" => handle_engine_state(state),
-        "mesh_stats" => handle_mesh_stats(state),
+        "engine_state" => handle_engine_state(state).await,
+        "mesh_stats" => handle_mesh_stats(state).await,
+        "open_file" => handle_open_file(state, params).await,
         _ => {
             // Frontend-mediated: delegate to DebugBridge
             state.debug_bridge.query_frontend(name, params).await
@@ -228,77 +243,132 @@ async fn dispatch_tool(
     }
 }
 
-fn handle_engine_state(state: &DebugServerState) -> Result<Value, String> {
-    let mut session = state
-        .engine
-        .lock()
-        .map_err(|e| format!("engine lock poisoned: {e}"))?;
-    let gui_state = session
-        .build_gui_state()
-        .map_err(|e| format!("build_gui_state failed: {e}"))?;
-
-    // Summarize meshes (no raw vertex/index data)
-    let meshes: Vec<Value> = gui_state
-        .meshes
-        .iter()
-        .map(|m| {
-            json!({
-                "entity_path": m.entity_path,
-                "vertex_count": m.vertices.len() / 3,
-                "face_count": m.indices.len() / 3,
-                "has_normals": m.normals.is_some(),
-            })
-        })
-        .collect();
-
-    Ok(json!({
-        "meshes": meshes,
-        "values": gui_state.values,
-        "constraints": gui_state.constraints,
-        "files": gui_state.files,
-    }))
+/// Run a closure that needs engine access on a real OS thread (not tokio).
+/// EngineSession uses OcctKernelHandle::execute() with blocking_send which
+/// panics inside any tokio runtime context.
+async fn run_on_engine<F, T>(engine: &Arc<Mutex<EngineSession>>, f: F) -> Result<T, String>
+where
+    F: FnOnce(&mut EngineSession) -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    let engine = Arc::clone(engine);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let result = engine
+            .lock()
+            .map_err(|e| format!("engine lock poisoned: {e}"))
+            .and_then(|mut session| f(&mut session));
+        let _ = tx.send(result);
+    });
+    rx.await.map_err(|_| "engine thread died".to_string())?
 }
 
-fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
-    let mut session = state
-        .engine
-        .lock()
-        .map_err(|e| format!("engine lock poisoned: {e}"))?;
-    let gui_state = session
-        .build_gui_state()
-        .map_err(|e| format!("build_gui_state failed: {e}"))?;
+async fn handle_engine_state(state: &DebugServerState) -> Result<Value, String> {
+    run_on_engine(&state.engine, |session| {
+        let gui_state = session
+            .build_gui_state()
+            .map_err(|e| format!("build_gui_state failed: {e}"))?;
 
-    let stats: Vec<Value> = gui_state
-        .meshes
-        .iter()
-        .map(|m| {
-            let vertex_count = m.vertices.len() / 3;
-            let face_count = m.indices.len() / 3;
-
-            // Compute bounding box from vertices
-            let mut min = [f32::INFINITY; 3];
-            let mut max = [f32::NEG_INFINITY; 3];
-            for chunk in m.vertices.chunks_exact(3) {
-                for i in 0..3 {
-                    min[i] = min[i].min(chunk[i]);
-                    max[i] = max[i].max(chunk[i]);
-                }
-            }
-
-            json!({
-                "entity_path": m.entity_path,
-                "vertex_count": vertex_count,
-                "face_count": face_count,
-                "bounding_box": if vertex_count > 0 {
-                    json!({"min": min, "max": max})
-                } else {
-                    json!(null)
-                }
+        let meshes: Vec<Value> = gui_state
+            .meshes
+            .iter()
+            .map(|m| {
+                json!({
+                    "entity_path": m.entity_path,
+                    "vertex_count": m.vertices.len() / 3,
+                    "face_count": m.indices.len() / 3,
+                    "has_normals": m.normals.is_some(),
+                })
             })
-        })
-        .collect();
+            .collect();
 
-    Ok(json!({"meshes": stats}))
+        Ok(json!({
+            "meshes": meshes,
+            "values": gui_state.values,
+            "constraints": gui_state.constraints,
+            "files": gui_state.files,
+        }))
+    })
+    .await
+}
+
+async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
+    run_on_engine(&state.engine, |session| {
+        let gui_state = session
+            .build_gui_state()
+            .map_err(|e| format!("build_gui_state failed: {e}"))?;
+
+        let stats: Vec<Value> = gui_state
+            .meshes
+            .iter()
+            .map(|m| {
+                let vertex_count = m.vertices.len() / 3;
+                let face_count = m.indices.len() / 3;
+
+                let mut min = [f32::INFINITY; 3];
+                let mut max = [f32::NEG_INFINITY; 3];
+                for chunk in m.vertices.chunks_exact(3) {
+                    for i in 0..3 {
+                        min[i] = min[i].min(chunk[i]);
+                        max[i] = max[i].max(chunk[i]);
+                    }
+                }
+
+                json!({
+                    "entity_path": m.entity_path,
+                    "vertex_count": vertex_count,
+                    "face_count": face_count,
+                    "bounding_box": if vertex_count > 0 {
+                        json!({"min": min, "max": max})
+                    } else {
+                        json!(null)
+                    }
+                })
+            })
+            .collect();
+
+        Ok(json!({"meshes": stats}))
+    })
+    .await
+}
+
+async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let path = params["path"]
+        .as_str()
+        .ok_or_else(|| "path is required".to_string())?
+        .to_owned();
+
+    // Read file from disk
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("failed to read {path}: {e}"))?;
+
+    // Load into engine and build GUI state (on OS thread — OCCT panics in tokio)
+    let path_clone = path.clone();
+    let content_clone = content.clone();
+    let gui_state = run_on_engine(&state.engine, move |session| {
+        session
+            .update_source(&path_clone, &content_clone)
+            .map_err(|e| format!("update_source failed: {e}"))?;
+        session
+            .build_gui_state()
+            .map_err(|e| format!("build_gui_state failed: {e}"))
+    })
+    .await?;
+
+    // Serialize GUI state for the frontend
+    let gui_state_json = serde_json::to_value(&gui_state)
+        .map_err(|e| format!("serialize gui_state failed: {e}"))?;
+
+    // Tell frontend to open file and init engine state
+    let file_data = json!({
+        "path": path,
+        "content": content,
+        "guiState": gui_state_json,
+    });
+    state
+        .debug_bridge
+        .query_frontend("open_file", file_data)
+        .await
 }
 
 // --- MCP Streamable HTTP handler ---

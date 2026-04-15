@@ -4,37 +4,9 @@
 //! dimensional aliases, transitive resolution, cycle detection, parameterized aliases,
 //! and integration with existing type resolution paths.
 
-use reify_compiler::{CompiledModule, CompiledTypeAlias, compile};
-use reify_types::{ContentHash, Diagnostic, ModulePath, Severity, SourceSpan, Type};
-
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
-fn parse_and_compile(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("alias_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile(&parsed)
-}
-
-fn errors_only(module: &CompiledModule) -> Vec<&Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
-}
-
-#[allow(dead_code)]
-fn warnings_only(module: &CompiledModule) -> Vec<&Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning)
-        .collect()
-}
+use reify_compiler::CompiledTypeAlias;
+use reify_test_support::{compile_source, errors_only};
+use reify_types::{ContentHash, SourceSpan, Type};
 
 // ─── step-1: CompiledTypeAlias data structures ──────────────────────────────
 
@@ -64,7 +36,7 @@ fn compiled_alias_appears_in_module_output() {
     let source = r#"
         type Stress = Force
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -86,7 +58,7 @@ fn compiled_alias_duplicate_produces_diagnostic() {
         type Foo = Int
         type Foo = Real
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.iter()
@@ -106,7 +78,7 @@ fn simple_alias_compiles_without_errors() {
             param p : Stress = 1mm
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -125,7 +97,7 @@ fn dimensional_alias_force_div_area() {
             param p : Stress = 1mm
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -161,7 +133,7 @@ fn dimensional_alias_force_mul_length() {
             param e : Energy = 1mm
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -199,7 +171,7 @@ fn chained_dimensional_alias_acceleration() {
             param a : Acceleration = 1mm
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -238,7 +210,7 @@ fn circular_alias_a_b_a_produces_error() {
         type A = B
         type B = A
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.iter().any(|d| d.message.contains("circular")),
@@ -252,7 +224,7 @@ fn self_referential_alias_produces_error() {
     let source = r#"
         type X = X
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.iter().any(|d| d.message.contains("circular")),
@@ -269,7 +241,7 @@ fn duplicate_alias_name_produces_error() {
         type Foo = Int
         type Foo = Real
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.iter().any(|d| d.message.contains("duplicate")),
@@ -301,7 +273,7 @@ fn parameterized_alias_substitution() {
             param p : Measure<Force> = 1mm
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -339,7 +311,7 @@ fn parameterized_alias_with_default() {
             param p : Measure = 1mm
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -375,7 +347,7 @@ fn multi_param_alias_with_partial_defaults() {
             param p : BiMeasure<Mass> = 1mm
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -409,7 +381,7 @@ fn alias_as_function_param_type() {
         type Stress = Force
         fn measure(p: Stress) -> Real { p }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -437,7 +409,7 @@ fn alias_as_function_return_type() {
         type Stress = Force
         fn compute(x: Real) -> Stress { x }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -464,7 +436,7 @@ fn alias_as_field_domain_codomain_type() {
         type Stress = Force
         field def f : Point3 -> Stress { source = analytical { |p| p } }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -494,7 +466,7 @@ fn alias_as_trait_member_type() {
             param p : Stress
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -510,7 +482,7 @@ fn pub_alias_has_is_pub_true() {
     let source = r#"
         pub type Stress = Force
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -531,7 +503,7 @@ fn non_pub_alias_has_is_pub_false() {
     let source = r#"
         type Velocity = Length
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -558,7 +530,7 @@ fn alias_list_of_string() {
             param p : StringList = ["hello"]
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -590,7 +562,7 @@ fn parameterized_alias_map_instantiation() {
         type IntMap<V> = Map<Int, V>
         fn identity(m: IntMap<String>) -> IntMap<String> { m }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -623,7 +595,7 @@ fn alias_interop_mixed_declarations() {
         }
         fn measure(p: Stress) -> Real { p }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -673,7 +645,7 @@ fn alias_declared_after_use_forward_reference() {
         }
         type Stress = Force
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -706,7 +678,7 @@ fn alias_forward_ref_function() {
         fn compute(x: Velocity) -> Real { x }
         type Velocity = Length
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -743,7 +715,7 @@ fn alias_body_references_user_parameterized_alias() {
             param p : StringList = ["hello"]
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -776,7 +748,7 @@ fn alias_chain_parameterized_pair_concrete_args() {
         type StringIntMap = Pair<String, Int>
         fn identity(m: StringIntMap) -> StringIntMap { m }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -806,7 +778,7 @@ fn parameterized_alias_with_list_type_arg() {
         type Wrapped<T> = Option<T>
         fn take_wrapped(w: Wrapped<List<Force>>) -> Real { 0.0 }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -834,7 +806,7 @@ fn parameterized_alias_with_map_type_arg() {
         type Boxed<T> = List<T>
         fn identity(m: Boxed<Map<String, Int>>) -> Boxed<Map<String, Int>> { m }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -870,7 +842,7 @@ fn parameterized_alias_chain_with_type_param_forwarding() {
             param p : Wrapped<Int> = [1]
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -914,7 +886,7 @@ fn alias_dependency_via_type_arg_reverse_order() {
             param p : B = [1]
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -947,7 +919,7 @@ fn alias_dependency_map_via_type_args_reverse_order() {
         type Inner = Real
         fn identity(m: Outer) -> Outer { m }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -977,7 +949,7 @@ fn alias_dependency_option_via_type_arg_reverse_order() {
             param w : Wrapped = 1mm
         }
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -1000,9 +972,9 @@ fn alias_content_hash_deterministic() {
         type D = Bool
         type E = Length
     "#;
-    let first_hash = parse_and_compile(source).content_hash;
+    let first_hash = compile_source(source).content_hash;
     for i in 1..10 {
-        let hash = parse_and_compile(source).content_hash;
+        let hash = compile_source(source).content_hash;
         assert_eq!(
             first_hash, hash,
             "content_hash differed on iteration {} — non-deterministic alias hash ordering",
@@ -1022,7 +994,7 @@ fn recursive_parameterized_alias_does_not_stack_overflow() {
         type A<T> = List<A<T>>
         type UseA = A<Real>
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.iter().any(|d| {
@@ -1042,7 +1014,7 @@ fn self_recursive_parameterized_alias_does_not_stack_overflow() {
         type A<T> = A<T>
         type UseA = A<Int>
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.iter().any(|d| {
@@ -1065,7 +1037,7 @@ fn compiled_type_alias_in_module_output() {
     let source = r#"
         pub type Stress = Force
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -1125,7 +1097,7 @@ fn compiled_type_alias_parameterized_in_module_output() {
     let source = r#"
         pub type Container<T> = List<T>
     "#;
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),

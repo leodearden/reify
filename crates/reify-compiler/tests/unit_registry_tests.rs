@@ -6,30 +6,10 @@
 mod common;
 
 use reify_compiler::{
-    CompiledModule, UnitEntry, UnitRegistry, compile, compile_with_prelude, compile_with_stdlib,
-    stdlib_loader,
+    UnitEntry, UnitRegistry, compile, compile_with_prelude, compile_with_stdlib,
 };
-use reify_types::{DimensionVector, ModulePath, Severity, SourceSpan};
-
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
-fn parse_and_compile(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile(&parsed)
-}
-
-fn errors_only(module: &CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
-}
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
+use reify_types::{DimensionVector, ModulePath, SourceSpan};
 
 // ─── step-1: UnitEntry and UnitRegistry data structures ───────────────────────
 
@@ -159,7 +139,7 @@ fn seed_prelude_unit_overwrites_on_duplicate() {
 
 #[test]
 fn resolve_dimension_type_length() {
-    let module = parse_and_compile("unit meter : Length");
+    let module = compile_source("unit meter : Length");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -175,7 +155,7 @@ fn resolve_dimension_type_length() {
 
 #[test]
 fn resolve_dimension_type_mass() {
-    let module = parse_and_compile("unit kilogram : Mass");
+    let module = compile_source("unit kilogram : Mass");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -191,7 +171,7 @@ fn resolve_dimension_type_mass() {
 
 #[test]
 fn resolve_dimension_type_time() {
-    let module = parse_and_compile("unit second : Time");
+    let module = compile_source("unit second : Time");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -207,7 +187,7 @@ fn resolve_dimension_type_time() {
 
 #[test]
 fn resolve_dimension_type_temperature() {
-    let module = parse_and_compile("unit kelvin : Temperature");
+    let module = compile_source("unit kelvin : Temperature");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -223,7 +203,7 @@ fn resolve_dimension_type_temperature() {
 
 #[test]
 fn resolve_dimension_type_angle() {
-    let module = parse_and_compile("unit radian : Angle");
+    let module = compile_source("unit radian : Angle");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -239,7 +219,7 @@ fn resolve_dimension_type_angle() {
 
 #[test]
 fn resolve_dimension_type_area() {
-    let module = parse_and_compile("unit sq_meter : Area");
+    let module = compile_source("unit sq_meter : Area");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -255,7 +235,7 @@ fn resolve_dimension_type_area() {
 
 #[test]
 fn resolve_dimension_type_volume() {
-    let module = parse_and_compile("unit cubic_meter : Volume");
+    let module = compile_source("unit cubic_meter : Volume");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -271,7 +251,7 @@ fn resolve_dimension_type_volume() {
 
 #[test]
 fn resolve_dimension_type_force() {
-    let module = parse_and_compile("unit newton : Force");
+    let module = compile_source("unit newton : Force");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -287,7 +267,7 @@ fn resolve_dimension_type_force() {
 
 #[test]
 fn resolve_dimension_type_current() {
-    let module = parse_and_compile("unit ampere : Current");
+    let module = compile_source("unit ampere : Current");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -303,7 +283,7 @@ fn resolve_dimension_type_current() {
 
 #[test]
 fn resolve_dimension_type_unknown_emits_error() {
-    let module = parse_and_compile("unit foo : UnknownDimension");
+    let module = compile_source("unit foo : UnknownDimension");
     let errors = errors_only(&module);
     assert!(
         !errors.is_empty(),
@@ -324,7 +304,7 @@ fn resolve_dimension_type_unknown_emits_error() {
 #[test]
 fn evaluate_const_number_literal() {
     // A unit with a plain number literal as its conversion factor.
-    let module = parse_and_compile("unit cm : Length = 0.01");
+    let module = compile_source("unit cm : Length = 0.01");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -345,7 +325,7 @@ fn evaluate_const_number_literal() {
 #[test]
 fn evaluate_const_binop_multiply() {
     // Conversion factor as a binary multiplication: 25.4 * 0.001
-    let module = parse_and_compile("unit inch_mm : Length = 25.4 * 0.001");
+    let module = compile_source("unit inch_mm : Length = 25.4 * 0.001");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -366,7 +346,7 @@ fn evaluate_const_binop_multiply() {
 #[test]
 fn evaluate_const_binop_divide() {
     // Conversion factor as division: 1 / 1000
-    let module = parse_and_compile("unit milli : Length = 1 / 1000");
+    let module = compile_source("unit milli : Length = 1 / 1000");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -387,7 +367,7 @@ fn evaluate_const_binop_divide() {
 #[test]
 fn evaluate_const_quantity_literal_cross_ref() {
     // thou = 0.0254mm uses a QuantityLiteral referencing mm from registry
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit m : Length\nunit mm : Length = 0.001\nunit thou : Length = 0.0254mm",
     );
     assert!(
@@ -412,7 +392,7 @@ fn evaluate_const_quantity_literal_cross_ref() {
 #[test]
 fn compile_unit_base_unit_no_conversion() {
     // Base unit with no conversion expression: factor defaults to 1.0.
-    let module = parse_and_compile("unit meter : Length");
+    let module = compile_source("unit meter : Length");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -430,7 +410,7 @@ fn compile_unit_base_unit_no_conversion() {
 
 #[test]
 fn compile_unit_derived_unit_with_factor() {
-    let module = parse_and_compile("unit mm : Length = 0.001");
+    let module = compile_source("unit mm : Length = 0.001");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -448,7 +428,7 @@ fn compile_unit_derived_unit_with_factor() {
 #[test]
 fn compile_unit_affine_with_offset() {
     // degC: factor=1.0, offset=273.15
-    let module = parse_and_compile("unit degC : Temperature = 1 offset 273.15");
+    let module = compile_source("unit degC : Temperature = 1 offset 273.15");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -466,7 +446,7 @@ fn compile_unit_affine_with_offset() {
 
 #[test]
 fn compile_unit_unknown_dimension_emits_error() {
-    let module = parse_and_compile("unit foo : Luminance = 1.0");
+    let module = compile_source("unit foo : Luminance = 1.0");
     let errors = errors_only(&module);
     assert!(!errors.is_empty(), "expected error for unknown dimension");
 }
@@ -475,7 +455,7 @@ fn compile_unit_unknown_dimension_emits_error() {
 
 #[test]
 fn compiled_module_has_units_field() {
-    let module = parse_and_compile("unit mm : Length = 0.001\nunit m : Length");
+    let module = compile_source("unit mm : Length = 0.001\nunit m : Length");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -491,7 +471,7 @@ fn compiled_module_has_units_field() {
 
 #[test]
 fn compiled_units_have_correct_dimensions_and_factors() {
-    let module = parse_and_compile("unit mm : Length = 0.001\nunit m : Length");
+    let module = compile_source("unit mm : Length = 0.001\nunit m : Length");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -517,7 +497,7 @@ fn compiled_units_have_correct_dimensions_and_factors() {
 #[test]
 fn quantity_literal_uses_registry_unit() {
     // Define thou in the source, then use it in a structure param default.
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit thou : Length = 0.0000254\nstructure Bracket { param width : Length = 10thou }",
     );
     assert!(
@@ -549,7 +529,7 @@ fn quantity_literal_uses_registry_unit() {
 fn hardcoded_units_still_work_without_declarations() {
     // All hardcoded units should still work when no unit declarations are present.
     // Covers mm (Length), deg (Angle), and kg (Mass) fallback paths.
-    let module = parse_and_compile(
+    let module = compile_source(
         "structure S { param a : Length = 10mm\n param b : Angle = 90deg\n param c : Mass = 1kg }",
     );
     assert!(
@@ -597,7 +577,7 @@ fn hardcoded_units_still_work_without_declarations() {
 
 #[test]
 fn duplicate_unit_name_emits_error() {
-    let module = parse_and_compile("unit mm : Length = 0.001\nunit mm : Length = 0.001");
+    let module = compile_source("unit mm : Length = 0.001\nunit mm : Length = 0.001");
     let errors = errors_only(&module);
     assert!(!errors.is_empty(), "expected duplicate unit error");
     assert!(
@@ -614,7 +594,7 @@ fn duplicate_unit_name_emits_error() {
 #[test]
 fn unit_cross_ref_in_conversion_expr() {
     // thou = 0.0254mm: should resolve mm from registry -> factor = 0.0254 * 0.001 = 0.0000254
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit m : Length\nunit mm : Length = 0.001\nunit thou : Length = 0.0254mm",
     );
     assert!(
@@ -638,7 +618,7 @@ fn unit_cross_ref_in_conversion_expr() {
 
 #[test]
 fn pub_unit_has_is_pub_true() {
-    let module = parse_and_compile("pub unit mm : Length = 0.001");
+    let module = compile_source("pub unit mm : Length = 0.001");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -654,7 +634,7 @@ fn pub_unit_has_is_pub_true() {
 
 #[test]
 fn private_unit_has_is_pub_false() {
-    let module = parse_and_compile("unit internal_mm : Length = 0.001");
+    let module = compile_source("unit internal_mm : Length = 0.001");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -672,7 +652,7 @@ fn private_unit_has_is_pub_false() {
 
 #[test]
 fn integration_unit_in_structure_param() {
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit mm : Length = 0.001\nstructure Bracket { param width : Length = 50mm }",
     );
     assert!(
@@ -704,7 +684,7 @@ fn integration_unit_in_structure_param() {
 #[test]
 fn offset_only_unit_has_factor_one() {
     // `unit kelvin : Temperature offset 273.15` -> factor=1.0, offset=Some(273.15)
-    let module = parse_and_compile("unit kelvin : Temperature offset 273.15");
+    let module = compile_source("unit kelvin : Temperature offset 273.15");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -729,7 +709,7 @@ fn offset_only_unit_has_factor_one() {
 #[test]
 fn offset_unit_quantity_literal_applies_offset() {
     // 100kelvin QuantityLiteral: si_value = 100 * 1.0 + 273.15 = 373.15
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit kelvin : Temperature offset 273.15\nstructure S { param t : Temperature = 100kelvin }",
     );
     assert!(
@@ -763,7 +743,7 @@ fn compile_unit_broken_conversion_not_registered() {
     // 'some_var' is an identifier — evaluate_const_expr() returns None for
     // non-constant expressions. compile_unit() should return None, so the unit
     // is NOT added to module.units.
-    let module = parse_and_compile("unit broken : Length = some_var");
+    let module = compile_source("unit broken : Length = some_var");
     // The unit should NOT appear in compiled units
     assert!(
         !module.units.iter().any(|u| u.name == "broken"),
@@ -786,7 +766,7 @@ fn compile_unit_broken_offset_not_registered() {
     // compile_unit() should return None, so the unit is NOT added to module.units.
     // Currently the offset code silently sets offset=None when eval fails,
     // registering the unit as if no offset was declared.
-    let module = parse_and_compile("unit broken_off : Temperature = 1 offset some_var");
+    let module = compile_source("unit broken_off : Temperature = 1 offset some_var");
     // The unit should NOT appear in compiled units
     assert!(
         !module.units.iter().any(|u| u.name == "broken_off"),
@@ -807,7 +787,7 @@ fn compile_unit_broken_offset_not_registered() {
 fn regression_hardcoded_units_all_still_resolve() {
     // All 9 hardcoded units (mm, cm, m, in, deg, rad, kg, g, s) must still work
     // when no unit declarations are present.
-    let module = parse_and_compile(
+    let module = compile_source(
         "structure S {\n\
             param a : Length = 1mm\n\
             param b : Length = 1cm\n\
@@ -869,7 +849,7 @@ fn affine_unit_rejected_in_conversion_expression() {
     // conversion expressions. The offset semantics only make sense for runtime
     // value expressions (e.g., '25degC' → 298.15K), not for defining conversion
     // factors.
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit degC : Temperature = 1 offset 273.15\nunit mytemp : Temperature = 1.0degC",
     );
     // mytemp should NOT be registered (compile_unit returns None)
@@ -894,7 +874,7 @@ fn affine_unit_rejected_in_conversion_expression() {
 fn non_affine_unit_in_conversion_still_works_after_guard() {
     // Non-affine QuantityLiteral in conversion expressions must still work.
     // 'thou = 0.0254mm' references mm (no offset) — should produce factor ≈ 0.0000254.
-    let module = parse_and_compile("unit mm : Length = 0.001\nunit thou : Length = 0.0254mm");
+    let module = compile_source("unit mm : Length = 0.001\nunit thou : Length = 0.0254mm");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -917,7 +897,7 @@ fn affine_unit_still_works_in_runtime_value_expression() {
     // Affine units must still work in runtime value expressions (QuantityLiteral
     // in structure params). '25degC' → si_value = 25*1 + 273.15 = 298.15K.
     // This goes through lookup_unit_in_registry(), NOT evaluate_const_expr().
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit degC : Temperature = 1 offset 273.15\nstructure S { param t : Temperature = 25degC }",
     );
     assert!(
@@ -950,7 +930,7 @@ fn affine_unit_still_works_in_runtime_value_expression() {
 fn overflow_multiplication_rejected() {
     // f64::MAX * 2.0 → inf — must NOT be registered.
     let src = format!("unit huge : Length = {} * 2.0", f64::MAX);
-    let module = parse_and_compile(&src);
+    let module = compile_source(&src);
     assert!(
         !module.units.iter().any(|u| u.name == "huge"),
         "unit with overflow factor should not be registered"
@@ -967,7 +947,7 @@ fn overflow_multiplication_rejected() {
 fn overflow_addition_rejected() {
     // f64::MAX + f64::MAX → inf
     let src = format!("unit huge_add : Length = {} + {}", f64::MAX, f64::MAX);
-    let module = parse_and_compile(&src);
+    let module = compile_source(&src);
     assert!(
         !module.units.iter().any(|u| u.name == "huge_add"),
         "unit with overflow addition should not be registered"
@@ -984,7 +964,7 @@ fn overflow_addition_rejected() {
 fn overflow_division_result_rejected() {
     // f64::MAX / very_small → inf (not div-by-zero, but result is inf)
     let src = format!("unit huge_div : Length = {} / 0.0000000000000001", f64::MAX);
-    let module = parse_and_compile(&src);
+    let module = compile_source(&src);
     assert!(
         !module.units.iter().any(|u| u.name == "huge_div"),
         "unit with overflow division result should not be registered"
@@ -1002,7 +982,7 @@ fn overflow_division_result_rejected() {
 #[test]
 fn zero_literal_factor_rejected() {
     // A unit with literal zero factor destroys unit information.
-    let module = parse_and_compile("unit z : Length = 0");
+    let module = compile_source("unit z : Length = 0");
     assert!(
         !module.units.iter().any(|u| u.name == "z"),
         "unit with zero factor should not be registered"
@@ -1020,7 +1000,7 @@ fn zero_literal_factor_rejected() {
 #[test]
 fn zero_from_arithmetic_factor_rejected() {
     // Zero via arithmetic: 0 * 1 → 0.
-    let module = parse_and_compile("unit z2 : Length = 0 * 1");
+    let module = compile_source("unit z2 : Length = 0 * 1");
     assert!(
         !module.units.iter().any(|u| u.name == "z2"),
         "unit with zero arithmetic factor should not be registered"
@@ -1045,7 +1025,7 @@ fn non_finite_offset_rejected() {
         f64::MAX,
         f64::MAX
     );
-    let module = parse_and_compile(&src);
+    let module = compile_source(&src);
     assert!(
         !module.units.iter().any(|u| u.name == "bad_off"),
         "unit with non-finite offset should not be registered"
@@ -1068,7 +1048,7 @@ fn quantity_literal_overflow_rejected() {
         "unit big : Length = 2.0\nunit derived : Length = {}big",
         f64::MAX
     );
-    let module = parse_and_compile(&src);
+    let module = compile_source(&src);
     assert!(
         !module.units.iter().any(|u| u.name == "derived"),
         "unit with quantity-literal overflow should not be registered"
@@ -1086,7 +1066,7 @@ fn quantity_literal_overflow_rejected() {
 #[test]
 fn valid_arithmetic_factor_still_compiles() {
     // 25.4 * 0.001 = 0.0254 — valid, should compile fine.
-    let module = parse_and_compile("unit inch : Length = 25.4 * 0.001");
+    let module = compile_source("unit inch : Length = 25.4 * 0.001");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -1103,7 +1083,7 @@ fn valid_arithmetic_factor_still_compiles() {
 #[test]
 fn valid_offset_still_compiles() {
     // 1 offset 273.15 — valid affine unit.
-    let module = parse_and_compile("unit degC : Temperature = 1 offset 273.15");
+    let module = compile_source("unit degC : Temperature = 1 offset 273.15");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -1120,7 +1100,7 @@ fn valid_offset_still_compiles() {
 #[test]
 fn valid_quantity_literal_cross_ref_still_compiles() {
     // 0.0254mm — valid cross-reference.
-    let module = parse_and_compile("unit mm : Length = 0.001\nunit thou : Length = 0.0254mm");
+    let module = compile_source("unit mm : Length = 0.001\nunit thou : Length = 0.0254mm");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -1138,7 +1118,7 @@ fn valid_quantity_literal_cross_ref_still_compiles() {
 fn valid_negative_factor_still_compiles() {
     // Negative factor is finite and non-zero — should compile.
     // (Semantically odd but not a validation error at this level.)
-    let module = parse_and_compile("unit neg : Length = 0 - 1");
+    let module = compile_source("unit neg : Length = 0 - 1");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -1155,7 +1135,7 @@ fn valid_negative_factor_still_compiles() {
 #[test]
 fn valid_small_factor_still_compiles() {
     // Very small but finite factor.
-    let module = parse_and_compile("unit pico : Length = 0.000000000001");
+    let module = compile_source("unit pico : Length = 0.000000000001");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -1182,7 +1162,7 @@ fn overflow_user_unit_in_structure_param_rejected() {
         "unit big : Length = 2.0\nstructure S {{ param x : Length = {}big }}",
         big_num
     );
-    let module = parse_and_compile(&src);
+    let module = compile_source(&src);
     let errors = errors_only(&module);
     assert!(
         errors
@@ -1199,7 +1179,7 @@ fn overflow_hardcoded_unit_in_structure_param_rejected() {
     // si_value = inf * 0.001 = inf — must emit overflow diagnostic.
     let big_num = "9".repeat(309);
     let src = format!("structure S {{ param y : Length = {}mm }}", big_num);
-    let module = parse_and_compile(&src);
+    let module = compile_source(&src);
     let errors = errors_only(&module);
     assert!(
         errors
@@ -1215,7 +1195,7 @@ fn overflow_hardcoded_unit_in_structure_param_rejected() {
 #[test]
 fn valid_quantity_literal_in_structure_param_still_compiles() {
     // A normal quantity literal in a structure param must still compile without errors.
-    let module = parse_and_compile("structure Foo { param x : Length = 10mm }");
+    let module = compile_source("structure Foo { param x : Length = 10mm }");
     assert!(
         errors_only(&module).is_empty(),
         "expected no errors for valid quantity literal in structure param; got: {:?}",
@@ -1243,16 +1223,6 @@ fn valid_quantity_literal_in_structure_param_still_compiles() {
 
 // ─── task-208: prelude unit seeding in compile_with_prelude ─────────────────
 
-fn compile_with_stdlib_helper(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("user_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile_with_prelude(&parsed, stdlib_loader::load_stdlib())
-}
-
 /// compile_with_prelude resolves a prelude unit (mm) in a structure param.
 /// The user source declares NO units — mm comes entirely from prelude.
 #[test]
@@ -1262,7 +1232,7 @@ structure def Bracket {
     param width : Length = 10mm
 }
 "#;
-    let module = compile_with_stdlib_helper(source);
+    let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
     assert!(
         errors.is_empty(),
@@ -1293,7 +1263,7 @@ structure def Bracket {
 #[test]
 fn prelude_unit_resolves_in_unit_conversion_expr() {
     let source = "unit mylen : Length = 0.0254mm";
-    let module = compile_with_stdlib_helper(source);
+    let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
     assert!(
         errors.is_empty(),
@@ -1319,7 +1289,7 @@ fn prelude_unit_resolves_in_unit_conversion_expr() {
 #[test]
 fn local_unit_duplicate_of_prelude_emits_error() {
     let source = "unit mm : Length = 0.002";
-    let module = compile_with_stdlib_helper(source);
+    let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
     assert!(
         errors
@@ -1454,11 +1424,11 @@ structure def TempCheck {
     param bodytemp: Temperature = 98.6degF
 }
 "#;
-    let module = compile_with_stdlib_helper(source);
+    let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
     assert!(
         errors.is_empty(),
-        "compile_with_stdlib_helper should resolve degF without errors, got: {:?}",
+        "compile_source_with_stdlib should resolve degF without errors, got: {:?}",
         errors
     );
 
@@ -1514,7 +1484,7 @@ structure def TempCheck {
 #[test]
 fn prelude_unit_collision_diagnostic_mentions_stdlib() {
     let source = "unit mm : Length = 0.002";
-    let module = compile_with_stdlib_helper(source);
+    let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
 
     // (1) At least one error mentions 'duplicate' and 'mm'
@@ -1631,7 +1601,7 @@ fn affine_unit_in_conversion_referencing_other_affine_rejected() {
     //   unit myK : Temperature = 1.0degC
     // means "1 myK = 1 degC", which would involve adding an offset to define a
     // conversion factor — that is invalid.
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit degC : Temperature = 1 offset 273.15\nunit myK : Temperature = 1.0degC",
     );
 
@@ -1662,7 +1632,7 @@ fn affine_unit_in_conversion_referencing_other_affine_rejected() {
 fn test_expect_scalar_extracts_si_value_and_dimension() {
     // Compile a simple Length param and verify that common::expect_scalar
     // can extract the si_value and dimension without nested if-let boilerplate.
-    let module = parse_and_compile("structure S { param x : Length = 10mm }");
+    let module = compile_source("structure S { param x : Length = 10mm }");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -1692,7 +1662,7 @@ fn test_expect_scalar_extracts_si_value_and_dimension() {
 fn test_expect_binop_extracts_op_and_operands() {
     // Compile a source with a let-binding BinOp expression and verify that
     // common::expect_binop can extract op/left/right without nested if-let boilerplate.
-    let module = parse_and_compile(
+    let module = compile_source(
         "unit thou : Length = 0.0000254\n\
          structure S {\n\
              param w : Length = 10thou\n\

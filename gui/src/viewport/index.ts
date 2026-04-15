@@ -8,3 +8,4 @@ export { createMeshManager } from './meshManager';
 export type { MeshManagerContext } from './meshManager';
 export { createSelection } from './selection';
 export type { SelectionContext, SelectionOptions } from './selection';
+export { createGhostMaterial } from './ghostMaterial';

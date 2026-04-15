@@ -5,28 +5,7 @@
 //! A unified `seen_entity_names` tracker in the pre-pass detects all cases and
 //! emits a two-label diagnostic pointing at both definitions.
 
-/// Helper: parse and compile source, return compiled module.
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(
-        source,
-        reify_types::ModulePath::single("entity_overload_test"),
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: return only error-severity diagnostics.
-fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect()
-}
+use reify_test_support::{compile_source, errors_only};
 
 // ── step-1/3: duplicate entity names ─────────────────────────────────────
 
@@ -43,7 +22,7 @@ structure Bracket {
     param height : Real = 20.0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     // Exactly one duplicate-entity error
@@ -93,7 +72,7 @@ occurrence Weld {
     param energy : Real = 100.0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert_eq!(
@@ -142,7 +121,7 @@ occurrence Widget {
     param duration : Real = 5.0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     assert_eq!(
@@ -205,7 +184,7 @@ structure Sensor {
     param value : Real = 0.0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     // Should have at least one duplicate-entity error (may have other warnings)
@@ -252,7 +231,7 @@ structure Shape {
     param side : Real = 1.0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     let dup_errors: Vec<_> = errors
@@ -301,7 +280,7 @@ structure Box<T, U> {
     param height : Real = 2.0
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = errors_only(&module);
 
     let dup_errors: Vec<_> = errors
@@ -344,7 +323,7 @@ field def Gamma : Real -> Real { source = analytical { |x| x } }
 
 constraint def Delta { x > 0 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // No duplicate-entity errors
     let dup_errors: Vec<_> = errors_only(&module)

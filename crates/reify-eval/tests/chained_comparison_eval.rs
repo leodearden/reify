@@ -6,25 +6,8 @@
 //! compatibility (returns Undef on mismatch), and And uses Kleene three-valued
 //! logic (false ∧ Undef = false, true ∧ Undef = Undef).
 
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_test_support::eval_source;
 use reify_types::{ModulePath, Severity, Value, ValueCellId};
-
-/// Helper: parse, compile, and eval source, return eval result.
-fn eval_source(source: &str) -> reify_eval::EvalResult {
-    let parsed = reify_syntax::parse(source, ModulePath::single("chain_eval_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    engine.eval(&compiled)
-}
 
 // ── step-1: chain_range_satisfied ─────────────────────────────────────────
 

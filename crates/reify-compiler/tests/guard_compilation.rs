@@ -4,24 +4,8 @@
 //! CompiledGuardedGroup entries in TopologyTemplate.
 
 use reify_compiler::*;
+use reify_test_support::compile_first_template;
 use reify_types::*;
-
-/// Helper: parse source and compile, returning first template.
-fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let template = compiled
-        .templates
-        .into_iter()
-        .next()
-        .expect("expected 1 template");
-    (template, compiled.diagnostics)
-}
 
 /// Helper: assert that no Error-severity diagnostics are present.
 ///
@@ -130,6 +114,7 @@ structure def S {
         group.constraints
     );
 }
+
 
 /// Parse `param x : Scalar = 5mm where active` — the per-declaration where clause
 /// should compile into a CompiledGuardedGroup with x as a guarded member.
