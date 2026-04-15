@@ -54,6 +54,12 @@ impl fmt::Display for MemberName {
 /// this prefix as the entity portion of their ValueCellId.
 pub const FIELD_ENTITY_PREFIX: &str = "__field";
 
+/// The standard LocatedPort trait name. Ports that satisfy this trait (directly or
+/// transitively through refinement) carry a spatial frame and participate in
+/// frame-alignment constraint generation. Used by the compiler to detect asymmetric
+/// connections where one port is spatial and the other is not.
+pub const LOCATED_PORT_TRAIT: &str = "LocatedPort";
+
 /// Identifies a value cell in the topology graph.
 /// A value cell corresponds to a single param, let binding, or computed property.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

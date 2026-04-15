@@ -3,7 +3,6 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 
@@ -684,6 +683,106 @@ fn compile_module_multi_import_prelude() {
         "expected sub_component with structure_name 'Nut', got {:?}",
         structure_names
     );
+}
+
+// ── task-370/step-9: circular_import_error_message_deterministic ──────────────
+
+/// Validate that circular-import error messages are deterministic.
+///
+/// Creates a three-module cycle: cherry -> apple -> banana -> cherry.
+/// Module names are chosen so alphabetical order (apple, banana, cherry)
+/// DIFFERS from DFS traversal order (cherry, apple, banana).  This ensures
+/// `sort_unstable()` on `in_progress` is the only thing that can produce the
+/// observed sorted output — the test genuinely fails without the sort fix.
+///
+/// Compiles twice (with independent `ModuleDag` instances) and asserts:
+/// (a) both runs produce an error mentioning "circular" or "cycle",
+/// (b) the error messages are identical between runs, and
+/// (c) the module names appear in sorted alphabetical order within the message
+///     ("apple" before "banana" before "cherry").
+///
+/// Without the HashSet-to-sorted-Vec fix (step-10), the iteration order of
+/// `in_progress` is hash-order-dependent and may fail the sorted-order assertion.
+#[test]
+fn circular_import_error_message_deterministic() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // cherry imports apple (DFS entry point)
+    fs::write(
+        dir.join("cherry.ri"),
+        "import apple\nstructure Cherry { param x: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    // apple imports banana
+    fs::write(
+        dir.join("apple.ri"),
+        "import banana\nstructure Apple { param y: Scalar = 2mm }",
+    )
+    .unwrap();
+
+    // banana imports cherry (closes the cycle: cherry -> apple -> banana -> cherry)
+    fs::write(
+        dir.join("banana.ri"),
+        "import cherry\nstructure Banana { param z: Scalar = 3mm }",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+
+    // First compilation — DFS visits cherry, apple, banana, then detects cherry again.
+    // in_progress = {cherry, apple, banana}; sorted = [apple, banana, cherry].
+    let mut dag1 = ModuleDag::new();
+    let result1 = dag1.compile_module("cherry", &resolver);
+    assert!(result1.is_err(), "expected error for 3-cycle (first run)");
+    let msg1 = result1
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+    assert!(
+        msg1.contains("circular") || msg1.contains("cycle"),
+        "first run: error should mention circular dependency, got: {}",
+        msg1
+    );
+
+    // Second compilation (fresh dag)
+    let mut dag2 = ModuleDag::new();
+    let result2 = dag2.compile_module("cherry", &resolver);
+    assert!(result2.is_err(), "expected error for 3-cycle (second run)");
+    let msg2 = result2
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // (b) Messages must be identical between runs (determinism)
+    assert_eq!(
+        msg1, msg2,
+        "circular-import error messages must be identical across compilations"
+    );
+
+    // (c) Module names must appear in sorted alphabetical order within the message.
+    // Alphabetical: apple < banana < cherry.  DFS order is cherry < apple < banana,
+    // so this assertion fails without sort_unstable().
+    let apple_pos = msg1.find("apple").expect("'apple' must appear in error");
+    let banana_pos = msg1.find("banana").expect("'banana' must appear in error");
+    // cherry appears twice (sorted list + triggered-by suffix); take the first occurrence.
+    let cherry_pos = msg1.find("cherry").expect("'cherry' must appear in error");
+    assert!(
+        apple_pos < banana_pos,
+        "expected 'apple' before 'banana' in sorted cycle, got: {}",
+        msg1
+    );
+    assert!(
+        banana_pos < cherry_pos,
+        "expected 'banana' before 'cherry' in sorted cycle, got: {}",
+        msg1
+    );
+
 }
 
 // ── amendment (task-1392): compile_project multi-import prelude path ──────────
