@@ -114,17 +114,26 @@ fn compiled() -> &'static CompiledModule {
     C.get_or_init(|| parse_and_compile_with_stdlib(SOURCE))
 }
 
-/// Evaluate the compiled module with a fresh engine. Not cached (each test
-/// gets an independent engine state).
-fn eval_checkpoint() -> reify_eval::EvalResult {
-    let mut engine = make_simple_engine();
-    engine.eval(compiled())
+/// Evaluate the compiled module. Cached via `OnceLock` — the source and
+/// eval engine are both deterministic (no randomness, no mutation), so
+/// re-evaluation yields identical results every time.  Consistent with how
+/// `compiled()` caches `CompiledModule`.
+fn eval_checkpoint() -> &'static reify_eval::EvalResult {
+    static E: OnceLock<reify_eval::EvalResult> = OnceLock::new();
+    E.get_or_init(|| {
+        let mut engine = make_simple_engine();
+        engine.eval(compiled())
+    })
 }
 
-/// Check constraints in the compiled module with a fresh engine.
-fn check_checkpoint() -> reify_eval::CheckResult {
-    let mut engine = make_simple_engine();
-    engine.check(compiled())
+/// Check constraints in the compiled module.  Cached via `OnceLock` for the
+/// same reason as `eval_checkpoint()`.
+fn check_checkpoint() -> &'static reify_eval::CheckResult {
+    static K: OnceLock<reify_eval::CheckResult> = OnceLock::new();
+    K.get_or_init(|| {
+        let mut engine = make_simple_engine();
+        engine.check(compiled())
+    })
 }
 
 // ── Integration tests ─────────────────────────────────────────────────────────
@@ -226,12 +235,20 @@ fn checkpoint_m9_constraints_satisfied() {
     }
 }
 
-/// Spot-check M10: `GeomPart.origin` should evaluate to a `Value::Point`.
+/// Spot-check M10: key `GeomPart` lets evaluate to their expected geometric types.
+///
+/// Checks:
+///   - `origin`  → `Value::Point` (point3(0,0,0))
+///   - `rot`     → `Value::Orientation` (orient_identity())
+///   - `tf`      → `Value::Transform` (transform3 with 10mm x-translation)
+///   - `moved`   → `Value::Point` with x-coord 0.01 SI (tf * origin = 10mm, 0, 0)
 ///
 /// **Fails in step-1** because SOURCE = "" → GeomPart.origin not found.
 #[test]
 fn checkpoint_m10_geometric_types_eval() {
     let result = eval_checkpoint();
+
+    // origin = point3(0mm, 0mm, 0mm) → Value::Point
     let id = ValueCellId::new("GeomPart", "origin");
     let val = result.values.get(&id).unwrap_or_else(|| {
         panic!(
@@ -244,15 +261,62 @@ fn checkpoint_m10_geometric_types_eval() {
         "expected Value::Point for GeomPart.origin, got {:?}",
         val
     );
+
+    // rot = orient_identity() → Value::Orientation
+    let id = ValueCellId::new("GeomPart", "rot");
+    let val = result.values.get(&id).unwrap_or_else(|| {
+        panic!("GeomPart.rot not found in eval values")
+    });
+    assert!(
+        matches!(val, Value::Orientation { .. }),
+        "expected Value::Orientation for GeomPart.rot, got {:?}",
+        val
+    );
+
+    // tf = transform3(rot, vec3(10mm, 0mm, 0mm)) → Value::Transform
+    let id = ValueCellId::new("GeomPart", "tf");
+    let val = result.values.get(&id).unwrap_or_else(|| {
+        panic!("GeomPart.tf not found in eval values")
+    });
+    assert!(
+        matches!(val, Value::Transform { .. }),
+        "expected Value::Transform for GeomPart.tf, got {:?}",
+        val
+    );
+
+    // moved = tf * origin = translation(10mm, 0, 0) applied to (0,0,0) → (0.01m, 0, 0) SI
+    let id = ValueCellId::new("GeomPart", "moved");
+    let val = result.values.get(&id).unwrap_or_else(|| {
+        panic!("GeomPart.moved not found in eval values")
+    });
+    assert!(
+        matches!(val, Value::Point(_)),
+        "expected Value::Point for GeomPart.moved, got {:?}",
+        val
+    );
+    if let Value::Point(coords) = val {
+        match &coords[0] {
+            Value::Scalar { si_value, .. } => assert!(
+                (si_value - 0.01).abs() < 1e-9,
+                "expected x-coord of GeomPart.moved = 0.01 SI (10mm), got {si_value}"
+            ),
+            other => panic!("expected Scalar for GeomPart.moved[0], got {:?}", other),
+        }
+    }
 }
 
-/// Spot-check M11 field calculus: `FieldUser.f3 = sample(linear_f, 3.0)` where
-/// `linear_f(x) = 2.5x + 1.0` → expected value is 8.5.
+/// Spot-check M11 field calculus:
+///   - `FieldUser.f3  = sample(linear_f, 3.0)` where `linear_f(x) = 2.5x + 1.0`
+///     → expected value is 8.5.
+///   - `FieldUser.df3 = sample(gradient(linear_f), 3.0)` — derivative of 2.5x+1.0
+///     is 2.5 everywhere → expected ≈ 2.5.
 ///
 /// **Fails in step-1** because SOURCE = "" → FieldUser.f3 not found.
 #[test]
 fn checkpoint_m11_field_sample_at_three() {
     let result = eval_checkpoint();
+
+    // f3 = sample(linear_f, 3.0) = 2.5 * 3.0 + 1.0 = 8.5
     let id = ValueCellId::new("FieldUser", "f3");
     let val = result.values.get(&id).unwrap_or_else(|| {
         panic!(
@@ -268,6 +332,21 @@ fn checkpoint_m11_field_sample_at_three() {
             );
         }
         other => panic!("expected Value::Real for FieldUser.f3, got {:?}", other),
+    }
+
+    // df3 = sample(gradient(linear_f), 3.0) — gradient of a linear field is its slope
+    let id = ValueCellId::new("FieldUser", "df3");
+    let val = result.values.get(&id).unwrap_or_else(|| {
+        panic!("FieldUser.df3 not found in eval values")
+    });
+    match val {
+        Value::Real(f) => {
+            assert!(
+                (f - 2.5).abs() < 1e-6,
+                "expected 2.5 for FieldUser.df3 (gradient of 2.5x+1.0 is 2.5 everywhere), got {f}"
+            );
+        }
+        other => panic!("expected Value::Real for FieldUser.df3, got {:?}", other),
     }
 }
 
@@ -656,14 +735,25 @@ fn checkpoint_value_variant_coverage() {
 /// The floor of 5400 tolerates normal fluctuation (toggling `#[ignore]`
 /// annotations, adding tests in other tasks) while catching mass regression.
 ///
-/// # Notes
+/// # Design notes
+///
+/// **Why `--workspace` and not `--exclude reify-eval`?**  The subprocess
+/// intentionally includes this crate's own non-ignored tests.  If a test in
+/// this file regresses, the subprocess reports it with `total_failed > 0`,
+/// which produces a clear error message.  Excluding reify-eval would reduce
+/// coverage and hide such failures.
+///
+/// **Compile-failure guard**: if `cargo test` exits with a non-zero status
+/// *before* any test binary emits a "test result:" line (e.g. a workspace
+/// compilation error), a dedicated early panic surfaces the stderr content
+/// rather than quietly reporting `0 passed / 0 failed`.
+///
+/// # Running
 /// Marked `#[ignore]` because spawning a nested `cargo test` invocation is slow
 /// (~30 s) and redundant with CI. Run explicitly with:
 /// ```
 /// cargo test -p reify-eval --test m8_m11_regression_checkpoint -- --include-ignored
 /// ```
-///
-/// Step-6 implementation: subprocess invocation with PASS >= 5400 floor.
 #[test]
 #[ignore = "slow subprocess; run explicitly with --include-ignored to verify test count floor"]
 fn test_count_floor() {
@@ -691,6 +781,19 @@ fn test_count_floor() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let all_output = format!("{stdout}{stderr}");
 
+    // Guard: if the subprocess exited non-zero with no "test result:" lines, it
+    // almost certainly failed to compile rather than having failing tests.  Report
+    // stderr explicitly so the root cause isn't hidden behind "0 passed / 0 failed".
+    let has_result_lines = all_output.lines().any(|l| l.starts_with("test result:"));
+    if !output.status.success() && !has_result_lines {
+        panic!(
+            "`cargo test --workspace` failed with no 'test result:' lines — \
+             likely a compilation error or launch failure.\n\
+             Exit code: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            output.status.code()
+        );
+    }
+
     // Each test binary emits a line like:
     //   "test result: ok. 551 passed; 0 failed; 20 ignored; ..."
     // Sum all the "passed" and "failed" counters across all binaries.
@@ -707,13 +810,25 @@ fn test_count_floor() {
             if let Some(prefix) = part.strip_suffix(" passed") {
                 // "test result: ok. 551 passed" → prefix = "test result: ok. 551"
                 if let Some(n) = prefix.split_whitespace().last() {
-                    total_passed += n.parse::<u64>().unwrap_or(0);
+                    match n.parse::<u64>() {
+                        Ok(count) => total_passed += count,
+                        Err(e) => panic!(
+                            "failed to parse passed count {n:?} from cargo test output: {e}\n\
+                             If the cargo output format changed, update the parser in this test."
+                        ),
+                    }
                 }
             }
             if let Some(prefix) = part.strip_suffix(" failed") {
                 // " 0 failed" → prefix = "0"
                 if let Some(n) = prefix.split_whitespace().last() {
-                    total_failed += n.parse::<u64>().unwrap_or(0);
+                    match n.parse::<u64>() {
+                        Ok(count) => total_failed += count,
+                        Err(e) => panic!(
+                            "failed to parse failed count {n:?} from cargo test output: {e}\n\
+                             If the cargo output format changed, update the parser in this test."
+                        ),
+                    }
                 }
             }
         }
