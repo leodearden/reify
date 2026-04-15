@@ -5,7 +5,7 @@
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind};
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, Severity, Type};
+use reify_types::{ExportFormat, GeometryOp, Type};
 
 // ---------------------------------------------------------------------------
 // step-1: Compiler rejects wrong arg counts, accepts correct count
@@ -175,8 +175,7 @@ fn fillet_through_full_eval_pipeline() {
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
-    let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "expected no error-level diagnostics from fillet full-pipeline build, got: {:?}", errors);
+    assert_no_error_diagnostics(&result.diagnostics, "fillet full-pipeline build");
 
     let ops = ops_ref.lock().unwrap();
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
@@ -248,8 +247,7 @@ fn fillet_modify_only_needs_radius_arg() {
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
-    let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "expected no error-level diagnostics from fillet minimal build, got: {:?}", errors);
+    assert_no_error_diagnostics(&result.diagnostics, "fillet minimal build");
 
     let ops = ops_ref.lock().unwrap();
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());

@@ -5,7 +5,7 @@
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind};
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, Severity, Type};
+use reify_types::{ExportFormat, GeometryOp, Type};
 
 // ---------------------------------------------------------------------------
 // step-1: Compiler rejects wrong arg counts, accepts correct count
@@ -171,8 +171,7 @@ fn chamfer_through_full_eval_pipeline() {
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
-    let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "expected no error-level diagnostics from chamfer full-pipeline build, got: {:?}", errors);
+    assert_no_error_diagnostics(&result.diagnostics, "chamfer full-pipeline build");
 
     let ops = ops_ref.lock().unwrap();
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
@@ -244,8 +243,7 @@ fn chamfer_modify_only_needs_distance_arg() {
 
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
-    let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "expected no error-level diagnostics from chamfer minimal build, got: {:?}", errors);
+    assert_no_error_diagnostics(&result.diagnostics, "chamfer minimal build");
 
     let ops = ops_ref.lock().unwrap();
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
