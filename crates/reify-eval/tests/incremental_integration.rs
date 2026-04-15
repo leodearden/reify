@@ -287,10 +287,12 @@ fn edit_height_inrange_still_satisfied() {
     // Positive presence check: all constraints should still be evaluated (not silently dropped).
     // Height does not touch the `determined(origin)` guard, so no constraints are excluded —
     // the full assembly count (measured as 49) must be present.
+    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
     assert!(
-        check_result.constraint_results.len() >= 40,
-        "expected >= 40 constraint results after height=400mm, got {} \
-         (constraints may have been silently dropped)",
+        check_result.constraint_results.len() >= 47,
+        "expected >= 47 constraint results after height=400mm, got {} \
+         (constraints may have been silently dropped; \
+          floor is 49 total minus 2 esc-295-78-guarded constraints = 47)",
         check_result.constraint_results.len()
     );
 
@@ -392,10 +394,12 @@ fn edit_height_below_width_triggers_ordering_violation() {
         .edit_check(height_id, mm(100.0))
         .expect("edit_check should succeed");
 
-    // Total count still >=40 (no short-circuit on violation)
+    // Total count still >=47 (no short-circuit on violation).
+    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
     assert!(
-        check_result.constraint_results.len() >= 40,
-        "expected >=40 constraint results even with height=100mm (violation), got {}",
+        check_result.constraint_results.len() >= 47,
+        "expected >=47 constraint results even with height=100mm (violation), got {} \
+         (floor is 49 total minus 2 esc-295-78-guarded constraints = 47)",
         check_result.constraint_results.len()
     );
 
@@ -432,10 +436,12 @@ fn edit_position_x_determinacy_predicates_hold() {
     // Positive presence check: due to esc-295-78, the 2 guarded constraints are excluded from
     // the result when position_x is in the dirty cone.  Even so, the remaining 47 constraints
     // must all be present — any further silent dropping would indicate a regression.
+    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
     assert!(
-        check_result.constraint_results.len() >= 40,
-        "expected >= 40 constraint results after position_x=200mm, got {} \
-         (constraints may have been silently dropped; note esc-295-78 excludes 2 guarded constraints)",
+        check_result.constraint_results.len() >= 47,
+        "expected >= 47 constraint results after position_x=200mm, got {} \
+         (constraints may have been silently dropped; \
+          note esc-295-78 excludes 2 guarded constraints leaving floor of 47)",
         check_result.constraint_results.len()
     );
 
