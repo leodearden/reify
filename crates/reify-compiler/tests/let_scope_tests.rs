@@ -1,7 +1,132 @@
 //! Tests for let-binding scope resolution, especially geometry lets.
 
-use reify_compiler::CompiledGeometryOp;
+use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, RealizationDecl,
+                     TopologyTemplate};
 use reify_types::Severity;
+
+// ─── Source-string constants (shared between existing and op-level tests) ─────
+
+const SRC_DIFFERENCE_LET_BOUND: &str = r#"structure S {
+    param r: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let hole = cylinder(r2, h)
+    let result = difference(body, hole)
+}"#;
+
+const SRC_NESTED_BOOLEAN_OPS: &str = r#"structure S {
+    param r: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let a = cylinder(r, h)
+    let b = cylinder(r2, h)
+    let combined = difference(a, b)
+    let c = sphere(r)
+    let result = union(combined, c)
+}"#;
+
+const SRC_MIXED_LET_AND_INLINE: &str = r#"structure S {
+    param r: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = difference(body, cylinder(r2, h))
+}"#;
+
+const SRC_UNION_ALL_LET_BOUND: &str = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    param w: Scalar = 8mm
+    param d: Scalar = 8mm
+    let a = cylinder(r, h)
+    let b = sphere(r)
+    let c = box(w, h, d)
+    let d_geom = union_all(a, b, c)
+}"#;
+
+// ─── Op-sequence assertion helpers ────────────────────────────────────────────
+
+/// Expected geometry op variant for `assert_op_sequence`.
+#[derive(Debug)]
+enum ExpectedOp {
+    Cylinder,
+    Sphere,
+    Box_,
+    BoolDiff(usize, usize),
+    BoolUnion(usize, usize),
+}
+
+fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
+    match (actual, expected) {
+        (CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }, ExpectedOp::Cylinder) => true,
+        (CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }, ExpectedOp::Sphere) => true,
+        (CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }, ExpectedOp::Box_) => true,
+        (
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Difference,
+                left: GeomRef::Step(l),
+                right: GeomRef::Step(r),
+            },
+            ExpectedOp::BoolDiff(el, er),
+        ) => l == el && r == er,
+        (
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(l),
+                right: GeomRef::Step(r),
+            },
+            ExpectedOp::BoolUnion(el, er),
+        ) => l == el && r == er,
+        _ => false,
+    }
+}
+
+/// Assert that `ops` matches `expected` element-by-element, providing clear
+/// failure messages that identify which position mismatched.
+fn assert_op_sequence(ops: &[CompiledGeometryOp], expected: &[ExpectedOp]) {
+    assert_eq!(
+        ops.len(),
+        expected.len(),
+        "expected {} ops, got {}",
+        expected.len(),
+        ops.len()
+    );
+    for (i, (actual, exp)) in ops.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            op_matches(actual, exp),
+            "ops[{}]: expected {:?}, got {:?}",
+            i,
+            exp,
+            actual
+        );
+    }
+}
+
+/// Find a realization by its position in the ordered list of geometry-let
+/// names. `names` should list every geometry let in source order; `target` is
+/// the name to look up.  This is more self-documenting than a raw index and is
+/// resilient to minor reordering when `names` is updated alongside the source.
+fn realization_named<'a>(
+    template: &'a TopologyTemplate,
+    names: &[&str],
+    target: &str,
+) -> &'a RealizationDecl {
+    let idx = names
+        .iter()
+        .position(|&n| n == target)
+        .unwrap_or_else(|| panic!("geometry let '{}' not found in names list {:?}", target, names));
+    assert!(
+        idx < template.realizations.len(),
+        "realization index {} for '{}' is out of bounds (len={})",
+        idx,
+        target,
+        template.realizations.len()
+    );
+    &template.realizations[idx]
+}
+
+// ─── compile helpers ──────────────────────────────────────────────────────────
 
 /// Helper: parse + compile source, assert no errors, return compiled output.
 fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
@@ -69,15 +194,7 @@ fn geometry_let_in_scope_for_subsequent_let() {
 fn difference_with_let_bound_args() {
     // Both args to difference() are let-bound geometry variables (Idents).
     // The compiler must resolve these to their initializer expressions.
-    let source = r#"structure S {
-    param r: Scalar = 5mm
-    param r2: Scalar = 3mm
-    param h: Scalar = 10mm
-    let body = cylinder(r, h)
-    let hole = cylinder(r2, h)
-    let result = difference(body, hole)
-}"#;
-    let compiled = compile_no_errors(source);
+    let compiled = compile_no_errors(SRC_DIFFERENCE_LET_BOUND);
     let template = &compiled.templates[0];
     // body, hole, result → 3 realizations
     assert_eq!(
@@ -136,17 +253,7 @@ fn intersection_with_let_bound_args() {
 
 #[test]
 fn union_all_with_let_bound_args() {
-    let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
-    param w: Scalar = 8mm
-    param d: Scalar = 8mm
-    let a = cylinder(r, h)
-    let b = sphere(r)
-    let c = box(w, h, d)
-    let d_geom = union_all(a, b, c)
-}"#;
-    let compiled = compile_no_errors(source);
+    let compiled = compile_no_errors(SRC_UNION_ALL_LET_BOUND);
     let template = &compiled.templates[0];
     assert_eq!(
         template.realizations.len(),
@@ -161,17 +268,7 @@ fn union_all_with_let_bound_args() {
 #[test]
 fn nested_boolean_ops_with_let_args() {
     // combined is a boolean op result used as input to another boolean op via let.
-    let source = r#"structure S {
-    param r: Scalar = 5mm
-    param r2: Scalar = 3mm
-    param h: Scalar = 10mm
-    let a = cylinder(r, h)
-    let b = cylinder(r2, h)
-    let combined = difference(a, b)
-    let c = sphere(r)
-    let result = union(combined, c)
-}"#;
-    let compiled = compile_no_errors(source);
+    let compiled = compile_no_errors(SRC_NESTED_BOOLEAN_OPS);
     let template = &compiled.templates[0];
     // a, b, combined, c, result → 5 realizations
     assert_eq!(
@@ -242,14 +339,7 @@ fn intersection_all_with_let_bound_args() {
 #[test]
 fn mixed_let_and_inline_in_boolean_op() {
     // One arg is a let-bound Ident, the other is an inline geometry call.
-    let source = r#"structure S {
-    param r: Scalar = 5mm
-    param r2: Scalar = 3mm
-    param h: Scalar = 10mm
-    let body = cylinder(r, h)
-    let result = difference(body, cylinder(r2, h))
-}"#;
-    let compiled = compile_no_errors(source);
+    let compiled = compile_no_errors(SRC_MIXED_LET_AND_INLINE);
     let template = &compiled.templates[0];
     // body, result → 2 realizations
     assert_eq!(
@@ -285,6 +375,144 @@ fn cyclic_geometry_let_references_error() {
         errors.iter().any(|d| d.message.contains("cyclic")),
         "expected cyclic reference error, got: {:?}",
         errors
+    );
+}
+
+// ─── task-1709 step-1: difference op-level assertions ───
+
+#[test]
+fn difference_ops_verify_boolean_variant_and_step_refs() {
+    // Verifies the operations Vec of the `result` realization.
+    // Source shared with difference_with_let_bound_args.
+    let compiled = compile_no_errors(SRC_DIFFERENCE_LET_BOUND);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "hole", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Cylinder,
+            ExpectedOp::BoolDiff(0, 1),
+        ],
+    );
+}
+
+// ─── task-1709 step-2: nested boolean ops step-index assertions ───
+
+#[test]
+fn nested_boolean_ops_verify_step_indices() {
+    // combined=difference(a,b), result=union(combined,c).
+    // result inlines: [Cylinder(a), Cylinder(b), Diff(0,1), Sphere(c), Union(2,3)].
+    // Source shared with nested_boolean_ops_with_let_args.
+    let compiled = compile_no_errors(SRC_NESTED_BOOLEAN_OPS);
+    let template = &compiled.templates[0];
+    let realization =
+        realization_named(template, &["a", "b", "combined", "c", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Cylinder,
+            ExpectedOp::BoolDiff(0, 1),
+            ExpectedOp::Sphere,
+            ExpectedOp::BoolUnion(2, 3),
+        ],
+    );
+}
+
+// ─── task-1709 step-3: mixed let-bound + inline op assertions ───
+
+#[test]
+fn mixed_let_and_inline_ops_verify_step_refs() {
+    // body is let-bound; right arg is inline cylinder(r2,h).
+    // Source shared with mixed_let_and_inline_in_boolean_op.
+    let compiled = compile_no_errors(SRC_MIXED_LET_AND_INLINE);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Cylinder,
+            ExpectedOp::BoolDiff(0, 1),
+        ],
+    );
+}
+
+// ─── task-1709 step-4: union_all left-fold structure assertions ───
+
+#[test]
+fn union_all_ops_verify_left_fold_structure() {
+    // d_geom = union_all(a, b, c) — left-fold of 3 args.
+    // Expected ops: [Cylinder, Sphere, Union(0,1), Box, Union(2,3)].
+    // Source shared with union_all_with_let_bound_args.
+    let compiled = compile_no_errors(SRC_UNION_ALL_LET_BOUND);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["a", "b", "c", "d_geom"], "d_geom");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sphere,
+            ExpectedOp::BoolUnion(0, 1),
+            ExpectedOp::Box_,
+            ExpectedOp::BoolUnion(2, 3),
+        ],
+    );
+}
+
+// ─── task-1709 amend: shared let-bound operand step indices ───
+
+#[test]
+fn shared_let_operand_step_indices_correct() {
+    // `body` (a let-bound cylinder) is used as the left operand of two different
+    // boolean ops: `result1 = difference(body, hole)` and `result2 = union(body, addon)`.
+    // Each realization inlines `body` independently, so step indices in both
+    // realizations start from 0 — verifying that the compiler does not emit
+    // a shared GeomRef::Step across realizations.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let hole = cylinder(r2, h)
+    let result1 = difference(body, hole)
+    let addon = sphere(r)
+    let result2 = union(body, addon)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    // 5 geometry lets → 5 realizations
+    assert_eq!(
+        template.realizations.len(),
+        5,
+        "expected 5 realizations (body, hole, result1, addon, result2)"
+    );
+
+    let names = ["body", "hole", "result1", "addon", "result2"];
+
+    // result1: difference(body, hole) → [Cylinder, Cylinder, Diff(0,1)]
+    let r1 = realization_named(template, &names, "result1");
+    assert_op_sequence(
+        &r1.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Cylinder,
+            ExpectedOp::BoolDiff(0, 1),
+        ],
+    );
+
+    // result2: union(body, addon) → [Cylinder, Sphere, Union(0,1)]
+    // Step(0) here refers to body inlined fresh into this realization,
+    // NOT to any step from result1's ops.
+    let r2 = realization_named(template, &names, "result2");
+    assert_op_sequence(
+        &r2.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sphere,
+            ExpectedOp::BoolUnion(0, 1),
+        ],
     );
 }
 
