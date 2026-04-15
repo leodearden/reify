@@ -35592,10 +35592,11 @@
         "description": "Two improvements in crates/reify-expr/tests/field_eval_tests.rs from task 1674 review:\n\n1. Extract helper like `make_3param_add_field(domain_type) -> (Value, Type)` to DRY the four 3-param sample() tests that duplicate lambda body + field setup boilerplate.\n\n2. Fix stale doc comment at ~line 506: condition (1) should say `Value::Point or Value::Vector` (not just `Value::Point`) after the or-pattern added in task 1674.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T01:57:47.929Z"
       },
       {
         "id": "1704",
@@ -35630,7 +35631,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:57:45.842Z",
+      "lastModified": "2026-04-15T01:57:47.929Z",
       "taskCount": 1705,
       "completedCount": 1455,
       "tags": [
