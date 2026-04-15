@@ -10,6 +10,30 @@ use reify_types::Diagnostic;
 
 use crate::CompiledModule;
 
+/// Collect the already-compiled modules that correspond to the import declarations
+/// in `parsed`, returning references into `modules`.
+///
+/// For each import declaration in `parsed`, looks up `import.path` in `modules`.
+/// Returns a `Vec` of references to the compiled modules that were found.
+/// Missing entries (not yet compiled) are silently skipped — the caller is
+/// responsible for ensuring dependencies are compiled before calling this.
+fn collect_import_preludes<'a>(
+    parsed: &reify_syntax::ParsedModule,
+    modules: &'a HashMap<String, CompiledModule>,
+) -> Vec<&'a CompiledModule> {
+    parsed
+        .declarations
+        .iter()
+        .filter_map(|d| {
+            if let reify_syntax::Declaration::Import(import) = d {
+                modules.get(&import.path)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Resolves import dot-paths to filesystem paths.
 ///
 /// Conventions:
@@ -164,21 +188,15 @@ impl ModuleDag {
                 }
             }
 
-            // Collect prelude modules (already-compiled imports) for constraint def propagation.
-            let preludes: Vec<CompiledModule> = parsed
-                .declarations
-                .iter()
-                .filter_map(|d| {
-                    if let reify_syntax::Declaration::Import(import) = d {
-                        self.modules.get(&import.path).cloned()
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            // NB: all recursive compile_module calls are done; self.modules is now
+            // stable for shared borrowing. Do not add any code here that mutates
+            // self before compile_with_prelude_refs returns — that would break
+            // the borrow checker (unlike compile_project, this separation is
+            // implicit and not block-scoped).
+            let preludes = collect_import_preludes(&parsed, &self.modules);
 
             // Compile this module with prelude context so imported constraint defs are visible.
-            Ok(crate::compile_with_prelude(&parsed, &preludes))
+            Ok(crate::compile_with_prelude_refs(&parsed, &preludes))
         })();
 
         // Always remove from in-progress, whether the inner block succeeded or failed
@@ -238,20 +256,12 @@ pub fn compile_project(
 
     // Collect imported modules as prelude so their pub units (and other
     // exported definitions) are visible in the entry module.
-    let preludes: Vec<CompiledModule> = parsed
-        .declarations
-        .iter()
-        .filter_map(|d| {
-            if let reify_syntax::Declaration::Import(import) = d {
-                dag.modules.get(&import.path).cloned()
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Compile the entry module with prelude context
-    let compiled_entry = crate::compile_with_prelude(&parsed, &preludes);
+    // Block-scope the preludes so the shared borrows of dag.modules are
+    // dropped before the mutable borrow in dag.modules.insert below.
+    let compiled_entry = {
+        let preludes = collect_import_preludes(&parsed, &dag.modules);
+        crate::compile_with_prelude_refs(&parsed, &preludes)
+    };
     let entry_key = entry_name.to_string();
     dag.topo_order.push(entry_key.clone());
     dag.modules.insert(entry_key, compiled_entry);
