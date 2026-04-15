@@ -537,19 +537,7 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
     )
     .unwrap();
 
-    let resolver = ModuleResolver::new(&dir, &stdlib_dir);
-    let result =
-        reify_compiler::module_dag::compile_project(&dir.join("main.ri"), &resolver);
-
-    // compile_project returns Ok even when the entry module has diagnostics
-    let modules = result.expect("compile_project should not return Err for duplicate unit");
-    let entry_module = modules.last().expect("no modules returned");
-
-    let errors: Vec<_> = entry_module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
+    let errors = common::compile_errors_with_stdlib(&dir, "main.ri", &stdlib_dir);
 
     // (a) There must be a duplicate-unit error mentioning 'myunit'
     let dup_diag = errors
