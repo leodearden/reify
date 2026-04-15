@@ -170,6 +170,33 @@ fn spawn_reader(stdout: std::process::ChildStdout) -> mpsc::Receiver<serde_json:
     rx
 }
 
+/// Verify that `acquire_lsp_test_lock()` recovers from a poisoned mutex rather
+/// than propagating the `PoisonError` as a panic.
+///
+/// Regression test for esc-1672-40: a timed-out LSP test that held the lock
+/// poisoned the mutex, causing all subsequent LSP tests to fail with an opaque
+/// `PoisonError` cascade. With `.lock().unwrap()` the second acquisition below
+/// panics; with `.lock().unwrap_or_else(|e| e.into_inner())` it succeeds.
+#[test]
+fn acquire_lsp_test_lock_recovers_from_poisoned_mutex() {
+    // Spawn a thread that acquires the lock and then panics, poisoning the mutex.
+    let handle = thread::spawn(|| {
+        let _guard = acquire_lsp_test_lock();
+        panic!("intentional poison to simulate a test crash");
+    });
+
+    // Confirm the thread panicked while holding the lock.
+    assert!(
+        handle.join().is_err(),
+        "spawned thread should have panicked while holding the lock"
+    );
+
+    // Acquiring the now-poisoned lock must not panic.
+    // With .lock().unwrap() this line panics (PoisonError); with
+    // .lock().unwrap_or_else(|e| e.into_inner()) it succeeds.
+    let _guard = acquire_lsp_test_lock();
+}
+
 /// Wait until we receive a response with the given id from the message stream.
 fn wait_for_response(rx: &mpsc::Receiver<serde_json::Value>, id: u64) -> serde_json::Value {
     let timeout = std::time::Duration::from_secs(10);
