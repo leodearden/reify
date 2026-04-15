@@ -174,7 +174,7 @@ fn eval_field_snapshot_consistency() {
 //
 // These tests exercise the full sampling dispatch path:
 //   sample(analysis_op(tensor_field), point)
-//   → FieldSourceKind match in lib.rs:126-254
+//   → the FieldSourceKind dispatch match in eval_expr's "sample" arm (crates/reify-expr/src/lib.rs)
 //   → sample_*_at_point → inner lambda eval → stdlib analysis builtin
 //
 // Unlike field_analysis_tests.rs in reify-expr (which uses Pressure-dimensioned
@@ -361,8 +361,8 @@ fn eval_sample_von_mises_field_dispatch() {
     let (field, field_type) = make_constant_tensor_field(tensor);
 
     // Build nested expr: sample(von_mises(field_literal), 0.5)
-    // von_mises(Field) intercepts at lib.rs:277-282, wraps with VonMises source.
-    // sample(VonMisesField, point) dispatches via FieldSourceKind::VonMises at lib.rs:201-212.
+    // von_mises(Field) wraps via analysis::compute_von_mises in eval_expr's "von_mises" arm.
+    // sample(VonMisesField, point) dispatches via the FieldSourceKind::VonMises match arm in eval_expr's "sample" arm.
     let vm_field_type = Type::Field {
         domain: Box::new(Type::Real),
         codomain: Box::new(Type::Real),
@@ -465,8 +465,8 @@ fn eval_sample_safety_factor_field_dispatch() {
     let (field, field_type) = make_constant_tensor_field(tensor);
 
     // Build nested expr: sample(safety_factor(field_literal, 250.0), 0.5)
-    // safety_factor(Field, yield) intercepts at lib.rs:295-300, captures [field, yield] in
-    // lambda slot with SafetyFactor source.  sample dispatches via (_, SafetyFactor) at lib.rs:239.
+    // safety_factor(Field, yield) intercepts via analysis::compute_safety_factor in eval_expr's "safety_factor" arm.
+    // sample dispatches via the (_, FieldSourceKind::SafetyFactor) match arm in eval_expr's "sample" arm.
     let sf_field_type = Type::Field {
         domain: Box::new(Type::Real),
         codomain: Box::new(Type::Real),
