@@ -60,7 +60,13 @@ impl PrefixSet {
     /// - `Only(list)` → `list.contains(&sym)`.
     pub fn includes(&self, sym: &str) -> bool {
         match self {
-            PrefixSet::All => true,
+            PrefixSet::All => {
+                debug_assert!(
+                    SI_PREFIXES.iter().any(|(s, _)| *s == sym),
+                    "unknown prefix symbol: `{sym}`"
+                );
+                true
+            }
             PrefixSet::Only(list) => list.contains(&sym),
         }
     }
