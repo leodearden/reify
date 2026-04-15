@@ -3851,7 +3851,34 @@ fn compile_geometry_op(
                     let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
                     let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
                     let count = f64_arg("count")? as usize;
-                    let angle = eval_named_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
+                    let raw_angle = eval_named_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
+                    // CAD convention: a bare numeric angle (no unit suffix) is
+                    // interpreted as degrees and converted to radians.  Values
+                    // that already carry an ANGLE dimension (from `deg`/`rad`
+                    // suffixes in source) pass through unchanged.
+                    let angle = match raw_angle {
+                        reify_types::Value::Real(v) => {
+                            let deg = v;
+                            let rad = deg * std::f64::consts::PI / 180.0;
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
+                                 use `{}deg` or `{:.6}rad` for explicit units",
+                                deg, deg, deg, rad
+                            )));
+                            reify_types::Value::angle(rad)
+                        }
+                        reify_types::Value::Int(i) => {
+                            let deg = i as f64;
+                            let rad = deg * std::f64::consts::PI / 180.0;
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
+                                 use `{}deg` or `{:.6}rad` for explicit units",
+                                deg, deg, deg, rad
+                            )));
+                            reify_types::Value::angle(rad)
+                        }
+                        other => other,
+                    };
                     Some(reify_types::GeometryOp::CircularPattern {
                         target: target_id,
                         axis_origin,
@@ -5383,11 +5410,14 @@ mod tests {
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
                 ("count".into(), literal_f64(4.0)),
-                ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
+                // Use an explicitly-dimensioned angle literal to test the pass-through path.
+                // A bare f64 would now trigger the degrees→radians conversion path instead.
+                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         match result {
             Some(reify_types::GeometryOp::CircularPattern {
                 target,
@@ -5400,10 +5430,20 @@ mod tests {
                 assert_eq!(axis_origin, [0.0, 0.0, 0.0]);
                 assert_eq!(axis_dir, [0.0, 0.0, 1.0]);
                 assert_eq!(count, 4);
-                // angle should be a Real value, not Undef
+                // angle should be a Scalar value (with ANGLE dimension), not Undef
                 assert!(
                     !matches!(angle, reify_types::Value::Undef),
                     "angle should not be Undef when arg is present"
+                );
+                // The explicit-unit path must NOT emit a degree-conversion warning
+                let has_deg_warning = diagnostics.iter().any(|d| {
+                    d.severity == reify_types::Severity::Warning
+                        && (d.message.contains("deg") || d.message.contains("degree"))
+                });
+                assert!(
+                    !has_deg_warning,
+                    "explicit angle unit should not trigger a degree-conversion warning, got: {:?}",
+                    diagnostics
                 );
             }
             other => panic!("expected Some(CircularPattern), got {:?}", other),
@@ -5518,6 +5558,55 @@ mod tests {
             "expected a Warning diagnostic about implicit degree conversion, got: {:?}",
             diagnostics
         );
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_angle_scalar_passes_through() {
+        // An explicitly-dimensioned angle (Value::Scalar with ANGLE dimension) must
+        // pass through the CircularPattern arm unchanged — no double-conversion,
+        // no degree-conversion warning.
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = reify_compiler::CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(6.0)),
+                // Explicit angle unit: PI radians
+                ("angle".into(), literal_angle(std::f64::consts::PI)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        match result {
+            Some(reify_types::GeometryOp::CircularPattern { angle, .. }) => {
+                let angle_f64 = angle.as_f64().expect("angle should be numeric");
+                assert!(
+                    (angle_f64 - std::f64::consts::PI).abs() < 1e-12,
+                    "explicit PI rad angle should pass through as PI, got {}",
+                    angle_f64
+                );
+                // No degree-conversion warning should be emitted for explicit units
+                let has_deg_warning = diagnostics.iter().any(|d| {
+                    d.severity == reify_types::Severity::Warning
+                        && (d.message.contains("deg") || d.message.contains("degree"))
+                });
+                assert!(
+                    !has_deg_warning,
+                    "explicit angle unit should not trigger a degree-conversion warning, got: {:?}",
+                    diagnostics
+                );
+            }
+            other => panic!("expected Some(CircularPattern), got {:?}", other),
+        }
     }
 
     #[test]
