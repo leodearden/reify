@@ -36100,7 +36100,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T07:02:47.836Z"
+        "updatedAt": "2026-04-15T07:02:47.836Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "option_compile_tests OptionNone assertion pattern",
+              "assert_option_none_length helper refactor task 1726 1098"
+            ]
+          },
+          "_causation_id": "90e09f11-316a-485e-b6c4-b2cd1afa5d10"
+        }
       },
       {
         "id": 1731,
