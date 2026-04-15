@@ -599,7 +599,7 @@ fn checkpoint_value_variant_coverage() {
         // Primitive scalars (4)
         Value::Bool(true),
         Value::Int(42),
-        Value::Real(2.718),
+        Value::Real(2.719),
         Value::String("hello".to_string()),
         // Dimensioned scalar (1)
         Value::Scalar {
