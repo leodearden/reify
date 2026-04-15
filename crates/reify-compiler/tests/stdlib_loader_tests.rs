@@ -1,6 +1,7 @@
 //! Tests for stdlib_loader — embedded .ri stdlib loading, compilation, and caching.
 
 use reify_compiler::stdlib_loader;
+use reify_test_support::{collect_errors, steel_elastic_source, steel_strong_source};
 use reify_types::{ModulePath, Severity};
 
 // ─── step-1: basic loading ──────────────────────────────────────────────
@@ -258,5 +259,28 @@ structure def Steel : Strong {
     assert!(
         !template.constraints.is_empty(),
         "expected constraint from Strong trait (uts >= yield_strength) injected into Steel, but constraints is empty"
+    );
+}
+
+// ─── negative tests: compiling without prelude must produce errors ────
+
+/// Compiling Steel:Elastic source WITHOUT the prelude should produce ≥1
+/// error diagnostic, proving the prelude is required for trait resolution.
+#[test]
+fn compile_without_prelude_errors_for_elastic() {
+    let source = steel_elastic_source();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        !errors.is_empty(),
+        "expected at least one compile error when compiling Steel:Elastic without prelude, \
+         but no errors were produced"
     );
 }
