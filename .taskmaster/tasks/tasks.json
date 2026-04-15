@@ -35281,7 +35281,7 @@
         "id": 1690,
         "title": "Add hover descriptions for 10 missing LSP keywords",
         "description": "The `keyword_description()` function in `crates/reify-lsp/src/hover.rs` (lines 149-167) only covers 15 of the 25 keywords recognized by the completion engine. When a user hovers over one of the missing keywords, they get no hover information.\n\nMissing keywords (all have completion entries but no hover descriptions):\n- Top-level: `occurrence`, `fn`, `trait`, `enum`\n- Body-level: `purpose`, `minimize`, `maximize`, `port`, `connect`, `where`\n\nFix: Add match arms to `keyword_description()` for each missing keyword with a brief description string, matching the pattern of existing entries. Add a test that verifies all keywords in `TOP_LEVEL_KEYWORDS`, `BODY_KEYWORDS`, and `EXPR_KEYWORDS` (from completion.rs) have corresponding hover descriptions.\n\nmemory_hints: search \"keyword hover LSP\" in reify project",
-        "details": "",
+        "details": "<info added on 2026-04-15T00:34:34.123Z>\nmemory_hints: hover.rs has two separate code paths — `compute_hover()` for identifier/declaration hover, and `keyword_description()` for keyword hover (lines 149-167). Only `keyword_description()` needs changes for this task. Search \"keyword hover LSP reify\" for prior LSP hover context; search \"TOP_LEVEL_KEYWORDS BODY_KEYWORDS completion\" to find keyword list definitions in completion.rs; entity \"reify-lsp\" for crate-level context. The test should verify all keywords in `TOP_LEVEL_KEYWORDS`, `BODY_KEYWORDS`, and `EXPR_KEYWORDS` arrays have corresponding `keyword_description()` entries.\n</info added on 2026-04-15T00:34:34.123Z>",
         "testStrategy": "",
         "status": "in-progress",
         "dependencies": [],
