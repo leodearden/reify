@@ -1006,6 +1006,7 @@ fn build_primitive_missing_arg_no_kernel_error() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
+    // Only test exercising the None (zero kernel ops) path of assert_rejected_at_compile.
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
