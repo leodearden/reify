@@ -204,6 +204,47 @@ fn duplicate_meta_key_error() {
 }
 
 // ---------------------------------------------------------------------------
+// step-3: multiple distinct duplicate meta keys each produce an error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn duplicate_meta_key_multiple_duplicates() {
+    let source = r#"
+        structure def Bracket {
+            meta {
+                x = "1",
+                y = "2",
+                x = "3",
+                y = "4"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    // One error for the duplicate "x" and one for the duplicate "y".
+    assert_eq!(
+        errors.len(),
+        2,
+        "expected exactly two errors (one per duplicated key), got: {:?}",
+        errors
+    );
+    assert!(
+        errors.iter().all(|d| d.message.contains("duplicate meta key")),
+        "all errors should be 'duplicate meta key' errors, got: {:?}",
+        errors
+    );
+
+    // First values should be kept.
+    assert_eq!(template.meta.get("x").map(|s| s.as_str()), Some("1"));
+    assert_eq!(template.meta.get("y").map(|s| s.as_str()), Some("2"));
+}
+
+// ---------------------------------------------------------------------------
 // step-11: meta.key works inside constraint expressions
 // ---------------------------------------------------------------------------
 
