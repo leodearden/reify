@@ -36792,11 +36792,22 @@
         "description": "The Reify language has no `pi` constant. Writing `2 * pi` as an angle argument fails silently. Add `pi` (3.14159...) and `tau` (6.28318...) as built-in constants accessible from any structure scope.",
         "details": "memory_hints: search \"stdlib builtin constants\", get_entity \"reify-stdlib\"\n\nCurrently the only way to use pi is to hardcode `6.2832` or define `let pi = 3.14159`. The stdlib should export these as pre-defined constants. Check how other constants (like unit definitions `mm`, `kg`) are registered and follow the same pattern.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T12:01:49.994Z"
+        "updatedAt": "2026-04-15T12:08:05.852Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/constants.rs",
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/constant_compile_tests.rs",
+            "crates/reify-eval/tests/stdlib_constants_e2e.rs",
+            "crates/reify-stdlib/src/lib.rs",
+            "crates/reify-stdlib/src/trig.rs"
+          ]
+        }
       },
       {
         "id": "1763",
@@ -36904,7 +36915,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T12:07:18.461Z",
+      "lastModified": "2026-04-15T12:08:05.853Z",
       "taskCount": 1765,
       "completedCount": 1508,
       "tags": [
