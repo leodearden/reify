@@ -45,6 +45,12 @@ pub struct EngineSession {
     file_path: Option<PathBuf>,
     last_check: Option<CheckResult>,
     module_name: Option<String>,
+    /// In-memory cache for `get_def_preview` results.
+    ///
+    /// Keyed by `(definition_name, template.content_hash)` — the cache is
+    /// automatically invalidated when a new module is loaded (via `commit_state`
+    /// which clears the map) or when the template's content hash changes.
+    def_preview_cache: HashMap<(String, ContentHash), GuiState>,
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -70,6 +76,7 @@ impl EngineSession {
             file_path: None,
             last_check: None,
             module_name: None,
+            def_preview_cache: HashMap::new(),
         }
     }
 
@@ -236,6 +243,8 @@ impl EngineSession {
         self.module_name = Some(module_name.to_string());
         self.compiled = Some(compiled);
         self.last_check = Some(check_result);
+        // Invalidate def preview cache — new module may have different content hashes.
+        self.def_preview_cache.clear();
     }
 
     /// Export geometry to a file.
@@ -603,6 +612,64 @@ impl EngineSession {
         map
     }
 
+    /// Return a preview `GuiState` for a single named definition, evaluated in
+    /// isolation with its default parameter values.
+    ///
+    /// Looks up the named template in the currently loaded `CompiledModule`,
+    /// clones it into a single-template preview module (preserving shared context
+    /// such as enums and functions), and evaluates it with a fresh
+    /// `SimpleConstraintChecker` engine (no geometry kernel — meshes are omitted).
+    ///
+    /// Results are cached by `(def_name, template.content_hash)`; the cache is
+    /// cleared automatically on every `load_from_source` / `update_source` call.
+    ///
+    /// # Errors
+    /// Returns `Err` when:
+    /// - No module is currently loaded.
+    /// - `def_name` does not match any template in the loaded module.
+    pub fn get_def_preview(&mut self, def_name: &str) -> Result<GuiState, String> {
+        // Phase 1: borrow compiled to extract the template and build the preview module.
+        let (content_hash, preview_module) = {
+            let compiled = self
+                .compiled
+                .as_ref()
+                .ok_or_else(|| "No module loaded".to_string())?;
+            let template = compiled
+                .templates
+                .iter()
+                .find(|t| t.name == def_name)
+                .ok_or_else(|| format!("No definition named '{}' in loaded module", def_name))?;
+            let hash = template.content_hash;
+            // Clone the full module so that shared context (enums, functions, traits,
+            // stdlib units, etc.) is available during evaluation, but replace the
+            // templates list with only the one we want to preview.
+            let mut preview = compiled.clone();
+            preview.templates = vec![template.clone()];
+            (hash, preview)
+        };
+
+        // Phase 2: check cache (requires mutable self, so Phase 1 borrow must be released).
+        let cache_key = (def_name.to_string(), content_hash);
+        if let Some(cached) = self.def_preview_cache.get(&cache_key) {
+            return Ok(cached.clone());
+        }
+
+        // Phase 3: evaluate with a lightweight preview engine (SimpleConstraintChecker, no kernel).
+        let mut preview_engine = Engine::new(
+            Box::new(reify_constraints::SimpleConstraintChecker),
+            None, // no geometry kernel — preview is values + constraints only
+        );
+        let check_result = preview_engine.check(&preview_module);
+
+        // Phase 4: build GuiState from the check result.
+        let gui_state = build_preview_gui_state(&preview_module, &check_result);
+
+        // Phase 5: cache and return.
+        self.def_preview_cache
+            .insert(cache_key, gui_state.clone());
+        Ok(gui_state)
+    }
+
     /// Find the innermost structure or occurrence definition whose span contains
     /// the given 1-based `(line, col)` position.
     ///
@@ -654,6 +721,85 @@ impl EngineSession {
             }
         }
         best
+    }
+}
+
+/// Build a `GuiState` from a preview evaluation result.
+///
+/// Used by `get_def_preview` to convert a `CheckResult` into the same
+/// `GuiState` format returned by `build_gui_state`, but with:
+/// - **No meshes** — geometry tessellation is skipped (no kernel available).
+/// - **No files** — file list is not meaningful for a single-def preview.
+///
+/// The values and constraints sections are built using the same logic as
+/// `build_gui_state`.
+fn build_preview_gui_state(
+    compiled: &reify_compiler::CompiledModule,
+    check: &CheckResult,
+) -> GuiState {
+    let mut values = Vec::new();
+    for template in &compiled.templates {
+        for cell in &template.value_cells {
+            let val = check.values.get_or_undef(&cell.id);
+            let (formatted_value, unit) = format_value(&val);
+            let determinacy = match &val {
+                reify_types::Value::Undef => {
+                    if cell.kind.is_auto() {
+                        DeterminacyState::Auto
+                    } else {
+                        DeterminacyState::Undetermined
+                    }
+                }
+                _ => DeterminacyState::Determined,
+            };
+            let kind = match cell.kind {
+                ValueCellKind::Param => "Param",
+                ValueCellKind::Let => "Let",
+                ValueCellKind::Auto { .. } => "Auto",
+            };
+            values.push(ValueData {
+                cell_id: cell.id.to_string(),
+                name: cell.id.member.clone(),
+                value: formatted_value,
+                unit,
+                determinacy: format_determinacy(determinacy),
+                entity_path: cell.id.entity.clone(),
+                kind: kind.to_string(),
+            });
+        }
+    }
+
+    let mut constraints = Vec::new();
+    for entry in &check.constraint_results {
+        let status = match entry.satisfaction {
+            Satisfaction::Satisfied => "Satisfied",
+            Satisfaction::Violated => "Violated",
+            Satisfaction::Indeterminate => "Indeterminate",
+        };
+        let (expression, parameter_ids) = compiled
+            .templates
+            .iter()
+            .find_map(|t| {
+                t.constraints
+                    .iter()
+                    .find(|c| c.id == entry.id)
+                    .map(|c| (format_expr(&c.expr), collect_value_refs(&c.expr)))
+            })
+            .unwrap_or_default();
+        constraints.push(ConstraintData {
+            node_id: entry.id.to_string(),
+            expression,
+            status: status.to_string(),
+            label: entry.label.clone(),
+            parameter_ids,
+        });
+    }
+
+    GuiState {
+        meshes: Vec::new(),
+        values,
+        constraints,
+        files: Vec::new(),
     }
 }
 
