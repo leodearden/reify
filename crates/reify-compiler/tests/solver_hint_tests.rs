@@ -170,3 +170,29 @@ fn solver_hint_in_guarded_block_compiles() {
     assert_eq!(width_cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
     assert_eq!(width_cell.solver_hints[0].collection, "sizes");
 }
+
+// ── Step 19: multiple @solver_hint on same param ───────────────────────────
+
+#[test]
+fn solver_hint_multiple_on_same_param() {
+    let source = r#"structure S {
+        @solver_hint("discrete_set", a)
+        @solver_hint("prefer_stock", b)
+        param length : Length = auto
+    }"#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let template = &module.templates[0];
+    let cell = &template.value_cells[0];
+    assert_eq!(
+        cell.solver_hints.len(),
+        2,
+        "expected 2 solver hints, got {:?}",
+        cell.solver_hints
+    );
+    assert_eq!(cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
+    assert_eq!(cell.solver_hints[0].collection, "a");
+    assert_eq!(cell.solver_hints[1].kind, reify_compiler::SolverHintKind::PreferStock);
+    assert_eq!(cell.solver_hints[1].collection, "b");
+}
