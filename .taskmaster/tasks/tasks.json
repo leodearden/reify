@@ -35811,6 +35811,17 @@
         ],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 1716,
+        "title": "Harden incremental integration test assertions",
+        "description": "Three assertion-quality fixes in crates/reify-eval/tests/incremental_integration.rs:\n1. Tighten >= 40 lower bounds on constraint_results.len() to >= 47 at lines ~263, ~358, ~393 (observed count is 49, esc-295-78 can drop to 47).\n2. Add lower-bound assertion (>= 45) to the XFAIL block at ~line 521 to prevent silent catastrophic regressions.\n3. Add error-path tests for edit_param/edit_check: invalid ValueCellId (nonexistent entity/param), dimension mismatch. Note: edit_param-before-eval is already covered in boundary5_engine.rs.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35823,7 +35834,7 @@
       ],
       "created": "2026-04-15T06:07:16.445Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T06:07:27.660Z"
+      "updated": "2026-04-15T06:07:37.471Z"
     }
   }
 }
