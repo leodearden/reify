@@ -2310,7 +2310,7 @@ fn get_entity_tree_sub_component_produces_nested_node() {
     // instead. Source: Assembly with a bolt sub.
     session.load_from_source(
         r#"structure Bolt { param mass: Scalar = 1 }
-structure Assembly { sub bolt: Bolt() }"#,
+structure Assembly { sub bolt = Bolt() }"#,
         "test",
     ).expect("load");
 
@@ -2397,7 +2397,7 @@ fn get_entity_tree_sub_node_type_name_from_structure_name() {
     let mut session = EngineSession::new(Box::new(checker), None);
     session.load_from_source(
         r#"structure Bolt { param mass: Scalar = 1 }
-structure Assembly { sub bolt: Bolt() }"#,
+structure Assembly { sub bolt = Bolt() }"#,
         "test",
     ).expect("load");
 
