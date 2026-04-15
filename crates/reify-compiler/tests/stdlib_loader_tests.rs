@@ -375,3 +375,51 @@ fn prelude_definitions_excluded_from_output_module() {
         "output module should contain the user's Steel template"
     );
 }
+
+// ─── enum coverage: HardnessScale ────────────────────────────────────
+
+/// HardnessScale enum from materials_mechanical.ri should be present in
+/// the stdlib with exactly 7 variants.
+#[test]
+fn hardness_scale_enum_present_in_stdlib() {
+    let modules = stdlib_loader::load_stdlib();
+
+    // Collect all enum_defs across all stdlib modules.
+    let all_enums: Vec<_> = modules
+        .iter()
+        .flat_map(|m| m.enum_defs.iter())
+        .collect();
+
+    let hardness = all_enums
+        .iter()
+        .find(|e| e.name == "HardnessScale")
+        .expect("HardnessScale enum should exist in stdlib");
+
+    let expected_variants = [
+        "Rockwell_A",
+        "Rockwell_B",
+        "Rockwell_C",
+        "Brinell",
+        "Vickers",
+        "Shore_A",
+        "Shore_D",
+    ];
+
+    assert_eq!(
+        hardness.variants.len(),
+        expected_variants.len(),
+        "HardnessScale should have {} variants, got {}: {:?}",
+        expected_variants.len(),
+        hardness.variants.len(),
+        hardness.variants
+    );
+
+    for variant in &expected_variants {
+        assert!(
+            hardness.variants.contains(&variant.to_string()),
+            "HardnessScale should contain variant '{}', found: {:?}",
+            variant,
+            hardness.variants
+        );
+    }
+}
