@@ -577,29 +577,7 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have nested guarded member 'x'");
 
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "nested guarded param cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("nested guarded member 'x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "nested guarded param default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for nested guarded param, got {:?}",
-        default.kind
-    );
+    assert_option_none_length(member, "nested guarded param");
 }
 
 // ---------------------------------------------------------------------------
@@ -841,27 +819,5 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have else-branch guarded member 'x'");
 
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "else-branch guarded param cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("else-branch guarded member 'x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "else-branch guarded param default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for else-branch guarded param, got {:?}",
-        default.kind
-    );
+    assert_option_none_length(member, "else-branch guarded param");
 }
