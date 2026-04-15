@@ -35702,7 +35702,7 @@
         "description": "The tests in `crates/reify-compiler/tests/let_scope_tests.rs:66-293` (added by task 1609) only assert `template.realizations.len()`. This confirms geometry compilation succeeds but does not verify the actual `CompiledGeometryOp` values—e.g., that a `Difference` op correctly references the inlined cylinder ops via the right `GeomRef::Step` indices. A subtle bug in step_offset handling or op construction could pass these tests undetected.\n\nAdd at least one test that inspects the actual `CompiledGeometryOp` values in a realization's `operations` Vec, verifying the BooleanOp variant and GeomRef::Step indices are correct.\n\n## memory_hints\n- search: \"CompiledGeometryOp BooleanOp GeomRef\"\n- search: \"compile_geometry_call step_offset\"\n- entity: \"CompiledGeometryOp\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -35713,7 +35713,8 @@
           "modules": [
             "crates/reify-compiler/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T05:38:57.675Z"
       },
       {
         "id": "1710",
@@ -35760,7 +35761,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T05:38:57.146Z",
+      "lastModified": "2026-04-15T05:38:57.675Z",
       "taskCount": 1708,
       "completedCount": 1471,
       "tags": [
