@@ -37705,15 +37705,16 @@
         "description": "Two small polish items from task-1776 review: (1) trait_merge_tests.rs ~line 1195: Change `template.constraints.len() >= 1` to `== 1` — the current assertion is too weak and could mask regressions. (2) conformance.rs ~line 280: Add `tracing::debug!` when `_was_new` is false to surface trait-merge type conflicts during development.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T17:09:00.583Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:08:59.920Z",
+      "lastModified": "2026-04-15T17:09:00.583Z",
       "taskCount": 1796,
       "completedCount": 1533,
       "tags": [
