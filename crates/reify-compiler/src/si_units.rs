@@ -369,6 +369,8 @@ pub fn build_si_units_source() -> String {
         // u.prefix_combos.includes(sym). This mirrors the base-unit loop and
         // correctly handles both PrefixSet::All and PrefixSet::Only without
         // silently producing zero results if a unit ever carries PrefixSet::All.
+        // Note: emits prefixed variants in SI_PREFIXES order (ascending magnitude),
+        // regardless of the order symbols appear in PrefixSet::Only.
         for (prefix, prefix_factor) in SI_PREFIXES {
             if !u.prefix_combos.includes(prefix) {
                 continue;
