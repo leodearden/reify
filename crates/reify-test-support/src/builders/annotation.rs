@@ -46,6 +46,13 @@ pub fn annotation_with_args(name: impl Into<String>, args: Vec<AnnotationArg>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
+
+    #[test]
+    fn constants_match_expected_strings() {
+        assert_eq!(TEST_ANNOTATION, "test");
+        assert_eq!(DEPRECATED_ANNOTATION, "deprecated");
+    }
 
     #[test]
     fn ann_str_produces_string_arg() {
