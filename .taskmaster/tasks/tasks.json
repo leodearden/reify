@@ -5981,7 +5981,16 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-eval/tests/m11_incremental.rs"
-          ]
+          ],
+          "memory_hints": {
+            "searches": [
+              "integration_full_v01.ri integration test file structure",
+              "edit_param incremental re-evaluation reify-eval",
+              "type aliases trait constraints geometric arithmetic range checks determinacy"
+            ],
+            "entities": []
+          },
+          "_causation_id": "8a9210de-78df-4834-a133-09f74785f437"
         },
         "subtasks": [],
         "updatedAt": "2026-04-15T00:50:00.119Z"
