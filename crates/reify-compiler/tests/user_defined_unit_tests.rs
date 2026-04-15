@@ -398,13 +398,35 @@ fn local_unit_duplicating_imported_pub_unit_produces_error() {
         !errors.is_empty(),
         "expected duplicate unit error when redeclaring an imported pub unit"
     );
+
+    // (1) Bind the specific duplicate diagnostic
+    let dup_diag = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate") && d.message.contains("mil"));
     assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("duplicate") && d.message.contains("mil")),
+        dup_diag.is_some(),
         "error should mention 'duplicate' and 'mil'; got: {:?}",
         errors
     );
+    let dup_diag = dup_diag.unwrap();
+
+    // (a) The message must NOT say 'stdlib' — the source module is 'unit_test', not 'std/*'
+    assert!(
+        !dup_diag.message.contains("stdlib"),
+        "diagnostic should NOT mention 'stdlib' for user-module collision, got: {:?}",
+        dup_diag.message
+    );
+
+    // (b) The message must name the source module 'unit_test' (where `mil` was declared)
+    assert!(
+        dup_diag.message.contains("unit_test"),
+        "diagnostic should mention 'unit_test' as the source module, got: {:?}",
+        dup_diag.message
+    );
+
+    // (c) Exactly one label with a non-empty span — the user-module branch emits
+    // only the duplicate decl span and omits the original's SourceSpan::empty(0).
+    common::assert_single_non_empty_label(dup_diag);
 }
 
 // ─── step-17: transitive pub unit NOT visible two hops via compile_with_prelude ─
