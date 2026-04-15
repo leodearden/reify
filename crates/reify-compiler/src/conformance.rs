@@ -277,7 +277,11 @@ pub(crate) fn check_trait_conformance(
                 DefaultKind::Let(_) => Type::Real,
                 DefaultKind::Constraint(_) => continue,
             };
-            scope.register_if_absent(name, ty);
+            let _was_new = scope.register_if_absent(name, ty);
+            // If _was_new is false, a prior default already registered this name
+            // (first-seen type wins). Useful hook for future debug-level logging
+            // to surface trait-merge conflicts where two traits supply the same
+            // default name with different types.
         }
     }
 
