@@ -36088,15 +36088,16 @@
         "description": "Two test-quality improvements in crates/reify-eval/tests/field_eval_tests.rs for the helpers introduced by Task 1723:\n\n1. **Pin `#[should_panic]` expected messages** (lines 377, 384): The two `#[should_panic]` tests (`test_assert_real_approx_panics_outside_tolerance`, `test_assert_real_approx_panics_for_non_real_variant`) don't use `expected = \"...\"` to assert the panic message. They would silently pass if the function panicked for an unrelated reason. Add `expected` substrings to pin the panic source, e.g. `#[should_panic(expected = \"should fail\")]`.\n\n2. **Add near-boundary tolerance test case** (line 366-374): `test_assert_real_approx_passes_within_tolerance` only tests exact matches (3.14 vs 3.14, 0.0 vs 0.0). Add a case like `assert_real_approx(&Value::Real(3.14 + REAL_TOLERANCE * 0.9), 3.14, \"near-boundary\");` to exercise the tolerance comparison for non-trivial deltas.\n\nmemory_hints: search \"field_eval_tests helpers assert_real_approx\", get_entity \"REAL_TOLERANCE\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T07:04:00.869Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T07:04:00.474Z",
+      "lastModified": "2026-04-15T07:04:00.869Z",
       "taskCount": 1728,
       "completedCount": 1487,
       "tags": [
