@@ -123,6 +123,21 @@ pub enum GeometryOp {
         plane_origin: [f64; 3],
         plane_normal: [f64; 3],
     },
+    /// Create a 2D grid pattern of copies along two directions.
+    LinearPattern2D {
+        target: GeometryHandleId,
+        direction1: [f64; 3],
+        count1: usize,
+        spacing1: Value,
+        direction2: [f64; 3],
+        count2: usize,
+        spacing2: Value,
+    },
+    /// Create copies at user-specified translation offsets.
+    ArbitraryPattern {
+        target: GeometryHandleId,
+        transforms: Vec<[f64; 3]>,
+    },
     /// Loft through a sequence of profiles.
     Loft { profiles: Vec<GeometryHandleId> },
     /// Extrude a 2D profile along Z axis by distance.
@@ -380,5 +395,72 @@ mod tests {
         assert!(GeometryHandleId(5) > GeometryHandleId(3));
         assert!(GeometryHandleId(7) <= GeometryHandleId(7));
         assert!(GeometryHandleId(7) >= GeometryHandleId(7));
+    }
+
+    #[test]
+    fn geometry_op_linear_pattern_2d_variant_exists() {
+        let op = GeometryOp::LinearPattern2D {
+            target: GeometryHandleId(1),
+            direction1: [1.0, 0.0, 0.0],
+            count1: 3,
+            spacing1: Value::Scalar {
+                si_value: 0.02,
+                dimension: crate::DimensionVector::LENGTH,
+            },
+            direction2: [0.0, 1.0, 0.0],
+            count2: 4,
+            spacing2: Value::Scalar {
+                si_value: 0.03,
+                dimension: crate::DimensionVector::LENGTH,
+            },
+        };
+        match &op {
+            GeometryOp::LinearPattern2D {
+                target,
+                direction1,
+                count1,
+                spacing1,
+                direction2,
+                count2,
+                spacing2,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*direction1, [1.0, 0.0, 0.0]);
+                assert_eq!(*count1, 3);
+                match spacing1 {
+                    Value::Scalar { si_value, .. } => assert!((si_value - 0.02).abs() < 1e-15),
+                    _ => panic!("expected Scalar"),
+                }
+                assert_eq!(*direction2, [0.0, 1.0, 0.0]);
+                assert_eq!(*count2, 4);
+                match spacing2 {
+                    Value::Scalar { si_value, .. } => assert!((si_value - 0.03).abs() < 1e-15),
+                    _ => panic!("expected Scalar"),
+                }
+            }
+            _ => panic!("expected LinearPattern2D variant"),
+        }
+    }
+
+    #[test]
+    fn geometry_op_arbitrary_pattern_variant_exists() {
+        let op = GeometryOp::ArbitraryPattern {
+            target: GeometryHandleId(2),
+            transforms: vec![
+                [0.01, 0.0, 0.0],
+                [0.0, 0.02, 0.0],
+                [0.01, 0.02, 0.0],
+            ],
+        };
+        match &op {
+            GeometryOp::ArbitraryPattern { target, transforms } => {
+                assert_eq!(*target, GeometryHandleId(2));
+                assert_eq!(transforms.len(), 3);
+                assert_eq!(transforms[0], [0.01, 0.0, 0.0]);
+                assert_eq!(transforms[1], [0.0, 0.02, 0.0]);
+                assert_eq!(transforms[2], [0.01, 0.02, 0.0]);
+            }
+            _ => panic!("expected ArbitraryPattern variant"),
+        }
     }
 }

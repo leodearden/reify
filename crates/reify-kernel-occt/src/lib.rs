@@ -509,6 +509,18 @@ impl OcctKernel {
                 ffi::ffi::make_pipe(profile_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::LinearPattern2D { .. } => {
+                // TODO: implement in step-22
+                return Err(GeometryError::OperationFailed(
+                    "linear_pattern_2d not yet implemented".into(),
+                ));
+            }
+            GeometryOp::ArbitraryPattern { .. } => {
+                // TODO: implement in step-22
+                return Err(GeometryError::OperationFailed(
+                    "arbitrary_pattern not yet implemented".into(),
+                ));
+            }
         };
         Ok(self.store(shape))
     }
