@@ -49,6 +49,16 @@ fn assert_constraint_op(template: &TopologyTemplate, member: &str, expected: Bin
     );
 }
 
+/// Minimal structure that conforms to `Plastic` and carries both a
+/// `plastic_strain` (≥ 0, `BinOp::Ge`) and a `hardening_modulus` (> 0,
+/// `BinOp::Gt`) constraint. Shared by the `assert_constraint_op` helper tests.
+const PLASTIC_BODY_SRC: &str = r#"
+structure def PlasticBody : Plastic {
+    param plastic_strain : Real = 0.0
+    param hardening_modulus : Real = 500.0
+}
+"#;
+
 // ─── step-1: file exists, parses, compiles without errors ────────────────────
 
 /// Step 1: structural_physical.ri file exists, parses cleanly, compiles
@@ -711,14 +721,7 @@ structure def PlasticBody : Plastic {
 #[test]
 #[should_panic(expected = "plastic_strain constraint expected BinOp::Gt")]
 fn assert_constraint_op_detects_wrong_operator() {
-    let compiled = compile_structure(
-        r#"
-structure def PlasticBody : Plastic {
-    param plastic_strain : Real = 0.0
-    param hardening_modulus : Real = 500.0
-}
-"#,
-    );
+    let compiled = compile_structure(PLASTIC_BODY_SRC);
 
     let template = compiled
         .templates
@@ -737,14 +740,7 @@ structure def PlasticBody : Plastic {
 #[test]
 #[should_panic(expected = "expected a constraint referencing")]
 fn assert_constraint_op_detects_member_not_found() {
-    let compiled = compile_structure(
-        r#"
-structure def PlasticBody : Plastic {
-    param plastic_strain : Real = 0.0
-    param hardening_modulus : Real = 500.0
-}
-"#,
-    );
+    let compiled = compile_structure(PLASTIC_BODY_SRC);
 
     let template = compiled
         .templates
