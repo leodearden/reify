@@ -1,6 +1,9 @@
 use reify_compiler::{CompiledModule, RequirementKind};
 use reify_syntax::ParsedModule;
-use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
+use reify_types::{
+    BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value,
+    DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
+};
 
 use crate::builders::{
     CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
@@ -955,6 +958,14 @@ mod tests {
     use super::*;
     use reify_compiler::ValueCellKind;
     use reify_types::Severity;
+
+    #[test]
+    fn annotation_constants_available_in_fixtures() {
+        assert_eq!(TEST_ANNOTATION, "test");
+        assert_eq!(DEPRECATED_ANNOTATION, "deprecated");
+        assert_eq!(OPTIMIZED_ANNOTATION, "optimized");
+        assert_eq!(SOLVER_HINT_ANNOTATION, "solver_hint");
+    }
 
     #[test]
     fn bracket_parsed_module_structure() {
