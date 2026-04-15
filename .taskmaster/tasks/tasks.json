@@ -7294,7 +7294,7 @@
           "342",
           "343"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-M8.4",
           "modules": [
@@ -7311,7 +7311,7 @@
         },
         "subtasks": [],
         "details": "Three .ri tests: (1) linalg — rotation matrix det=1, inverse=transpose, eigenvalues of diagonal, complex ops; (2) fields — temperature field gradient, von_mises stress, safety_factor; (3) io — part with material+tolerance, STEP/STL/Display output.",
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-15T01:21:44.867Z"
       },
       {
         "id": "345",
@@ -35517,7 +35517,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:21:41.878Z",
+      "lastModified": "2026-04-15T01:21:44.867Z",
       "taskCount": 1699,
       "completedCount": 1448,
       "tags": [
