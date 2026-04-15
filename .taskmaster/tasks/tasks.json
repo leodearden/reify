@@ -37588,6 +37588,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1796,
+        "title": "Fix undo/redo shortcuts appearing as active in KeyboardHelp overlay",
+        "description": "The `undo` and `redo` entries in shortcuts.ts have non-empty `key` values ('Ctrl+Z', 'Ctrl+Shift+Z') but no handlers are wired in useKeyboardShortcuts.ts. KeyboardHelp.tsx renders all SHORTCUTS entries with a non-empty `key`, so these appear as available shortcuts that do nothing when pressed. The MenuBar correctly marks them as disabled, but KeyboardHelp has no such distinction.\n\nFix: Either set the `key` to '' for undo and redo (hiding them from KeyboardHelp like fitToView), or add a `disabled` flag to ShortcutDef and filter/annotate accordingly in KeyboardHelp.\n\nmemory_hints: search \"undo redo shortcut handler KeyboardHelp\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37600,7 +37611,7 @@
       ],
       "created": "2026-04-15T16:48:28.159Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T16:52:25.395Z"
+      "updated": "2026-04-15T16:52:31.611Z"
     }
   }
 }
