@@ -1593,3 +1593,86 @@ fn sentinel_placeholder_continues_independent_ops() {
         "realization should be rolled back when any op fails, but got geometry output"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tests for rollback correctness with sentinel (step-8)
+// ---------------------------------------------------------------------------
+
+/// Rollback correctness: op0 (Sphere) succeeds and produces a valid handle, but
+/// op1 (Boolean referencing non-existent Step(5)) fails to compile and sets
+/// had_failure=true. Even though op0's handle is in step_handles at the time
+/// of failure, the realization's handle range must be truncated to handle_start
+/// because had_failure=true triggers the rollback condition.
+///
+/// Verifies: geometry_output is None despite op0 producing a valid handle, and
+/// a compile-failure diagnostic is emitted for op1.
+#[test]
+fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Sphere (compiles and executes OK) → valid handle in step_handles[0]
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(10.0))],
+    };
+
+    // Op 1: Boolean referencing non-existent Step(5) → compile failure, sets had_failure
+    let union_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(5),
+        right: GeomRef::Step(5),
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "radius", Type::length(), Some(mm_literal(10.0)))
+        .realization(e, 0, vec![sphere_op, union_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_had_failure_rollback"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (a) kernel received exactly 1 execute call (Sphere from op0)
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected 1 kernel execute call (Sphere from op0), got {}",
+        ops.len()
+    );
+
+    // (b) had_failure rollback: geometry_output must be None even though op0 succeeded
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None — had_failure=true must trigger rollback \
+         even though op0 produced a valid Sphere handle"
+    );
+
+    // (c) exactly 1 compile-failure diagnostic (from op1)
+    let compile_failures: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .collect();
+    assert_eq!(
+        compile_failures.len(),
+        1,
+        "expected 1 compile-failure diagnostic (op1 bad refs), got {}: {:?}",
+        compile_failures.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
