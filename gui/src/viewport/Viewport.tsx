@@ -49,6 +49,18 @@ export function Viewport(props: ViewportProps) {
     props.flyToEntityRef?.((entityPath: string) => selection.flyToEntity(entityPath));
     props.fitToViewRef?.(() => selection.fitToView());
 
+    // Expose viewport internals for the debug bridge (REIFY_DEBUG=1)
+    if (window.__REIFY_DEBUG__) {
+      window.__REIFY_DEBUG__.viewport = {
+        scene,
+        camera,
+        renderer,
+        getMeshes: () => meshManager.getSceneMeshes(),
+        fitToView: () => selection.fitToView(),
+        flyToEntity: (entityPath: string) => selection.flyToEntity(entityPath),
+      };
+    }
+
     // Render-on-demand: keep rAF loop alive (for OrbitControls damping)
     // but only call renderer.render when something has changed.
     let needsRender = true;
@@ -132,6 +144,9 @@ export function Viewport(props: ViewportProps) {
       controls.dispose();
       meshManager.dispose();
       renderer.dispose();
+      if (window.__REIFY_DEBUG__) {
+        delete window.__REIFY_DEBUG__.viewport;
+      }
     });
   });
 
