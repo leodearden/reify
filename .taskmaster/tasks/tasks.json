@@ -37150,7 +37150,7 @@
         "description": "The `compile_errors` helper introduced in task 1759 (module_dag_tests.rs lines 23-33) extracts the pattern already duplicated inline in existing tests (e.g., lines 474-486 and 552-565). Those existing call sites still use the verbose inline version.\n\n1. Move `compile_errors` into `tests/common/mod.rs` so it can be reused by other test files.\n2. Migrate existing `compile_project`-based tests that only inspect error-severity diagnostics from the entry module to use the helper (e.g., `compile_project_detects_duplicate_unit_from_import`, `compile_project_stdlib_unit_collision`).\n3. Tests that also check labels or non-error diagnostics may need a variant that returns full diagnostics — consider adding one if needed.\n\nmemory_hints: search \"compile_errors helper\" and \"module_dag_tests\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -37171,7 +37171,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-15T12:40:37.024Z"
+        "updatedAt": "2026-04-15T16:03:31.136Z"
       },
       {
         "id": "1772",
@@ -37412,9 +37412,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T13:07:00.468Z",
+      "lastModified": "2026-04-15T16:03:31.136Z",
       "taskCount": 1779,
-      "completedCount": 1515,
+      "completedCount": 1516,
       "tags": [
         "master"
       ]
