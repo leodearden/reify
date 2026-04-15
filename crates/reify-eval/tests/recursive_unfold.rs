@@ -1602,26 +1602,20 @@ fn missing_template_ref_emits_error_diagnostic() {
 
     let result = eval_single_template(template);
 
-    // Should have an Error-severity diagnostic about the unknown structure.
-    let has_error = result
+    // Should have exactly one Error-severity diagnostic about the unknown structure.
+    // count==1 is strictly stronger: it verifies the error exists, there is exactly
+    // one such error, and there is no warning-only fallback.
+    let error_count = result
         .diagnostics
         .iter()
-        .any(|d| d.severity == Severity::Error && d.message.contains("unknown structure"));
-    assert!(
-        has_error,
-        "Expected Error-severity diagnostic about unknown structure 'Nonexistent', \
-         got: {:?}",
-        result.diagnostics
-    );
-
-    // Should NOT have only warnings about it — the severity must be Error.
-    let has_only_warning = result
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Warning && d.message.contains("unknown structure"));
-    assert!(
-        !has_only_warning,
-        "Unknown structure reference should be Error, not Warning: {:?}",
+        .filter(|d| d.severity == Severity::Error && d.message.contains("unknown structure"))
+        .count();
+    assert_eq!(
+        error_count,
+        1,
+        "Expected exactly 1 Error-severity diagnostic about unknown structure 'Nonexistent', \
+         got {}: {:?}",
+        error_count,
         result.diagnostics
     );
 }
