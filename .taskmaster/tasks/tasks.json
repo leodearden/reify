@@ -37497,15 +37497,16 @@
         "description": "In crates/reify-eval/tests/stress_pattern_composition.rs, replace the local eval_ri_file() (lines 28-65) and compile_ri_file() (lines 68-79) helpers with calls to existing reify_test_support functions (compile_source_named, make_engine, etc.) plus a one-liner fs::read_to_string. This eliminates duplicated parse→compile→eval plumbing and keeps the stress tests consistent with the broader test suite.\n\nmemory_hints: search \"compile_source_named\" for the existing helper API; search \"reify_test_support\" for available test utilities.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T16:34:19.818Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T16:34:19.154Z",
+      "lastModified": "2026-04-15T16:34:19.819Z",
       "taskCount": 1784,
       "completedCount": 1523,
       "tags": [
