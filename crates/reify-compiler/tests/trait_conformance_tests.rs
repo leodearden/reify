@@ -587,13 +587,27 @@ structure def S : A {
 }
 "#;
 
-    let (_, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
     let errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // x comes from D, reachable via both B->D and C->D paths; must appear exactly once.
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 value cell 'x' (diamond dedup), got {}: {:?}",
+        x_cells.len(),
+        x_cells
+    );
 }
 
 /// Task-189 step-3: Missing member in deep diamond produces exactly 1 error.
