@@ -876,23 +876,23 @@ pub fn mutual_recursion_module() -> CompiledModule {
 pub fn annotated_module() -> CompiledModule {
     let rigid_trait = CompiledTraitBuilder::new("Rigid")
         .annotation(annotation_with_args(
-            "deprecated",
+            DEPRECATED_ANNOTATION,
             vec![ann_str("use Rigid2")],
         ))
         .build();
 
     let bolt_template = TopologyTemplateBuilder::new("Bolt")
-        .annotation(annotation("test"))
-        .annotation(annotation("optimized"))
+        .annotation(annotation(TEST_ANNOTATION))
+        .annotation(annotation(OPTIMIZED_ANNOTATION))
         .build();
 
     let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
         .imported()
-        .annotation(annotation("deprecated"))
+        .annotation(annotation(DEPRECATED_ANNOTATION))
         .build();
 
     let purpose = CompiledPurposeBuilder::new("mfg_ready")
-        .annotation(annotation("solver_hint"))
+        .annotation(annotation(SOLVER_HINT_ANNOTATION))
         .build();
 
     CompiledModuleBuilder::new(ModulePath::single("annotated_module"))
