@@ -95,24 +95,10 @@ pub(crate) fn compile_geometry_call(
     // Boolean ops: args are nested geometry calls, NOT scalars.
     // Handle before scalar arg compilation below.
     match name {
-        "union" | "intersection" | "difference" => {
-            if args.len() != 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "{}() expects 2 arguments, got {}",
-                    name,
-                    args.len()
-                )));
-                return None;
-            }
-            let bool_op = match name {
-                "union" => BooleanOp::Union,
-                "intersection" => BooleanOp::Intersection,
-                "difference" => BooleanOp::Difference,
-                _ => unreachable!(),
-            };
-            // Compile left arg recursively.
-            let left_ops = match compile_geometry_call(
-                &args[0],
+        "union" | "intersection" | "difference" | "union_all" | "intersection_all" => {
+            return compile_boolean_op(
+                name,
+                args,
                 scope,
                 enum_defs,
                 functions,
@@ -120,145 +106,7 @@ pub(crate) fn compile_geometry_call(
                 step_offset,
                 geometry_lets,
                 visiting,
-            ) {
-                Some(ops) => ops,
-                None => {
-                    // Only emit extra diagnostic if the arg is not a geometry expression
-                    // (neither a FunctionCall nor a geometry-let Ident).
-                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. })
-                        && !matches!(&args[0].kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
-                    {
-                        diagnostics.push(Diagnostic::error(format!(
-                            "{}() argument 1 must be a geometry expression",
-                            name
-                        )));
-                    }
-                    return None;
-                }
-            };
-            let left_result_step = step_offset + left_ops.len() - 1;
-            let right_offset = step_offset + left_ops.len();
-            // Compile right arg recursively.
-            let right_ops = match compile_geometry_call(
-                &args[1],
-                scope,
-                enum_defs,
-                functions,
-                diagnostics,
-                right_offset,
-                geometry_lets,
-                visiting,
-            ) {
-                Some(ops) => ops,
-                None => {
-                    if !matches!(args[1].kind, reify_syntax::ExprKind::FunctionCall { .. })
-                        && !matches!(&args[1].kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
-                    {
-                        diagnostics.push(Diagnostic::error(format!(
-                            "{}() argument 2 must be a geometry expression",
-                            name
-                        )));
-                    }
-                    return None;
-                }
-            };
-            let right_result_step = right_offset + right_ops.len() - 1;
-            let mut all_ops = left_ops;
-            all_ops.extend(right_ops);
-            all_ops.push(CompiledGeometryOp::Boolean {
-                op: bool_op,
-                left: GeomRef::Step(left_result_step),
-                right: GeomRef::Step(right_result_step),
-            });
-            return Some(all_ops);
-        }
-        "union_all" | "intersection_all" => {
-            if args.len() < 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "{}() expects at least 2 arguments, got {}",
-                    name,
-                    args.len()
-                )));
-                return None;
-            }
-            let bool_op = match name {
-                "union_all" => BooleanOp::Union,
-                "intersection_all" => BooleanOp::Intersection,
-                _ => unreachable!(),
-            };
-            // Left-fold: compile all args, interleaving binary Boolean ops.
-            // After each pair (accumulator, next_arg), emit a Boolean op whose
-            // result becomes the next accumulator.
-            let mut all_ops: Vec<CompiledGeometryOp> = Vec::new();
-            let mut current_offset = step_offset;
-
-            // Compile first arg.
-            let first_ops = match compile_geometry_call(
-                &args[0],
-                scope,
-                enum_defs,
-                functions,
-                diagnostics,
-                current_offset,
-                geometry_lets,
-                visiting,
-            ) {
-                Some(ops) => ops,
-                None => {
-                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. })
-                        && !matches!(&args[0].kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
-                    {
-                        diagnostics.push(Diagnostic::error(format!(
-                            "{}() argument 1 must be a geometry expression",
-                            name
-                        )));
-                    }
-                    return None;
-                }
-            };
-            let mut accumulator_step = current_offset + first_ops.len() - 1;
-            current_offset += first_ops.len();
-            all_ops.extend(first_ops);
-
-            // Fold remaining args left-to-right.
-            for (i, arg) in args.iter().enumerate().skip(1) {
-                let arg_ops = match compile_geometry_call(
-                    arg,
-                    scope,
-                    enum_defs,
-                    functions,
-                    diagnostics,
-                    current_offset,
-                    geometry_lets,
-                    visiting,
-                ) {
-                    Some(ops) => ops,
-                    None => {
-                        if !matches!(arg.kind, reify_syntax::ExprKind::FunctionCall { .. })
-                            && !matches!(&arg.kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
-                        {
-                            diagnostics.push(Diagnostic::error(format!(
-                                "{}() argument {} must be a geometry expression",
-                                name,
-                                i + 1
-                            )));
-                        }
-                        return None;
-                    }
-                };
-                let arg_result_step = current_offset + arg_ops.len() - 1;
-                current_offset += arg_ops.len();
-                all_ops.extend(arg_ops);
-                // Emit binary op: (accumulator, arg) → new accumulator at current_offset.
-                all_ops.push(CompiledGeometryOp::Boolean {
-                    op: bool_op,
-                    left: GeomRef::Step(accumulator_step),
-                    right: GeomRef::Step(arg_result_step),
-                });
-                accumulator_step = current_offset;
-                current_offset += 1;
-            }
-            return Some(all_ops);
+            );
         }
         _ => {}
     }
