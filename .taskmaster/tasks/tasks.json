@@ -36670,7 +36670,20 @@
           "modules": [
             "crates/reify-eval/src/lib.rs",
             "crates/reify-types/src/geometry.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "GeometryHandle",
+              "GeomRef",
+              "INVALID sentinel"
+            ],
+            "searches": [
+              "INVALID sentinel GeometryHandle u64::MAX content_hash guard debug_assert",
+              "step_handles rollback saturating_sub unsigned underflow compile_geometry_op",
+              "sentinel placeholder compile_geometry_op None task 612 completed"
+            ],
+            "_causation_id": "9255cb58-9827-4ba9-a1de-71532f4fe900"
+          }
         }
       },
       {
