@@ -57,22 +57,26 @@ fn compiled() -> CompiledModule {
     .clone()
 }
 
-/// Eval the canonical source with SimpleConstraintChecker, return EvalResult.
+/// Eval the canonical source with SimpleConstraintChecker, cache and return a static reference.
 /// Uses the cached compiled module to avoid redundant compilation.
-fn eval_canonical() -> reify_eval::EvalResult {
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled());
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        eval_errors.is_empty(),
-        "eval errors in large_assembly.ri: {:?}",
-        eval_errors
-    );
-    result
+/// The OnceLock ensures the expensive eval runs only once across all tests.
+fn eval_canonical() -> &'static reify_eval::EvalResult {
+    static E: OnceLock<reify_eval::EvalResult> = OnceLock::new();
+    E.get_or_init(|| {
+        let mut engine = make_simple_engine();
+        let result = engine.eval(&compiled());
+        let eval_errors: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            eval_errors.is_empty(),
+            "eval errors in large_assembly.ri: {:?}",
+            eval_errors
+        );
+        result
+    })
 }
 
 /// Check the canonical source with SimpleConstraintChecker, return CheckResult.
