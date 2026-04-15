@@ -35318,6 +35318,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1693,
+        "title": "Fix integration test accuracy: safety_factor doc/tolerance + test_runner threshold",
+        "description": "Three accuracy fixes in crates/reify-eval/tests/integration_full_v01.rs:\n\n1. **Doc comment mismatch**: Line 479 doc says `safety_factor(100.0) → 150.0` but the .ri file uses `safety_factor(100.5)` yielding 150.75. Update doc to match actual computation.\n\n2. **Tolerance too wide**: Line 494 asserts `(v - 150.0).abs() < 1.0` — tolerance of 1.0 masks wrong results for deterministic computation (100.5 * 1.5 = 150.75). Fix to `(v - 150.75).abs() < 0.01`.\n\n3. **Test runner threshold gap**: `test_runner_all_pass` asserts `results.len() >= 5` but expects 6 test names. A single missing @test goes undetected. Raise threshold to `>= 6` or assert all expected names present.\n\nmemory_hints: search \"safety_factor overload integration test\"; get_entity \"integration_full_v01\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35330,7 +35341,7 @@
       ],
       "created": "2026-04-15T00:34:12.809Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T00:34:35.924Z"
+      "updated": "2026-04-15T00:35:16.592Z"
     }
   }
 }
