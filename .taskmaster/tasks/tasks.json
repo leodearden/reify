@@ -35573,6 +35573,17 @@
             ]
           }
         }
+      },
+      {
+        "id": 1702,
+        "title": "DRY sample() test boilerplate in field_eval_tests.rs and fix stale doc comment",
+        "description": "Two small improvements in crates/reify-expr/tests/field_eval_tests.rs from task 1674 review:\n\n1. **Extract test helper**: The four 3-param `(x+y)+z` sample() tests (`sample_multi_param_lambda_binds_unpacked_point_components`, `sample_multi_param_lambda_with_mismatched_point_returns_undef`, `sample_multi_param_lambda_with_vector_input`, `sample_multi_param_lambda_with_mismatched_vector_returns_undef`) duplicate ~80% of their setup boilerplate (lambda body construction, field/field_type assembly). Extract a helper like `make_3param_add_field(domain_type: Type) -> (Value, Type)` that builds the 3-param `(x+y)+z` lambda field given a domain type, reducing each test to a one-liner for setup.\n\n2. **Fix stale doc comment**: The doc comment for `sample_multi_param_lambda_with_mismatched_point_returns_undef` (around line 506) says condition (1) is '`evaluated_args[1]` is `Value::Point`'. After task 1674 added the or-pattern, this should read '`evaluated_args[1]` is `Value::Point` or `Value::Vector`'.\n\nLow priority — the existing Point tests already follow the verbose pattern, so the duplication is a pre-existing style. Both changes are in the same file.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35584,7 +35595,8 @@
         "master"
       ],
       "created": "2026-04-15T01:50:32.627Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-15T01:54:17.087Z"
     }
   }
 }
