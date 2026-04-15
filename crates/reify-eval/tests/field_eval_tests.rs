@@ -31,6 +31,22 @@ fn eval_source(source: &str) -> reify_eval::EvalResult {
     engine.eval(&compiled)
 }
 
+/// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
+///
+/// Panics with a descriptive message if any item is not `Value::Real`.
+/// Used by the three principal-stress tests to avoid duplicating the
+/// extraction loop.
+fn extract_eigenvalues(items: &[Value]) -> [f64; 3] {
+    let mut eigenvalues = [0.0_f64; 3];
+    for (i, item) in items.iter().enumerate() {
+        match item {
+            Value::Real(v) => eigenvalues[i] = *v,
+            _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
+        }
+    }
+    eigenvalues
+}
+
 // ── Step 21: eval analytical field at point ────────────────────────────
 
 #[test]
@@ -478,14 +494,7 @@ fn eval_sample_principal_stresses_field_dispatch() {
     };
     assert_eq!(items.len(), 3, "should have 3 principal stresses");
 
-    // Extract eigenvalues
-    let mut eigenvalues = [0.0_f64; 3];
-    for (i, item) in items.iter().enumerate() {
-        match item {
-            Value::Real(v) => eigenvalues[i] = *v,
-            _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
-        }
-    }
+    let eigenvalues = extract_eigenvalues(items);
 
     // Eigenvalues should be sorted ascending
     assert!(
@@ -670,14 +679,7 @@ fn eval_sample_principal_stresses_hydrostatic_dispatch() {
     };
     assert_eq!(items.len(), 3, "should have 3 principal stresses");
 
-    // Extract eigenvalues
-    let mut eigenvalues = [0.0_f64; 3];
-    for (i, item) in items.iter().enumerate() {
-        match item {
-            Value::Real(v) => eigenvalues[i] = *v,
-            _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
-        }
-    }
+    let eigenvalues = extract_eigenvalues(items);
 
     // Each eigenvalue should equal p
     for (i, &v) in eigenvalues.iter().enumerate() {
@@ -772,14 +774,7 @@ fn eval_sample_principal_stresses_full_symmetric_dispatch() {
     };
     assert_eq!(items.len(), 3, "should have 3 principal stresses");
 
-    // Extract eigenvalues
-    let mut eigenvalues = [0.0_f64; 3];
-    for (i, item) in items.iter().enumerate() {
-        match item {
-            Value::Real(v) => eigenvalues[i] = *v,
-            _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
-        }
-    }
+    let eigenvalues = extract_eigenvalues(items);
 
     // Checksum: sum of eigenvalues = trace = 2 + 3 + 4 = 9
     let trace_sum = eigenvalues.iter().sum::<f64>();
