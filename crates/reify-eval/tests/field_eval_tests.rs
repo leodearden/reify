@@ -720,7 +720,7 @@ fn eval_sample_safety_factor_hydrostatic_dispatch() {
 //
 // Uses [[2,1,1],[1,3,1],[1,1,4]], which exercises the trigonometric eigenvalue
 // branch in compute_eigenvalues_3x3 (non-zero off-diagonals). Trace=9 acts as
-// a checksum; expected eigenvalues ≈ [1.3256, 2.4601, 5.2143].
+// a checksum; expected eigenvalues ≈ [1.3249, 2.4608, 5.2143].
 
 #[test]
 fn eval_sample_principal_stresses_full_symmetric_dispatch() {
