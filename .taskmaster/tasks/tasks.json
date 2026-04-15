@@ -35794,10 +35794,11 @@
         "description": "Two C FFI functions declared in the OCCT kernel bridge are never called from Rust and constitute dead code: `loft_two_profiles` and `shape_vec_len`. They should be removed from both the C/C++ header/implementation and the Rust `extern \"C\"` declaration block to keep the FFI surface minimal and honest.\\n\\nFound during task 1588 ~70-module code review (2026-04-15).\\n\\n## memory_hints\\n- search: \\\"OCCT kernel FFI vestigial functions loft_two_profiles shape_vec_len\\\"\\n- search: \\\"OCCT FFI dead code cleanup\\\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:13:09.272Z"
       },
       {
         "id": "1715",
@@ -35919,7 +35920,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:13:09.077Z",
+      "lastModified": "2026-04-15T06:13:09.272Z",
       "taskCount": 1721,
       "completedCount": 1475,
       "tags": [
