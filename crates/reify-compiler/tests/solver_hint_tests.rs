@@ -196,3 +196,26 @@ fn solver_hint_multiple_on_same_param() {
     assert_eq!(cell.solver_hints[1].kind, reify_compiler::SolverHintKind::PreferStock);
     assert_eq!(cell.solver_hints[1].collection, "b");
 }
+
+// ── Step 21: builder creates param with solver hints ───────────────────────
+
+#[test]
+fn builder_param_with_solver_hints() {
+    use reify_test_support::builders::TopologyTemplateBuilder;
+
+    let hints = vec![reify_compiler::SolverHint {
+        kind: reify_compiler::SolverHintKind::DiscreteSet,
+        collection: "bolt_lengths".to_string(),
+        span: reify_types::SourceSpan::new(0, 0),
+    }];
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param_with_solver_hints("S", "length", reify_types::Type::length(), None, hints)
+        .build();
+
+    assert_eq!(template.value_cells.len(), 1);
+    let cell = &template.value_cells[0];
+    assert_eq!(cell.solver_hints.len(), 1);
+    assert_eq!(cell.solver_hints[0].kind, reify_compiler::SolverHintKind::DiscreteSet);
+    assert_eq!(cell.solver_hints[0].collection, "bolt_lengths");
+}

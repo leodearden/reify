@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use reify_compiler::{
     CompiledConstraint, CompiledGeometryOp, CompiledGuardedGroup, EntityKind, RealizationDecl,
-    SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    SolverHint, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
 use reify_syntax;
 use reify_types::{
@@ -127,6 +127,26 @@ impl TopologyTemplateBuilder {
             cell_type,
             default_expr: None,
             solver_hints: Vec::new(),
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn param_with_solver_hints(
+        mut self,
+        entity: &str,
+        member: &str,
+        cell_type: Type,
+        default: Option<CompiledExpr>,
+        solver_hints: Vec<SolverHint>,
+    ) -> Self {
+        self.value_cells.push(ValueCellDecl {
+            id: ValueCellId::new(entity, member),
+            kind: ValueCellKind::Param,
+            visibility: reify_compiler::Visibility::Public,
+            cell_type,
+            default_expr: default,
+            solver_hints,
             span: SourceSpan::new(0, 0),
         });
         self
