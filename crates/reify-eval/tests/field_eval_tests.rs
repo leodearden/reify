@@ -378,18 +378,7 @@ fn eval_sample_von_mises_field_dispatch() {
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // von Mises of uniaxial stress = σ
-    match &result {
-        Value::Real(v) => {
-            assert!(
-                (v - sigma).abs() < 1e-10,
-                "expected von Mises ≈ {sigma}, got {v}"
-            );
-        }
-        _ => panic!(
-            "sample(von_mises(field), point) should return Real({sigma}), got {:?}",
-            result
-        ),
-    }
+    assert_real_approx(&result, sigma, "von Mises");
 }
 
 // ── step-3: principal_stresses dispatch ───────────────────────────────────────
@@ -428,15 +417,7 @@ fn eval_sample_principal_stresses_field_dispatch() {
     assert_eq!(items.len(), 3, "should have 3 principal stresses");
     let expected = [0.0_f64, 0.0, sigma];
     for (i, (item, &exp)) in items.iter().zip(expected.iter()).enumerate() {
-        match item {
-            Value::Real(v) => {
-                assert!(
-                    (v - exp).abs() < 1e-10,
-                    "principal stress[{i}]: expected {exp}, got {v}"
-                );
-            }
-            _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
-        }
+        assert_real_approx(item, exp, &format!("principal stress[{i}]"));
     }
 }
 
@@ -468,18 +449,7 @@ fn eval_sample_max_shear_field_dispatch() {
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // max_shear of pure shear [[0,τ,0],[τ,0,0],[0,0,0]] = τ
-    match &result {
-        Value::Real(v) => {
-            assert!(
-                (v - tau).abs() < 1e-10,
-                "expected max_shear ≈ {tau}, got {v}"
-            );
-        }
-        _ => panic!(
-            "sample(max_shear(field), point) should return Real({tau}), got {:?}",
-            result
-        ),
-    }
+    assert_real_approx(&result, tau, "max_shear");
 }
 
 // ── step-5: safety_factor dispatch ────────────────────────────────────────────
@@ -515,19 +485,7 @@ fn eval_sample_safety_factor_field_dispatch() {
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // safety_factor = yield / von_mises = 250 / 100 = 2.5
-    match &result {
-        Value::Real(v) => {
-            assert!(
-                (v - yield_val / sigma).abs() < 1e-10,
-                "expected safety_factor ≈ {}, got {v}",
-                yield_val / sigma
-            );
-        }
-        _ => panic!(
-            "sample(safety_factor(field, yield), point) should return Real(2.5), got {:?}",
-            result
-        ),
-    }
+    assert_real_approx(&result, yield_val / sigma, "safety_factor");
 }
 
 // ── step-6: spatially-varying lambda — point propagation ─────────────────────
@@ -601,13 +559,7 @@ fn eval_sample_von_mises_spatially_varying_field() {
     let sample_high = make_sample_at(vm_expr_high, 75.0, Type::Real);
     let values = ValueMap::new();
     let result_high = eval_expr(&sample_high, &EvalContext::simple(&values));
-    match &result_high {
-        Value::Real(v) => assert!(
-            (v - sigma_a).abs() < 1e-10,
-            "point=75 (>50): expected von Mises ≈ {sigma_a}, got {v}"
-        ),
-        _ => panic!("expected Real for point=75, got {:?}", result_high),
-    }
+    assert_real_approx(&result_high, sigma_a, "point=75 (>50): von Mises");
 
     // Sample at 25.0 → condition false → tensor_b → von Mises ≈ 200
     let vm_expr_low = make_function_call(
@@ -617,11 +569,5 @@ fn eval_sample_von_mises_spatially_varying_field() {
     );
     let sample_low = make_sample_at(vm_expr_low, 25.0, Type::Real);
     let result_low = eval_expr(&sample_low, &EvalContext::simple(&values));
-    match &result_low {
-        Value::Real(v) => assert!(
-            (v - sigma_b).abs() < 1e-10,
-            "point=25 (<50): expected von Mises ≈ {sigma_b}, got {v}"
-        ),
-        _ => panic!("expected Real for point=25, got {:?}", result_low),
-    }
+    assert_real_approx(&result_low, sigma_b, "point=25 (<50): von Mises");
 }
