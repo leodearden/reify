@@ -35606,6 +35606,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1705,
+        "title": "DRY sample() test helpers and fix stale doc comment",
+        "description": "Task 1674 review: extract shared 3-param lambda field helper in field_eval_tests.rs; fix doc comment at line 506 (Point -> Point or Vector).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35618,7 +35629,7 @@
       ],
       "created": "2026-04-15T01:50:32.627Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T01:56:28.170Z"
+      "updated": "2026-04-15T01:57:05.464Z"
     }
   }
 }
