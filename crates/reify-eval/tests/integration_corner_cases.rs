@@ -158,38 +158,18 @@ fn type_alias_three_deep_resolves() {
 ///                 trait ports live in the trait definition, not in the implementing structure's
 ///                 template, so we verify the trait_bounds relationship
 ///   - constraint: inherited `size > 0mm` is Satisfied (no Violated constraints)
+///
+/// Uses a single engine + single check() call: CheckResult.values serves param/let
+/// assertions and CheckResult.constraint_results serves the constraint assertion.
+/// This avoids the two-engine / three-eval pattern of the previous version.
 #[test]
 fn trait_all_member_kinds() {
-    // ── param + let: value assertions ──
-    let result = eval_ri_file();
+    let compiled = compiled();
 
-    let size_id = ValueCellId::new("FullTraitImpl", "size");
-    let size_val = result
-        .values
-        .get(&size_id)
-        .unwrap_or_else(|| panic!("FullTraitImpl.size not found"));
-    assert!(
-        matches!(size_val, Value::Scalar { .. }),
-        "FullTraitImpl.size should be Scalar, got: {:?}",
-        size_val
-    );
-
-    let doubled_id = ValueCellId::new("FullTraitImpl", "doubled");
-    let doubled_val = result
-        .values
-        .get(&doubled_id)
-        .unwrap_or_else(|| panic!("FullTraitImpl.doubled not found"));
-    assert!(
-        matches!(doubled_val, Value::Scalar { .. }),
-        "FullTraitImpl.doubled should be Scalar, got: {:?}",
-        doubled_val
-    );
-
-    // ── port: trait_bounds relationship ──
+    // ── port: trait_bounds relationship (compiled module, no eval needed) ──
     // Ports declared in a trait live in the trait definition, not in the implementing
     // structure's TopologyTemplate.ports. We verify via trait_bounds that FullTraitImpl
     // declares conformance to FullTrait (which has `port output : out FullTrait`).
-    let compiled = compiled();
     let template = compiled
         .templates
         .iter()
@@ -202,8 +182,47 @@ fn trait_all_member_kinds() {
         template.trait_bounds
     );
 
+    // ── single engine: check() gives values + constraint_results in one eval pass ──
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let check_result = engine.check(&compiled);
+
+    // Assert no eval-severity errors from the single CheckResult.
+    let check_errors: Vec<_> = check_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        check_errors.is_empty(),
+        "eval/check errors in trait_all_member_kinds: {:?}",
+        check_errors
+    );
+
+    // ── param + let: value assertions from CheckResult.values ──
+    let size_id = ValueCellId::new("FullTraitImpl", "size");
+    let size_val = check_result
+        .values
+        .get(&size_id)
+        .unwrap_or_else(|| panic!("FullTraitImpl.size not found"));
+    assert!(
+        matches!(size_val, Value::Scalar { .. }),
+        "FullTraitImpl.size should be Scalar, got: {:?}",
+        size_val
+    );
+
+    let doubled_id = ValueCellId::new("FullTraitImpl", "doubled");
+    let doubled_val = check_result
+        .values
+        .get(&doubled_id)
+        .unwrap_or_else(|| panic!("FullTraitImpl.doubled not found"));
+    assert!(
+        matches!(doubled_val, Value::Scalar { .. }),
+        "FullTraitImpl.doubled should be Scalar, got: {:?}",
+        doubled_val
+    );
+
     // ── constraint: verify no Violated constraints on FullTraitImpl ──
-    let check_result = eval_and_check_ri();
     let violated: Vec<_> = check_result
         .constraint_results
         .iter()
