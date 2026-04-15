@@ -330,7 +330,7 @@ pub(crate) fn compile_connection(
         if compatible {
             auto_match_port_members(&left_port, &right_port, ctx.ports, diagnostics, span)
         } else {
-            Vec::new()
+            Vec::new() // direction error already emitted; skip auto-match
         }
     } else {
         port_mappings.to_vec()

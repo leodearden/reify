@@ -1363,6 +1363,40 @@ structure def S {
     );
 }
 
+// ── task-393 test helpers ─────────────────────────────────────────────────
+
+/// Assert that at least one diagnostic matches `severity` and has a message
+/// containing `contains`.  Panics with the full diagnostics list on failure.
+fn assert_has_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
+    let matched: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == severity && d.message.contains(contains))
+        .collect();
+    assert!(
+        !matched.is_empty(),
+        "expected diagnostic with severity={:?} containing {:?}, got: {:?}",
+        severity,
+        contains,
+        diagnostics
+    );
+}
+
+/// Assert that no diagnostic matches `severity` with a message containing
+/// `contains`.  Panics with the matching diagnostics on failure.
+fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
+    let matched: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == severity && d.message.contains(contains))
+        .collect();
+    assert!(
+        matched.is_empty(),
+        "expected no diagnostic with severity={:?} containing {:?}, got: {:?}",
+        severity,
+        contains,
+        matched
+    );
+}
+
 // ── task-393/step-1: incompatible_directions_suppresses_auto_match_warning ──
 
 #[test]
@@ -1386,27 +1420,8 @@ structure def S {
 "#;
     let (_template, diagnostics) = compile_first_template(source);
 
-    // Direction error must be present
-    let dir_errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("incompatible port directions"))
-        .collect();
-    assert!(
-        !dir_errors.is_empty(),
-        "expected direction-incompatible error, got: {:?}",
-        diagnostics
-    );
-
-    // No unmatched-members warning should be emitted
-    let member_warnings: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("do not match"))
-        .collect();
-    assert!(
-        member_warnings.is_empty(),
-        "expected no unmatched-members warning when directions are incompatible, got: {:?}",
-        member_warnings
-    );
+    assert_has_diagnostic(&diagnostics, Severity::Error, "incompatible port directions");
+    assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
 
 // ── task-393/step-3: incompatible_directions_reverse_suppresses_warning ──
@@ -1432,27 +1447,8 @@ structure def S {
 "#;
     let (_template, diagnostics) = compile_first_template(source);
 
-    // Direction error must be present (Out <- Out means is_forward_compatible(Out, Out) = false)
-    let dir_errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("incompatible port directions"))
-        .collect();
-    assert!(
-        !dir_errors.is_empty(),
-        "expected direction-incompatible error for Out <- Out, got: {:?}",
-        diagnostics
-    );
-
-    // No unmatched-members warning should be emitted
-    let member_warnings: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("do not match"))
-        .collect();
-    assert!(
-        member_warnings.is_empty(),
-        "expected no unmatched-members warning when Reverse directions are incompatible, got: {:?}",
-        member_warnings
-    );
+    assert_has_diagnostic(&diagnostics, Severity::Error, "incompatible port directions");
+    assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
 
 // ── task-393/step-4: incompatible_bidi_suppresses_warning ────────────────
@@ -1478,27 +1474,8 @@ structure def S {
 "#;
     let (_template, diagnostics) = compile_first_template(source);
 
-    // Bidi-specific direction error must be present
-    let bidi_errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("bidirectional connect requires both ports to be bidi"))
-        .collect();
-    assert!(
-        !bidi_errors.is_empty(),
-        "expected bidi-direction error for In <-> Out, got: {:?}",
-        diagnostics
-    );
-
-    // No unmatched-members warning should be emitted
-    let member_warnings: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("do not match"))
-        .collect();
-    assert!(
-        member_warnings.is_empty(),
-        "expected no unmatched-members warning when bidi directions are incompatible, got: {:?}",
-        member_warnings
-    );
+    assert_has_diagnostic(&diagnostics, Severity::Error, "bidirectional connect requires both ports to be bidi");
+    assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
 
 // ── task-393/step-5: compatible_directions_still_emits_unmatched_warning ──
@@ -1524,25 +1501,6 @@ structure def S {
 "#;
     let (_template, diagnostics) = compile_first_template(source);
 
-    // No direction error
-    let dir_errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("incompatible port directions"))
-        .collect();
-    assert!(
-        dir_errors.is_empty(),
-        "expected no direction-incompatible error for Out -> In, got: {:?}",
-        dir_errors
-    );
-
-    // Unmatched-members warning MUST still be emitted
-    let member_warnings: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("do not match"))
-        .collect();
-    assert!(
-        !member_warnings.is_empty(),
-        "expected unmatched-members warning for compatible Out->In with mismatched members, got: {:?}",
-        diagnostics
-    );
+    assert_no_diagnostic(&diagnostics, Severity::Error, "incompatible port directions");
+    assert_has_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
