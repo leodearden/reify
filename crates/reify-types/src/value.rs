@@ -6710,4 +6710,39 @@ mod tests {
             Some(crate::ty::Type::String)
         );
     }
+
+    // ── infer_type() defaults: compiler-aligned Real fallbacks ────────────
+
+    #[test]
+    fn infer_type_empty_list_uses_real_fallback() {
+        use crate::ty::Type;
+        let v = Value::List(vec![]);
+        assert_eq!(
+            v.infer_type(),
+            Type::List(Box::new(Type::Real)),
+            "empty List should default element type to Real (matching compiler)"
+        );
+    }
+
+    #[test]
+    fn infer_type_empty_set_uses_real_fallback() {
+        use crate::ty::Type;
+        let v = Value::Set(BTreeSet::new());
+        assert_eq!(
+            v.infer_type(),
+            Type::Set(Box::new(Type::Real)),
+            "empty Set should default element type to Real (matching compiler)"
+        );
+    }
+
+    #[test]
+    fn infer_type_empty_map_uses_string_real_fallback() {
+        use crate::ty::Type;
+        let v = Value::Map(BTreeMap::new());
+        assert_eq!(
+            v.infer_type(),
+            Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+            "empty Map should default value type to Real (key stays String, matching compiler)"
+        );
+    }
 }
