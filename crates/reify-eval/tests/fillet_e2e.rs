@@ -96,6 +96,10 @@ fn fillet_compiler_accepts_two_args() {
         "expected 1 realization for fillet call, got {}",
         template.realizations.len()
     );
+    assert!(
+        !template.realizations[0].operations.is_empty(),
+        "expected at least one operation in the realization"
+    );
     let op = &template.realizations[0].operations[0];
     assert!(
         matches!(
@@ -150,8 +154,10 @@ fn fillet_through_full_eval_pipeline() {
         kind: ModifyKind::Fillet,
         target: GeomRef::Step(0),
         args: vec![
-            // "target" arg is not evaluated; actual handle resolved from GeomRef::Step(0)
-            ("target".into(), mm_literal(20.0)),
+            // "target" arg slot is structurally required by the IR format but its value is
+            // NEVER evaluated — the actual handle is resolved from GeomRef::Step(0) above.
+            // Using 0.0 as an explicit sentinel to signal the value is intentionally ignored.
+            ("target".into(), mm_literal(0.0)),
             ("radius".into(), mm_literal(3.0)),
         ],
     };
