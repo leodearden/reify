@@ -37941,10 +37941,11 @@
         "description": "From task 1794 review: (1) Derive ShortcutId union type from SHORTCUTS registry in shortcuts.ts, use it in MenuItemDef.shortcutId. (2) Replace ~12 toBeTruthy() with toBeDefined() in MenuBar.test.tsx.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:08:49.332Z"
       },
       {
         "id": "1818",
@@ -37971,7 +37972,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:08:48.991Z",
+      "lastModified": "2026-04-15T21:08:49.332Z",
       "taskCount": 1814,
       "completedCount": 1547,
       "tags": [
