@@ -2,6 +2,7 @@ import { onMount, onCleanup } from 'solid-js';
 
 export interface KeyboardShortcutCallbacks {
   onOpen?: () => void;
+  onSave?: () => void;
   onReEvaluate?: () => void;
   onExportDialog?: () => void;
   onHelp?: () => void;
@@ -31,6 +32,13 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
     if (e.ctrlKey && e.key === 'o') {
       e.preventDefault();
       callbacks.onOpen?.();
+      return;
+    }
+
+    // Ctrl+S — Save file
+    if (e.ctrlKey && e.key === 's') {
+      e.preventDefault();
+      callbacks.onSave?.();
       return;
     }
 

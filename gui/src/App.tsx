@@ -12,6 +12,7 @@ import {
   Toast,
   ReloadPrompt,
   ChatPanel,
+  MenuBar,
 } from './panels';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
@@ -29,6 +30,7 @@ import {
   updateSource as bridgeUpdateSource,
   openFile as bridgeOpenFile,
   openFileEngine as bridgeOpenFileEngine,
+  saveFile as bridgeSaveFile,
   onFileChanged,
   onSerializationError,
   getSourceLocation as bridgeGetSourceLocation,
@@ -151,6 +153,18 @@ const App: Component = () => {
     }
   });
 
+  async function handleSave() {
+    const activeFile = editorStore.state.activeFile;
+    if (!activeFile) return;
+    const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
+    if (!file) return;
+    try {
+      await bridgeSaveFile(file.path, file.content);
+    } catch (err) {
+      showToast(`Save failed: ${errorMessage(err)}`, 'error');
+    }
+  }
+
   // Keyboard shortcuts
   useKeyboardShortcuts({
     onOpen: async () => {
@@ -168,6 +182,7 @@ const App: Component = () => {
         showToast(`Open file failed: ${msg}`, 'error');
       }
     },
+    onSave: handleSave,
     onReEvaluate: () => {
       // Re-evaluate the active file
       const activeFile = editorStore.state.activeFile;
@@ -520,6 +535,36 @@ const App: Component = () => {
       </Show>
       <Show when={initPhase() === 'ready'}>
         <div data-testid="app-layout" class={styles.layout}>
+          <MenuBar
+            onOpen={async () => {
+              try {
+                const path = await pickOpenPath();
+                if (!path) return;
+                const fileData = await bridgeOpenFile(path);
+                editorStore.openFile(fileData);
+                const guiState = await bridgeOpenFileEngine(path);
+                engineStore.initFromState(guiState);
+              } catch (err) {
+                showToast(`Open file failed: ${errorMessage(err)}`, 'error');
+              }
+            }}
+            onSave={handleSave}
+            onExport={handleExport}
+            onReEvaluate={() => {
+              const activeFile = editorStore.state.activeFile;
+              if (activeFile) {
+                const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
+                if (file) {
+                  bridgeUpdateSource(file.path, file.content).catch((err) =>
+                    showToast(`Re-evaluation failed: ${errorMessage(err)}`, 'error'),
+                  );
+                }
+              }
+            }}
+            onFitToView={handleFitToView}
+            onToggleChat={handleToggleChat}
+            onHelp={() => setShowHelp((v) => !v)}
+          />
           <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
           <ReloadPrompt
             filePaths={Array.from(changedFiles())}

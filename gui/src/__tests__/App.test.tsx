@@ -63,7 +63,9 @@ vi.mock('../bridge', () => ({
   pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
   pickOpenPath: vi.fn().mockResolvedValue(null),
   updateSource: vi.fn().mockResolvedValue(undefined),
+  saveFile: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
+  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
   onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -124,6 +126,11 @@ describe('App layout wiring', () => {
   it('renders app-layout container', async () => {
     await renderAndWaitForReady();
     expect(screen.getByTestId('app-layout')).toBeTruthy();
+  });
+
+  it('renders MenuBar above Toolbar', async () => {
+    await renderAndWaitForReady();
+    expect(screen.getByTestId('menu-bar')).toBeTruthy();
   });
 
   it('renders Toolbar at top', async () => {
