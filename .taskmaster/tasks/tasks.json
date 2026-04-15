@@ -37247,7 +37247,7 @@
         "description": "Two small improvements to editorTheme module from task 1767 review:\n\n1. **Test coverage gap**: Add t.paren and t.brace to the syntax tag coverage test array in editorTheme.test.ts (lines 57-66). These tags are defined in reifyHighlightStyle (lines 64-65 of editorTheme.ts) but missing from the test cases, so regressions in their highlight rules would go undetected.\n\n2. **Misleading comment**: The NOTE comment at editorTheme.ts:25-27 claims \"all THEME_TOKENS values are guaranteed to be 6-digit hex strings\" but THEME_TOKENS also contains spacing values ('2px'), font stacks, and radii. Narrow the comment to specify that only the color tokens used in hex-concatenation (surface0, accent) are 6-digit hex — not all tokens.\n\nmemory_hints: search \"editorTheme highlight style test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -37260,7 +37260,8 @@
             "gui/src/editor",
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T12:40:37.593Z"
       },
       {
         "id": "1780",
@@ -37284,7 +37285,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T12:40:37.025Z",
+      "lastModified": "2026-04-15T12:40:37.593Z",
       "taskCount": 1775,
       "completedCount": 1512,
       "tags": [
