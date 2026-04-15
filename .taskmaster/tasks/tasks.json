@@ -38091,6 +38091,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1825,
+        "title": "Fix misleading test comment and add defensive waitFor in editor tests",
+        "description": "Two test fixes from task 1798 review: (1) Editor.test.tsx:163 comment misattributes safety to if(path) guard instead of createEffect clearing debounce timer. (2) App.test.tsx:~1340 missing defensive waitFor for capturedEditorStore before access.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -38103,7 +38114,7 @@
       ],
       "created": "2026-04-15T21:22:06.203Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T21:23:37.380Z"
+      "updated": "2026-04-15T21:24:38.379Z"
     }
   }
 }
