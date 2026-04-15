@@ -1,41 +1,14 @@
 //! Tests for SI prefix and derived-unit stdlib expansion (task 334).
 
-use reify_compiler::{CompiledModule, CompiledUnit, compile, compile_with_stdlib, si_units};
-use reify_types::{DimensionVector, ModulePath, Severity};
+use reify_compiler::{CompiledUnit, compile, si_units};
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
+use reify_types::{DimensionVector, ModulePath};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-fn parse_and_compile(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("si_units_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile(&parsed)
-}
-
-fn compile_with_stdlib_helper(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("si_units_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    compile_with_stdlib(&parsed)
-}
-
-fn errors_only(module: &CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
-}
-
 /// Compile a unit declaration and look up its `dimension` field.
 fn unit_dim(source: &str, unit_name: &str) -> DimensionVector {
-    let module = parse_and_compile(source);
+    let module = compile_source(source);
     let errs = errors_only(&module);
     assert!(errs.is_empty(), "unexpected errors: {:?}", errs);
     let u = module
@@ -271,7 +244,7 @@ fn stdlib_param_si_value(param_type: &str, literal: &str) -> (f64, DimensionVect
         "structure def S {{ param x : {} = {} }}",
         param_type, literal
     );
-    let module = compile_with_stdlib_helper(&source);
+    let module = compile_source_with_stdlib(&source);
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -553,7 +526,7 @@ fn unknown_unit_still_produces_parse_error() {
     // arbitrary identifiers. An unknown unit after a number literal should
     // yield an Error-severity diagnostic mentioning the unit name.
     let source = "structure def S { param x : Length = 5xyz123 }";
-    let module = compile_with_stdlib_helper(source);
+    let module = compile_source_with_stdlib(source);
     let errs = errors_only(&module);
     assert!(
         !errs.is_empty(),
