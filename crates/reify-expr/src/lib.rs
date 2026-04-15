@@ -132,16 +132,21 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     {
                         match (lambda.as_ref(), source) {
                             (Value::Lambda { params, .. }, _) => {
-                                // Mirror the calculus::detect_single_point_param convention:
-                                // when the lambda has params.len() > 1 AND the input is a
-                                // Value::Point whose length matches params.len(), unpack the
-                                // Point components into individual scalar arguments so the arity
-                                // check in apply_lambda passes.  A 1-param lambda (params.len()
-                                // == 1) always receives the whole Point unchanged (no unpacking),
+                                // Accept both Point and Vector — they share structural
+                                // representation (both wrap Vec<Value>).  Mirror the calculus
+                                // convention established in extract_point_coords,
+                                // compute_numerical_divergence_at_point, and
+                                // compute_numerical_curl_at_point: when the lambda has
+                                // params.len() > 1 AND the input is a Value::Point or
+                                // Value::Vector whose length matches params.len(), unpack the
+                                // components into individual scalar arguments so the arity check
+                                // in apply_lambda passes.  A 1-param lambda (params.len() == 1)
+                                // always receives the whole Point/Vector unchanged (no unpacking),
                                 // preserving the single-param binding contract.
-                                // See also: calculus.rs::detect_single_point_param.
+                                // See also: calculus.rs::extract_point_coords.
                                 if params.len() > 1
-                                    && let Value::Point(items) = &evaluated_args[1]
+                                    && let (Value::Point(items) | Value::Vector(items)) =
+                                        &evaluated_args[1]
                                     && params.len() == items.len()
                                 {
                                     return apply_lambda(lambda, items.as_slice(), ctx);
