@@ -35931,11 +35931,11 @@
         "description": "Three assertion-quality fixes in crates/reify-eval/tests/incremental_integration.rs:\n1. Tighten >= 40 lower bounds on constraint_results.len() to >= 47 at lines ~263, ~358, ~393 (observed count is 49, esc-295-78 can drop to 47).\n2. Add lower-bound assertion (>= 45) to the XFAIL block at ~line 521 to prevent silent catastrophic regressions.\n3. Add error-path tests for edit_param/edit_check: invalid ValueCellId (nonexistent entity/param), dimension mismatch. Note: edit_param-before-eval is already covered in boundary5_engine.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:19:16.930Z",
+        "updatedAt": "2026-04-15T17:52:56.977Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -37854,7 +37854,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:52:55.083Z",
+      "lastModified": "2026-04-15T17:52:56.977Z",
       "taskCount": 1804,
       "completedCount": 1546,
       "tags": [
