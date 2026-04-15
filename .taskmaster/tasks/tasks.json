@@ -36835,10 +36835,11 @@
         "description": "The GUI has no visible menu bar. Users can't discover available actions or their keyboard shortcuts. Add a menu bar with at minimum: File (Open ^O, Save ^S, Export), Edit (Undo, Redo), View (Refresh F5, Fit to View, Toggle Grid), Help.",
         "details": "memory_hints: search \"GUI menu bar keyboard shortcuts\"\n\nThe toolbar area exists (data-testid=\"toolbar\") but contains no menus. Keyboard shortcuts exist (F5, Ctrl+O, Ctrl+S, Ctrl+E) but are invisible to users. A standard menu bar with hotkey annotations would solve discoverability.\n\nConsider using Tauri's native menu API or a custom menu component. Tauri 2 supports app menus via tauri-plugin-menu.\n\nFiles: gui/src/App.tsx (keyboard shortcuts), gui/src-tauri/src/main.rs (Tauri setup)",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:01:50.385Z"
       },
       {
         "id": "1767",
@@ -36867,7 +36868,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T12:01:49.994Z",
+      "lastModified": "2026-04-15T12:01:50.385Z",
       "taskCount": 1765,
       "completedCount": 1507,
       "tags": [
