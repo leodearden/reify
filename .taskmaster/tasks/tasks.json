@@ -35584,6 +35584,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1703,
+        "title": "DRY sample() test boilerplate and fix stale doc comment in field_eval_tests.rs",
+        "description": "Two improvements in crates/reify-expr/tests/field_eval_tests.rs from task 1674 review:\n\n1. Extract helper like `make_3param_add_field(domain_type) -> (Value, Type)` to DRY the four 3-param sample() tests that duplicate lambda body + field setup boilerplate.\n\n2. Fix stale doc comment at ~line 506: condition (1) should say `Value::Point or Value::Vector` (not just `Value::Point`) after the or-pattern added in task 1674.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35596,7 +35607,7 @@
       ],
       "created": "2026-04-15T01:50:32.627Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T01:54:17.087Z"
+      "updated": "2026-04-15T01:55:23.167Z"
     }
   }
 }
