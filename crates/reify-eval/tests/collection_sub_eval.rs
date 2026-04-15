@@ -543,6 +543,60 @@ fn edit_param_count_int_undef_undef_int_transition() {
     );
 }
 
+// ─── task-1588 step-1: non-Int old_count emits Warning diagnostic ───
+
+#[test]
+fn edit_param_non_int_old_count_emits_warning() {
+    let (module, mut engine) = make_bolt_parent_engine(Some(4));
+    let n_id = ValueCellId::new("Parent", "n");
+
+    // Establish baseline: 4 bolt instances in snapshot
+    let _initial = engine.eval(&module);
+
+    // Edit n to Real(2.0) — sets snapshot count_cell = Real(2.0)
+    // old_count_val = Int(4) → Int arm (no warning from old_count)
+    // new_count_val = Real(2.0) → _ => 0 (removes 4 instances, creates 0)
+    let _r1 = engine
+        .edit_param(n_id.clone(), Value::Real(2.0))
+        .expect("edit to Real should succeed");
+
+    // Edit n to Int(3) — old_count_val = Real(2.0), new_count_val = Int(3)
+    // old_count_val = Real(2.0) should emit a Warning diagnostic
+    let r2 = engine
+        .edit_param(n_id, Value::Int(3))
+        .expect("edit to Int(3) should succeed");
+
+    // (a) diagnostics must contain a Warning about non-integer old count
+    let has_warning = r2.diagnostics.iter().any(|d| {
+        d.severity == Severity::Warning
+            && d.message.contains("non-integer")
+            && d.message.contains("Parent.__count_bolts")
+    });
+    assert!(
+        has_warning,
+        "expected a Warning diagnostic about non-integer old count cell, got: {:?}",
+        r2.diagnostics
+    );
+
+    // (b) exactly 3 bolt instances exist (new_count = Int(3))
+    let bolt_count = count_bolt_diameter_instances(&r2.values);
+    assert_eq!(
+        bolt_count, 3,
+        "exactly 3 bolt instances should exist after editing to Int(3), got {}",
+        bolt_count
+    );
+
+    // (c) no stale instances beyond the 3 expected (no Real(2.0)-era artifacts)
+    for i in 3..6 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            r2.values.get(&scoped_id).is_none(),
+            "bolts[{}] should not exist (no stale instances expected)",
+            i
+        );
+    }
+}
+
 // ─── step-30: count Int→Undef removes all instances (regression for unreachable!() bug) ───
 
 #[test]
