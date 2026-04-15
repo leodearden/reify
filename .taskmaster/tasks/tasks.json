@@ -37525,11 +37525,11 @@
         "description": "The `assert_has_diagnostic` and `assert_no_diagnostic` helpers in `connect_compile_tests.rs` (lines 1370-1397) are useful for asserting on diagnostic severity+message content. A similar pattern exists in `guard_compilation.rs` (`assert_no_error_diagnostics`). As the compiler test suite grows, these helpers should live in a shared test-utilities module to avoid duplication.\n\nSuggested approach: create a `test_helpers.rs` module (or similar) included via `mod test_helpers;` in each integration test file, containing these diagnostic assertion utilities. Also consider migrating the existing `assert_no_error_diagnostics` pattern from `guard_compilation.rs`.\n\nWhile extracting, consider using `Iterator::any()` instead of collecting into a Vec in `assert_has_diagnostic` (the `assert_no_diagnostic` needs the Vec for the panic message, so it should stay as-is).\n\n**memory_hints**: search \"compiler test helpers diagnostic assertions\" for prior art",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:37:48.092Z"
+        "updatedAt": "2026-04-15T17:09:16.506Z"
       },
       {
         "id": "1791",
@@ -37714,9 +37714,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:09:00.583Z",
+      "lastModified": "2026-04-15T17:09:16.506Z",
       "taskCount": 1796,
-      "completedCount": 1533,
+      "completedCount": 1534,
       "tags": [
         "master"
       ]
