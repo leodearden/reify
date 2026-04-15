@@ -6650,4 +6650,64 @@ mod tests {
             "Option(None) has no inferable inner type"
         );
     }
+
+    // ── try_infer_type() tests: Some(correct_type) for populated values ────
+
+    #[test]
+    fn try_infer_type_nonempty_list_returns_some_list_int() {
+        let v = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(
+            v.try_infer_type(),
+            Some(crate::ty::Type::List(Box::new(crate::ty::Type::Int))),
+            "non-empty List(Int) should return Some(List(Int))"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_nonempty_set_returns_some_set_int() {
+        let mut s = BTreeSet::new();
+        s.insert(Value::Int(42));
+        let v = Value::Set(s);
+        assert_eq!(
+            v.try_infer_type(),
+            Some(crate::ty::Type::Set(Box::new(crate::ty::Type::Int))),
+            "non-empty Set(Int) should return Some(Set(Int))"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_nonempty_map_returns_some_map_string_int() {
+        let mut m = BTreeMap::new();
+        m.insert(Value::String("key".into()), Value::Int(1));
+        let v = Value::Map(m);
+        assert_eq!(
+            v.try_infer_type(),
+            Some(crate::ty::Type::Map(
+                Box::new(crate::ty::Type::String),
+                Box::new(crate::ty::Type::Int),
+            )),
+            "non-empty Map(String,Int) should return Some(Map(String,Int))"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_option_some_int_returns_some_option_int() {
+        let v = Value::Option(Some(Box::new(Value::Int(7))));
+        assert_eq!(
+            v.try_infer_type(),
+            Some(crate::ty::Type::Option(Box::new(crate::ty::Type::Int))),
+            "Option(Some(Int)) should return Some(Option(Int))"
+        );
+    }
+
+    #[test]
+    fn try_infer_type_scalar_values_return_some() {
+        assert_eq!(Value::Bool(true).try_infer_type(), Some(crate::ty::Type::Bool));
+        assert_eq!(Value::Int(0).try_infer_type(), Some(crate::ty::Type::Int));
+        assert_eq!(Value::Real(0.0).try_infer_type(), Some(crate::ty::Type::Real));
+        assert_eq!(
+            Value::String("".into()).try_infer_type(),
+            Some(crate::ty::Type::String)
+        );
+    }
 }
