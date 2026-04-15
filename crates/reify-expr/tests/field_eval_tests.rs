@@ -583,45 +583,8 @@ fn sample_multi_param_lambda_with_mismatched_point_returns_undef() {
 /// - Expected: `Real(6.0)` — vector unpacked into x=1.0, y=2.0, z=3.0; (1+2)+3=6
 #[test]
 fn sample_multi_param_lambda_with_vector_input() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    // Lambda body: (x + y) + z  — same body as the matching-arity Point test.
-    let xy = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let body = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        xy,
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
-    );
-
-    // 3-param lambda — params.len() == 3
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
     let domain_type = Type::vec3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
-    };
+    let (field, field_type) = make_xyz_sum_field(domain_type.clone());
 
     // sample(field, Vector([1.0, 2.0, 3.0])) -> Real(6.0)
     // sample() must unpack Vector([1.0, 2.0, 3.0]) into [x=1.0, y=2.0, z=3.0].
