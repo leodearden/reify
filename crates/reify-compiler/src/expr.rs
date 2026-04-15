@@ -1550,10 +1550,10 @@ pub(crate) fn compile_expr_guarded(
             match scope.resolve(member) {
                 Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
                 None => {
-                    // Fallback: create a ValueCellId directly (trait conformance will catch
-                    // missing members separately).
-                    let id = ValueCellId::new(&scope.entity_name, member);
-                    CompiledExpr::value_ref(id, Type::Real)
+                    // Member not found in scope — conformance checking will report the
+                    // missing member as a separate error.  Return Undef to match the
+                    // three sibling error paths in this match arm.
+                    CompiledExpr::literal(Value::Undef, Type::Real)
                 }
             }
         }
