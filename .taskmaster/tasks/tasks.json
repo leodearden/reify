@@ -38232,10 +38232,11 @@
         "description": "Three improvements to chamfer_e2e.rs and fillet_e2e.rs from task 1819 review:\n\n1. **Assert build results** (chamfer_e2e.rs:244, fillet_e2e.rs:248): Both `chamfer_modify_only_needs_distance_arg` and `fillet_modify_only_needs_radius_arg` discard `engine.build()` with `let _result`. Assert that the result contains no error-level diagnostics. Apply to both the new minimal-args tests and the original full-pipeline tests.\n\n2. **Fix stale line-number references** (chamfer_e2e.rs:153, fillet_e2e.rs:157): Comments reference specific line numbers in geometry.rs (882-884 and 900-907) that will drift. Replace with function/match-arm references, e.g., \"Mirrors what the compiler emits in compile_geometry_call() for chamfer/fillet\".\n\n## memory_hints\n- search: \"engine.build diagnostics assertion pattern\"\n- search: \"e2e test assertion conventions\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:39:45.197Z"
       },
       {
         "id": "1831",
@@ -38251,7 +38252,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T21:39:42.549Z",
+      "lastModified": "2026-04-15T21:39:45.197Z",
       "taskCount": 1826,
       "completedCount": 1554,
       "tags": [
