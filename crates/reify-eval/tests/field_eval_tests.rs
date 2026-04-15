@@ -368,6 +368,8 @@ fn test_assert_real_approx_passes_within_tolerance() {
     assert_real_approx(&Value::Real(3.14), 3.14, "pi");
     // Should not panic: difference is exactly at zero
     assert_real_approx(&Value::Real(0.0), 0.0, "zero");
+    // Should not panic: value is just inside tolerance (90% of REAL_TOLERANCE)
+    assert_real_approx(&Value::Real(3.14 + REAL_TOLERANCE * 0.9), 3.14, "near-boundary");
     // Verify REAL_TOLERANCE constant exists and has the expected magnitude
     assert!(REAL_TOLERANCE > 0.0, "REAL_TOLERANCE must be positive");
     assert!(REAL_TOLERANCE <= 1e-10, "REAL_TOLERANCE should be small (≤1e-10)");
