@@ -617,6 +617,20 @@ impl OcctKernel {
                         "nurbs_curve: weights count must equal control points count".into(),
                     ));
                 }
+                if knots.is_empty() {
+                    return Err(GeometryError::OperationFailed(
+                        "nurbs_curve: knots vector must not be empty".into(),
+                    ));
+                }
+                let expected_knots = control_points.len() + degree + 1;
+                if knots.len() != expected_knots {
+                    return Err(GeometryError::OperationFailed(
+                        format!(
+                            "nurbs_curve: expected {} knots (n_points + degree + 1), got {}",
+                            expected_knots, knots.len(),
+                        ),
+                    ));
+                }
                 let coords: Vec<f64> = control_points.iter().flat_map(|p| p.iter().copied()).collect();
                 let shape = ffi::ffi::make_nurbs_curve(
                     &coords, control_points.len(),

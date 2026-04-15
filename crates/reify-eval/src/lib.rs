@@ -4037,9 +4037,26 @@ fn compile_geometry_op(
                         ));
                         return None;
                     }
+                    // Validate degree is a positive integer
+                    if vals[0] < 1.0 || vals[0] != vals[0].trunc() || vals[0] > 25.0 {
+                        diagnostics.push(Diagnostic::error(
+                            format!("nurbs() degree must be a positive integer (1..25), got {}", vals[0]),
+                        ));
+                        return None;
+                    }
                     let degree = vals[0] as usize;
                     // Remaining: need to know n_points to split.
                     // Convention: second val is n_points.
+                    // Validate n_points is a positive integer within a sensible range
+                    if vals[1] < 2.0 || vals[1] != vals[1].trunc() || vals[1] > (vals.len() as f64) {
+                        diagnostics.push(Diagnostic::error(
+                            format!(
+                                "nurbs() n_points must be a positive integer >= 2 and consistent with argument count, got {}",
+                                vals[1]
+                            ),
+                        ));
+                        return None;
+                    }
                     let n_points = vals[1] as usize;
                     let expected_min = 2 + n_points * 3 + n_points; // degree + n + poles + weights
                     if vals.len() < expected_min {
@@ -4058,6 +4075,20 @@ fn compile_geometry_op(
                         .collect();
                     let weights: Vec<f64> = vals[pole_end..weight_end].to_vec();
                     let knots: Vec<f64> = vals[weight_end..].to_vec();
+                    if knots.is_empty() {
+                        diagnostics.push(Diagnostic::error(
+                            "nurbs() requires at least 1 knot value".to_string(),
+                        ));
+                        return None;
+                    }
+                    let expected_knots = n_points + degree + 1;
+                    if knots.len() != expected_knots {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "nurbs() expected {} knots (n_points + degree + 1 = {} + {} + 1), got {}",
+                            expected_knots, n_points, degree, knots.len(),
+                        )));
+                        return None;
+                    }
                     Some(reify_types::GeometryOp::NurbsCurve {
                         control_points,
                         weights,
