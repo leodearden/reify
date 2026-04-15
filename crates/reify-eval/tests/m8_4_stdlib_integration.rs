@@ -14,7 +14,7 @@
 //!   io_export.ri       — Physical+Elastic+Strong trait conformance, tolerancing
 //!                        subs, and geometry (box) for export-ready parts
 
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::make_simple_engine;
 use reify_types::{Severity, Value, ValueCellId};
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
@@ -147,16 +147,24 @@ fn linalg_eigenvalues_of_diagonal() {
                 "eigenvalues should have 3 entries, got {}",
                 items.len()
             );
+            // `compute_eigenvalues_3x3` returns eigenvalues sorted ascending.
+            // We independently sort the extracted floats before comparison so
+            // the test stays robust if that sort-order contract ever changes.
             let expected = [3.0_f64, 5.0, 7.0];
-            for (i, (item, &exp)) in items.iter().zip(expected.iter()).enumerate() {
-                let actual = match item {
+            let mut actuals: Vec<f64> = items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| match item {
                     Value::Real(v) => *v,
-                    Value::Int(i) => *i as f64,
+                    Value::Int(n) => *n as f64,
                     other => panic!(
                         "eigenvalue[{}] should be Real or Int, got {:?}",
                         i, other
                     ),
-                };
+                })
+                .collect();
+            actuals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            for (i, (&actual, &exp)) in actuals.iter().zip(expected.iter()).enumerate() {
                 assert!(
                     (actual - exp).abs() < 1e-9,
                     "eigenvalue[{}]: expected {}, got {}",
@@ -209,23 +217,34 @@ fn linalg_inverse_equals_transpose() {
         }
     }
 
-    // Both R^-1 and R^T should have the same [0][0] element (≈ 0.0 for R_z(90°))
-    let inv_00 = tensor_elem(inv_val, 0, 0);
-    let trans_00 = tensor_elem(trans_val, 0, 0);
-    assert!(
-        (inv_00 - trans_00).abs() < 1e-9,
-        "inv_rot[0][0] ({}) should match trans_rot[0][0] ({})",
-        inv_00,
-        trans_00
-    );
-
-    // For R_z(90°), the transpose [0][1] should be 1.0 (= R[1][0] of original)
-    let trans_01 = tensor_elem(trans_val, 0, 1);
-    assert!(
-        (trans_01 - 1.0).abs() < 1e-9,
-        "trans_rot[0][1] should be ≈1.0 (R_z^T[0][1] = R_z[1][0] = 1), got {}",
-        trans_01
-    );
+    // For R_z(90°): R = [[0,-1,0],[1,0,0],[0,0,1]]
+    // R^T = R^-1 = [[0,1,0],[-1,0,0],[0,0,1]]  (orthogonal matrix property)
+    //
+    // Check all 9 elements: (a) inv_rot == trans_rot at every position, and
+    // (b) trans_rot matches the known analytical values of R^T.
+    // A 2-element spot-check could pass by coincidence (e.g. both zero at [0][0]).
+    let expected_rt: [[f64; 3]; 3] = [
+        [ 0.0,  1.0, 0.0],
+        [-1.0,  0.0, 0.0],
+        [ 0.0,  0.0, 1.0],
+    ];
+    for row in 0..3usize {
+        for col in 0..3usize {
+            let inv_elem   = tensor_elem(inv_val,   row, col);
+            let trans_elem = tensor_elem(trans_val, row, col);
+            let exp        = expected_rt[row][col];
+            assert!(
+                (inv_elem - trans_elem).abs() < 1e-9,
+                "inv_rot[{}][{}] ({}) != trans_rot[{}][{}] ({}): R^-1 should equal R^T",
+                row, col, inv_elem, row, col, trans_elem
+            );
+            assert!(
+                (trans_elem - exp).abs() < 1e-9,
+                "trans_rot[{}][{}] should be ≈{}, got {}",
+                row, col, exp, trans_elem
+            );
+        }
+    }
 }
 
 // ── step-3: linalg_complex_re_im ─────────────────────────────────────────────
@@ -541,13 +560,7 @@ fn io_export_tolerance_band() {
     }
 }
 
-// Suppress unused import warning — parse_and_compile_with_stdlib is available
-// for compile-level assertions if needed in future steps.
-#[allow(unused_imports)]
-use reify_compiler::CompiledModule;
-#[allow(dead_code)]
-fn _compiled_ri(path: &str) -> CompiledModule {
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
-    parse_and_compile_with_stdlib(&source)
-}
+// NOTE: each test independently calls eval_ri_file, re-parsing and re-compiling
+// the same .ri fixture. This matches the established m8_3 pattern; future
+// iterations may share results across same-fixture tests via
+// `std::sync::LazyLock` to avoid redundant parse→compile→eval cycles.
