@@ -70,9 +70,29 @@ pub fn compile_with_stdlib(parsed: &reify_syntax::ParsedModule) -> CompiledModul
 /// that are visible to the user module during compilation. The output
 /// `CompiledModule` contains only the user's own definitions — prelude
 /// definitions are used as context but not duplicated in the output.
+///
+/// This is a thin wrapper around [`compile_with_prelude_refs`] that accepts
+/// owned `CompiledModule` slices for external callers. Internal code should
+/// prefer `compile_with_prelude_refs` to avoid cloning.
 pub fn compile_with_prelude(
     parsed: &reify_syntax::ParsedModule,
     prelude: &[CompiledModule],
+) -> CompiledModule {
+    let refs: Vec<&CompiledModule> = prelude.iter().collect();
+    compile_with_prelude_refs(parsed, &refs)
+}
+
+/// Compile a parsed module with prelude definitions provided as references.
+///
+/// This is the inner implementation used by the module DAG to avoid cloning
+/// already-compiled modules. The `prelude` slice contains references to
+/// compiled modules whose exported definitions (units, traits, enums,
+/// constraint defs) are visible during compilation.
+///
+/// External callers should use [`compile_with_prelude`] instead.
+pub(crate) fn compile_with_prelude_refs(
+    parsed: &reify_syntax::ParsedModule,
+    prelude: &[&CompiledModule],
 ) -> CompiledModule {
     let mut imports = Vec::new();
     let mut functions = Vec::new();
@@ -103,7 +123,7 @@ pub fn compile_with_prelude(
     // the prelude parameter with an empty slice. This affects unit seeding,
     // trait/enum/function resolution, and constraint def imports.
     let has_no_prelude = parsed.pragmas.iter().any(|p| p.name == "no_prelude");
-    let prelude: &[CompiledModule] = if has_no_prelude { &[] } else { prelude };
+    let prelude: &[&CompiledModule] = if has_no_prelude { &[] } else { prelude };
 
     // Consolidated pre-pass: iterate declarations once, collecting references
     // for deferred compilation. This replaces 4 separate loops (enum, function,

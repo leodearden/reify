@@ -189,13 +189,10 @@ impl ModuleDag {
             }
 
             // Collect prelude modules (already-compiled imports) for constraint def propagation.
-            let preludes: Vec<CompiledModule> = collect_import_preludes(&parsed, &self.modules)
-                .into_iter()
-                .cloned()
-                .collect();
+            let preludes = collect_import_preludes(&parsed, &self.modules);
 
             // Compile this module with prelude context so imported constraint defs are visible.
-            Ok(crate::compile_with_prelude(&parsed, &preludes))
+            Ok(crate::compile_with_prelude_refs(&parsed, &preludes))
         })();
 
         // Always remove from in-progress, whether the inner block succeeded or failed
@@ -255,13 +252,12 @@ pub fn compile_project(
 
     // Collect imported modules as prelude so their pub units (and other
     // exported definitions) are visible in the entry module.
-    let preludes: Vec<CompiledModule> = collect_import_preludes(&parsed, &dag.modules)
-        .into_iter()
-        .cloned()
-        .collect();
-
-    // Compile the entry module with prelude context
-    let compiled_entry = crate::compile_with_prelude(&parsed, &preludes);
+    // Block-scope the preludes so the shared borrows of dag.modules are
+    // dropped before the mutable borrow in dag.modules.insert below.
+    let compiled_entry = {
+        let preludes = collect_import_preludes(&parsed, &dag.modules);
+        crate::compile_with_prelude_refs(&parsed, &preludes)
+    };
     let entry_key = entry_name.to_string();
     dag.topo_order.push(entry_key.clone());
     dag.modules.insert(entry_key, compiled_entry);
