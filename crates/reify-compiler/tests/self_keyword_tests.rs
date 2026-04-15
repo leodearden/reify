@@ -427,12 +427,12 @@ fn self_error_at_module_scope() {
     }
 }
 
-// ─── task-1125 step-1: self.collection_sub emits error ───
+// ─── task-1125 step-1 (updated by task-1280 step-3): self.collection_sub resolves to List<T> ───
 
 #[test]
-fn self_dot_collection_sub_emits_error() {
-    // `self.items` where `items` is a collection sub should emit an error,
-    // not silently return StructureRef("Bolt") as if it were a single-instance sub.
+fn self_dot_collection_sub_resolves_to_list() {
+    // `self.items` where `items` is a collection sub should resolve to a List<T> value cell,
+    // mirroring bare `items`. No error should be emitted (task-1280 fix).
     let source = r#"structure Bolt {
     param diameter : Scalar = 10mm
 }
@@ -440,27 +440,36 @@ structure S {
     sub items : List<Bolt>
     let x = self.items
 }"#;
-    let compiled = compile_with_diagnostics(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
         .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let x_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("x value cell");
+
+    let expected_id = ValueCellId::new("S", "__list_items__diameter");
+    let x_refs = x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .collect_value_refs();
     assert!(
-        !errors.is_empty(),
-        "expected at least one error for `self.items` on collection sub, got no errors"
+        x_refs.contains(&expected_id),
+        "self.items should reference S.__list_items__diameter, got: {:?}",
+        x_refs
     );
-    let has_helpful_msg = errors.iter().any(|d| {
-        let msg = &d.message;
-        msg.contains("items")
-            && (msg.contains("collection")
-                || msg.contains("indexed")
-                || msg.contains("index"))
-    });
+
+    let x_ty = &x_cell.default_expr.as_ref().expect("x default_expr").result_type;
     assert!(
-        has_helpful_msg,
-        "expected error message mentioning 'items' and 'collection'/'indexed'/'index', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        matches!(x_ty, reify_types::Type::List(_)),
+        "self.items should have List type, got: {:?}",
+        x_ty
     );
 }
 
