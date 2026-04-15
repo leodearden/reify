@@ -160,6 +160,7 @@ const App: Component = () => {
     if (!file) return;
     try {
       await bridgeSaveFile(file.path, file.content);
+      editorStore.markClean(file.path);
     } catch (err) {
       showToast(`Save failed: ${errorMessage(err)}`, 'error');
     }

@@ -2295,3 +2295,41 @@ describe('App serialization-error subscription', () => {
     expect(unlistenSerialization).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('handleSave clears dirty indicator after successful save', () => {
+  it('clears dirty indicator after successful save via Ctrl+S', async () => {
+    const path = '/project/test.ri';
+    const content = 'module Test {}';
+
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+
+    render(() => <App />);
+
+    // Wait for App to be ready and capturedEditorStore to be set
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Open a file in the store, mark it dirty, and set as active
+    capturedEditorStore.openFile({ path, content });
+    capturedEditorStore.markDirty(path);
+    capturedEditorStore.setActiveFile(path);
+
+    // Confirm the file is dirty before save
+    expect(capturedEditorStore.state.dirtyFiles).toContain(path);
+
+    // Trigger handleSave via global Ctrl+S shortcut
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    // bridge.saveFile should be called with the correct path and content
+    await waitFor(() => {
+      expect(bridge.saveFile).toHaveBeenCalledWith(path, content);
+    });
+
+    // After a successful save the dirty indicator must be cleared
+    await waitFor(() => {
+      expect(capturedEditorStore.state.dirtyFiles).not.toContain(path);
+    });
+  });
+});
