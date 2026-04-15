@@ -13,8 +13,8 @@ use reify_types::{
 use reify_types::{DiagnosticInfo, SourceLocationInfo};
 
 use crate::types::{
-    ConstraintData, EntityIdentity, EntityTreeNode, FileData, GuiState, MeshData, SourceSpanInfo,
-    ValueData, format_determinacy, format_value,
+    ConstraintData, DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MeshData,
+    SourceSpanInfo, ValueData, format_determinacy, format_value,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -602,6 +602,59 @@ impl EngineSession {
 
         map
     }
+
+    /// Find the innermost structure or occurrence definition whose span contains
+    /// the given 1-based `(line, col)` position.
+    ///
+    /// Returns `None` when:
+    /// - No module is loaded.
+    /// - The position falls outside every declaration's span.
+    /// - `line` or `col` are zero.
+    ///
+    /// # Parsing
+    /// The source text is re-parsed on every call (single-file, fast).  The
+    /// parse result is used only for span lookups; compile errors do not affect
+    /// the result — declarations are matched on `SourceSpan` from the *syntax*
+    /// tree, not the compiled IR.
+    pub fn get_containing_definition(&self, line: u32, col: u32) -> Option<DefInfo> {
+        let (key, source) = self.resolve_source()?;
+        let module_name = key.trim_end_matches(".ri");
+        let parsed =
+            reify_syntax::parse(source, ModulePath::single(module_name));
+
+        let offset = line_col_to_byte_offset(source, line, col) as u32;
+
+        // Walk top-level declarations and find the innermost (smallest span) that
+        // contains the given byte offset.
+        let mut best: Option<DefInfo> = None;
+        for decl in &parsed.declarations {
+            let (name, kind, span) = match decl {
+                reify_syntax::Declaration::Structure(s) => {
+                    (s.name.as_str(), "structure", s.span)
+                }
+                reify_syntax::Declaration::Occurrence(o) => {
+                    (o.name.as_str(), "occurrence", o.span)
+                }
+                _ => continue,
+            };
+            if offset >= span.start && offset < span.end {
+                let is_smaller = best.as_ref().map_or(true, |b| {
+                    (span.end - span.start) < (b.span.end - b.span.start)
+                });
+                if is_smaller {
+                    best = Some(DefInfo {
+                        name: name.to_string(),
+                        kind: kind.to_string(),
+                        span: SourceSpanInfo {
+                            start: span.start,
+                            end: span.end,
+                        },
+                    });
+                }
+            }
+        }
+        best
+    }
 }
 
 /// Build an `EntityTreeNode` for a topology template.
@@ -1077,5 +1130,41 @@ pub(crate) fn offset_to_line_col_fast(
     // Count codepoints from line_start to effective offset for 1-based column.
     let col = source[line_start..effective].chars().count() + 1;
     (line, col)
+}
+
+/// Convert a 1-based `(line, col)` pair to a byte offset into `source`.
+///
+/// Both `line` and `col` are 1-based and count **Unicode codepoints** (matching
+/// the semantics of [`offset_to_line_col_fast`], the inverse operation).
+///
+/// - If `line` or `col` is 0, returns 0 as a safe fallback.
+/// - If `line` exceeds the number of lines, returns `source.len()`.
+/// - If `col` exceeds the line length, clamps to the end of the line.
+pub(crate) fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> usize {
+    if line == 0 || col == 0 {
+        return 0;
+    }
+    let line = line as usize;
+    let col = col as usize;
+    let line_offsets = build_line_offsets(source);
+
+    // Byte index of the first character on the target line.
+    let line_start = if line <= 1 {
+        0
+    } else {
+        match line_offsets.get(line - 2) {
+            Some(&nl) => nl + 1, // byte after the preceding newline
+            None => return source.len(), // line is beyond end of source
+        }
+    };
+
+    // Count (col - 1) Unicode codepoints from line_start.
+    let line_text = &source[line_start..];
+    line_start
+        + line_text
+            .char_indices()
+            .nth(col - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(line_text.len())
 }
 

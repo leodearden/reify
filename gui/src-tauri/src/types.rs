@@ -180,6 +180,20 @@ pub struct EntityIdentity {
     pub source_span: Option<SourceSpanInfo>,
 }
 
+/// A definition (structure or occurrence) found at a given source position.
+///
+/// Returned by `get_containing_definition(line, col)`.
+/// `span` uses byte offsets matching the source text stored in the session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DefInfo {
+    /// Name of the structure or occurrence (e.g. `"Bracket"`).
+    pub name: String,
+    /// Kind: `"structure"` or `"occurrence"`.
+    pub kind: String,
+    /// Byte span of the declaration in the source file.
+    pub span: SourceSpanInfo,
+}
+
 /// Format a Value for GUI display, returning (formatted_value, unit_string).
 ///
 /// Delegates to [`Value::format_display_pair()`] — the canonical implementation
