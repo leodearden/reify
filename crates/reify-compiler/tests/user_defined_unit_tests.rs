@@ -488,6 +488,10 @@ fn transitive_pub_unit_not_visible_via_compile_with_prelude() {
         "module_b errors: {:?}",
         errors_only(&module_b)
     );
+    assert!(
+        module_b.units.is_empty(),
+        "module_b should have no locally-declared units"
+    );
 
     // Module C: compiled with B as prelude, tries to use `mil`.
     // The prelude-seeding loop iterates B.units (empty), so `mil` is not seeded into C.
