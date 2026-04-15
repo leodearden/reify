@@ -477,3 +477,135 @@ structure def S {
         "the broken impl must have been called before the fallback"
     );
 }
+
+// ── Test 7: mixed batch — one broken impl, one working impl, one plain ────────
+
+#[test]
+fn mixed_batch_one_broken_optimized_impl_falls_back_correctly() {
+    // Three constraints in one structure:
+    //   OptA(@optimized("target_a"), a == b, a=b=1.0) — BrokenCountOptimizedImpl
+    //      returns empty Vec → fallback → Satisfied
+    //   OptB(@optimized("target_b"), a == b, a=b=1.0) — MockOptimizedImpl
+    //      returns Violated → Violated
+    //   PlainEq(no annotation, a == b, a=b=1.0) — language-level checker → Satisfied
+    //
+    // Assertions:
+    //   (a) diagnostic error for target_a only (broken impl)
+    //   (b) OptA gets Satisfaction::Satisfied (fallback evaluated 1.0 == 1.0)
+    //   (c) OptB gets Satisfaction::Violated (working mock)
+    //   (d) PlainEq gets Satisfaction::Satisfied (language-level checker)
+    //   (e) order is preserved: OptA first, OptB second, PlainEq third
+    let source = r#"
+@optimized("target_a")
+constraint def OptA {
+    param a: Real
+    param b: Real
+    a == b
+}
+@optimized("target_b")
+constraint def OptB {
+    param a: Real
+    param b: Real
+    a == b
+}
+constraint def PlainEq {
+    param a: Real
+    param b: Real
+    a == b
+}
+structure def Mixed {
+    param x: Real = 1.0
+    constraint OptA(a: x, b: x)
+    constraint OptB(a: x, b: x)
+    constraint PlainEq(a: x, b: x)
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    // Broken impl for target_a: returns empty Vec (0 results for 1 constraint)
+    let broken = BrokenCountOptimizedImpl::new(vec![]);
+    let broken_calls = broken.calls_handle();
+
+    // Working mock for target_b: returns Violated
+    let working = MockOptimizedImpl::new().with_default(Satisfaction::Violated);
+    let working_calls = working.calls_handle();
+
+    let mut engine = make_simple_engine();
+    engine.register_optimized_impl("target_a", Box::new(broken));
+    engine.register_optimized_impl("target_b", Box::new(working));
+
+    let check_result = engine.check(&compiled);
+
+    // (e) Three results in declaration order
+    assert_eq!(
+        check_result.constraint_results.len(),
+        3,
+        "expected three constraint results, got {:?}",
+        check_result.constraint_results
+    );
+
+    let r0 = &check_result.constraint_results[0];
+    let r1 = &check_result.constraint_results[1];
+    let r2 = &check_result.constraint_results[2];
+
+    let l0 = r0.label.as_deref().unwrap_or("");
+    let l1 = r1.label.as_deref().unwrap_or("");
+    let l2 = r2.label.as_deref().unwrap_or("");
+
+    assert!(l0.contains("OptA"), "first result should be OptA, got label={:?}", r0.label);
+    assert!(l1.contains("OptB"), "second result should be OptB, got label={:?}", r1.label);
+    assert!(l2.contains("PlainEq"), "third result should be PlainEq, got label={:?}", r2.label);
+
+    // (b) OptA: broken impl fell back, language-level checker sees x == x → Satisfied
+    assert_eq!(
+        r0.satisfaction,
+        Satisfaction::Satisfied,
+        "OptA should be Satisfied via fallback"
+    );
+    // (c) OptB: working mock returns Violated
+    assert_eq!(
+        r1.satisfaction,
+        Satisfaction::Violated,
+        "OptB should be Violated via working mock"
+    );
+    // (d) PlainEq: language-level checker → Satisfied
+    assert_eq!(
+        r2.satisfaction,
+        Satisfaction::Satisfied,
+        "PlainEq should be Satisfied via language-level checker"
+    );
+
+    // (a) Exactly one Error diagnostic for target_a's contract violation
+    let error_diags: Vec<_> = check_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        error_diags.len(),
+        1,
+        "expected exactly one Error diagnostic (for target_a), got: {:?}",
+        error_diags
+    );
+    let diag = &error_diags[0];
+    assert!(
+        diag.message.contains("target_a"),
+        "diagnostic should mention target_a, got: {:?}",
+        diag.message
+    );
+    assert!(
+        diag.message.contains("falling back"),
+        "diagnostic should mention falling back, got: {:?}",
+        diag.message
+    );
+
+    // Both impls were invoked
+    assert!(
+        !broken_calls.lock().unwrap().is_empty(),
+        "broken impl must have been invoked before fallback"
+    );
+    assert!(
+        !working_calls.lock().unwrap().is_empty(),
+        "working mock must have been invoked for OptB"
+    );
+}
