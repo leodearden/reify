@@ -399,16 +399,16 @@ mod annotation_tests {
     #[test]
     fn topology_builder_single_annotation() {
         let t = TopologyTemplateBuilder::new("T")
-            .annotation(annotation("optimized"))
+            .annotation(annotation(OPTIMIZED_ANNOTATION))
             .build();
         assert_eq!(t.annotations.len(), 1);
-        assert_eq!(t.annotations[0].name, "optimized");
+        assert_eq!(t.annotations[0].name, OPTIMIZED_ANNOTATION);
     }
 
     #[test]
     fn topology_builder_annotation_with_args() {
         let t = TopologyTemplateBuilder::new("T")
-            .annotation(annotation_with_args("deprecated", vec![ann_str("use Q")]))
+            .annotation(annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use Q")]))
             .build();
         assert_eq!(t.annotations.len(), 1);
         assert_eq!(t.annotations[0].args.len(), 1);
@@ -426,7 +426,7 @@ mod annotation_tests {
     fn topology_builder_annotation_does_not_affect_content_hash() {
         let t1 = TopologyTemplateBuilder::new("T").build();
         let t2 = TopologyTemplateBuilder::new("T")
-            .annotation(annotation("optimized"))
+            .annotation(annotation(OPTIMIZED_ANNOTATION))
             .build();
         assert_eq!(t1.content_hash, t2.content_hash);
     }
