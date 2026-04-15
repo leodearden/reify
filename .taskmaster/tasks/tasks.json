@@ -35595,6 +35595,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1704,
+        "title": "DRY sample() test boilerplate and fix stale doc in field_eval_tests",
+        "description": "From task 1674 review: (1) Extract helper for 3-param lambda field setup shared by 4 sample() tests. (2) Fix doc comment at line 506 to say Point or Vector.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -35607,7 +35618,7 @@
       ],
       "created": "2026-04-15T01:50:32.627Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T01:55:23.167Z"
+      "updated": "2026-04-15T01:56:28.170Z"
     }
   }
 }
