@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn is_valid_optimized_true_for_string_arg() {
         let a = ann(
-            "optimized",
+            reify_types::OPTIMIZED_ANNOTATION,
             vec![reify_types::AnnotationArg::String("kernel::foo".to_string())],
         );
         assert!(is_valid_optimized(&a));
@@ -348,13 +348,13 @@ mod tests {
 
     #[test]
     fn is_valid_optimized_false_for_no_args() {
-        let a = ann("optimized", vec![]);
+        let a = ann(reify_types::OPTIMIZED_ANNOTATION, vec![]);
         assert!(!is_valid_optimized(&a));
     }
 
     #[test]
     fn is_valid_optimized_false_for_int_arg() {
-        let a = ann("optimized", vec![reify_types::AnnotationArg::Int(123)]);
+        let a = ann(reify_types::OPTIMIZED_ANNOTATION, vec![reify_types::AnnotationArg::Int(123)]);
         assert!(!is_valid_optimized(&a));
     }
 
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn is_valid_optimized_true_for_string_first_arg_with_trailing_args() {
         let a = ann(
-            "optimized",
+            reify_types::OPTIMIZED_ANNOTATION,
             vec![
                 reify_types::AnnotationArg::String("kernel::foo".to_string()),
                 reify_types::AnnotationArg::Int(42),
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn is_valid_optimized_false_for_bool_arg() {
-        let a = ann("optimized", vec![reify_types::AnnotationArg::Bool(true)]);
+        let a = ann(reify_types::OPTIMIZED_ANNOTATION, vec![reify_types::AnnotationArg::Bool(true)]);
         assert!(!is_valid_optimized(&a));
     }
 }
