@@ -2,7 +2,7 @@
 
 use reify_types::Value;
 
-use crate::helpers::{sanitize_value, unary};
+use crate::helpers::{binary, sanitize_value, unary};
 use crate::matrix::matrix_components_f64;
 
 /// Evaluate a stress-analysis builtin by name.
@@ -14,10 +14,7 @@ pub(crate) fn eval_analysis(name: &str, args: &[Value]) -> Option<Value> {
         "von_mises" => von_mises(args),
         "principal_stresses" => principal_stresses(args),
         "max_shear" => max_shear(args),
-        "safety_factor" => {
-            let _ = args;
-            Value::Undef // stub — implementations added in subsequent steps
-        }
+        "safety_factor" => safety_factor(args),
         _ => return None,
     })
 }
@@ -152,6 +149,28 @@ fn max_shear(args: &[Value]) -> Value {
         // eigs is sorted ascending: [σ₃, σ₂, σ₁]
         let tau_max = (eigs[2] - eigs[0]) / 2.0;
         sanitize_value(Value::from_component(tau_max, dim))
+    })
+}
+
+/// Compute safety factor: yield_strength / von_mises(tensor).
+///
+/// Returns a dimensionless Real. If von_mises is zero (e.g. hydrostatic stress),
+/// the division produces infinity which sanitize_value converts to Undef.
+fn safety_factor(args: &[Value]) -> Value {
+    binary(args, |tensor, yield_val| {
+        let yield_f64 = match yield_val.as_f64() {
+            Some(v) => v,
+            None => return Value::Undef,
+        };
+
+        // Compute von Mises of the tensor via the same logic as the von_mises builtin
+        let vm = von_mises(&[tensor.clone()]);
+        let vm_f64 = match vm.as_f64() {
+            Some(v) => v,
+            None => return Value::Undef,
+        };
+
+        sanitize_value(Value::Real(yield_f64 / vm_f64))
     })
 }
 
