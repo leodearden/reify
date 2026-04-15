@@ -3088,6 +3088,7 @@ impl Engine {
             for template in &module.templates {
                 for realization in &template.realizations {
                     let handle_start = step_handles.len();
+                    let mut had_failure = false;
                     for op in &realization.operations {
                         total_ops += 1;
                         let geom_op = compile_geometry_op(
@@ -3113,12 +3114,13 @@ impl Engine {
                                 diagnostics.push(Diagnostic::error(
                                     "failed to compile geometry operation",
                                 ));
-                                break;
+                                step_handles.push(GeometryHandleId::INVALID);
+                                had_failure = true;
                             }
                         }
                     }
                     // Discard intermediate handles from partially-failed realizations
-                    if step_handles.len() - handle_start < realization.operations.len() {
+                    if had_failure || step_handles.len() - handle_start < realization.operations.len() {
                         step_handles.truncate(handle_start);
                     }
                 }
@@ -3168,6 +3170,7 @@ impl Engine {
             for template in &module.templates {
                 for realization in &template.realizations {
                     let handle_start = step_handles.len();
+                    let mut had_failure = false;
                     for op in &realization.operations {
                         total_ops += 1;
                         let geom_op = compile_geometry_op(
@@ -3193,12 +3196,13 @@ impl Engine {
                                 diagnostics.push(Diagnostic::error(
                                     "failed to compile geometry operation",
                                 ));
-                                break;
+                                step_handles.push(GeometryHandleId::INVALID);
+                                had_failure = true;
                             }
                         }
                     }
                     // Discard intermediate handles from partially-failed realizations
-                    if step_handles.len() - handle_start < realization.operations.len() {
+                    if had_failure || step_handles.len() - handle_start < realization.operations.len() {
                         step_handles.truncate(handle_start);
                     }
                 }
@@ -3289,6 +3293,7 @@ impl Engine {
         for template in &module.templates {
             for realization in &template.realizations {
                 let handle_start = step_handles.len();
+                let mut had_failure = false;
 
                 for op in &realization.operations {
                     let geom_op = compile_geometry_op(
@@ -3313,13 +3318,14 @@ impl Engine {
                         None => {
                             diagnostics
                                 .push(Diagnostic::error("failed to compile geometry operation"));
-                            break;
+                            step_handles.push(GeometryHandleId::INVALID);
+                            had_failure = true;
                         }
                     }
                 }
 
                 // Discard intermediate handles from partially-failed realizations
-                if step_handles.len() - handle_start < realization.operations.len() {
+                if had_failure || step_handles.len() - handle_start < realization.operations.len() {
                     step_handles.truncate(handle_start);
                 }
 
