@@ -35474,11 +35474,11 @@
         "description": "Two test quality improvements in crates/reify-eval/tests/integration_full_v01.rs:\n\n1. **DRY parse assertions (lines 75-163):** The integration_full_v01_ri_parses test has 9 near-identical filter+count+assert blocks differing only in Declaration variant, label, and threshold. Extract a helper macro or closure, e.g.: `assert_min_count!(parsed, Declaration::Trait(_), \"Trait\", 2);`\n\n2. **Guard tautological purpose constraint assertion (lines 493-501):** In purpose_compiled_and_activatable (Test 16), the constraint count assertion uses `mfg_ready.constraints.len()` as the expected delta. If the purpose body has 0 constraints, this becomes `assert_eq!(after, before + 0)` — a tautology. Add: `assert!(expected_extra > 0, \"mfg_ready should have at least 1 constraint\");`\n\nmemory_hints: search \"parse assertion DRY integration test\"; get_entity \"integration_full_v01\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T01:02:57.604Z",
+        "updatedAt": "2026-04-15T01:27:29.087Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/integration_full_v01.rs"
@@ -35517,7 +35517,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T01:27:27.163Z",
+      "lastModified": "2026-04-15T01:27:29.087Z",
       "taskCount": 1699,
       "completedCount": 1449,
       "tags": [
