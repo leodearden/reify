@@ -40,6 +40,60 @@ fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
     );
 }
 
+/// Helper: assert that zero diagnostics of ANY severity are present.
+///
+/// Stricter than `assert_no_error_diagnostics` — checks that the diagnostics
+/// slice is completely empty (no Errors, Warnings, or Info). Use this for
+/// silent-drop characterization tests where the intent is "absolutely nothing
+/// is emitted".
+fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
+    assert!(
+        diagnostics.is_empty(),
+        "{context}: expected no diagnostics at all, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Characterization test: `Chain` inside a `where {}` block is silently ignored
+/// by `compile_guarded_members` — no diagnostic of any severity is emitted.
+///
+/// Top-level ports `a` and `b` are declared so the parser can resolve the port
+/// identifiers in `chain a -> b`. The chain statement lives inside the guarded
+/// block and is silently dropped.
+#[test]
+fn chain_in_block_guard_silently_ignored() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    param active : Bool = true
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    where active {
+        chain a -> b
+    }
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    assert_no_diagnostics(
+        &diagnostics,
+        "chain in block guard (should be silently dropped)",
+    );
+    // Positive assertion: the chain inside the guarded block must NOT desugar
+    // into a top-level connection — it should be silently dropped.
+    assert!(
+        template.connections.is_empty(),
+        "expected no compiled connections — chain inside a guarded block should be \
+         silently dropped, not desugared to top-level connections, got: {:?}",
+        template
+            .connections
+            .iter()
+            .map(|c| format!("{} -> {}", c.left_port, c.right_port))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Parse `param x : Scalar = 5mm where active` — the per-declaration where clause
 /// should compile into a CompiledGuardedGroup with x as a guarded member.
 #[test]
