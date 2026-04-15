@@ -37,6 +37,8 @@ use crate::snapshot::Snapshot;
 pub enum EngineError {
     /// The engine has not been initialized — call eval() first.
     NotInitialized,
+    /// The specified ValueCellId does not exist in the evaluation graph.
+    CellNotFound { cell: reify_types::ValueCellId },
 }
 
 impl std::fmt::Display for EngineError {
@@ -46,6 +48,13 @@ impl std::fmt::Display for EngineError {
                 write!(
                     f,
                     "engine not initialized: call eval() before this operation"
+                )
+            }
+            EngineError::CellNotFound { cell } => {
+                write!(
+                    f,
+                    "value cell not found in evaluation graph: {}.{}",
+                    cell.entity, cell.member
                 )
             }
         }
@@ -1805,6 +1814,11 @@ impl Engine {
             .eval_state
             .as_ref()
             .ok_or(EngineError::NotInitialized)?;
+
+        // Validate that the cell exists in the evaluation graph.
+        if !state.snapshot.graph.value_cells.contains_key(&cell) {
+            return Err(EngineError::CellNotFound { cell });
+        }
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
