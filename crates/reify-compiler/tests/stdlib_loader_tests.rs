@@ -1,8 +1,13 @@
 //! Tests for stdlib_loader — embedded .ri stdlib loading, compilation, and caching.
 
 use reify_compiler::stdlib_loader;
-use reify_test_support::{collect_errors, steel_elastic_source, steel_strong_source};
-use reify_types::{ModulePath, Severity};
+use reify_test_support::{
+    CompiledModuleBuilder, collect_errors, steel_elastic_source, steel_strong_source,
+};
+use reify_types::{
+    CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash, ModulePath,
+    Severity, Type,
+};
 
 // ─── step-1: basic loading ──────────────────────────────────────────────
 
@@ -422,4 +427,63 @@ fn hardness_scale_enum_present_in_stdlib() {
             hardness.variants
         );
     }
+}
+
+// ─── function-merging path (documented gap) ──────────────────────────
+
+/// Prelude function resolution is NOT currently implemented: user code that
+/// calls a function defined in a prelude module will produce an unresolved
+/// function error. This test documents the gap.
+///
+/// If prelude function merging is implemented in the future, this test
+/// should be updated to assert zero errors instead.
+#[test]
+fn prelude_function_merging_path_is_unimplemented() {
+    // Build a synthetic prelude module containing a single function: double(x: Real) -> Real
+    let double_fn = CompiledFunction {
+        name: "double".to_string(),
+        is_pub: true,
+        params: vec![("x".to_string(), Type::Real)],
+        return_type: Type::Real,
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr {
+                kind: CompiledExprKind::Literal(reify_types::Value::Real(0.0)),
+                result_type: Type::Real,
+                content_hash: ContentHash::of_str("double_stub"),
+            },
+        },
+        content_hash: ContentHash::of_str("fn_double"),
+        annotations: vec![],
+    };
+
+    let synthetic_prelude = CompiledModuleBuilder::new(ModulePath::single("synthetic"))
+        .function(double_fn)
+        .build();
+
+    // User code that calls the prelude function.
+    let source = r#"
+structure def S {
+    param x : Real = double(21.0)
+}
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, &[synthetic_prelude]);
+    let errors = collect_errors(&compiled.diagnostics);
+
+    // Currently, prelude functions are NOT resolved — expect an error.
+    // If/when prelude function merging is implemented, change this to:
+    //   assert!(errors.is_empty(), "...");
+    assert!(
+        !errors.is_empty(),
+        "expected unresolved function error for prelude fn 'double' \
+         (prelude function merging not yet implemented), but got no errors. \
+         If this passes, the feature was implemented — update this test."
+    );
 }
