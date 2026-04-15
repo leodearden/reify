@@ -238,10 +238,11 @@ fn push_entity_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
 }
 
 /// Keywords that are only valid at the top level (outside structure bodies).
-const TOP_LEVEL_KEYWORDS: &[&str] = &["structure", "occurrence", "import", "fn", "trait", "enum"];
+pub(crate) const TOP_LEVEL_KEYWORDS: &[&str] =
+    &["structure", "occurrence", "import", "fn", "trait", "enum"];
 
 /// Keywords that start declaration lines inside a structure body.
-const BODY_KEYWORDS: &[&str] = &[
+pub(crate) const BODY_KEYWORDS: &[&str] = &[
     "param",
     "let",
     "constraint",
@@ -256,7 +257,8 @@ const BODY_KEYWORDS: &[&str] = &[
 ];
 
 /// Keywords valid inside expressions (conditions, values, operators).
-const EXPR_KEYWORDS: &[&str] = &["if", "then", "else", "and", "or", "not", "true", "false"];
+pub(crate) const EXPR_KEYWORDS: &[&str] =
+    &["if", "then", "else", "and", "or", "not", "true", "false"];
 
 /// Metadata for a single built-in function exposed in LSP completions.
 struct BuiltinFunctionInfo {

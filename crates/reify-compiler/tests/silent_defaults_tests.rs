@@ -527,11 +527,45 @@ fn stdlib_fn_no_args_emits_type_inference_warning() {
 
     let warnings = warning_diagnostics(&module);
     let has_type_warning = warnings.iter().any(|d| {
-        d.message.contains("zero-arg function") && d.message.contains("defaulting to Real")
+        d.message.contains("zero-arg function")
+            && d.message.contains("defaulting to Real")
+            && d.message.contains("__test_zero_arg_fn")
     });
     assert!(
         has_type_warning,
         "expected warning about type inference for zero-arg stdlib call, got: {:?}",
+        warnings
+    );
+}
+
+// ── task-1666 step-2: negative case — single-arg call must NOT emit zero-arg warning ──
+
+/// Calling a stdlib-style function with one argument must NOT produce a
+/// "zero-arg function" type-inference warning.
+///
+/// The NoUserFunctions overload branch infers the return type from the first
+/// compiled arg when present, so the `unwrap_or_else` (which emits the warning)
+/// is never reached. This test prevents regressions where the warning is emitted
+/// unconditionally.
+#[test]
+fn stdlib_fn_single_arg_no_zero_arg_warning() {
+    let source = r#"
+        structure S {
+            let x = sqrt(1.0)
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(
+        errors.is_empty(),
+        "single-arg stdlib call should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warning_diagnostics(&module);
+    assert!(
+        warnings.iter().all(|d| !d.message.contains("zero-arg function")),
+        "single-arg call should not emit a zero-arg warning, got: {:?}",
         warnings
     );
 }

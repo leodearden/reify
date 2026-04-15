@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 use reify_types::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId,
     ConstraintResult, ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError,
-    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl,
-    OptimizedImplInput, OptimizedImplOutput, QueryError, ReprKind, ResolutionProblem, Satisfaction,
-    SolveResult, TessError, Type, Value, ValueCellId, ValueMap,
+    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh,
+    OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ReprKind,
+    ResolutionProblem, Satisfaction, SolveResult, TessError, Type, Value, ValueCellId, ValueMap,
 };
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.

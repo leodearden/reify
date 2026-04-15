@@ -1,3 +1,4 @@
+mod analysis;
 mod calculus;
 mod complex;
 mod sanitize;
@@ -131,22 +132,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     } = &evaluated_args[0]
                     {
                         match (lambda.as_ref(), source) {
-                            (Value::Lambda { params, .. }, _) => {
-                                // Mirror the calculus::detect_single_point_param convention:
-                                // when the lambda has params.len() > 1 AND the input is a
-                                // Value::Point whose length matches params.len(), unpack the
-                                // Point components into individual scalar arguments so the arity
-                                // check in apply_lambda passes.  A 1-param lambda (params.len()
-                                // == 1) always receives the whole Point unchanged (no unpacking),
-                                // preserving the single-param binding contract.
-                                // See also: calculus.rs::detect_single_point_param.
-                                if params.len() > 1
-                                    && let Value::Point(items) = &evaluated_args[1]
-                                    && params.len() == items.len()
-                                {
-                                    return apply_lambda(lambda, items.as_slice(), ctx);
-                                }
-                                apply_lambda(lambda, &evaluated_args[1..], ctx)
+                            (Value::Lambda { .. }, _) => {
+                                apply_lambda_with_point_unpacking(
+                                    lambda,
+                                    &evaluated_args[1],
+                                    ctx,
+                                )
                             }
                             // Derived-field case: lambda slot contains the original field.
                             // Pass codomain_type (the derived field's already-divided codomain,
@@ -205,6 +196,54 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 codomain_type,
                                 ctx,
                             ),
+                            // Analysis field wrappers: sample the inner field, then
+                            // apply the analysis builtin pointwise.
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::VonMises,
+                            ) => analysis::sample_von_mises_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                codomain_type,
+                                ctx,
+                            ),
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::PrincipalStresses,
+                            ) => analysis::sample_principal_stresses_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                codomain_type,
+                                ctx,
+                            ),
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::MaxShear,
+                            ) => analysis::sample_max_shear_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                codomain_type,
+                                ctx,
+                            ),
+                            // SafetyFactor: lambda slot is List[field, yield_val],
+                            // not a nested Field — match on the source kind directly.
+                            (_, FieldSourceKind::SafetyFactor) => {
+                                analysis::sample_safety_factor_at_point(
+                                    lambda,
+                                    &evaluated_args[1],
+                                    codomain_type,
+                                    ctx,
+                                )
+                            }
                             _ => {
                                 #[cfg(debug_assertions)]
                                 eprintln!(
@@ -232,6 +271,32 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 "curl" if evaluated_args.len() == 1 => calculus::compute_curl(&evaluated_args[0]),
                 "laplacian" if evaluated_args.len() == 1 => {
                     calculus::compute_laplacian(&evaluated_args[0])
+                }
+                // Analysis field wrappers: intercept when arg is a Field,
+                // otherwise fall through to eval_builtin for concrete tensors.
+                "von_mises"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    analysis::compute_von_mises(&evaluated_args[0])
+                }
+                "principal_stresses"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    analysis::compute_principal_stresses(&evaluated_args[0])
+                }
+                "max_shear"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    analysis::compute_max_shear(&evaluated_args[0])
+                }
+                "safety_factor"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    analysis::compute_safety_factor(&evaluated_args[0], &evaluated_args[1])
                 }
                 _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
             }
@@ -609,6 +674,32 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
             eval_expr(body, &ctx.with_scope(&eval_map))
         }
         _ => Value::Undef,
+    }
+}
+
+/// Apply a lambda to a point, handling multi-param unpacking.
+///
+/// When the lambda has multiple params (e.g., `|x, y, z|`) and the point is a
+/// `Value::Point` with matching length, unpacks the point components into
+/// individual scalar arguments. A single-param lambda receives the whole Point.
+///
+/// Mirrors the unpacking convention in the `sample` handler's `Value::Lambda`
+/// arm and `calculus.rs::detect_single_point_param`.
+pub(crate) fn apply_lambda_with_point_unpacking(
+    lambda: &Value,
+    point: &Value,
+    ctx: &EvalContext,
+) -> Value {
+    if let Value::Lambda { params, .. } = lambda {
+        if params.len() > 1
+            && let Value::Point(items) = point
+            && params.len() == items.len()
+        {
+            return apply_lambda(lambda, items.as_slice(), ctx);
+        }
+        apply_lambda(lambda, std::slice::from_ref(point), ctx)
+    } else {
+        Value::Undef
     }
 }
 

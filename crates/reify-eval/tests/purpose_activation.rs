@@ -19,9 +19,8 @@
 //! A follow-up task should implement them and add tests here. See
 //! `crates/reify-compiler/src/traits.rs` (resolved_queries building loop).
 
-use reify_constraints::SimpleConstraintChecker;
 use reify_eval::Engine;
-use reify_test_support::{make_engine, parse_and_compile, parse_and_compile_with_stdlib};
+use reify_test_support::{make_engine, make_simple_engine, parse_and_compile, parse_and_compile_with_stdlib};
 use reify_types::{ModulePath, OptimizationObjective, Satisfaction, Severity};
 
 const EXAMPLE_PATH: &str = concat!(
@@ -533,10 +532,10 @@ fn m10_purpose_activation_example_constraints_satisfied() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/m10_purpose_activation.ri should exist");
     let compiled = parse_and_compile_with_stdlib(&source);
-    // Use Engine::new with SimpleConstraintChecker directly (rather than make_engine())
-    // because this test needs a real checker to evaluate structural constraints to
-    // Satisfied. make_engine() uses MockConstraintChecker which returns Unchecked.
-    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    // Use make_simple_engine() (rather than make_engine()) because this test needs a
+    // real checker to evaluate structural constraints to Satisfied. make_engine() uses
+    // MockConstraintChecker which returns Unchecked.
+    let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
     let eval_errors: Vec<_> = result
         .diagnostics

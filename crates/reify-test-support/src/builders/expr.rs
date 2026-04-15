@@ -278,7 +278,12 @@ pub fn field_literal_expr(
 
 /// Create a field `laplacian` call: `std::field::laplacian(field) -> result_type`.
 pub fn laplacian_call(field: CompiledExpr, result_type: Type) -> CompiledExpr {
-    fn_call("laplacian", "std::field::laplacian", vec![field], result_type)
+    fn_call(
+        "laplacian",
+        "std::field::laplacian",
+        vec![field],
+        result_type,
+    )
 }
 
 /// Create a lambda expression with named parameters.
@@ -592,7 +597,12 @@ mod tests {
         let domain = Type::Geometry;
         let codomain = Type::Real;
         let lambda = Value::Undef;
-        let expr = field_literal_expr(domain.clone(), codomain.clone(), FieldSourceKind::Analytical, lambda);
+        let expr = field_literal_expr(
+            domain.clone(),
+            codomain.clone(),
+            FieldSourceKind::Analytical,
+            lambda,
+        );
         assert_eq!(
             expr.result_type,
             Type::Field {
@@ -612,8 +622,18 @@ mod tests {
         let domain = Type::Geometry;
         let codomain = Type::Real;
         let lambda = Value::Int(42);
-        let expr = field_literal_expr(domain.clone(), codomain.clone(), FieldSourceKind::Sampled, lambda.clone());
-        if let CompiledExprKind::Literal(Value::Field { source, lambda: lam, .. }) = &expr.kind {
+        let expr = field_literal_expr(
+            domain.clone(),
+            codomain.clone(),
+            FieldSourceKind::Sampled,
+            lambda.clone(),
+        );
+        if let CompiledExprKind::Literal(Value::Field {
+            source,
+            lambda: lam,
+            ..
+        }) = &expr.kind
+        {
             assert_eq!(*source, FieldSourceKind::Sampled);
             assert_eq!(**lam, lambda);
         } else {

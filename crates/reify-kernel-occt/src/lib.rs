@@ -3444,6 +3444,58 @@ mod tests {
         assert_operation_fails_with(result, "zero");
     }
 
+    // --- Revolve positive boundary tests (task-574) ---
+
+    #[test]
+    fn revolve_just_above_axis_threshold_accepted() {
+        // axis_dir=[0, 0, 1e-3] has mag_sq=1e-6, well above AXIS_MAG_SQ_MIN=1e-12.
+        // Uses Z-direction so the torus profile (offset 20 along X) doesn't
+        // intersect the revolve axis.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let face_id = make_torus_profile(&mut kernel, 5.0, 20.0);
+
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: face_id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1e-3],
+            angle_rad: std::f64::consts::TAU,
+        });
+        assert!(
+            result.is_ok(),
+            "axis mag_sq=1e-6 (above AXIS_MAG_SQ_MIN=1e-12) should be accepted, got {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn revolve_just_above_angle_threshold_accepted() {
+        // angle_rad=1e-6 is far above ANGLE_ABS_MIN=1e-30 and also above
+        // OCCT's internal Precision::Angular()≈1e-12, so both the Rust
+        // validation and the OCCT operation succeed.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let face_id = make_torus_profile(&mut kernel, 5.0, 20.0);
+
+        let result = kernel.execute(&GeometryOp::Revolve {
+            profile: face_id,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: 1e-6,
+        });
+        assert!(
+            result.is_ok(),
+            "angle 1e-6 (above ANGLE_ABS_MIN=1e-30) should be accepted, got {:?}",
+            result.err()
+        );
+    }
+
     #[test]
     fn sweep_circle_along_line_creates_pipe() {
         if !crate::OCCT_AVAILABLE {

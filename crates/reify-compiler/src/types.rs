@@ -319,7 +319,25 @@ pub struct ValueCellDecl {
     pub visibility: Visibility,
     pub cell_type: Type,
     pub default_expr: Option<CompiledExpr>,
+    pub solver_hints: Vec<SolverHint>,
     pub span: SourceSpan,
+}
+
+/// A solver hint extracted from a `@solver_hint` annotation on a value cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolverHint {
+    pub kind: SolverHintKind,
+    pub collection: String,
+    pub span: SourceSpan,
+}
+
+/// The kind of solver hint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SolverHintKind {
+    /// Restrict the value to a discrete set of values from the named collection.
+    DiscreteSet,
+    /// Prefer values from the named stock/standard collection.
+    PreferStock,
 }
 
 /// Whether a value cell is a parameter (externally settable), a let (computed),

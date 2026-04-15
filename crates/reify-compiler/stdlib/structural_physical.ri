@@ -51,9 +51,14 @@ trait ElasticallyDeformable : Elastic {
 // A body exhibiting permanent deformation beyond yield.
 // plastic_strain (dimensionless fraction, using Real),
 // hardening_modulus (Pa, using Real).
+// Note: hardening_modulus > 0 is strictly positive — a zero modulus would mean
+// perfectly-plastic behaviour (no strain hardening), which is outside the scope
+// of this trait. Use a separate trait if perfectly-plastic models are required.
 trait Plastic {
     param plastic_strain : Real
     param hardening_modulus : Real
+    constraint hardening_modulus > 0
+    constraint plastic_strain >= 0
 }
 
 // ── Thermal conductivity ────────────────────────────────────────────────────

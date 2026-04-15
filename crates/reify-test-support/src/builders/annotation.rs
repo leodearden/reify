@@ -89,6 +89,9 @@ mod tests {
         let ann = annotation_with_args("deprecated", vec![ann_str("use Foo instead")]);
         assert_eq!(ann.name, "deprecated");
         assert_eq!(ann.args.len(), 1);
-        assert_eq!(ann.args[0], AnnotationArg::String("use Foo instead".to_string()));
+        assert_eq!(
+            ann.args[0],
+            AnnotationArg::String("use Foo instead".to_string())
+        );
     }
 }

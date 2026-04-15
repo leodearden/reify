@@ -99,6 +99,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(38, 42),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(24, 42),
                 content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
             }),
@@ -118,6 +119,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(69, 74),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(47, 74),
                 content_hash: ContentHash::of_str("param height: Scalar = 100mm"),
             }),
@@ -137,6 +139,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(104, 107),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(79, 107),
                 content_hash: ContentHash::of_str("param thickness: Scalar = 5mm"),
             }),
@@ -156,6 +159,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(141, 144),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(112, 144),
                 content_hash: ContentHash::of_str("param fillet_radius: Scalar = 3mm"),
             }),
@@ -175,6 +179,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(178, 181),
                 }),
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(149, 181),
                 content_hash: ContentHash::of_str("param hole_diameter: Scalar = 6mm"),
             }),
@@ -208,6 +213,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(200, 226),
                 },
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(187, 226),
                 content_hash: ContentHash::of_str("let volume = width * height * thickness"),
             }),
@@ -321,6 +327,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                     span: SourceSpan::new(356, 385),
                 },
                 where_clause: None,
+                annotations: Vec::new(),
                 span: SourceSpan::new(346, 385),
                 content_hash: ContentHash::of_str("let body = box(width, height, thickness)"),
             }),
@@ -865,7 +872,10 @@ pub fn mutual_recursion_module() -> CompiledModule {
 /// - Purpose `"mfg_ready"` with `@solver_hint` annotation
 pub fn annotated_module() -> CompiledModule {
     let rigid_trait = CompiledTraitBuilder::new("Rigid")
-        .annotation(annotation_with_args("deprecated", vec![ann_str("use Rigid2")]))
+        .annotation(annotation_with_args(
+            "deprecated",
+            vec![ann_str("use Rigid2")],
+        ))
         .build();
 
     let bolt_template = TopologyTemplateBuilder::new("Bolt")
@@ -1129,7 +1139,10 @@ mod tests {
         assert_eq!(bolt.annotations.len(), 2);
         let ann_names: Vec<&str> = bolt.annotations.iter().map(|a| a.name.as_str()).collect();
         assert!(ann_names.contains(&"test"), "expected @test annotation");
-        assert!(ann_names.contains(&"optimized"), "expected @optimized annotation");
+        assert!(
+            ann_names.contains(&"optimized"),
+            "expected @optimized annotation"
+        );
 
         // (c) one field with @deprecated annotation
         assert_eq!(module.fields.len(), 1);
@@ -1299,9 +1312,7 @@ mod tests {
     /// Helper: parse and compile `source`, assert no errors and exactly one
     /// `Severity::Warning` mentioning both "unknown port type" and
     /// "NonExistentTrait". Returns the `CompiledModule` for further assertions.
-    fn assert_warning_source_compiles_with_unknown_port_warning(
-        source: &str,
-    ) -> CompiledModule {
+    fn assert_warning_source_compiles_with_unknown_port_warning(source: &str) -> CompiledModule {
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(
             parsed.errors.is_empty(),
@@ -1338,7 +1349,9 @@ mod tests {
 
     #[test]
     fn warn_source_with_unknown_port_type_produces_unknown_port_warning_no_errors() {
-        assert_warning_source_compiles_with_unknown_port_warning(warn_source_with_unknown_port_type());
+        assert_warning_source_compiles_with_unknown_port_warning(
+            warn_source_with_unknown_port_type(),
+        );
     }
 
     #[test]
@@ -1356,10 +1369,10 @@ mod tests {
     }
 
     #[test]
-    fn warn_source_with_unknown_port_type_with_width_param_cell_has_length_type_span_kind_and_default() {
+    fn warn_source_with_unknown_port_type_with_width_param_cell_has_length_type_span_kind_and_default()
+     {
         let source = warn_source_with_unknown_port_type_with_width();
-        let compiled =
-            assert_warning_source_compiles_with_unknown_port_warning(source);
+        let compiled = assert_warning_source_compiles_with_unknown_port_warning(source);
         let s_template = compiled
             .templates
             .iter()
@@ -1394,12 +1407,10 @@ mod tests {
             )
         });
         assert_eq!(
-            span_text,
-            "param width : Length = 80mm",
+            span_text, "param width : Length = 80mm",
             "expected width cell span to cover the full `param width : Length = 80mm` \
              declaration, got span {:?} covering {:?}",
-            width_cell.span,
-            span_text,
+            width_cell.span, span_text,
         );
         assert!(
             matches!(width_cell.kind, ValueCellKind::Param),

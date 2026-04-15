@@ -75,7 +75,7 @@ async function lspRequest(method: string, params: unknown): Promise<string> {
 export function createLspClient(): LspClient {
   return {
     async initialize(): Promise<InitializeResult> {
-      const response = await lspRequest('initialize', {});
+      const response = await lspRequest('initialize', { capabilities: {} });
       return JSON.parse(response) as InitializeResult;
     },
 
