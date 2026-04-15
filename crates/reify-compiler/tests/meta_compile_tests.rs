@@ -245,6 +245,39 @@ fn duplicate_meta_key_multiple_duplicates() {
 }
 
 // ---------------------------------------------------------------------------
+// step-5: unique meta keys produce no errors (regression guard)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn meta_block_no_duplicate_keys_no_error() {
+    let source = r#"
+        structure def Bracket {
+            meta {
+                a = "1",
+                b = "2",
+                c = "3"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected errors for unique meta keys: {:?}",
+        errors
+    );
+
+    assert_eq!(template.meta.get("a").map(|s| s.as_str()), Some("1"));
+    assert_eq!(template.meta.get("b").map(|s| s.as_str()), Some("2"));
+    assert_eq!(template.meta.get("c").map(|s| s.as_str()), Some("3"));
+}
+
+// ---------------------------------------------------------------------------
 // step-11: meta.key works inside constraint expressions
 // ---------------------------------------------------------------------------
 
