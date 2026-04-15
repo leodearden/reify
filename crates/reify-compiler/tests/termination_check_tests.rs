@@ -13,25 +13,13 @@
 //! 10. Block-level guards satisfy termination requirement.
 
 use reify_compiler::*;
+use reify_test_support::{compile_source, compile_first_template};
 use reify_types::*;
 
-/// Helper: parse source and compile, returning all templates and diagnostics.
+/// Helper: compile and destructure into templates + diagnostics.
 fn compile_all(source: &str) -> (Vec<TopologyTemplate>, Vec<Diagnostic>) {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
+    let compiled = compile_source(source);
     (compiled.templates, compiled.diagnostics)
-}
-
-/// Helper: parse source and compile, returning first template.
-fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let (templates, diags) = compile_all(source);
-    let template = templates.into_iter().next().expect("expected 1 template");
-    (template, diags)
 }
 
 // ─── Step 1: sub where-clause compiles into guard_expr ───────────────────────
