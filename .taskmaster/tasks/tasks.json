@@ -27495,7 +27495,8 @@
         "updatedAt": "2026-04-15T11:06:52.276Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/tests/self_keyword_tests.rs"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
