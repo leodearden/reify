@@ -10,7 +10,7 @@
 
 use reify_types::{DimensionVector, FieldSourceKind, Type, Value};
 
-use super::{EvalContext, apply_lambda};
+use super::{EvalContext, apply_lambda_with_point_unpacking};
 
 /// Extract the element dimension from a 3×3 matrix/tensor codomain type.
 ///
@@ -43,6 +43,10 @@ fn tensor_element_dimension(codomain: &Type) -> Option<DimensionVector> {
 ///
 /// Returns `Some((domain_type, codomain_type, element_dimension))` if all
 /// checks pass, `None` otherwise.
+///
+/// NOTE: Checks 1–3 duplicate the logic in `calculus::validate_differentiable_field`.
+/// A shared base validator would eliminate this duplication, but `calculus.rs` is
+/// outside the scope of this task's module locks. See reviewer suggestion #2.
 fn validate_tensor_field<'a>(
     field_val: &'a Value,
     op: &str,
@@ -108,70 +112,54 @@ fn scalar_type_for_dim(dim: DimensionVector) -> Type {
     }
 }
 
+// ── Shared field-wrapping helper ───────────────────────────────────────────
+
+/// Validate a tensor field and wrap it with the given `FieldSourceKind`.
+///
+/// Shared implementation for `compute_von_mises`, `compute_principal_stresses`,
+/// and `compute_max_shear`. Each differs only in the source kind variant.
+///
+/// The resulting field has `codomain_type = Scalar<element_dim>`. For
+/// `PrincipalStresses` this is a known type-level lie — sampling actually
+/// returns a `Value::List` of 3 scalars. See the TODO on
+/// `compute_principal_stresses` for details.
+fn wrap_tensor_field(field_val: &Value, op: &str, source_kind: FieldSourceKind) -> Value {
+    let (domain_type, _codomain_type, elem_dim) =
+        match validate_tensor_field(field_val, op) {
+            Some(triple) => triple,
+            None => return Value::Undef,
+        };
+
+    let result_codomain = scalar_type_for_dim(elem_dim);
+
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: result_codomain,
+        source: source_kind,
+        lambda: Box::new(field_val.clone()),
+    }
+}
+
 /// Create a VonMises-wrapped field from a tensor field.
 ///
 /// Given a `Field<D, Matrix3x3<Q>>`, returns a `Field<D, Scalar<Q>>` with
 /// `source = FieldSourceKind::VonMises` and the original field stored in the
 /// lambda slot.
 pub(crate) fn compute_von_mises(field_val: &Value) -> Value {
-    let (domain_type, _codomain_type, elem_dim) =
-        match validate_tensor_field(field_val, "von_mises") {
-            Some(triple) => triple,
-            None => return Value::Undef,
-        };
-
-    let result_codomain = scalar_type_for_dim(elem_dim);
-
-    Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: result_codomain,
-        source: FieldSourceKind::VonMises,
-        lambda: Box::new(field_val.clone()),
-    }
-}
-
-/// Sample the inner field at a point, handling the multi-param unpacking convention.
-///
-/// When the inner lambda has multiple params (e.g., `|x, y, z|`) and the point
-/// is a `Value::Point` with matching length, unpacks the point components into
-/// individual scalar arguments. A single-param lambda receives the whole Point.
-///
-/// Mirrors the unpacking logic in the `sample` handler for `Value::Lambda` fields.
-fn sample_inner_field(lambda: &Value, point: &Value, ctx: &EvalContext) -> Value {
-    if let Value::Lambda { params, .. } = lambda {
-        if params.len() > 1
-            && let Value::Point(items) = point
-            && params.len() == items.len()
-        {
-            return apply_lambda(lambda, items.as_slice(), ctx);
-        }
-        apply_lambda(lambda, std::slice::from_ref(point), ctx)
-    } else {
-        Value::Undef
-    }
+    wrap_tensor_field(field_val, "von_mises", FieldSourceKind::VonMises)
 }
 
 /// Create a PrincipalStresses-wrapped field from a tensor field.
 ///
 /// Given a `Field<D, Matrix3x3<Q>>`, returns a `Field<D, Scalar<Q>>` with
-/// `source = FieldSourceKind::PrincipalStresses`. The actual codomain when
-/// sampled is a List of 3 scalars, but the type-level codomain uses the
-/// scalar element type for simplicity.
+/// `source = FieldSourceKind::PrincipalStresses`.
+///
+/// TODO(type-coherence): The declared `codomain_type` is `Scalar<Q>`, but
+/// sampling actually returns a `Value::List` of 3 scalars. Code that inspects
+/// `Field.codomain_type` to interpret sampled values will get the wrong answer.
+/// Consider introducing `Type::List(Box<Type>)` to express this correctly.
 pub(crate) fn compute_principal_stresses(field_val: &Value) -> Value {
-    let (domain_type, _codomain_type, elem_dim) =
-        match validate_tensor_field(field_val, "principal_stresses") {
-            Some(triple) => triple,
-            None => return Value::Undef,
-        };
-
-    let result_codomain = scalar_type_for_dim(elem_dim);
-
-    Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: result_codomain,
-        source: FieldSourceKind::PrincipalStresses,
-        lambda: Box::new(field_val.clone()),
-    }
+    wrap_tensor_field(field_val, "principal_stresses", FieldSourceKind::PrincipalStresses)
 }
 
 /// Create a MaxShear-wrapped field from a tensor field.
@@ -180,20 +168,7 @@ pub(crate) fn compute_principal_stresses(field_val: &Value) -> Value {
 /// `source = FieldSourceKind::MaxShear` and the original field stored in the
 /// lambda slot.
 pub(crate) fn compute_max_shear(field_val: &Value) -> Value {
-    let (domain_type, _codomain_type, elem_dim) =
-        match validate_tensor_field(field_val, "max_shear") {
-            Some(triple) => triple,
-            None => return Value::Undef,
-        };
-
-    let result_codomain = scalar_type_for_dim(elem_dim);
-
-    Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: result_codomain,
-        source: FieldSourceKind::MaxShear,
-        lambda: Box::new(field_val.clone()),
-    }
+    wrap_tensor_field(field_val, "max_shear", FieldSourceKind::MaxShear)
 }
 
 /// Create a SafetyFactor-wrapped field from a tensor field and yield strength.
@@ -235,6 +210,24 @@ pub(crate) fn compute_safety_factor(field_val: &Value, yield_val: &Value) -> Val
 
 // ── Sampling functions ──────────────────────────────────────────────────────
 
+/// Sample a unary analysis field at a point.
+///
+/// Shared implementation for `sample_von_mises_at_point`,
+/// `sample_principal_stresses_at_point`, and `sample_max_shear_at_point`.
+/// Each differs only in the builtin name passed to `eval_builtin`.
+fn sample_unary_analysis_at_point(
+    inner_lambda: &Value,
+    point: &Value,
+    ctx: &EvalContext,
+    builtin_name: &str,
+) -> Value {
+    let tensor = apply_lambda_with_point_unpacking(inner_lambda, point, ctx);
+    if tensor.is_undef() {
+        return Value::Undef;
+    }
+    reify_stdlib::eval_builtin(builtin_name, &[tensor])
+}
+
 /// Sample a VonMises-wrapped field at a point.
 ///
 /// Evaluates the original tensor field's lambda at the given point, then
@@ -245,11 +238,7 @@ pub(crate) fn sample_von_mises_at_point(
     _codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
-    let tensor = sample_inner_field(inner_lambda, point, ctx);
-    if tensor.is_undef() {
-        return Value::Undef;
-    }
-    reify_stdlib::eval_builtin("von_mises", &[tensor])
+    sample_unary_analysis_at_point(inner_lambda, point, ctx, "von_mises")
 }
 
 /// Sample a PrincipalStresses-wrapped field at a point.
@@ -259,11 +248,7 @@ pub(crate) fn sample_principal_stresses_at_point(
     _codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
-    let tensor = sample_inner_field(inner_lambda, point, ctx);
-    if tensor.is_undef() {
-        return Value::Undef;
-    }
-    reify_stdlib::eval_builtin("principal_stresses", &[tensor])
+    sample_unary_analysis_at_point(inner_lambda, point, ctx, "principal_stresses")
 }
 
 /// Sample a MaxShear-wrapped field at a point.
@@ -273,11 +258,7 @@ pub(crate) fn sample_max_shear_at_point(
     _codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
-    let tensor = sample_inner_field(inner_lambda, point, ctx);
-    if tensor.is_undef() {
-        return Value::Undef;
-    }
-    reify_stdlib::eval_builtin("max_shear", &[tensor])
+    sample_unary_analysis_at_point(inner_lambda, point, ctx, "max_shear")
 }
 
 /// Sample a SafetyFactor-wrapped field at a point.
@@ -310,7 +291,7 @@ pub(crate) fn sample_safety_factor_at_point(
         _ => return Value::Undef,
     };
 
-    let tensor = sample_inner_field(inner_lambda, point, ctx);
+    let tensor = apply_lambda_with_point_unpacking(inner_lambda, point, ctx);
     if tensor.is_undef() {
         return Value::Undef;
     }
