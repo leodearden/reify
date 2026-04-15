@@ -13,8 +13,8 @@
 //! Satisfaction::Violated results.
 
 use reify_compiler::CompiledModule;
-use reify_test_support::{make_simple_engine, mm, parse_and_compile_with_stdlib};
-use reify_types::{DimensionVector, Satisfaction, SnapshotId, SnapshotProvenance, Value, ValueCellId};
+use reify_test_support::{kg, make_simple_engine, mm, parse_and_compile_with_stdlib};
+use reify_types::{Satisfaction, SnapshotId, SnapshotProvenance, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -55,15 +55,6 @@ fn si_value(v: &Value, label: &str) -> f64 {
     match v {
         Value::Scalar { si_value, .. } => *si_value,
         other => panic!("expected Scalar for {label}, got {other:?}"),
-    }
-}
-
-/// Construct a Scalar Value with MASS dimension from kilograms.
-/// Mirrors the `mm()` helper from reify-test-support, which lacks a `kg()` counterpart.
-fn kg(v: f64) -> Value {
-    Value::Scalar {
-        si_value: v,
-        dimension: DimensionVector::MASS,
     }
 }
 
