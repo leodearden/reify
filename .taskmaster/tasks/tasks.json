@@ -37555,6 +37555,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1793,
+        "title": "Add save error-path test and improve MenuBar test assertions",
+        "description": "Two test quality improvements from task 1766 review:\n\n1. The handleSave test in App.test.tsx covers the happy path but not the error path where bridgeSaveFile rejects. A failed save should show a toast and NOT call markClean. Add a test that mocks bridge.saveFile to reject, triggers Ctrl+S, and asserts that dirtyFiles still contains the path and that a toast with 'Save failed' is shown.\n\n2. Several callback tests in MenuBar.test.tsx use non-null assertion `!` on `.find()` results. If the find fails (e.g., due to a label text change), the test throws a confusing TypeError instead of a clear assertion failure. Add explicit expect(item).toBeTruthy() assertions before clicks.\n\nmemory_hints: search \"handleSave bridgeSaveFile error toast test\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37567,7 +37578,7 @@
       ],
       "created": "2026-04-15T16:48:28.159Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T16:50:28.964Z"
+      "updated": "2026-04-15T16:51:09.182Z"
     }
   }
 }
