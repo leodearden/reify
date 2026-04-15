@@ -893,7 +893,7 @@ describe('meshManager', () => {
       (manager as any).setVisibility('A', 'ghost');
       vi.clearAllMocks();
 
-      // Second ghost call: prevState === state, so early-return at meshManager.ts:230
+      // Second ghost call: early-return when prevState === state (idempotency guard)
       (manager as any).setVisibility('A', 'ghost');
 
       // No scene or group operations should have occurred
@@ -934,8 +934,8 @@ describe('meshManager', () => {
       // Pre-store ghost visibility before the entity has any mesh data
       (manager as any).setVisibility('Z', 'ghost');
 
-      // Entity arrives via sync: meshManager.ts:276-281 reads the stored state
-      // and calls addGhostClone instead of scene.add
+      // Entity arrives via sync: pre-stored state is read and ghost branch is taken,
+      // so addGhostClone is called instead of scene.add
       manager.sync({ Z: makeMeshData('Z') });
 
       // Entity should be in ghost map (ghost clone was added), not scene map
@@ -943,6 +943,25 @@ describe('meshManager', () => {
       expect(manager.getSceneMeshes().has('Z')).toBe(false);
       // Ghost clone was added to ghostGroup, not directly to scene
       expect(mockGroupAdd).toHaveBeenCalledTimes(1);
+      expect(mockSceneAdd).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'Z' }));
+    });
+
+    it('(o) orphan visibility: pre-stored hidden state suppresses scene and ghost placement on sync', () => {
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Pre-store hidden visibility before any mesh data arrives
+      (manager as any).setVisibility('Z', 'hidden');
+
+      // Entity arrives via sync: hidden branch means mesh is created but placed nowhere
+      manager.sync({ Z: makeMeshData('Z') });
+
+      // Mesh should have been created (it exists internally) but neither in scene nor ghost map
+      expect(manager.getSceneMeshes().has('Z')).toBe(false);
+      expect((manager as any).getGhostMeshes().has('Z')).toBe(false);
+      // Neither scene.add nor ghostGroup.add should have been called for 'Z'
+      expect(mockGroupAdd).not.toHaveBeenCalled();
       expect(mockSceneAdd).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'Z' }));
     });
   });
