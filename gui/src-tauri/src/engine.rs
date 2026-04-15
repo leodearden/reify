@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use reify_compiler::{CompiledModule, ValueCellKind};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
     ConstraintChecker, DeterminacyState, DimensionVector, ExportFormat, GeometryKernel, ModulePath,
@@ -13,7 +13,8 @@ use reify_types::{
 use reify_types::{DiagnosticInfo, SourceLocationInfo};
 
 use crate::types::{
-    ConstraintData, FileData, GuiState, MeshData, ValueData, format_determinacy, format_value,
+    ConstraintData, EntityTreeNode, FileData, GuiState, MeshData, ValueData, format_determinacy,
+    format_value,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -505,6 +506,114 @@ impl EngineSession {
             constraints,
             files,
         })
+    }
+
+    /// Return the hierarchical entity tree for the currently loaded module.
+    ///
+    /// Each root node corresponds to a top-level topology template.  Children
+    /// are the template's value cells (params, lets, autos), sub-components,
+    /// and ports, in declaration order.
+    ///
+    /// Returns an empty vec when no module is loaded.
+    pub fn get_entity_tree(&self) -> Vec<EntityTreeNode> {
+        let compiled = match self.compiled.as_ref() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+
+        compiled
+            .templates
+            .iter()
+            .map(|t| build_template_node(t, &t.name, compiled))
+            .collect()
+    }
+}
+
+/// Build an `EntityTreeNode` for a topology template.
+///
+/// `entity_path` is the dot-separated path used as the root of this node's
+/// children (e.g. `"Bracket"` → children are `"Bracket.width"`, etc.).
+fn build_template_node(
+    template: &reify_compiler::TopologyTemplate,
+    entity_path: &str,
+    compiled: &reify_compiler::CompiledModule,
+) -> EntityTreeNode {
+    let kind = match template.entity_kind {
+        EntityKind::Structure => "structure",
+        EntityKind::Occurrence => "occurrence",
+    };
+
+    let mut children = Vec::new();
+
+    // Value cells: param, let, auto
+    for cell in &template.value_cells {
+        let cell_kind = match cell.kind {
+            ValueCellKind::Param => "param",
+            ValueCellKind::Let => "let",
+            ValueCellKind::Auto { .. } => "auto",
+        };
+        let member = &cell.id.member;
+        let cell_path = format!("{}.{}", entity_path, member);
+        let is_geometry_member = member == "geometry";
+        let parent_has_physical = template.trait_bounds.iter().any(|b| b.contains("Physical"));
+        children.push(EntityTreeNode {
+            entity_path: cell_path,
+            kind: cell_kind.to_string(),
+            type_name: Some(cell.cell_type.to_string()),
+            has_mesh: false,
+            trait_geometry: is_geometry_member && parent_has_physical,
+            children: vec![],
+        });
+    }
+
+    // Sub-components
+    for sub in &template.sub_components {
+        let sub_path = format!("{}.{}", entity_path, sub.name);
+        let type_name = if sub.is_collection {
+            format!("List<{}>", sub.structure_name)
+        } else {
+            sub.structure_name.clone()
+        };
+        // Try to find the child template for recursive tree building
+        let sub_children = if let Some(child_template) = compiled
+            .templates
+            .iter()
+            .find(|t| t.name == sub.structure_name)
+        {
+            build_template_node(child_template, &sub_path, compiled).children
+        } else {
+            vec![]
+        };
+        children.push(EntityTreeNode {
+            entity_path: sub_path,
+            kind: "sub".to_string(),
+            type_name: Some(type_name),
+            has_mesh: false,
+            trait_geometry: false,
+            children: sub_children,
+        });
+    }
+
+    // Ports
+    for port in &template.ports {
+        let port_path = format!("{}.{}", entity_path, port.name);
+        children.push(EntityTreeNode {
+            entity_path: port_path,
+            kind: "port".to_string(),
+            type_name: Some(port.type_name.clone()),
+            has_mesh: false,
+            trait_geometry: false,
+            children: vec![],
+        });
+    }
+
+    EntityTreeNode {
+        entity_path: entity_path.to_string(),
+        kind: kind.to_string(),
+        type_name: None,
+        has_mesh: !template.realizations.is_empty(),
+        trait_geometry: false,
+        children,
     }
 }
 

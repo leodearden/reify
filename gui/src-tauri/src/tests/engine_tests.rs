@@ -9,6 +9,8 @@ use reify_types::ExportFormat;
 
 use reify_types::{DiagnosticInfo, SourceLocationInfo};
 
+use reify_test_support::{TopologyTemplateBuilder, CompiledModuleBuilder, bracket_compiled_module};
+
 use crate::engine::{EngineSession, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
 
@@ -2116,7 +2118,7 @@ fn get_source_location_file_key_updates_after_update_source() {
     );
 }
 
-// ---- Step 1: EntityTreeNode type serialization tests ----
+// ---- Steps 1-2: EntityTreeNode type serialization tests ----
 
 #[test]
 fn entity_tree_node_serialization_roundtrip() {
@@ -2175,4 +2177,102 @@ fn entity_tree_node_default_type_name_is_none() {
     let json = serde_json::to_string(&node).expect("serialize should succeed");
     let back: EntityTreeNode = serde_json::from_str(&json).expect("deserialize should succeed");
     assert_eq!(back.type_name, None);
+}
+
+// ---- Step 3: get_entity_tree() tests ----
+
+#[test]
+fn get_entity_tree_no_module_returns_empty_vec() {
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+    let tree = session.get_entity_tree();
+    assert!(tree.is_empty(), "no module loaded → empty tree");
+}
+
+#[test]
+fn get_entity_tree_bracket_returns_single_root_node() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session.load_from_source(bracket_source(), "bracket").expect("load");
+
+    let tree = session.get_entity_tree();
+    assert_eq!(tree.len(), 1, "bracket has one root template");
+    assert_eq!(tree[0].entity_path, "Bracket");
+    assert_eq!(tree[0].kind, "structure");
+}
+
+#[test]
+fn get_entity_tree_bracket_children_have_correct_kinds() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session.load_from_source(bracket_source(), "bracket").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = &tree[0];
+
+    // bracket has 5 params, 2 lets (volume + body), 3 constraints (no child nodes for constraints)
+    let params: Vec<_> = root.children.iter().filter(|c| c.kind == "param").collect();
+    let lets: Vec<_> = root.children.iter().filter(|c| c.kind == "let").collect();
+
+    assert_eq!(params.len(), 5, "5 param cells: width, height, thickness, fillet_radius, hole_diameter");
+    // `let body = box(...)` compiles into a realization (geometry op), not a ValueCellDecl.
+    // Only `let volume = ...` is a let-binding value cell.
+    assert_eq!(lets.len(), 1, "1 let cell: volume (body is a realization, not a let)");
+}
+
+#[test]
+fn get_entity_tree_bracket_param_entity_paths_correct() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session.load_from_source(bracket_source(), "bracket").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = &tree[0];
+
+    let width_node = root.children.iter().find(|c| c.entity_path == "Bracket.width");
+    assert!(width_node.is_some(), "should have Bracket.width child node");
+    assert_eq!(width_node.unwrap().kind, "param");
+}
+
+#[test]
+fn get_entity_tree_has_mesh_true_when_realization_exists() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session.load_from_source(bracket_source(), "bracket").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = &tree[0];
+    // bracket has a realization (box), so has_mesh should be true
+    assert!(root.has_mesh, "Bracket root should have has_mesh=true");
+}
+
+#[test]
+fn get_entity_tree_no_realization_has_mesh_false() {
+    // Build a module with a template that has no realizations
+    use reify_test_support::{CompiledModuleBuilder};
+    use reify_types::ModulePath;
+    use reify_types::Type;
+
+    let template = TopologyTemplateBuilder::new("Simple")
+        .param("Simple", "x", Type::length(), None)
+        .build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("simple"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    // Use the bracket_compiled_module to verify the fixture API, then test our custom module
+    let _ = bracket_compiled_module(); // ensure fixture compiles
+
+    // Load a module with no realizations via source (no geometry ops)
+    session.load_from_source("structure Simple { param x: Scalar = 1mm }", "simple").expect("load");
+    let tree = session.get_entity_tree();
+    let root = &tree[0];
+    assert!(!root.has_mesh, "Simple with no realization has_mesh=false");
+    let _ = compiled; // suppress unused warning
 }
