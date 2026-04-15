@@ -38102,6 +38102,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1826,
+        "title": "Fix misleading test comment and add defensive waitFor in editor tests",
+        "description": "From task 1798 review: (1) Editor.test.tsx:163 comment wrong about safety mechanism. (2) App.test.tsx:1340 missing waitFor pattern.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -38114,7 +38125,7 @@
       ],
       "created": "2026-04-15T21:22:06.203Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T21:24:38.379Z"
+      "updated": "2026-04-15T21:25:05.165Z"
     }
   }
 }
