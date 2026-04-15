@@ -1,4 +1,5 @@
 pub mod cache;
+mod concurrent;
 pub mod demand;
 pub mod deps;
 pub mod dirty;
