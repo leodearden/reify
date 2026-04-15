@@ -477,6 +477,24 @@ fn eval_sample_principal_stresses_field_dispatch() {
         );
     };
     assert_eq!(items.len(), 3, "should have 3 principal stresses");
+
+    // Extract eigenvalues
+    let mut eigenvalues = [0.0_f64; 3];
+    for (i, item) in items.iter().enumerate() {
+        match item {
+            Value::Real(v) => eigenvalues[i] = *v,
+            _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
+        }
+    }
+
+    // Eigenvalues should be sorted ascending
+    assert!(
+        eigenvalues[0] <= eigenvalues[1] && eigenvalues[1] <= eigenvalues[2],
+        "eigenvalues should be sorted ascending, got {:?}",
+        eigenvalues
+    );
+
+    // Check known values: uniaxial stress eigenvalues = [0.0, 0.0, σ]
     let expected = [0.0_f64, 0.0, sigma];
     for (i, (item, &exp)) in items.iter().zip(expected.iter()).enumerate() {
         assert_real_approx(item, exp, &format!("principal stress[{i}]"));
