@@ -37462,11 +37462,11 @@
         "description": "Three closely related cleanup items in crates/reify-eval/tests/stress_large_assembly.rs:\n1. Replace the 3× repeated Value→f64 match blocks in mass_propagation_steel_beam (lines 168-185), mass_propagation_aluminum_plate (lines 217-234), and total_mass_computed (lines 254-258) with val.as_f64().unwrap_or_else(|| panic!(...)).\n2. Extract a helper fn assert_mass_equals_volume_times_density(result: &EvalResult, entity: &str) covering lines 149-193 and 197-243, then call it from each test.\n3. In compiled() (lines 45-54), remove the manual error-filtering assertion block that duplicates what parse_and_compile_with_stdlib already guarantees.\n\nmemory_hints: search \"Value::as_f64\" for the existing helper method; search \"parse_and_compile_with_stdlib\" for its error-handling guarantees.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T17:05:32.185Z",
+        "updatedAt": "2026-04-15T17:47:28.787Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/stress_large_assembly.rs"
@@ -37854,9 +37854,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T17:45:39.319Z",
+      "lastModified": "2026-04-15T17:47:28.787Z",
       "taskCount": 1804,
-      "completedCount": 1544,
+      "completedCount": 1545,
       "tags": [
         "master"
       ]
