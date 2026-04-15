@@ -39,13 +39,27 @@ describe('KeyboardHelp', () => {
     expect(overlay.textContent).toContain('Toggle this help');
   });
 
-  it('renders all entries with keys from the shared SHORTCUTS registry', () => {
+  it('renders all active (non-disabled) entries with keys from the shared SHORTCUTS registry', () => {
     render(() => <KeyboardHelp onClose={() => {}} />);
     const overlay = screen.getByTestId('keyboard-help');
-    for (const s of SHORTCUTS.filter((s) => s.key)) {
+    for (const s of SHORTCUTS.filter((s) => s.key && !s.disabled)) {
       expect(overlay.textContent).toContain(s.key);
       expect(overlay.textContent).toContain(s.description);
     }
+  });
+
+  it('does NOT render Ctrl+Z (undo) in the overlay', () => {
+    render(() => <KeyboardHelp onClose={() => {}} />);
+    const overlay = screen.getByTestId('keyboard-help');
+    expect(overlay.textContent).not.toContain('Ctrl+Z');
+    expect(overlay.textContent).not.toContain('Undo');
+  });
+
+  it('does NOT render Ctrl+Shift+Z (redo) in the overlay', () => {
+    render(() => <KeyboardHelp onClose={() => {}} />);
+    const overlay = screen.getByTestId('keyboard-help');
+    expect(overlay.textContent).not.toContain('Ctrl+Shift+Z');
+    expect(overlay.textContent).not.toContain('Redo');
   });
 
   it('renders Ctrl+S (save shortcut) from shared registry', () => {
