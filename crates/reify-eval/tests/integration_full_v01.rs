@@ -13,7 +13,7 @@
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{ModulePath, Satisfaction, Value, ValueCellId};
+use reify_types::{Diagnostic, ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -58,6 +58,21 @@ fn check_source(src: &str) -> reify_eval::CheckResult {
     let compiled = parse_and_compile_with_stdlib(src);
     let mut engine = make_simple_engine();
     engine.check(&compiled)
+}
+
+/// Assert that a diagnostics slice contains no entries with [`Severity::Error`].
+/// Panics with the offending diagnostics and `context` label on failure.
+fn assert_no_errors(diagnostics: &[Diagnostic], context: &str) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "errors in {}: {:?}",
+        context,
+        errors
+    );
 }
 
 // ── Test 1: file parses without errors ───────────────────────────────────────
