@@ -37566,6 +37566,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1794,
+        "title": "Refactor MenuBar to data-driven menu rendering",
+        "description": "The four menu sections (File, Edit, View, Help) in MenuBar.tsx follow an identical structural pattern repeated 4 times: wrapper div with position:relative, trigger button with open/hover logic, Show guard with dropdown. Only the menu items differ.\n\nRefactor to a data-driven approach: define a MenuDef type with id, label, and items array, then render menus with a For loop. Also add a guard to handleMouseDown: `if (containerRef && e.target instanceof Node && !containerRef.contains(e.target))` for robustness.\n\nmemory_hints: search \"MenuBar data-driven refactor menu definition\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -37578,7 +37589,7 @@
       ],
       "created": "2026-04-15T16:48:28.159Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-15T16:51:09.182Z"
+      "updated": "2026-04-15T16:51:49.657Z"
     }
   }
 }
