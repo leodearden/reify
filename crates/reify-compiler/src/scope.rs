@@ -93,3 +93,26 @@ impl<'u> CompilationScope<'u> {
         self.names.get(name).map(|(id, ty, _)| (id, ty))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_if_absent_does_not_overwrite() {
+        let mut scope = CompilationScope::new("TestEntity");
+
+        // Vacant case: register_if_absent should insert and return true.
+        let inserted = scope.register_if_absent("y", Type::Bool);
+        assert!(inserted, "register_if_absent should return true for a fresh name");
+        let (_, ty, _) = scope.names["y"].clone();
+        assert_eq!(ty, Type::Bool, "fresh insert should store the given type");
+
+        // Occupied case: register_if_absent must NOT overwrite and must return false.
+        scope.register("x", Type::Real);
+        let overwritten = scope.register_if_absent("x", Type::length());
+        assert!(!overwritten, "register_if_absent should return false for an existing name");
+        let (_, ty, _) = scope.names["x"].clone();
+        assert_eq!(ty, Type::Real, "existing type must not be overwritten");
+    }
+}
