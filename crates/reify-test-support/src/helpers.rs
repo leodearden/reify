@@ -354,6 +354,27 @@ pub fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
     );
 }
 
+/// Assert that `diagnostics` is completely empty — no diagnostics of any severity.
+///
+/// This is stricter than [`assert_no_error_diagnostics`]: it fails on Warnings,
+/// Info, and any other severity in addition to Errors. Use this for
+/// characterization tests where the intent is "absolutely nothing is emitted".
+///
+/// `context` is a short label that appears in the panic message to identify
+/// which compilation or evaluation phase failed — e.g. `"compile"`, `"guard block"`.
+///
+/// # Panics
+/// Panics if `diagnostics` is non-empty. The panic message includes `context`
+/// and the full list of diagnostic messages.
+#[track_caller]
+pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
+    assert!(
+        diagnostics.is_empty(),
+        "{context}: expected no diagnostics at all, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
@@ -822,5 +843,24 @@ mod tests {
     fn test_assert_no_error_diagnostics_panics_on_error() {
         let diags = vec![Diagnostic::error("undefined identifier")];
         super::assert_no_error_diagnostics(&diags, "compile phase");
+    }
+
+    // ── assert_no_diagnostics ─────────────────────────────────────────────
+
+    /// assert_no_diagnostics should not panic when the slice is empty.
+    #[test]
+    fn test_assert_no_diagnostics_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_diagnostics(&diags, "guard compile");
+    }
+
+    /// assert_no_diagnostics should panic even on an Info-severity diagnostic;
+    /// it is stricter than assert_no_error_diagnostics. The panic message must
+    /// include the context label.
+    #[test]
+    #[should_panic(expected = "guard compile")]
+    fn test_assert_no_diagnostics_panics_on_any_diagnostic() {
+        let diags = vec![Diagnostic::info("informational note")];
+        super::assert_no_diagnostics(&diags, "guard compile");
     }
 }
