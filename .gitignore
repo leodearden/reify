@@ -9,6 +9,10 @@ Cargo.lock
 .eval-worktrees/
 data/escalations/
 node_modules/
+# Also ignore as a bare path (no trailing slash) because git tracks symlinks as mode-120000
+# blobs, not directories — the trailing-slash rule above does not match symlinks. This
+# explicit entry prevents a worktree-local gui/node_modules symlink from being re-added.
+gui/node_modules
 /package.json
 /package-lock.json
 gui/package-lock.json
