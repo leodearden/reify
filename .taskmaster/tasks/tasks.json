@@ -36529,7 +36529,16 @@
           "1743"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/viewStore.ts",
+            "gui/src/__tests__/viewStore.test.ts"
+          ],
+          "modules": [
+            "gui/src/stores"
+          ]
+        }
       },
       {
         "id": 1746,
@@ -36542,7 +36551,19 @@
           "1745"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/viewStore.ts",
+            "gui/src/components/ViewSelector.tsx",
+            "gui/src/__tests__/viewStore.test.ts",
+            "gui/src/__tests__/ViewSelector.test.tsx"
+          ],
+          "modules": [
+            "gui/src/stores",
+            "gui/src/components"
+          ]
+        }
       },
       {
         "id": 1747,
