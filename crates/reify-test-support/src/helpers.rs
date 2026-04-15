@@ -1,6 +1,7 @@
 //! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
 
-use reify_types::{ModulePath, Severity};
+use reify_compiler::TopologyTemplate;
+use reify_types::{Diagnostic, ModulePath, Severity};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::MockConstraintChecker;
@@ -60,6 +61,38 @@ pub fn compile_source(source: &str) -> reify_compiler::CompiledModule {
 pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
     let parsed = parse_or_panic(source);
     reify_compiler::compile_with_stdlib(&parsed)
+}
+
+/// Parse and compile `source`, then extract the first template.
+/// Returns the template and the full list of diagnostics.
+///
+/// # Panics
+/// Panics if there are parse errors or if the compiled module has no templates.
+pub fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
+    let compiled = compile_source(source);
+    let diagnostics = compiled.diagnostics;
+    let template = compiled
+        .templates
+        .into_iter()
+        .next()
+        .expect("compile_first_template: no templates in compiled module");
+    (template, diagnostics)
+}
+
+/// Parse and compile `source`, then extract the template with the given `name`.
+/// Returns the template and the full list of diagnostics.
+///
+/// # Panics
+/// Panics if there are parse errors or if no template with `name` is found.
+pub fn compile_template(source: &str, name: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
+    let compiled = compile_source(source);
+    let diagnostics = compiled.diagnostics;
+    let template = compiled
+        .templates
+        .into_iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("compile_template: template {:?} not found", name));
+    (template, diagnostics)
 }
 
 /// Parse `source`, assert no parse errors, compile, assert no compile errors.
