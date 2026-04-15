@@ -1932,8 +1932,9 @@ structure S {
     #[test]
     fn loft_non_geom_args_fallback_uses_step_offset() {
         // loft() with literal-number args (not geometry expressions).
-        // When step_offset=5, the fallback GeomRef for each profile should be
-        // GeomRef::Step(5) (matching geom_ref() helper), NOT Step(0).
+        // When step_offset=5, the fallback GeomRef for profile i should be
+        // GeomRef::Step(5 + i) — each profile gets a unique step, matching
+        // sweep()'s convention (profile=step_offset, path=step_offset+1).
         let expr = reify_syntax::Expr {
             kind: reify_syntax::ExprKind::FunctionCall {
                 name: "loft".to_string(),
@@ -1976,12 +1977,14 @@ structure S {
                 profiles,
                 ..
             } => {
-                assert!(!profiles.is_empty(), "loft should have profiles");
-                for profile in profiles {
+                assert_eq!(profiles.len(), 2, "loft should have 2 profiles");
+                for (i, profile) in profiles.iter().enumerate() {
                     assert_eq!(
                         *profile,
-                        GeomRef::Step(5),
-                        "loft fallback should be Step(step_offset=5), not {:?}",
+                        GeomRef::Step(5 + i),
+                        "loft fallback for profile {} should be Step(step_offset + {0} = {}), not {:?}",
+                        i,
+                        5 + i,
                         profile
                     );
                 }

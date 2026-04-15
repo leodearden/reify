@@ -454,7 +454,10 @@ pub(crate) fn compile_geometry_call(
             for i in 0..args.len() {
                 // Silent fallback — consistent with extrude/revolve_full which use
                 // geom_ref() and never emit an error for non-geometry profiles.
-                let r = geom_refs.get(&i).cloned().unwrap_or(GeomRef::Step(step_offset));
+                let r = geom_refs
+                    .get(&i)
+                    .cloned()
+                    .unwrap_or(GeomRef::Step(step_offset + i));
                 profiles.push(r);
             }
             let loft_args: Vec<(String, CompiledExpr)> = compiled_args
