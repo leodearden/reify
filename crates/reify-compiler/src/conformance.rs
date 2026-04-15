@@ -269,6 +269,7 @@ pub(crate) fn check_trait_conformance(
     for default in &all_defaults {
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
+            && !scope.names.contains_key(name)
         {
             let ty = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
