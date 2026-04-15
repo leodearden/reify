@@ -30,6 +30,25 @@ fn compile_structure(source: &str) -> CompiledModule {
     compiled
 }
 
+/// Assert that the constraint referencing `member` in `template` uses `expected`
+/// as its BinOp operator. Panics with a message containing `member` on failure.
+fn assert_constraint_op(template: &TopologyTemplate, member: &str, expected: BinOp) {
+    let cc = template
+        .constraints
+        .iter()
+        .find(|cc| {
+            matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
+                if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == member))
+        })
+        .unwrap_or_else(|| panic!("expected a constraint referencing {member}"));
+    let (op, _, _) = common::expect_binop(&cc.expr);
+    assert_eq!(
+        *op,
+        expected,
+        "{member} constraint expected BinOp::{expected:?}, got BinOp::{op:?}"
+    );
+}
+
 // ─── step-1: file exists, parses, compiles without errors ────────────────────
 
 /// Step 1: structural_physical.ri file exists, parses cleanly, compiles
@@ -652,18 +671,7 @@ structure def PlasticBody : Plastic {
         .first()
         .expect("expected at least 1 template");
 
-    // Confirm the injected constraint for plastic_strain uses Ge (>=), not Gt (>).
-    let ps_constraint = template.constraints.iter().find(|cc| {
-        matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
-            if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "plastic_strain")
-        )
-    });
-    let cc = ps_constraint.expect("expected a constraint referencing plastic_strain");
-    assert!(
-        matches!(&cc.expr.kind, CompiledExprKind::BinOp { op: BinOp::Ge, .. }),
-        "plastic_strain constraint must use BinOp::Ge (>=), not BinOp::Gt (>), got: {:?}",
-        cc.expr.kind
-    );
+    assert_constraint_op(template, "plastic_strain", BinOp::Ge);
 }
 
 // ─── task-1688: hardening_modulus=0.0 boundary value compiles ────────────────
@@ -692,18 +700,33 @@ structure def PlasticBody : Plastic {
         .first()
         .expect("expected at least 1 template");
 
-    // Confirm the injected constraint for hardening_modulus uses Gt (>), not Ge (>=).
-    let hm_constraint = template.constraints.iter().find(|cc| {
-        matches!(&cc.expr.kind, CompiledExprKind::BinOp { left, .. }
-            if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "hardening_modulus")
-        )
-    });
-    let cc = hm_constraint.expect("expected a constraint referencing hardening_modulus");
-    assert!(
-        matches!(&cc.expr.kind, CompiledExprKind::BinOp { op: BinOp::Gt, .. }),
-        "hardening_modulus constraint must use BinOp::Gt (>), not BinOp::Ge (>=), got: {:?}",
-        cc.expr.kind
+    assert_constraint_op(template, "hardening_modulus", BinOp::Gt);
+}
+
+// ─── task-1699: assert_constraint_op helper ───────────────────────────────────
+
+/// Validates that `assert_constraint_op` panics with the member name in the
+/// message when the wrong operator is passed. Deliberately passes `BinOp::Gt`
+/// for `plastic_strain` (the real constraint is `BinOp::Ge`).
+#[test]
+#[should_panic(expected = "plastic_strain constraint expected BinOp::Gt")]
+fn assert_constraint_op_detects_wrong_operator() {
+    let compiled = compile_structure(
+        r#"
+structure def PlasticBody : Plastic {
+    param plastic_strain : Real = 0.0
+    param hardening_modulus : Real = 500.0
+}
+"#,
     );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    // Deliberately pass Gt (wrong) instead of Ge (correct) — must panic.
+    assert_constraint_op(template, "plastic_strain", BinOp::Gt);
 }
 
 // ─── step-21: load_stdlib_module uses production path (wrong code path) ──────
