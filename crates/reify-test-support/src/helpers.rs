@@ -367,6 +367,32 @@ mod tests {
 
     #[cfg(feature = "eval-helpers")]
     #[test]
+    fn test_check_source() {
+        let result = super::check_source(bracket_source());
+        assert!(
+            !result.constraint_results.is_empty(),
+            "check_source should produce non-empty constraint_results for bracket source"
+        );
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_check_source_with_stdlib() {
+        // Source referencing stdlib trait Material with a constraint.
+        let source = r#"structure Steel : Material {
+            param density: Real = 7850
+            param name: String = "Steel"
+            constraint density > 0
+        }"#;
+        let result = super::check_source_with_stdlib(source);
+        assert!(
+            !result.constraint_results.is_empty(),
+            "check_source_with_stdlib should produce constraint_results"
+        );
+    }
+
+    #[cfg(feature = "eval-helpers")]
+    #[test]
     fn test_make_engine() {
         let compiled = super::parse_and_compile(bracket_source());
         let mut engine = super::make_engine();
