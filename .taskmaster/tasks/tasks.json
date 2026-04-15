@@ -36029,15 +36029,16 @@
         "description": "GeometryOp::Chamfer exists in reify-types and has a stdlib implementation (task 315 done), but there is no compiler dispatch path for it. The compiler→eval→FFI wiring is missing. Code review of task 1588 (70-module review, 2026-04-15) identified this gap via mem0 entries 1f659e54 and 26d8f165.",
         "details": "## Problem\nGeometryOp::Chamfer is defined in reify-types but the compiler has no dispatch arm for it. Without a compiler dispatch path, the op can never be emitted from user code, making the stdlib implementation unreachable.\n\n## Required work\n1. Add `GeometryOp::Chamfer` handling to the compiler's geometry dispatch (likely in `crates/reify-compiler/src/geometry.rs` or the compile_geometry_op function)\n2. Ensure eval handles `GeometryOp::Chamfer` (check `crates/reify-eval/src/` for the eval dispatch)\n3. Verify FFI/CAD kernel call is wired up\n4. Add compiler test: chamfer(body, ...) should compile to a GeometryOp::Chamfer op\n5. Add eval/integration test: chamfered shape evaluates correctly\n\n## memory_hints\n- search: \"GeometryOp::Chamfer compiler dispatch\"\n- search: \"task 315 chamfer stdlib implementation\"\n- search: \"compile_geometry_op geometry dispatch arms\"\n- entity: \"GeometryOp::Chamfer\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-15T06:47:29.400Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T06:47:28.994Z",
+      "lastModified": "2026-04-15T06:47:29.400Z",
       "taskCount": 1725,
       "completedCount": 1482,
       "tags": [
