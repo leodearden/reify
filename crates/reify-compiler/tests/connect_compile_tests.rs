@@ -3,7 +3,7 @@
 //! Tests for compiling connect and chain declarations into CompiledConnection entries.
 
 use reify_compiler::*;
-use reify_test_support::{compile_first_template, compile_source};
+use reify_test_support::{assert_has_diagnostic, assert_no_diagnostic, compile_first_template, compile_source};
 use reify_types::*;
 
 // ── Step 13: compile_connect_generates_connection ────────────────────
@@ -1360,40 +1360,6 @@ structure def S {
         conn.port_mappings,
         vec![("d".to_string(), "d".to_string())],
         "expected explicit port mapping d->d"
-    );
-}
-
-// ── task-393 test helpers ─────────────────────────────────────────────────
-
-/// Assert that at least one diagnostic matches `severity` and has a message
-/// containing `contains`.  Panics with the full diagnostics list on failure.
-fn assert_has_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
-    let matched: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == severity && d.message.contains(contains))
-        .collect();
-    assert!(
-        !matched.is_empty(),
-        "expected diagnostic with severity={:?} containing {:?}, got: {:?}",
-        severity,
-        contains,
-        diagnostics
-    );
-}
-
-/// Assert that no diagnostic matches `severity` with a message containing
-/// `contains`.  Panics with the matching diagnostics on failure.
-fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
-    let matched: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == severity && d.message.contains(contains))
-        .collect();
-    assert!(
-        matched.is_empty(),
-        "expected no diagnostic with severity={:?} containing {:?}, got: {:?}",
-        severity,
-        contains,
-        matched
     );
 }
 
