@@ -1,12 +1,17 @@
-/// Shared test helpers for unit-related integration test binaries.
-///
-/// Include in a test binary with `mod common;` at the top of the file.
-/// Helpers are `pub` so they are visible after `use common::{...}`.
-///
-/// Most helpers have migrated to `reify_test_support`. This module retains only:
-/// - `compile_with_stdlib_helper` — delegates to `reify_test_support::compile_source_with_stdlib`
-/// - `assert_single_non_empty_label` — specific to unit collision diagnostic tests
-use reify_types::{Diagnostic, SourceSpan};
+//! Shared test helpers for unit-related integration test binaries.
+//!
+//! Include in a test binary with `mod common;` at the top of the file.
+//! Helpers are `pub` so they are visible after `use common::{...}`.
+//!
+//! Most helpers have migrated to `reify_test_support`. This module retains only:
+//! - `compile_with_stdlib_helper` — delegates to `reify_test_support::compile_source_with_stdlib`
+//! - `assert_single_non_empty_label` — specific to unit collision diagnostic tests
+//! - `compile_errors` / `compile_errors_with_stdlib` — compile a project and return Error-severity diagnostics
+
+use std::path::Path;
+
+use reify_compiler::module_dag::ModuleResolver;
+use reify_types::{Diagnostic, Severity, SourceSpan};
 
 /// Parse `source` and compile it with the full stdlib prelude seeded into the
 /// unit registry.  Panics if the parser returns any errors.
@@ -17,6 +22,39 @@ use reify_types::{Diagnostic, SourceSpan};
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
 pub fn compile_with_stdlib_helper(source: &str) -> reify_compiler::CompiledModule {
     reify_test_support::compile_source_with_stdlib(source)
+}
+
+/// Compile the named entry file within `dir` using `stdlib` as the stdlib root
+/// and return the Error-severity diagnostics from the last (entry) module.
+///
+/// This is the flexible variant used when the test needs a custom stdlib
+/// directory (e.g. one built inside the test's temp dir).  Panics if
+/// `compile_project` returns `Err` or yields no modules.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+pub fn compile_errors_with_stdlib(
+    dir: &Path,
+    entry: &str,
+    stdlib: &Path,
+) -> Vec<Diagnostic> {
+    let resolver = ModuleResolver::new(dir, stdlib);
+    let result = reify_compiler::module_dag::compile_project(&dir.join(entry), &resolver);
+    let modules = result.expect("compile_project should return Ok even with diagnostics");
+    let last = modules.into_iter().last().expect("no modules returned");
+    last.diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
+/// Compile the named entry file within `dir` using `dir/stdlib` as the stdlib
+/// root and return the Error-severity diagnostics from the last (entry) module.
+///
+/// Delegates to [`compile_errors_with_stdlib`] with the conventional default
+/// stdlib path `dir.join("stdlib")`.  Panics if `compile_project` returns
+/// `Err` or yields no modules.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+pub fn compile_errors(dir: &Path, entry: &str) -> Vec<Diagnostic> {
+    compile_errors_with_stdlib(dir, entry, &dir.join("stdlib"))
 }
 
 /// Assert that `diag` emits exactly one label and that the label's span is not
