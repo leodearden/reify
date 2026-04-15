@@ -602,7 +602,7 @@ pub(crate) fn compile_geometry_call(
                 diagnostics.push(Diagnostic::error(
                     "sweep() path (argument 2) must be a geometry expression".to_string(),
                 ));
-                GeomRef::Step(0)
+                GeomRef::Step(step_offset + 1)
             };
             let mut it = compiled_args.into_iter();
             let sweep_args: Vec<(String, CompiledExpr)> = vec![
