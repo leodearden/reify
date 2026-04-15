@@ -456,6 +456,13 @@ mod tests {
 mod trait_def_annotation_tests {
     use super::*;
     use crate::builders::{ann_str, annotation, annotation_with_args};
+    use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
+
+    #[test]
+    fn annotation_constants_available() {
+        assert_eq!(TEST_ANNOTATION, "test");
+        assert_eq!(DEPRECATED_ANNOTATION, "deprecated");
+    }
 
     #[test]
     fn trait_def_builder_single_annotation() {
@@ -499,6 +506,13 @@ mod trait_def_annotation_tests {
 mod compiled_trait_annotation_tests {
     use super::*;
     use crate::builders::{ann_str, annotation, annotation_with_args};
+    use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
+
+    #[test]
+    fn annotation_constants_available() {
+        assert_eq!(TEST_ANNOTATION, "test");
+        assert_eq!(DEPRECATED_ANNOTATION, "deprecated");
+    }
 
     #[test]
     fn compiled_trait_builder_single_annotation() {
