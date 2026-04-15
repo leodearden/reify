@@ -810,3 +810,37 @@ fn edit_check_nonexistent_entity_returns_cell_not_found() {
         "expected EngineError::CellNotFound, got {err:?}"
     );
 }
+
+// ── Error-path tests: DimensionMismatch ───────────────────────────────────────
+
+/// edit_param Assembly.height (Type::Scalar[LENGTH]) with kg(5.0) (Value::Scalar[MASS])
+/// should return Err(EngineError::DimensionMismatch { .. }).
+#[test]
+fn edit_param_dimension_mismatch_returns_error() {
+    let (mut engine, _initial) = make_eval_engine();
+    let height_id = ValueCellId::new("Assembly", "height");
+    // kg(5.0) produces Value::Scalar[MASS], but height is Type::Scalar[LENGTH].
+    let err = engine
+        .edit_param(height_id, kg(5.0))
+        .expect_err("edit_param with dimension mismatch should return Err");
+    assert!(
+        matches!(err, reify_eval::EngineError::DimensionMismatch { .. }),
+        "expected EngineError::DimensionMismatch, got {err:?}"
+    );
+}
+
+/// edit_check Assembly.height (Type::Scalar[LENGTH]) with kg(5.0) (Value::Scalar[MASS])
+/// should return Err(EngineError::DimensionMismatch { .. }) (delegates to edit_param).
+#[test]
+fn edit_check_dimension_mismatch_returns_error() {
+    let (mut engine, _initial) = make_eval_engine();
+    let height_id = ValueCellId::new("Assembly", "height");
+    // kg(5.0) produces Value::Scalar[MASS], but height is Type::Scalar[LENGTH].
+    let err = engine
+        .edit_check(height_id, kg(5.0))
+        .expect_err("edit_check with dimension mismatch should return Err");
+    assert!(
+        matches!(err, reify_eval::EngineError::DimensionMismatch { .. }),
+        "expected EngineError::DimensionMismatch, got {err:?}"
+    );
+}
