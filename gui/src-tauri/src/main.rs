@@ -256,7 +256,7 @@ fn get_containing_definition(
     state: tauri::State<'_, AppState>,
     line: u32,
     col: u32,
-) -> Option<reify_gui::types::DefInfo> {
+) -> Result<Option<reify_gui::types::DefInfo>, String> {
     reify_gui::commands::get_containing_definition_impl(&state.engine, line, col)
 }
 

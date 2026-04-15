@@ -138,14 +138,13 @@ pub fn get_def_preview_impl(
 /// Return the innermost definition (structure/occurrence) containing the given
 /// 1-based (line, col) source position.
 ///
-/// Returns `None` when no module is loaded or the position is outside any definition.
+/// Returns `Ok(None)` when no module is loaded or the position is outside any definition.
+/// Returns `Err` when the engine mutex is poisoned.
 pub fn get_containing_definition_impl(
     engine: &Mutex<EngineSession>,
     line: u32,
     col: u32,
-) -> Option<DefInfo> {
-    engine
-        .lock()
-        .ok()
-        .and_then(|s| s.get_containing_definition(line, col))
+) -> Result<Option<DefInfo>, String> {
+    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(s.get_containing_definition(line, col))
 }
