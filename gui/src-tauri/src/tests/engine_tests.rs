@@ -2698,3 +2698,164 @@ fn get_containing_definition_span_valid_and_starts_at_zero() {
     // The source starts with "structure Foo {…}", so the def begins at byte 0.
     assert_eq!(def.span.start, 0, "Foo def starts at byte 0");
 }
+
+// ---- Step 11: get_def_preview() tests ----
+
+/// No module loaded → get_def_preview returns Err.
+#[test]
+fn get_def_preview_no_module_returns_error() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    let result = session.get_def_preview("Bracket");
+    assert!(result.is_err(), "no module loaded → Err");
+}
+
+/// Unknown definition name → get_def_preview returns Err.
+#[test]
+fn get_def_preview_unknown_name_returns_error() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let result = session.get_def_preview("NonExistentDef");
+    assert!(
+        result.is_err(),
+        "unknown def name → Err, got: {:?}",
+        result
+    );
+}
+
+/// Valid definition name → get_def_preview returns Ok(GuiState) with values.
+///
+/// The returned GuiState must have at least as many value entries as the bracket
+/// has params+lets (5 params + 1 let = 6).
+#[test]
+fn get_def_preview_valid_name_returns_gui_state_with_values() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let result = session.get_def_preview("Bracket");
+    let state = result.expect("Bracket preview should return Ok(GuiState)");
+    assert!(
+        state.values.len() >= 5,
+        "preview GuiState should have at least 5 value entries (bracket params), got {}",
+        state.values.len()
+    );
+}
+
+/// Bracket param defaults are evaluated: Bracket.width preview value is "80".
+#[test]
+fn get_def_preview_param_defaults_are_evaluated() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let state = session
+        .get_def_preview("Bracket")
+        .expect("Bracket preview should succeed");
+    let width = state
+        .values
+        .iter()
+        .find(|v| v.name == "width")
+        .expect("preview state should have a 'width' value entry");
+    assert_eq!(
+        width.value, "80",
+        "preview width default should be 80 (mm), got: '{}'",
+        width.value
+    );
+}
+
+/// def with no default param produces GuiState with undetermined value.
+#[test]
+fn get_def_preview_no_default_param_is_undetermined() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    // 'x' has no default expression — must be Undetermined in preview.
+    session
+        .load_from_source("structure Bar { param x: Scalar }", "test")
+        .expect("load should succeed");
+    let state = session
+        .get_def_preview("Bar")
+        .expect("Bar preview should succeed");
+    let x_val = state
+        .values
+        .iter()
+        .find(|v| v.name == "x")
+        .expect("preview should have 'x' value");
+    assert_eq!(
+        x_val.determinacy, "undetermined",
+        "param with no default should be undetermined, got: '{}'",
+        x_val.determinacy
+    );
+}
+
+/// get_def_preview result is cached: second call returns equal GuiState without
+/// re-evaluating (structural equality check — same values, same constraints).
+#[test]
+fn get_def_preview_result_is_cached() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let first = session
+        .get_def_preview("Bracket")
+        .expect("first preview call should succeed");
+    let second = session
+        .get_def_preview("Bracket")
+        .expect("second preview call should succeed");
+    assert_eq!(
+        first, second,
+        "cached preview result should be structurally equal to first result"
+    );
+}
+
+/// After reloading the module, get_def_preview reflects the new source.
+#[test]
+fn get_def_preview_cache_invalidated_on_reload() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+    let before = session
+        .get_def_preview("Bracket")
+        .expect("initial preview");
+
+    // Reload with a different width default.
+    let checker2 = SimpleConstraintChecker;
+    let kernel2 = MockGeometryKernel::new();
+    let mut session2 = EngineSession::new(Box::new(checker2), Some(Box::new(kernel2)));
+    session2
+        .load_from_source(bracket_source_with_width("120mm"), "bracket")
+        .expect("reload with different width");
+    let after = session2
+        .get_def_preview("Bracket")
+        .expect("preview after reload");
+
+    let width_before = before
+        .values
+        .iter()
+        .find(|v| v.name == "width")
+        .map(|v| v.value.as_str())
+        .unwrap_or("");
+    let width_after = after
+        .values
+        .iter()
+        .find(|v| v.name == "width")
+        .map(|v| v.value.as_str())
+        .unwrap_or("");
+    assert_ne!(
+        width_before, width_after,
+        "preview width should differ after reload with different default"
+    );
+}
