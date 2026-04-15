@@ -349,7 +349,7 @@ pub(crate) fn compile_geometry_call(
         }
         // arbitrary_pattern(target, dx1, dy1, dz1, dx2, dy2, dz2, ...)
         "arbitrary_pattern" => {
-            if compiled_args.len() < 4 || (compiled_args.len() - 1) % 3 != 0 {
+            if compiled_args.len() < 4 || !(compiled_args.len() - 1).is_multiple_of(3) {
                 diagnostics.push(Diagnostic::error(format!(
                     "arbitrary_pattern() expects target + N*(dx,dy,dz) triples (>= 4 args, (len-1) % 3 == 0), got {}",
                     compiled_args.len()
