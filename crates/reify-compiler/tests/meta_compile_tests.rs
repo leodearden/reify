@@ -307,3 +307,38 @@ fn meta_presence_affects_content_hash() {
         "entity with meta block must have a different content_hash than the same entity without one"
     );
 }
+
+// ---------------------------------------------------------------------------
+// step-4 (task-389): meta content_hash is deterministic across compilations
+// ---------------------------------------------------------------------------
+
+/// Compiling the same source twice must yield identical content_hashes.
+/// This validates that the key-sort in the meta_hashes block produces a
+/// stable hash regardless of HashMap iteration order.
+#[test]
+fn meta_content_hash_is_deterministic() {
+    let source = r#"
+        structure def Plate {
+            meta {
+                material = "steel",
+                finish = "anodized",
+                part_number = "PL-007"
+            }
+            param thickness : Length = 3mm
+        }
+    "#;
+
+    let (template1, diags1) = compile_first_template(source);
+    let (template2, diags2) = compile_first_template(source);
+
+    let errors1: Vec<_> = diags1.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors2: Vec<_> = diags2.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors1.is_empty(), "unexpected errors (run 1): {:?}", errors1);
+    assert!(errors2.is_empty(), "unexpected errors (run 2): {:?}", errors2);
+
+    assert_eq!(
+        template1.content_hash,
+        template2.content_hash,
+        "two compilations of identical source must produce the same content_hash"
+    );
+}
