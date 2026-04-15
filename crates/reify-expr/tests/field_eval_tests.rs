@@ -534,46 +534,8 @@ fn sample_multi_param_lambda_binds_unpacked_point_components() {
 ///   (non-Point) + 3-param lambda → `Undef` because the Point-guard never fires.
 #[test]
 fn sample_multi_param_lambda_with_mismatched_point_returns_undef() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    // Lambda body: (x + y) + z  — identical to the matching-arity test, body is
-    // irrelevant here because the arity check fires first.
-    let xy = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let body = CompiledExpr::binop(
-        reify_types::BinOp::Add,
-        xy,
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
-    );
-
-    // 3-param lambda — params.len() == 3
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
     let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
-    };
+    let (field, field_type) = make_xyz_sum_field(domain_type.clone());
 
     // Point has 2 elements but lambda expects 3 params → guard condition (3) fails.
     // Fallback: apply_lambda sees 1 forwarded arg (the whole Point) vs 3 params → Undef.
