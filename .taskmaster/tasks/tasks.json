@@ -36502,7 +36502,21 @@
           "1741"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/selectionStore.ts",
+            "gui/src/viewport/selection.ts",
+            "gui/src/panels/DesignTree.tsx",
+            "gui/src/__tests__/selectionStore.test.ts",
+            "gui/src/__tests__/viewport/selection.test.ts"
+          ],
+          "modules": [
+            "gui/src/stores",
+            "gui/src/viewport",
+            "gui/src/panels"
+          ]
+        }
       },
       {
         "id": 1745,
