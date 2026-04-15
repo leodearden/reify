@@ -3,29 +3,9 @@
 //!
 //! Task 267: @test compiler support.
 
+use reify_test_support::{compile_source, errors_only, warnings_only};
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_marker_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    reify_compiler::compile(&parsed)
-}
-
-fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect()
-}
-
-fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Warning)
-        .collect()
-}
 
 fn annotation_warnings<'a>(
     module: &'a reify_compiler::CompiledModule,
@@ -58,7 +38,7 @@ fn parse_first_constraint_def(source: &str) -> reify_syntax::ConstraintDef {
 
 #[test]
 fn template_marked_is_test_when_test_annotation_present() {
-    let module = compile_module("@test structure S { param x : Real }");
+    let module = compile_source("@test structure S { param x : Real }");
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     assert!(
@@ -71,7 +51,7 @@ fn template_marked_is_test_when_test_annotation_present() {
 
 #[test]
 fn template_not_marked_is_test_when_no_annotation() {
-    let module = compile_module("structure S { param x : Real }");
+    let module = compile_source("structure S { param x : Real }");
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     assert!(
@@ -82,7 +62,7 @@ fn template_not_marked_is_test_when_no_annotation() {
 
 #[test]
 fn occurrence_marked_is_test_when_test_annotation_present() {
-    let module = compile_module("@test occurrence Heat { param temp : Real }");
+    let module = compile_source("@test occurrence Heat { param temp : Real }");
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     assert_eq!(
@@ -118,7 +98,7 @@ fn constraint_def_is_test_returns_false_without_annotation() {
 
 #[test]
 fn unknown_annotation_on_constraint_def_emits_warning() {
-    let module = compile_module(
+    let module = compile_source(
         "@unknownfoo constraint def C { param x : Length\n x > 0 }",
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
@@ -139,7 +119,7 @@ fn unknown_annotation_on_constraint_def_emits_warning() {
 
 #[test]
 fn unknown_pragma_on_constraint_def_emits_warning() {
-    let module = compile_module(
+    let module = compile_source(
         "constraint def C { #unknownfoo\n param x : Length\n x > 0 }",
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
@@ -160,7 +140,7 @@ fn unknown_pragma_on_constraint_def_emits_warning() {
 
 #[test]
 fn test_annotation_on_constraint_def_emits_no_invalid_context_warning() {
-    let module = compile_module("@test constraint def C { param x : Length\n x > 0 }");
+    let module = compile_source("@test constraint def C { param x : Length\n x > 0 }");
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let bad_warns: Vec<_> = warnings_only(&module)
         .into_iter()
@@ -177,7 +157,7 @@ fn test_annotation_on_constraint_def_emits_no_invalid_context_warning() {
 
 #[test]
 fn test_annotation_on_field_still_warns_invalid_context() {
-    let module = compile_module(
+    let module = compile_source(
         "@test field def f : Point3 -> Real { source = analytical { |p| 0.0 } }",
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
@@ -205,7 +185,7 @@ fn compiled_module_test_templates_returns_only_marked() {
         structure B { param y : Real }
         @test occurrence H { param z : Real }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
 
     let test_tmpls = module.test_templates();
@@ -232,7 +212,7 @@ fn compiled_module_test_constraint_defs_returns_only_marked() {
             y > 0
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
 
     let test_defs = module.test_constraint_defs();
@@ -248,7 +228,7 @@ fn compiled_module_test_constraint_defs_returns_only_marked() {
 
 #[test]
 fn multiple_annotations_with_test_marks_template() {
-    let module = compile_module(
+    let module = compile_source(
         r#"@test @deprecated("old") structure S { param x : Real }"#,
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
