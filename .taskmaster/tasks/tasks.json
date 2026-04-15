@@ -35683,7 +35683,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/let_scope_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": 1709,
@@ -35694,7 +35705,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/let_scope_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": 1710,
