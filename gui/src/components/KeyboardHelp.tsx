@@ -30,7 +30,7 @@ export function KeyboardHelp(props: KeyboardHelpProps) {
         <h2 class={styles.title}>Keyboard Shortcuts</h2>
         <table class={styles.table}>
           <tbody>
-            {SHORTCUTS.filter((s) => s.key).map((s) => (
+            {SHORTCUTS.filter((s) => s.key && !s.disabled).map((s) => (
               <tr>
                 <td class={styles.key}><kbd>{s.key}</kbd></td>
                 <td class={styles.desc}>{s.description}</td>
