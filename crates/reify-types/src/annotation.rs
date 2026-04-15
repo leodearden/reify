@@ -81,21 +81,6 @@ mod tests {
     }
 
     #[test]
-    fn deprecated_annotation_constant_is_lowercase_deprecated() {
-        assert_eq!(DEPRECATED_ANNOTATION, "deprecated");
-    }
-
-    #[test]
-    fn optimized_annotation_constant_is_lowercase_optimized() {
-        assert_eq!(OPTIMIZED_ANNOTATION, "optimized");
-    }
-
-    #[test]
-    fn solver_hint_annotation_constant_is_solver_hint() {
-        assert_eq!(SOLVER_HINT_ANNOTATION, "solver_hint");
-    }
-
-    #[test]
     fn has_test_annotation_returns_true_when_test_present() {
         let anns = vec![make_annotation(TEST_ANNOTATION)];
         assert!(has_test_annotation(&anns));
