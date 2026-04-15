@@ -13,8 +13,8 @@
 //! Satisfaction::Violated results.
 
 use reify_compiler::CompiledModule;
-use reify_test_support::{make_simple_engine, mm, parse_and_compile_with_stdlib};
-use reify_types::{DimensionVector, Satisfaction, SnapshotId, SnapshotProvenance, Value, ValueCellId};
+use reify_test_support::{kg, make_simple_engine, mm, parse_and_compile_with_stdlib};
+use reify_types::{Satisfaction, SnapshotId, SnapshotProvenance, Value, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -55,15 +55,6 @@ fn si_value(v: &Value, label: &str) -> f64 {
     match v {
         Value::Scalar { si_value, .. } => *si_value,
         other => panic!("expected Scalar for {label}, got {other:?}"),
-    }
-}
-
-/// Construct a Scalar Value with MASS dimension from kilograms.
-/// Mirrors the `mm()` helper from reify-test-support, which lacks a `kg()` counterpart.
-fn kg(v: f64) -> Value {
-    Value::Scalar {
-        si_value: v,
-        dimension: DimensionVector::MASS,
     }
 }
 
@@ -467,17 +458,9 @@ fn edit_position_x_determinacy_predicates_hold() {
 /// Checks:
 /// 1. The compiled Assembly template has exactly 1 guarded_group with 2 constraints
 ///    (the `where determined(origin) { … }` block).
-/// 2. After edit_check, no returned constraint results are Violated.
-///
-/// FIXME(esc-295-78): The engine's guard re-elaboration phase (lib.rs ~line 1924)
-/// re-evaluates `determined(origin)` WITHOUT the determinacy context when origin
-/// is in the dirty cone (which happens here because position_x→origin→guard_cell).
-/// This causes the guard to evaluate to Undef rather than Bool(true), so the two
-/// guarded constraints (Assembly#constraint[2] = determined(displacement) and
-/// Assembly#constraint[3] = determined(base_frame)) are excluded from the
-/// edit_check result entirely.  The full assertion — that those constraints appear
-/// and are Satisfied — should be restored once the engine bug is fixed by adding
-/// `.with_determinacy(&new_snapshot.values)` to the EvalContext at that call site.
+/// 2. After edit_check, all 49 constraints are returned (including the 2 guarded ones).
+/// 3. The guarded constraints (determined(displacement), determined(base_frame)) are Satisfied.
+/// 4. No returned constraint results are Violated.
 #[test]
 fn edit_position_x_where_guard_constraints_remain_satisfied() {
     let e = "Assembly";
@@ -502,31 +485,41 @@ fn edit_position_x_where_guard_constraints_remain_satisfied() {
          (determined(displacement) and determined(base_frame))"
     );
 
-    // 2. After edit_check(position_x=200mm), no returned constraint should be Violated.
+    // 2. After edit_check(position_x=200mm), all 49 constraints should be returned.
     let px_id = ValueCellId::new(e, "position_x");
     let check_result = engine
         .edit_check(px_id, mm(200.0))
         .expect("edit_check should succeed");
 
-    // XFAIL(esc-295-78): The full assembly produces 49 constraint results when no guard
-    // is in the dirty cone.  Due to the engine bug, position_x→origin→guard_cell puts
-    // `determined(origin)` in the dirty cone without determinacy context, so the 2
-    // guarded constraints are excluded and the count drops to 47.
-    //
-    // This assertion documents the *current broken* count.  When esc-295-78 is fixed,
-    // the count will reach 49 and this assertion will FAIL — that's intentional.
-    // At that point: remove this XFAIL block and restore the full guard satisfaction
-    // assertions (checking that determined(displacement) and determined(base_frame) are
-    // both Satisfied in `check_result.constraint_results`).
     let result_count = check_result.constraint_results.len();
-    assert!(
-        result_count < 49,
-        "XFAIL(esc-295-78): expected fewer than 49 constraint results \
-         (2 guarded constraints currently missing due to engine bug), \
-         but got {result_count} — if the count is now 49 the engine bug may be fixed; \
-         remove this XFAIL block and restore the full guard-constraint assertions"
+    assert_eq!(
+        result_count, 49,
+        "expected all 49 constraint results (including 2 guarded), got {result_count}"
     );
 
+    // 3. The guarded constraints should be Satisfied (determined(origin) is true after edit).
+    let guarded_ids: Vec<_> = assembly_template.guarded_groups[0]
+        .constraints
+        .iter()
+        .map(|c| &c.id)
+        .collect();
+    for gid in &guarded_ids {
+        let entry = check_result
+            .constraint_results
+            .iter()
+            .find(|e| &e.id == *gid);
+        assert!(
+            entry.is_some(),
+            "guarded constraint {gid} should be present in edit_check results"
+        );
+        assert_eq!(
+            entry.unwrap().satisfaction,
+            Satisfaction::Satisfied,
+            "guarded constraint {gid} should be Satisfied after position_x edit"
+        );
+    }
+
+    // 4. No constraint should be Violated.
     let violations: Vec<_> = check_result
         .constraint_results
         .iter()

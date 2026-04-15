@@ -45,6 +45,27 @@ const SRC_UNION_ALL_LET_BOUND: &str = r#"structure S {
     let d_geom = union_all(a, b, c)
 }"#;
 
+const SRC_INTERSECTION_LET_BOUND: &str = r#"structure S {
+    param w: Scalar = 10mm
+    param h: Scalar = 10mm
+    param d: Scalar = 10mm
+    param r: Scalar = 7mm
+    let a = box(w, h, d)
+    let b = sphere(r)
+    let c = intersection(a, b)
+}"#;
+
+const SRC_INTERSECTION_ALL_LET_BOUND: &str = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    param w: Scalar = 8mm
+    param d: Scalar = 8mm
+    let a = cylinder(r, h)
+    let b = sphere(r)
+    let c = box(w, h, d)
+    let d_geom = intersection_all(a, b, c)
+}"#;
+
 // ─── Op-sequence assertion helpers ────────────────────────────────────────────
 
 /// Expected geometry op variant for `assert_op_sequence`.
@@ -55,6 +76,7 @@ enum ExpectedOp {
     Box_,
     BoolDiff(usize, usize),
     BoolUnion(usize, usize),
+    BoolIntersect(usize, usize),
 }
 
 fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
@@ -77,6 +99,14 @@ fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
                 right: GeomRef::Step(r),
             },
             ExpectedOp::BoolUnion(el, er),
+        ) => l == el && r == er,
+        (
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Intersection,
+                left: GeomRef::Step(l),
+                right: GeomRef::Step(r),
+            },
+            ExpectedOp::BoolIntersect(el, er),
         ) => l == el && r == er,
         _ => false,
     }
@@ -112,17 +142,17 @@ fn realization_named<'a>(
     names: &[&str],
     target: &str,
 ) -> &'a RealizationDecl {
+    assert_eq!(
+        names.len(),
+        template.realizations.len(),
+        "names count ({}) does not match realizations count ({})",
+        names.len(),
+        template.realizations.len()
+    );
     let idx = names
         .iter()
         .position(|&n| n == target)
         .unwrap_or_else(|| panic!("geometry let '{}' not found in names list {:?}", target, names));
-    assert!(
-        idx < template.realizations.len(),
-        "realization index {} for '{}' is out of bounds (len={})",
-        idx,
-        target,
-        template.realizations.len()
-    );
     &template.realizations[idx]
 }
 
@@ -230,16 +260,7 @@ fn union_with_let_bound_args() {
 
 #[test]
 fn intersection_with_let_bound_args() {
-    let source = r#"structure S {
-    param w: Scalar = 10mm
-    param h: Scalar = 10mm
-    param d: Scalar = 10mm
-    param r: Scalar = 7mm
-    let a = box(w, h, d)
-    let b = sphere(r)
-    let c = intersection(a, b)
-}"#;
-    let compiled = compile_no_errors(source);
+    let compiled = compile_no_errors(SRC_INTERSECTION_LET_BOUND);
     let template = &compiled.templates[0];
     assert_eq!(
         template.realizations.len(),
@@ -314,17 +335,7 @@ fn non_geometry_let_in_boolean_op_errors() {
 
 #[test]
 fn intersection_all_with_let_bound_args() {
-    let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
-    param w: Scalar = 8mm
-    param d: Scalar = 8mm
-    let a = cylinder(r, h)
-    let b = sphere(r)
-    let c = box(w, h, d)
-    let d_geom = intersection_all(a, b, c)
-}"#;
-    let compiled = compile_no_errors(source);
+    let compiled = compile_no_errors(SRC_INTERSECTION_ALL_LET_BOUND);
     let template = &compiled.templates[0];
     assert_eq!(
         template.realizations.len(),
@@ -512,6 +523,62 @@ fn shared_let_operand_step_indices_correct() {
             ExpectedOp::Cylinder,
             ExpectedOp::Sphere,
             ExpectedOp::BoolUnion(0, 1),
+        ],
+    );
+}
+
+// ─── task-1712 step-1: realization_named panics on names/realizations count mismatch ───
+
+#[test]
+#[should_panic(expected = "names count")]
+fn realization_named_panics_on_count_mismatch() {
+    // SRC_DIFFERENCE_LET_BOUND produces 3 realizations: body, hole, result.
+    // Passing only &["body"] (1 element) with target "body" would silently
+    // succeed without the guard: idx=0 is in bounds, returning realizations[0]
+    // even though the mapping is wrong. The names-count guard must catch this.
+    let compiled = compile_no_errors(SRC_DIFFERENCE_LET_BOUND);
+    let template = &compiled.templates[0];
+    // Deliberate mismatch: 1 name vs 3 realizations
+    let _ = realization_named(template, &["body"], "body");
+}
+
+// ─── task-1713 step-1: intersection op-level assertions ───
+
+#[test]
+fn intersection_ops_verify_boolean_variant_and_step_refs() {
+    // Verifies the operations Vec of the `c` realization.
+    // Source shared with intersection_with_let_bound_args.
+    let compiled = compile_no_errors(SRC_INTERSECTION_LET_BOUND);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["a", "b", "c"], "c");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Box_,
+            ExpectedOp::Sphere,
+            ExpectedOp::BoolIntersect(0, 1),
+        ],
+    );
+}
+
+// ─── task-1713 step-3: intersection_all left-fold structure assertions ───
+
+#[test]
+fn intersection_all_ops_verify_left_fold_structure() {
+    // d_geom = intersection_all(a, b, c) — left-fold of 3 args.
+    // Expected ops: [Cylinder, Sphere, Intersect(0,1), Box, Intersect(2,3)].
+    // Source shared with intersection_all_with_let_bound_args.
+    let compiled = compile_no_errors(SRC_INTERSECTION_ALL_LET_BOUND);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["a", "b", "c", "d_geom"], "d_geom");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sphere,
+            ExpectedOp::BoolIntersect(0, 1),
+            ExpectedOp::Box_,
+            ExpectedOp::BoolIntersect(2, 3),
         ],
     );
 }
