@@ -229,3 +229,81 @@ fn meta_access_in_constraint_context() {
         other => panic!("expected BinOp at top level of constraint, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// step-1 (task-389): meta value change affects content_hash
+// ---------------------------------------------------------------------------
+
+/// Two entities identical except for a meta entry value must produce different
+/// content_hashes. This test FAILS until meta entries are included in the hash.
+#[test]
+fn meta_change_affects_content_hash() {
+    let source_a = r#"
+        structure def Widget {
+            meta {
+                description = "Version A"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+    let source_b = r#"
+        structure def Widget {
+            meta {
+                description = "Version B"
+            }
+            param width : Length = 10mm
+        }
+    "#;
+
+    let (template_a, diags_a) = compile_first_template(source_a);
+    let (template_b, diags_b) = compile_first_template(source_b);
+
+    let errors_a: Vec<_> = diags_a.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors_b: Vec<_> = diags_b.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors_a.is_empty(), "unexpected errors in source_a: {:?}", errors_a);
+    assert!(errors_b.is_empty(), "unexpected errors in source_b: {:?}", errors_b);
+
+    assert_ne!(
+        template_a.content_hash,
+        template_b.content_hash,
+        "entities differing only in meta value must have different content_hashes"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-2 (task-389): meta presence/absence affects content_hash
+// ---------------------------------------------------------------------------
+
+/// An entity with a meta block and the same entity without one must produce
+/// different content_hashes. This test FAILS until meta entries are included
+/// in the hash.
+#[test]
+fn meta_presence_affects_content_hash() {
+    let source_with_meta = r#"
+        structure def Gadget {
+            meta {
+                part_number = "G-001"
+            }
+            param height : Length = 5mm
+        }
+    "#;
+    let source_without_meta = r#"
+        structure def Gadget {
+            param height : Length = 5mm
+        }
+    "#;
+
+    let (template_with, diags_with) = compile_first_template(source_with_meta);
+    let (template_without, diags_without) = compile_first_template(source_without_meta);
+
+    let errors_with: Vec<_> = diags_with.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors_without: Vec<_> = diags_without.iter().filter(|d| d.severity == Severity::Error).collect();
+    assert!(errors_with.is_empty(), "unexpected errors (with meta): {:?}", errors_with);
+    assert!(errors_without.is_empty(), "unexpected errors (without meta): {:?}", errors_without);
+
+    assert_ne!(
+        template_with.content_hash,
+        template_without.content_hash,
+        "entity with meta block must have a different content_hash than the same entity without one"
+    );
+}
