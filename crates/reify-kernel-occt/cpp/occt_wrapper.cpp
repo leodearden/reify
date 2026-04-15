@@ -427,6 +427,72 @@ std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
     }
 }
 
+std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
+    double dx1, double dy1, double dz1,
+    uint32_t count1, double spacing1,
+    double dx2, double dy2, double dz2,
+    uint32_t count2, double spacing2) {
+    try {
+        if (count1 < 1) {
+            throw std::runtime_error("linear_pattern_2d: count1 must be >= 1");
+        }
+        if (count2 < 1) {
+            throw std::runtime_error("linear_pattern_2d: count2 must be >= 1");
+        }
+        // Normalize direction 1
+        double mag1 = std::sqrt(dx1*dx1 + dy1*dy1 + dz1*dz1);
+        if (mag1 < CPP_DIR_MAG_MIN) {
+            throw std::runtime_error("linear_pattern_2d: direction1 must be non-zero");
+        }
+        double ndx1 = dx1 / mag1, ndy1 = dy1 / mag1, ndz1 = dz1 / mag1;
+
+        // Normalize direction 2
+        double mag2 = std::sqrt(dx2*dx2 + dy2*dy2 + dz2*dz2);
+        if (mag2 < CPP_DIR_MAG_MIN) {
+            throw std::runtime_error("linear_pattern_2d: direction2 must be non-zero");
+        }
+        double ndx2 = dx2 / mag2, ndy2 = dy2 / mag2, ndz2 = dz2 / mag2;
+
+        // Start with the original shape
+        TopoDS_Shape accumulated = shape.shape;
+
+        for (uint32_t i = 0; i < count1; ++i) {
+            for (uint32_t j = 0; j < count2; ++j) {
+                if (i == 0 && j == 0) continue; // skip the original
+                double tx = static_cast<double>(i) * spacing1 * ndx1
+                          + static_cast<double>(j) * spacing2 * ndx2;
+                double ty = static_cast<double>(i) * spacing1 * ndy1
+                          + static_cast<double>(j) * spacing2 * ndy2;
+                double tz = static_cast<double>(i) * spacing1 * ndz1
+                          + static_cast<double>(j) * spacing2 * ndz2;
+                gp_Trsf trsf;
+                trsf.SetTranslation(gp_Vec(tx, ty, tz));
+                BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
+                transform.Build();
+                if (!transform.IsDone()) {
+                    throw std::runtime_error("linear_pattern_2d: transform failed");
+                }
+                BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
+                fuse.Build();
+                if (!fuse.IsDone()) {
+                    throw std::runtime_error("linear_pattern_2d: fuse failed");
+                }
+                accumulated = fuse.Shape();
+            }
+        }
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = accumulated;
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT linear_pattern_2d: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT linear_pattern_2d: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT linear_pattern_2d: unknown C++ exception");
+    }
+}
+
 std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
     double ox, double oy, double oz,
     double ax, double ay, double az,
@@ -465,6 +531,50 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
         throw std::runtime_error(std::string("OCCT circular_pattern: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT circular_pattern: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
+    const rust::Vec<double>& flat_transforms, uint32_t num_transforms) {
+    try {
+        if (num_transforms == 0) {
+            throw std::runtime_error("arbitrary_pattern: num_transforms must be > 0");
+        }
+        if (flat_transforms.size() != static_cast<size_t>(num_transforms) * 3) {
+            throw std::runtime_error("arbitrary_pattern: flat_transforms.size() != num_transforms * 3");
+        }
+
+        // Start with the original shape
+        TopoDS_Shape accumulated = shape.shape;
+
+        for (uint32_t i = 0; i < num_transforms; ++i) {
+            double dx = flat_transforms[i * 3 + 0];
+            double dy = flat_transforms[i * 3 + 1];
+            double dz = flat_transforms[i * 3 + 2];
+            gp_Trsf trsf;
+            trsf.SetTranslation(gp_Vec(dx, dy, dz));
+            BRepBuilderAPI_Transform transform(shape.shape, trsf, true);
+            transform.Build();
+            if (!transform.IsDone()) {
+                throw std::runtime_error("arbitrary_pattern: transform failed");
+            }
+            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
+            fuse.Build();
+            if (!fuse.IsDone()) {
+                throw std::runtime_error("arbitrary_pattern: fuse failed");
+            }
+            accumulated = fuse.Shape();
+        }
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = accumulated;
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT arbitrary_pattern: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT arbitrary_pattern: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT arbitrary_pattern: unknown C++ exception");
     }
 }
 

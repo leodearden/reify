@@ -3,7 +3,7 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 
@@ -16,6 +16,21 @@ fn test_dir(name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// Compile the named entry file within `dir` and return the Error-severity
+/// diagnostics from the last (entry) module in the output.
+///
+/// Panics if `compile_project` returns `Err` or yields no modules.
+fn compile_errors(dir: &Path, entry: &str) -> Vec<reify_types::Diagnostic> {
+    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(&dir.join(entry), &resolver);
+    let modules = result.expect("compile_project should return Ok even with diagnostics");
+    let last = modules.into_iter().last().expect("no modules returned");
+    last.diagnostics
+        .into_iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect()
 }
 
 // ── Step 19: Circular import detection ────────────────────────────
@@ -608,4 +623,331 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
     }
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ── step-1 (task-1392): prelude propagation via compile_module ────────────────
+
+/// Pins the compile_module prelude-collection path (the loop that filters
+/// import declarations and looks up already-compiled modules).
+///
+/// Module c defines a pub structure `Part`. Module b imports c.Part and
+/// references `Part` in a sub declaration. Compiling via dag.compile_module
+/// must produce a compiled b with one sub_component whose structure_name
+/// is "Part", proving the prelude was collected and propagated correctly.
+#[test]
+fn compile_module_prelude_propagates_pub_structure() {
+    let dir = test_dir("prelude_propagates_pub_structure");
+
+    // Module c: defines pub structure Part
+    fs::write(
+        dir.join("c.ri"),
+        "pub structure Part {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    // Module b: imports c.Part and uses it in a sub declaration
+    fs::write(
+        dir.join("b.ri"),
+        "import c.Part\nstructure B {\n    sub p = Part(x: 5mm)\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("b", &resolver);
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    // b should have exactly one template: B
+    let b_module = dag.modules.get("b").expect("module 'b' should be in DAG");
+    assert_eq!(b_module.templates.len(), 1, "expected 1 template in b");
+    let template = &b_module.templates[0];
+    assert_eq!(template.name, "B");
+
+    // B should have one sub_component referencing Part
+    assert_eq!(
+        template.sub_components.len(),
+        1,
+        "expected 1 sub_component, got {:?}",
+        template.sub_components.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        template.sub_components[0].structure_name,
+        "Part",
+        "sub_component structure_name should be 'Part'"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ── step-2 (task-1392): multi-import prelude via compile_module ───────────────
+
+/// Pins the collect_import_preludes behaviour for multiple imports.
+///
+/// Modules x and y each define a pub structure (Bolt and Nut). Module z
+/// imports both and references each in a sub declaration. Compiling via
+/// dag.compile_module('z') must produce a compiled z with 2 sub_components,
+/// proving that collect_import_preludes handles multiple imports correctly.
+#[test]
+fn compile_module_multi_import_prelude() {
+    let dir = test_dir("multi_import_prelude");
+
+    // Module x: pub structure Bolt
+    fs::write(
+        dir.join("x.ri"),
+        "pub structure Bolt {\n    param d: Scalar = 6mm\n}",
+    )
+    .unwrap();
+
+    // Module y: pub structure Nut
+    fs::write(
+        dir.join("y.ri"),
+        "pub structure Nut {\n    param d: Scalar = 6mm\n}",
+    )
+    .unwrap();
+
+    // Module z: imports both and uses each in a sub declaration
+    fs::write(
+        dir.join("z.ri"),
+        "import x.Bolt\nimport y.Nut\nstructure Assembly {\n    sub b = Bolt(d: 8mm)\n    sub n = Nut(d: 8mm)\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("z", &resolver);
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    // z should have exactly one template: Assembly
+    let z_module = dag.modules.get("z").expect("module 'z' should be in DAG");
+    assert_eq!(z_module.templates.len(), 1, "expected 1 template in z");
+    let template = &z_module.templates[0];
+    assert_eq!(template.name, "Assembly");
+
+    // Assembly should have 2 sub_components: Bolt and Nut
+    assert_eq!(
+        template.sub_components.len(),
+        2,
+        "expected 2 sub_components, got {:?}",
+        template.sub_components.iter().map(|s| &s.structure_name).collect::<Vec<_>>()
+    );
+
+    let structure_names: Vec<&str> = template
+        .sub_components
+        .iter()
+        .map(|s| s.structure_name.as_str())
+        .collect();
+    assert!(
+        structure_names.contains(&"Bolt"),
+        "expected sub_component with structure_name 'Bolt', got {:?}",
+        structure_names
+    );
+    assert!(
+        structure_names.contains(&"Nut"),
+        "expected sub_component with structure_name 'Nut', got {:?}",
+        structure_names
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ── amendment (task-1392): compile_project multi-import prelude path ──────────
+
+/// Covers the block-scoped prelude path in `compile_project` (lines 257-260 in
+/// module_dag.rs) with multiple imports.
+///
+/// Modules p and q each define a pub structure (Pin and Socket). Module r imports
+/// both and references each in a sub declaration. `compile_project` on r must
+/// return a compiled entry module with 2 sub_components, proving that:
+///   1. `collect_import_preludes` aggregates both imports, and
+///   2. the block-scoped borrow in `compile_project` is correct under multiple
+///      simultaneously-borrowed prelude modules.
+#[test]
+fn compile_project_multi_import_prelude() {
+    let dir = test_dir("compile_project_multi_import_prelude");
+
+    // Module p: pub structure Pin
+    fs::write(
+        dir.join("p.ri"),
+        "pub structure Pin {\n    param d: Scalar = 2mm\n}",
+    )
+    .unwrap();
+
+    // Module q: pub structure Socket
+    fs::write(
+        dir.join("q.ri"),
+        "pub structure Socket {\n    param d: Scalar = 2mm\n}",
+    )
+    .unwrap();
+
+    // Entry module r: imports both and uses each in a sub declaration
+    fs::write(
+        dir.join("r.ri"),
+        "import p.Pin\nimport q.Socket\nstructure Connector {\n    sub pin = Pin(d: 3mm)\n    sub sock = Socket(d: 3mm)\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(&dir.join("r.ri"), &resolver);
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    let modules = result.unwrap();
+    // Should have 3 modules in topo order: p, q, r
+    assert_eq!(modules.len(), 3, "expected 3 modules (p, q, r), got {}", modules.len());
+
+    // Entry module r is last (topological order: dependencies first)
+    let r_module = modules.last().unwrap();
+    assert_eq!(r_module.templates.len(), 1, "expected 1 template in r");
+    let template = &r_module.templates[0];
+    assert_eq!(template.name, "Connector");
+
+    // Connector should have 2 sub_components: Pin and Socket
+    assert_eq!(
+        template.sub_components.len(),
+        2,
+        "expected 2 sub_components, got {:?}",
+        template.sub_components.iter().map(|s| &s.structure_name).collect::<Vec<_>>()
+    );
+
+    let structure_names: Vec<&str> = template
+        .sub_components
+        .iter()
+        .map(|s| s.structure_name.as_str())
+        .collect();
+    assert!(
+        structure_names.contains(&"Pin"),
+        "expected sub_component with structure_name 'Pin', got {:?}",
+        structure_names
+    );
+    assert!(
+        structure_names.contains(&"Socket"),
+        "expected sub_component with structure_name 'Socket', got {:?}",
+        structure_names
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ── step-1 (task-1759): #no_prelude suppresses import prelude pub units ───────
+
+/// Verifies that `#no_prelude` suppresses the import prelude so that pub units
+/// from imported modules are NOT seeded into the unit registry.
+///
+/// dep defines `pub unit myunit : Length = 0.001`.  consumer declares
+/// `#no_prelude`, imports dep, and references `5myunit` in a param.
+/// Because `#no_prelude` shadows the prelude with `&[]` (lib.rs:131), the
+/// unit lookup fails and the consumer module must carry an "unknown unit"
+/// diagnostic for `myunit`.
+///
+/// This exercises the lib.rs:130-131 empty-slice shadowing path through the
+/// full `compile_project` pipeline.
+#[test]
+fn no_prelude_suppresses_import_prelude() {
+    let dir = test_dir("no_prelude_suppresses_import_prelude");
+
+    // dep.ri: exports pub unit myunit
+    fs::write(
+        dir.join("dep.ri"),
+        "pub unit myunit : Length = 0.001\npub structure Part {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    // consumer.ri: #no_prelude suppresses dep's pub units
+    fs::write(
+        dir.join("consumer.ri"),
+        "#no_prelude\nimport dep\nstructure S {\n    param y: Length = 5myunit\n}",
+    )
+    .unwrap();
+
+    let errors = compile_errors(&dir, "consumer.ri");
+    let unknown_unit_diag = errors
+        .iter()
+        .find(|d| d.message.contains("unknown unit") && d.message.contains("myunit"));
+    assert!(
+        unknown_unit_diag.is_some(),
+        "expected 'unknown unit: myunit' error (prelude suppressed by #no_prelude), got: {:#?}",
+        errors
+    );
+
+    // Positive control: WITHOUT #no_prelude the same import/unit resolves fine.
+    let dir2 = test_dir("no_prelude_suppresses_import_prelude_pos");
+    fs::write(
+        dir2.join("dep.ri"),
+        "pub unit myunit : Length = 0.001\npub structure Part {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+    fs::write(
+        dir2.join("consumer.ri"),
+        "import dep\nstructure S {\n    param y: Length = 5myunit\n}",
+    )
+    .unwrap();
+    let errors2 = compile_errors(&dir2, "consumer.ri");
+    assert!(
+        errors2.is_empty(),
+        "positive control (no #no_prelude): expected zero errors but got: {:#?}",
+        errors2
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&dir2);
+}
+
+// ── step-3 (task-1759): private units not exported through reference-based prelude ──
+
+/// Verifies that the `if cu.is_pub` filter (lib.rs:266) correctly blocks
+/// private units from being seeded into a consumer module's unit registry,
+/// even through the reference-based prelude indirection introduced in task 1392.
+///
+/// dep defines a private `unit secret : Length = 0.005` (no pub keyword).
+/// consumer imports dep and references `3secret` in a param.
+/// Because `secret` is not pub, the is_pub filter prevents it from being
+/// seeded, and the consumer module must carry an "unknown unit" diagnostic.
+#[test]
+fn private_unit_not_exported_through_import_prelude() {
+    let dir = test_dir("private_unit_not_exported_through_import_prelude");
+
+    // dep.ri: private unit (no pub) and a pub structure to make import valid
+    fs::write(
+        dir.join("dep.ri"),
+        "unit secret : Length = 0.005\npub structure Widget {\n    param w: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    // consumer.ri: imports dep and tries to use the private unit
+    fs::write(
+        dir.join("consumer.ri"),
+        "import dep\nstructure S {\n    param z: Length = 3secret\n}",
+    )
+    .unwrap();
+
+    let errors = compile_errors(&dir, "consumer.ri");
+    let unknown_unit_diag = errors
+        .iter()
+        .find(|d| d.message.contains("unknown unit") && d.message.contains("secret"));
+    assert!(
+        unknown_unit_diag.is_some(),
+        "expected 'unknown unit: secret' error (private unit not exported), got: {:#?}",
+        errors
+    );
+
+    // Positive control: with `pub unit secret` the unit resolves and there are no errors.
+    let dir2 = test_dir("private_unit_not_exported_through_import_prelude_pos");
+    fs::write(
+        dir2.join("dep.ri"),
+        "pub unit secret : Length = 0.005\npub structure Widget {\n    param w: Scalar = 1mm\n}",
+    )
+    .unwrap();
+    fs::write(
+        dir2.join("consumer.ri"),
+        "import dep\nstructure S {\n    param z: Length = 3secret\n}",
+    )
+    .unwrap();
+    let errors2 = compile_errors(&dir2, "consumer.ri");
+    assert!(
+        errors2.is_empty(),
+        "positive control (pub unit): expected zero errors but got: {:#?}",
+        errors2
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&dir2);
 }

@@ -2,37 +2,7 @@
 //!
 //! Tests for compiling `#name` and `#name(args)` pragmas at module and block level.
 
-/// Helper: parse and compile source, return compiled module (no prelude).
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("pragma_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: parse and compile source using the full stdlib prelude.
-fn compile_module_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("pragma_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    reify_compiler::compile_with_stdlib(&parsed)
-}
-
-/// Helper: return only error-severity diagnostics (ignoring warnings).
-fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect()
-}
-
-/// Helper: return only warning-severity diagnostics.
-fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Warning)
-        .collect()
-}
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
 
 /// Helper: filter warnings whose message contains the given substring.
 fn pragma_warnings<'a>(
@@ -50,7 +20,7 @@ fn pragma_warnings<'a>(
 /// Module-level pragmas are stored on CompiledModule.pragmas with correct names/args.
 #[test]
 fn module_pragmas_stored_on_compiled_module() {
-    let module = compile_module(
+    let module = compile_source(
         "#precision(value=64)\n#version(1)\nstructure S { param x : Real }",
     );
     assert!(
@@ -97,7 +67,7 @@ fn module_pragmas_stored_on_compiled_module() {
 /// With #no_prelude and no stdlib-specific names, compilation should succeed.
 #[test]
 fn no_prelude_simple_structure_compiles_clean() {
-    let module = compile_module_with_stdlib("#no_prelude\nstructure S { param x : Real = 1.0 }");
+    let module = compile_source_with_stdlib("#no_prelude\nstructure S { param x : Real = 1.0 }");
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -111,7 +81,7 @@ fn no_prelude_simple_structure_compiles_clean() {
 /// so suppressing the prelude must cause an "unknown unit" error.
 #[test]
 fn no_prelude_suppresses_stdlib_units() {
-    let module = compile_module_with_stdlib(
+    let module = compile_source_with_stdlib(
         "#no_prelude\nstructure S { param x : Length = 10km }",
     );
     let errs = errors_only(&module);
@@ -124,7 +94,7 @@ fn no_prelude_suppresses_stdlib_units() {
 /// Without #no_prelude, stdlib-only units like `km` should resolve cleanly.
 #[test]
 fn without_no_prelude_stdlib_units_resolve() {
-    let module = compile_module_with_stdlib("structure S { param x : Length = 10km }");
+    let module = compile_source_with_stdlib("structure S { param x : Length = 10km }");
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
@@ -138,7 +108,7 @@ fn without_no_prelude_stdlib_units_resolve() {
 /// Unknown module-level pragma `#optimize` should emit an "unknown pragma" warning.
 #[test]
 fn unknown_module_pragma_emits_warning() {
-    let module = compile_module("#optimize\nstructure S { param x : Real }");
+    let module = compile_source("#optimize\nstructure S { param x : Real }");
     let warns = pragma_warnings(&module, "unknown pragma");
     assert!(
         !warns.is_empty(),
@@ -155,7 +125,7 @@ fn unknown_module_pragma_emits_warning() {
 /// Known module-level pragma `#precision` should NOT emit an unknown-pragma warning.
 #[test]
 fn known_module_pragma_no_warning() {
-    let module = compile_module("#precision(value=64)\nstructure S { param x : Real }");
+    let module = compile_source("#precision(value=64)\nstructure S { param x : Real }");
     let warns = pragma_warnings(&module, "unknown pragma");
     assert!(
         warns.is_empty(),
@@ -169,7 +139,7 @@ fn known_module_pragma_no_warning() {
 /// Block-level pragma on a trait body is propagated to CompiledTrait.pragmas.
 #[test]
 fn trait_pragma_propagated_to_compiled_trait() {
-    let module = compile_module("trait T { #precision(bits=32) param x : Real }");
+    let module = compile_source("trait T { #precision(bits=32) param x : Real }");
     assert!(
         errors_only(&module).is_empty(),
         "unexpected errors: {:?}",
@@ -206,7 +176,7 @@ fn purpose_pragma_propagated_to_compiled_purpose() {
             constraint 1 > 0
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "unexpected errors: {:?}",
@@ -238,7 +208,7 @@ fn purpose_pragma_propagated_to_compiled_purpose() {
 /// Block-level pragma on a structure body is propagated to TopologyTemplate.pragmas.
 #[test]
 fn structure_pragma_propagated_to_topology_template() {
-    let module = compile_module(
+    let module = compile_source(
         r#"structure S { #solver(backend="ipopt") param x : Real }"#,
     );
     assert!(
@@ -272,7 +242,7 @@ fn structure_pragma_propagated_to_topology_template() {
 /// Unknown pragma `#turbo` inside a structure body should emit a warning.
 #[test]
 fn unknown_structure_pragma_emits_warning() {
-    let module = compile_module(r#"structure S { #turbo param x : Real }"#);
+    let module = compile_source(r#"structure S { #turbo param x : Real }"#);
     let warns = pragma_warnings(&module, "unknown pragma");
     assert!(
         !warns.is_empty(),
@@ -289,7 +259,7 @@ fn unknown_structure_pragma_emits_warning() {
 /// Unknown pragma `#fast` inside a trait body should emit a warning.
 #[test]
 fn unknown_trait_pragma_emits_warning() {
-    let module = compile_module(r#"trait T { #fast param x : Real }"#);
+    let module = compile_source(r#"trait T { #fast param x : Real }"#);
     let warns = pragma_warnings(&module, "unknown pragma");
     assert!(
         !warns.is_empty(),
@@ -306,7 +276,7 @@ fn unknown_trait_pragma_emits_warning() {
 /// Unknown pragma `#accel` inside a purpose body should emit a warning.
 #[test]
 fn unknown_purpose_pragma_emits_warning() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
         structure S { param x : Real = 0.0 }
         purpose p(s : Structure) {
@@ -331,7 +301,7 @@ fn unknown_purpose_pragma_emits_warning() {
 /// Known block pragma `#precision` on a structure should NOT emit an unknown-pragma warning.
 #[test]
 fn known_block_pragma_precision_no_warning_on_structure() {
-    let module = compile_module(r#"structure S { #precision(bits=64) param x : Real }"#);
+    let module = compile_source(r#"structure S { #precision(bits=64) param x : Real }"#);
     let warns = pragma_warnings(&module, "unknown pragma");
     assert!(
         warns.is_empty(),
@@ -343,7 +313,7 @@ fn known_block_pragma_precision_no_warning_on_structure() {
 /// Known block pragma `#solver` on a trait should NOT emit an unknown-pragma warning.
 #[test]
 fn known_block_pragma_solver_no_warning_on_trait() {
-    let module = compile_module(r#"trait T { #solver(backend="ipopt") param x : Real }"#);
+    let module = compile_source(r#"trait T { #solver(backend="ipopt") param x : Real }"#);
     let warns = pragma_warnings(&module, "unknown pragma");
     assert!(
         warns.is_empty(),
@@ -355,7 +325,7 @@ fn known_block_pragma_solver_no_warning_on_trait() {
 /// Known block pragma `#kernel` on a purpose should NOT emit an unknown-pragma warning.
 #[test]
 fn known_block_pragma_kernel_no_warning_on_purpose() {
-    let module = compile_module(
+    let module = compile_source(
         r#"
         structure S { param x : Real = 0.0 }
         purpose p(s : Structure) {

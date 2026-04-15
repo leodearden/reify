@@ -14,43 +14,8 @@
 //! There is no gap between step-8 and step-11 in this file — the apparent gap
 //! is a cross-file artifact of the original task-153 plan.
 
+use reify_test_support::{compile_source, parse_and_compile};
 use reify_types::{Severity, ValueCellId};
-
-/// Helper: parse + compile source, assert no errors, return compiled output.
-fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no error diagnostics, got: {:?}",
-        errors
-    );
-    compiled
-}
-
-/// Helper: parse + compile source, return compiled output (may have errors).
-#[allow(dead_code)]
-fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
 
 /// Returns `true` if any string in `messages` contains `word` as a whole token.
 ///
@@ -107,6 +72,7 @@ fn test_mentions_word() {
     ));
 }
 
+
 // ─── step-1: self.param resolves to correct ValueRef ───
 
 #[test]
@@ -116,7 +82,7 @@ fn self_dot_param_resolves_to_value_ref() {
     param x : Scalar = 5mm
     let y = self.x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // `y` should be a value cell
@@ -158,7 +124,7 @@ structure S {
     sub bolt = Bolt()
     let val = self.bolt.d
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
 
     // Find the S template
     let template = compiled
@@ -203,7 +169,7 @@ fn self_in_let_binding_compiles() {
     param a : Scalar = 3mm
     let b = self.a + 1mm
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Both value cells should exist
@@ -226,7 +192,7 @@ fn self_in_constraint_compiles() {
     param x : Scalar = 5mm
     constraint self.x > 2mm
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Should have at least one constraint
@@ -259,7 +225,7 @@ fn bare_self_as_entity_reference() {
     param x : Scalar = 5mm
     let me = self
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -300,7 +266,7 @@ fn self_in_guarded_block() {
         let child_width = self.width / 2
     }
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Should have a guarded group
@@ -427,12 +393,12 @@ fn self_error_at_module_scope() {
     }
 }
 
-// ─── task-1125 step-1: self.collection_sub emits error ───
+// ─── task-1125 step-1 (updated by task-1280 step-3): self.collection_sub resolves to List<T> ───
 
 #[test]
-fn self_dot_collection_sub_emits_error() {
-    // `self.items` where `items` is a collection sub should emit an error,
-    // not silently return StructureRef("Bolt") as if it were a single-instance sub.
+fn self_dot_collection_sub_resolves_to_list() {
+    // `self.items` where `items` is a collection sub should resolve to a List<T> value cell,
+    // mirroring bare `items`. No error should be emitted (task-1280 fix).
     let source = r#"structure Bolt {
     param diameter : Scalar = 10mm
 }
@@ -440,27 +406,36 @@ structure S {
     sub items : List<Bolt>
     let x = self.items
 }"#;
-    let compiled = compile_with_diagnostics(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
         .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let x_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("x value cell");
+
+    let expected_id = ValueCellId::new("S", "__list_items__diameter");
+    let x_refs = x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .collect_value_refs();
     assert!(
-        !errors.is_empty(),
-        "expected at least one error for `self.items` on collection sub, got no errors"
+        x_refs.contains(&expected_id),
+        "self.items should reference S.__list_items__diameter, got: {:?}",
+        x_refs
     );
-    let has_helpful_msg = errors.iter().any(|d| {
-        let msg = &d.message;
-        msg.contains("items")
-            && (msg.contains("collection")
-                || msg.contains("indexed")
-                || msg.contains("index"))
-    });
+
+    let x_ty = &x_cell.default_expr.as_ref().expect("x default_expr").result_type;
     assert!(
-        has_helpful_msg,
-        "expected error message mentioning 'items' and 'collection'/'indexed'/'index', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        matches!(x_ty, reify_types::Type::List(_)),
+        "self.items should have List type, got: {:?}",
+        x_ty
     );
 }
 
@@ -477,7 +452,7 @@ structure S {
     sub items : List<Bolt>
     let d = self.items.diameter
 }"#;
-    let compiled = compile_with_diagnostics(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -514,7 +489,7 @@ structure S {
     sub bolt = Bolt()
     let b = self.bolt
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -544,7 +519,7 @@ fn self_param_equivalence_with_bare_param() {
     let via_self = self.x
     let via_bare = x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     let via_self_cell = template
@@ -596,7 +571,7 @@ fn self_dot_param_inside_lambda_captures_entity_param() {
     param x : Scalar = 5mm
     let f = |y: Scalar| y + self.x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -643,7 +618,7 @@ fn bare_self_inside_lambda_captures_entity_ref() {
     param x : Scalar = 5mm
     let f = |_unused| self
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -721,48 +696,155 @@ fn self_inside_lambda_in_fn_body_errors() {
     }
 }
 
-// ─── task-1281 step-1: self.collection_sub error uses List fallback type ───
+// ─── task-1280 step-1: self.collection_sub equivalence with bare collection sub ───
 
 #[test]
-fn self_dot_collection_sub_error_has_list_fallback_type() {
-    // `self.items` where `items` is List<Bolt> should emit an error AND
-    // have a cell type of Type::List(Box::new(Type::StructureRef("Bolt")))
-    // rather than Type::Real, so downstream expressions don't get spurious
-    // type-mismatch diagnostics.
+fn self_dot_collection_sub_equivalence_with_bare() {
+    // `self.bolts` and bare `bolts` (a collection sub) should compile to the same
+    // ValueRef, mirroring how `self.param` ≡ bare `param` (step-11).
+    // Both should resolve to S.__list_bolts__diameter with type List<T>.
     let source = r#"structure Bolt {
     param diameter : Scalar = 10mm
 }
 structure S {
-    sub items : List<Bolt>
-    let x = self.items
+    sub bolts : List<Bolt>
+    let via_self = self.bolts
+    let via_bare = bolts
 }"#;
-    let compiled = compile_with_diagnostics(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "expected at least one error for `self.items` on collection sub"
-    );
-
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
         .find(|t| t.name == "S")
         .expect("S template");
-    let x_cell = s_template
+
+    let via_self_cell = s_template
         .value_cells
         .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("x value cell");
+        .find(|vc| vc.id.member == "via_self")
+        .expect("via_self value cell");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
 
-    assert_eq!(
-        x_cell.cell_type,
-        reify_types::Type::List(Box::new(reify_types::Type::StructureRef("Bolt".to_string()))),
-        "self.items error fallback should be List<StructureRef(Bolt)>, got {:?}",
-        x_cell.cell_type
+    let expected_id = ValueCellId::new("S", "__list_bolts__diameter");
+
+    let self_refs = via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .collect_value_refs();
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        self_refs.contains(&expected_id),
+        "via_self should reference S.__list_bolts__diameter, got: {:?}",
+        self_refs
+    );
+    assert!(
+        bare_refs.contains(&expected_id),
+        "via_bare should reference S.__list_bolts__diameter, got: {:?}",
+        bare_refs
+    );
+
+    // Both should resolve to List type
+    let self_ty = &via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .result_type;
+    let bare_ty = &via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .result_type;
+
+    assert!(
+        matches!(self_ty, reify_types::Type::List(_)),
+        "via_self should have List type, got: {:?}",
+        self_ty
+    );
+    assert!(
+        matches!(bare_ty, reify_types::Type::List(_)),
+        "via_bare should have List type, got: {:?}",
+        bare_ty
+    );
+}
+
+// ─── task-1280 amend: lexicographic first-member selection with multiple params ───
+
+#[test]
+fn self_dot_collection_sub_picks_lexicographic_first_member() {
+    // `Bolt` has two params: `diameter` and `length`.
+    // Lexicographically "diameter" < "length" (d < l), so the resolver must pick
+    // `diameter` as the representative member — both via `self.bolts` and bare `bolts`.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+    param length : Scalar = 50mm
+}
+structure S {
+    sub bolts : List<Bolt>
+    let via_self = self.bolts
+    let via_bare = bolts
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let via_self_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_self")
+        .expect("via_self value cell");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    // Must resolve to diameter (lexicographically first), not length.
+    let expected_id = ValueCellId::new("S", "__list_bolts__diameter");
+    let wrong_id = ValueCellId::new("S", "__list_bolts__length");
+
+    let self_refs = via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .collect_value_refs();
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        self_refs.contains(&expected_id),
+        "via_self should reference __list_bolts__diameter (lexicographic first), got: {:?}",
+        self_refs
+    );
+    assert!(
+        !self_refs.contains(&wrong_id),
+        "via_self must NOT reference __list_bolts__length, got: {:?}",
+        self_refs
+    );
+    assert!(
+        bare_refs.contains(&expected_id),
+        "via_bare should reference __list_bolts__diameter (lexicographic first), got: {:?}",
+        bare_refs
+    );
+    assert!(
+        !bare_refs.contains(&wrong_id),
+        "via_bare must NOT reference __list_bolts__length, got: {:?}",
+        bare_refs
     );
 }
 
@@ -780,7 +862,7 @@ structure S {
     sub items : List<Bolt>
     let d = self.items.diameter
 }"#;
-    let compiled = compile_with_diagnostics(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -827,7 +909,7 @@ structure S {
     sub items : List<Bolt>
     let c = self.items.count
 }"#;
-    let compiled = compile_with_diagnostics(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -876,7 +958,7 @@ structure S {
     let d = self.items.diameter
     constraint d > 5mm
 }"#;
-    let compiled = compile_with_diagnostics(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -906,7 +988,7 @@ structure S {
     sub items : List<Bolt>
     let s = self.items.sum
 }"#;
-    let compiled = compile_with_diagnostics(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()

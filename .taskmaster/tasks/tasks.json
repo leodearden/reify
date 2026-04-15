@@ -6721,7 +6721,7 @@
           "311",
           "237"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6741,10 +6741,17 @@
             "crates/reify-kernel-occt/src/lib.rs",
             "crates/reify-eval/src/lib.rs",
             "crates/reify-compiler/src/geometry.rs"
-          ]
+          ],
+          "memory_hints": {
+            "searches": [
+              "linear_pattern_2d arbitrary_pattern stdlib pattern implementation",
+              "circular_pattern stdlib existing flat-arg implementation orient_* geometry"
+            ],
+            "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-15T10:29:35.965Z"
+        "updatedAt": "2026-04-15T12:16:19.596Z"
       },
       {
         "id": "324",
@@ -7381,7 +7388,7 @@
           "330",
           "343"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
@@ -7397,7 +7404,7 @@
         },
         "subtasks": [],
         "details": "Two tests: (1) patterns — pattern of patterns, count=0/1, 10×10 grid, pattern+union_all; (2) large_assembly — 50+ structures with geometry+material+ports, computed mass propagation, simulation_ready purpose. Target: <5s eval.",
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-15T16:05:33.797Z"
       },
       {
         "id": "348",
@@ -7796,7 +7803,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T07:37:18.006Z",
+        "updatedAt": "2026-04-15T12:17:39.549Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -7804,8 +7811,13 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-types/src",
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/src/traits.rs",
+            "crates/reify-compiler/src/types.rs",
+            "crates/reify-compiler/tests/let_type_disambiguation_tests.rs",
+            "crates/reify-compiler/tests/silent_defaults_tests.rs",
+            "crates/reify-compiler/tests/structural_physical_tests.rs",
+            "crates/reify-test-support/src/builders"
           ]
         }
       },
@@ -7886,7 +7898,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:33:15.178Z",
+        "updatedAt": "2026-04-15T12:28:33.763Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -7894,8 +7906,12 @@
             "crates/reify-compiler/tests/connect_compile_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler/src/connect.rs",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/module_dag.rs",
+            "crates/reify-compiler/tests/connect_compile_tests.rs",
+            "crates/reify-compiler/tests/module_dag_tests.rs",
+            "crates/reify-types/src/identity.rs"
           ]
         }
       },
@@ -8184,7 +8200,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:32:09.950Z",
+        "updatedAt": "2026-04-15T12:44:09.899Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8192,8 +8208,8 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
           ]
         }
       },
@@ -8282,7 +8298,10 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/scope.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8291,7 +8310,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T20:59:19.279Z"
+        "updatedAt": "2026-04-15T12:48:03.965Z"
       },
       {
         "id": "389",
@@ -8304,7 +8323,8 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8323,7 +8343,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-13T18:44:52.832Z"
+        "updatedAt": "2026-04-15T16:07:49.591Z"
       },
       {
         "id": "390",
@@ -8336,7 +8356,8 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8344,7 +8365,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T20:59:19.374Z"
+        "updatedAt": "2026-04-15T16:11:58.379Z"
       },
       {
         "id": "391",
@@ -8410,7 +8431,7 @@
         "testStrategy": "",
         "priority": "medium",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -8421,7 +8442,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T20:59:19.488Z"
+        "updatedAt": "2026-04-15T16:11:59.097Z"
       },
       {
         "id": "394",
@@ -8570,11 +8591,11 @@
         "description": "Consolidates creation/hardening of reify-test-support helpers (compile_source, eval_source, parse_and_compile, collect_errors, compile_with_stdlib, constraint-def helpers, parse_or_panic DRY) and migration of reify-compiler tests, reify-eval tests, reify-runtime tests, and tests/common/mod.rs to use the shared helpers.",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 401 plus 10 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 401: Consolidate test helpers (compile_source, eval_source) into reify-test-support\n\n\nThe parse→compile and parse→compile→eval helper patterns are duplicated across 15+ test files in reify-compiler and reify-eval (e.g. meta_e2e.rs, meta_compile_tests.rs, connect_compile_tests.rs, field_compile_tests.rs, field_eval_tests.rs, purpose_eval.rs, m5_integration.rs, occurrence_eval.rs). Each file independently defines compile_source/compile_module and parse_compile_eval/eval_source.\n\nAdd shared helpers to crates/reify-test-support:\n1. `pub fn compile_source(source: &str) -> CompiledModule` — parse + compile\n2. `pub fn eval_source(source: &str) -> (CompiledModule, EvalResult)` — parse + compile + eval with MockConstraintChecker\n\nThe eval helper should also assert no eval-phase diagnostics (result.diagnostics) to prevent silent error swallowing.\n\nThen update all existing test files to import from reify-test-support instead of defining local copies.\n\nmemory_hints: search \"compile_source test helper\" and \"parse_compile_eval\" in crates/reify-compiler/tests and crates/reify-eval/tests\n\n### Absorbed from task 371: Test support: deduplicate compile_module/parse_decls helpers across 10+ files\ncompile_module helper is copy-pasted across 10+ test files in reify-compiler/tests/. parse_decls helper is similarly duplicated across 10+ test files in reify-syntax/tests/. Create shared test helpers — either tests/common.rs modules or add to reify-test-support crate — and update all test files to use the shared versions.\n\nMemory hints: search \"compile_module parse_decls test helper\", entities: reify-test-support, reify-compiler tests\n\n### Absorbed from task 402: Migrate remaining test files to common test helpers\nMigrate guard_compilation.rs and collection_sub_tests.rs to use `mod common;` shared helpers, eliminating duplicate inline helper functions.\n\n1. guard_compilation.rs: Add `mod common; use common::compile_first_template;` and remove the inline `compile_first_template` definition (identical to common/mod.rs version).\n\n2. collection_sub_tests.rs: Add `mod common;` and refactor the inline `compile_no_errors` to wrap `common::compile_module` with an error assertion (same pattern as purpose_compile_tests.rs).\n\n3. Consider adding a `compile_no_errors` helper to common/mod.rs that wraps `compile_module` + asserts no error diagnostics, since this pattern appears in collection_sub_tests.rs, collection_compile_tests.rs, and let_scope_tests.rs.\n\nmemory_hints: search \"compile_module test helper common\" in reify project; entity \"common/mod.rs\"\n\n### Absorbed from task 433: Extract parse_and_compile into reify-test-support and use CARGO_MANIFEST_DIR paths\nMove parse_and_compile helper from 3 test files (m9_trait_conformance.rs, m5_integration.rs, purpose_eval.rs) into crates/reify-test-support. Use CARGO_MANIFEST_DIR for fixture paths in m9_trait_conformance.rs (9 occurrences). Bind count_for results to local variables before assertions. (Review followup from task 194)\n\n### Absorbed from task 507: Add collect_errors() test helper to reify-test-support\nThe pattern .diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() appears ~125 times across ~25 test files. Add a collect_errors() helper to reduce boilerplate.\n\nAdd to crates/reify-test-support/src/lib.rs:\npub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> { diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() }\n\nMigrate the two new stdlib test files first; existing files can be migrated incrementally.\n\nFiles: crates/reify-test-support/src/lib.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs\n\n### Absorbed from task 557: Extract compile_with_stdlib test helper and fix fragile couplings\nDRY improvements for stdlib test infrastructure.\n\n1. Extract shared compile_with_stdlib(source) -> CompiledModule helper used by 5+ conformance tests.\n2. Replace hardcoded 'std/structural/physical' path string in load_stdlib_module with ModulePath::new constructor.\n3. Use .any() fast path in stdlib_loader error check instead of collecting into Vec.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs, crates/reify-compiler/src/stdlib_loader.rs\n\n### Absorbed from task 876: Consolidate constraint def test helpers into reify-test-support\nAdd compile_module, compile_template, error_diags, and parse_and_compile to crates/reify-test-support/src/. Remove per-file duplicates in: constraint_def_compile_tests.rs (lines 12-36), constraint_inst_tests.rs, and ~12 other compiler test files; and m9_constraint_def.rs (lines 20-34) plus m9_trait_conformance.rs, m5_integration.rs, m10_geometric_types.rs, purpose_eval.rs, determinacy_predicates.rs.\n\nNote: Prior consolidation tasks (2, 81, 614, 769) moved compile_source, eval_source, test_uri, and solver helpers. This task covers the remaining compile_module/compile_template/error_diags/parse_and_compile helpers that are still duplicated.\n\nmemory_hints: search \"reify-test-support helpers consolidate\" for prior consolidation work\n\n### Absorbed from task 1257: Extract shared compile_source helper into reify-test-support\nThe validation helper added in Task 1247 (`crates/reify-test-support/src/fixtures.rs:1247-1285`) duplicates parse+compile+filter-by-severity boilerplate that already lives in `crates/reify-compiler/tests/port_compile_tests.rs:9-28` (`compile_module` / `compile_first_template`).\n\nSince `reify-test-support` already depends on `reify-compiler`, this helper could be lifted to a public utility in test-support and reused by both call sites.\n\nProposed approach:\n- Add `pub fn compile_source(source: &str) -> CompiledModule` (and optionally `compile_first_template`) in a `reify-test-support` module — likely a new `compile_helpers.rs` so `fixtures.rs` stays focused on data fixtures.\n- Migrate `crates/reify-compiler/tests/port_compile_tests.rs` to use the shared helper.\n- Migrate the in-`fixtures.rs` test mod to call the shared helper.\n\nWatch for: dev-dependency direction. `reify-test-support` is already a normal dep of `reify-compiler` (so `port_compile_tests.rs` can use it via dev-deps). Confirm Cargo.toml wiring before refactor.\n\nNot blocking — the duplication is small and intents differ slightly (fixture validation vs. compiler behavior tests) — but worth doing as the codebase keeps growing copies of this pattern.\n\nSource: review_comprehensive S4 on Task 1247 (esc-1247-1023).\n\n### Absorbed from task 1419: Extract shared unit-test helpers to tests/common/mod.rs\nThe helpers `parse_and_compile`, `compile_with_prelude_helper`, and `errors_only` are byte-identical copies across `crates/reify-compiler/tests/unit_declaration_tests.rs` (lines 17-41) and `crates/reify-compiler/tests/user_defined_unit_tests.rs` (lines 15-41). A third file, `unit_registry_tests.rs`, has similar boilerplate. Move these helpers into a shared `crates/reify-compiler/tests/common/mod.rs` (the standard Cargo integration-test shared-code pattern), and update all three consumers to `mod common; use common::{parse_and_compile, compile_with_prelude_helper, errors_only};`. This prevents future drift where a fix applied to one copy is missed in the other. Scope: tests only, no production code changes; all existing tests must pass unchanged.\n\n### Absorbed from task 1595: Migrate reify-compiler tests to shared parse_and_compile helper\nTwo local copies of `fn parse_and_compile` remain after task 1332's consolidation:\n- crates/reify-compiler/tests/unit_registry_tests.rs:14 — uses `ModulePath::single(\"unit_test\")`\n- crates/reify-compiler/tests/type_alias_compile_tests.rs:12 — uses `ModulePath::single(\"alias_test\")`\n\nreify-compiler already has `reify-test-support` as a dev-dependency (Cargo.toml:13), so the migration is just a use-site swap.\n\n**Important behavior difference:** The shared `reify_test_support::parse_and_compile` asserts zero error-severity diagnostics, but the local copies in these two files return the raw `CompiledModule` without filtering. The existing callers use a separate `errors_only(module)` helper to inspect diagnostics, and some tests intentionally compile source that produces errors (e.g., cycle detection, unknown aliases). Those tests must NOT use the asserting shared helper.\n\nRecommended approach:\n1. Find all call sites in each file.\n2. For tests that expect success, migrate to `reify_test_support::parse_and_compile`.\n3. For tests that expect errors, use `reify_test_support::parse_compile_expect_err(source, needle)` or keep a local `parse_no_assert` helper that just calls `reify_syntax::parse` + `compile` without the assert.\n4. Remove the local `parse_and_compile` fn once all call sites are migrated.\n5. Verify no test depends on the `\"unit_test\"` or `\"alias_test\"` module-path strings (grep those literals).\n\n**Priority:** low. Code-reuse / drift-prevention.\n\n**Source:** review of task 1332 (esc-1332-348, reviewer_comprehensive suggestion 4, code_reuse).\n\n### Absorbed from task 1600: Harden reify-test-support helpers: parse_or_panic DRY, test quality, remaining copies\nFollow-up quality improvements from task 1332 review:\\n\\n1. **parse_or_panic DRY** (S2): Extract private `fn parse_or_panic(source) -> ParsedModule` from the three pipeline helpers in helpers.rs to remove the triplicated parse+assert prologue.\\n2. **Remaining copies** (S3): Two more copies of `parse_and_compile` remain in reify-compiler tests (type_alias_compile_tests.rs, unit_registry_tests.rs). Migrate them to reify_test_support::parse_and_compile. Verify no test relies on the custom ModulePath names.\\n3. **Test quality** (S4-S7): Strengthen helper unit tests — use non-geometry source in test_make_engine, use controlled needle in test_parse_compile_expect_err_needle_match, reduce stdlib-shape coupling in test_parse_and_compile_with_stdlib.\\n\\nSource: reviewer suggestions S2-S7 from task 1332 unblock.\\nFiles: crates/reify-test-support/src/helpers.rs, crates/reify-compiler/tests/type_alias_compile_tests.rs, crates/reify-compiler/tests/unit_registry_tests.rs\n",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T08:44:24.442Z",
+        "updatedAt": "2026-04-15T11:58:41.438Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8647,7 +8668,14 @@
             "1600"
           ],
           "bundled_at": "2026-04-11",
-          "bundle_key": "M"
+          "bundle_key": "M",
+          "memory_hints": {
+            "searches": [
+              "reify-test-support eval-helpers feature flag compile_source",
+              "test helper migration tests/common/mod.rs reify-compiler reify-eval reify-runtime"
+            ],
+            "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
+          }
         }
       },
       {
@@ -27466,11 +27494,11 @@
         "description": "In crates/reify-compiler/src/lib.rs, the bare-identifier path (ExprKind::Ident, lines ~2229-2247) resolves a collection sub name like `items` to a List<T> value cell (`__list_{name}__{first_member}`), so `let x = items` is valid inside a structure. Task 1125 made the equivalent `self.items` (MemberAccess branch at lines ~2737-2750) an error telling users to switch to indexed access. Since `self.member` is otherwise equivalent to bare `member` in entity scope (see the step-11 self.param equivalence test), this inconsistency is surprising: a refactor from `items` to `self.items` will break with a message that tells users to change form entirely.\n\nDecide and implement one of:\n  (a) Make `self.items` resolve to the same List<T> value cell as bare `items` (mirror the bare-ident logic inside the `self.member` branch at ~line 2737: look up collection_sub_member_types[member], return a ValueRef to `__list_{member}__{first_member}` with type List<T>).\n  (b) Also error on bare `items` so the rule is uniform, and document the rationale.\n\nAdd a test pinning whichever direction is chosen, and keep parity with the existing step-11 self.param equivalence test.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project; inspect lib.rs ExprKind::Ident collection_sub_names branch near 2229, and MemberAccess self.member branch near 2737.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T11:06:51.740Z",
+        "updatedAt": "2026-04-15T12:21:25.728Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -27492,10 +27520,11 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T11:06:52.276Z",
+        "updatedAt": "2026-04-15T12:21:37.015Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/tests/self_keyword_tests.rs"
           ],
           "files": [
             "crates/reify-compiler/src/lib.rs",
@@ -27609,11 +27638,11 @@
         "description": "The `seen_defaults` dedup in `collect_all_requirements` (lib.rs ~line 7892) compares only by type, not by kind (Param vs Let). When TraitA provides `param x : Real = 1` and TraitB provides `let x : Real = 42`, the Let default is silently discarded because it matches the existing Param entry on type. A third trait requiring `let x : Real` then sees only the Param default, fails kind-matching, and reports a spurious \"missing member\" error.\n\nFix: treat same-name, same-type, different-kind defaults as a conflict in the dedup logic, or store both kinds in `available_defaults` (e.g., keyed by (name, kind) instead of just name) so both remain available for requirement matching.\n\nMemory hints: search \"seen_defaults dedup kind-aware trait merge\", search \"cross-trait requirement kind param let mismatch\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T14:36:31.179Z",
+        "updatedAt": "2026-04-15T12:08:13.947Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -29668,11 +29697,11 @@
         "description": "The prelude-collection loop is duplicated verbatim in module_dag.rs between compile_module (lines 168-178) and compile_project (lines 241-251), differing only in self.modules vs dag.modules. Extract a private helper fn collect_import_preludes(parsed, modules) so future changes (transitive re-exports, de-duplication, filtering) live in one place. Additionally, compile_project clones every imported CompiledModule (templates, functions, fields, constraint_defs) and then immediately drains dag.modules via remove() — the clones are pure waste. Consider changing compile_with_prelude's signature to &[&CompiledModule] so compile_project can pass references, or build the owned Vec<CompiledModule> only after draining dag.modules in the right order. Apply both the deduplication and the clone-avoidance as a single refactor. Files: crates/reify-compiler/src/module_dag.rs, crates/reify-compiler/src/lib.rs (compile_with_prelude signature).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T15:39:00.796Z",
+        "updatedAt": "2026-04-15T11:53:08.735Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src"
@@ -29680,7 +29709,14 @@
           "files": [
             "crates/reify-compiler/src/module_dag.rs",
             "crates/reify-compiler/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "searches": [
+              "prelude-collection module_dag compile_project duplicate clone refactor",
+              "compile_with_prelude signature CompiledModule reference"
+            ],
+            "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
+          }
         }
       },
       {
@@ -29709,11 +29745,11 @@
         "description": "In crates/reify-compiler/src/lib.rs:272-286, the duplicate-unit diagnostic hardcodes 'already defined in stdlib prelude' whenever the original entry has span SourceSpan::empty(0). Post-task-209, prelude units flow in from user imports via compile_project / compile_module as well, so a collision with an imported pub unit (e.g. the local_unit_duplicating_imported_pub_unit_produces_error test) emits a message that misattributes the conflict to stdlib. Fix options: (a) track the source of seeded prelude units (UnitEntry::source: Stdlib | Imported(module_path)) and select wording accordingly — 'already defined in stdlib prelude' vs 'already imported from module X'; (b) minimally, soften wording to 'already defined in imported prelude' so it reads correctly in both cases. The existing test only asserts 'duplicate' and 'mil' appear, so tighten the assertion to cover the new wording. Files: crates/reify-compiler/src/lib.rs, crates/reify-compiler/src/units.rs (UnitRegistry/UnitEntry if tracking source), crates/reify-compiler/tests/user_defined_unit_tests.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-10T00:01:25.659Z",
+        "updatedAt": "2026-04-15T12:11:33.888Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -34701,11 +34737,11 @@
         "description": "Add an early-return fast path at the top of Engine::dispatch_constraints in crates/reify-eval/src/lib.rs (~line 400) that short-circuits the bucketing/merging machinery when self.optimization_registry.is_empty() — the overwhelmingly common case. Build a ConstraintInput directly from entries (dropping the Option<&str> target field) and return self.constraint_checker.check(&input) with no BTreeMap, no Vec<Option<ConstraintResult>> scratch, no unzip, no rebuild. Behavior must remain identical; goal is to eliminate the 4-5 extra allocations per batch that Task 273 introduced on every check / edit_check / eval_cached hot-path call site, restoring pre-273 performance when no optimized impls are registered.",
         "details": "Source: esc-273-83 suggestion from reviewer_comprehensive (performance, hot path regression).\n\nCurrent state: dispatch_constraints is called from five constraint-checking sites and unconditionally allocates a results Vec<Option<_>>, a BTreeMap, a fallback Vec<(usize, _)>, then unzips into two more Vecs. Pre-Task-273 was a single self.constraint_checker.check(&input).\n\nFix shape:\n```rust\nfn dispatch_constraints(...) -> Vec<ConstraintResult> {\n    if entries.is_empty() { return Vec::new(); }\n    if self.optimization_registry.is_empty() {\n        let (_targets_dropped, constraints): (Vec<_>, Vec<_>) = entries\n            .into_iter()\n            .map(|(id, expr, _)| ((), (id, expr)))\n            .unzip();\n        let input = ConstraintInput { constraints, values, functions, determinacy };\n        return self.constraint_checker.check(&input);\n    }\n    // ... existing bucketing path ...\n}\n```\n(Or cleaner: collect directly into Vec<(ConstraintNodeId, &CompiledExpr)> in one pass.)\n\nVerify with a microbenchmark or existing constraint-heavy test (e.g. a large frame_constraint batch) that allocation counts drop back to pre-273 levels. All existing dispatch tests must continue to pass.\n\nModules: crates/reify-eval/src",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T05:12:07.562Z",
+        "updatedAt": "2026-04-15T16:11:31.377Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -35074,13 +35110,13 @@
         "id": "1675",
         "title": "si_units: disambiguate prefix_combos field semantics between SiPrefixBase and SiDerivedUnit",
         "description": "The `prefix_combos` field on `SiPrefixBase` and `SiDerivedUnit` shares the same name and type (`&'static [&'static str]`) but has opposite empty-slice semantics: `&[]` on `SiDerivedUnit` means \"no prefixed variants\" (unprefixed only), while `&[]` on `SiPrefixBase` means \"emit all 20 prefixes.\" This is a maintenance hazard.\n\nOptions:\n(a) Rename the field on `SiPrefixBase` to something distinct like `restrict_to_prefixes` to signal the different semantics.\n(b) Introduce a small enum wrapper (e.g. `PrefixSet::All` vs `PrefixSet::Only(&[&str])`) so both structs can share the same empty-means-none convention.\n\nModules: crates/reify-compiler/src/si_units.rs\n\nmemory_hints: search \"SiPrefixBase prefix_combos semantics\" for prior context on this inconsistency.",
-        "details": "<info added on 2026-04-15T00:58:48.074Z>\nRECONCILIATION WARNING (run 39b398b0, 2026-04-15): This task has experienced stash-fail revert cycles in three consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0). Normal stash-fail recovery is not working. Before attempting this task again, the implementor MUST: (1) inspect branch task/1675 for persistent merge conflicts or dirty state, (2) consider fresh worktree checkout or cherry-pick onto a clean branch rather than standard stash-pop recovery. Memory hints: search \"task 1675 stash fail recurring branch\" for history; search \"SiPrefixBase prefix_combos semantics\" for the implementation context.\n</info added on 2026-04-15T00:58:48.074Z>\n<info added on 2026-04-15T01:27:55.682Z>\nESCALATION UPDATE (run ed46c158, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FOUR consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158). Normal orchestrator recovery is NOT working. This task REQUIRES manual intervention before any further automated attempt. Required actions: (1) Inspect branch task/1675 for persistent merge conflicts, dirty state, or unresolved conflict markers. (2) Checkout a fresh worktree and cherry-pick any completed work onto it. (3) Do NOT attempt stash-pop recovery — create a clean branch instead. If no completed work exists on the branch, start fresh from main. This pattern has been escalated to the highest severity for the reify project.\n</info added on 2026-04-15T01:27:55.682Z>\n<info added on 2026-04-15T05:32:54.024Z>\nESCALATION UPDATE (run dc802ff2, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FIVE consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2). The previous update at run ed46c158 explicitly flagged this for manual intervention — that intervention has NOT occurred. This task must be manually unblocked before the orchestrator attempts it again. Suggested path: checkout task/1675 branch, inspect for persistent conflict markers or unresolved state, and either (a) force-resolve and push a clean branch, or (b) abandon the branch and create a fresh worktree from main. DO NOT allow the orchestrator to retry via stash-pop.\n</info added on 2026-04-15T05:32:54.024Z>\n<info added on 2026-04-15T06:43:56.673Z>\nRECONCILIATION RESET (run f08db30b, 2026-04-15, Stage 2): Stage 1 of this reconciliation cycle confirmed that the \"done\" status set at 06:09:27Z was PHANTOM — no implementation commits exist on branch task/1675. The add_memory call during that cycle returned memory_ids=[] confirming nothing was captured. Status reset to pending. This task has now had 5 stash-fail cycles AND a phantom done. MANDATORY: implementor must use a fresh worktree checkout from main — do NOT use stash-pop recovery on the existing task/1675 branch. The branch likely has persistent conflict markers or dirty state that prevents clean checkout.\n</info added on 2026-04-15T06:43:56.673Z>",
+        "details": "<info added on 2026-04-15T00:58:48.074Z>\nRECONCILIATION WARNING (run 39b398b0, 2026-04-15): This task has experienced stash-fail revert cycles in three consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0). Normal stash-fail recovery is not working. Before attempting this task again, the implementor MUST: (1) inspect branch task/1675 for persistent merge conflicts or dirty state, (2) consider fresh worktree checkout or cherry-pick onto a clean branch rather than standard stash-pop recovery. Memory hints: search \"task 1675 stash fail recurring branch\" for history; search \"SiPrefixBase prefix_combos semantics\" for the implementation context.\n</info added on 2026-04-15T00:58:48.074Z>\n<info added on 2026-04-15T01:27:55.682Z>\nESCALATION UPDATE (run ed46c158, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FOUR consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158). Normal orchestrator recovery is NOT working. This task REQUIRES manual intervention before any further automated attempt. Required actions: (1) Inspect branch task/1675 for persistent merge conflicts, dirty state, or unresolved conflict markers. (2) Checkout a fresh worktree and cherry-pick any completed work onto it. (3) Do NOT attempt stash-pop recovery — create a clean branch instead. If no completed work exists on the branch, start fresh from main. This pattern has been escalated to the highest severity for the reify project.\n</info added on 2026-04-15T01:27:55.682Z>\n<info added on 2026-04-15T05:32:54.024Z>\nESCALATION UPDATE (run dc802ff2, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FIVE consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2). The previous update at run ed46c158 explicitly flagged this for manual intervention — that intervention has NOT occurred. This task must be manually unblocked before the orchestrator attempts it again. Suggested path: checkout task/1675 branch, inspect for persistent conflict markers or unresolved state, and either (a) force-resolve and push a clean branch, or (b) abandon the branch and create a fresh worktree from main. DO NOT allow the orchestrator to retry via stash-pop.\n</info added on 2026-04-15T05:32:54.024Z>\n<info added on 2026-04-15T06:43:56.673Z>\nRECONCILIATION RESET (run f08db30b, 2026-04-15, Stage 2): Stage 1 of this reconciliation cycle confirmed that the \"done\" status set at 06:09:27Z was PHANTOM — no implementation commits exist on branch task/1675. The add_memory call during that cycle returned memory_ids=[] confirming nothing was captured. Status reset to pending. This task has now had 5 stash-fail cycles AND a phantom done. MANDATORY: implementor must use a fresh worktree checkout from main — do NOT use stash-pop recovery on the existing task/1675 branch. The branch likely has persistent conflict markers or dirty state that prevents clean checkout.\n</info added on 2026-04-15T06:43:56.673Z>\n<info added on 2026-04-15T12:23:20.235Z>\nESCALATION UPDATE (run 80809328, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced its 6th phantom-done AND 7th total failure event. Git verification confirmed branch task/1675 does NOT EXIST anywhere in the repository (not local, not remote). The orchestrator marked this task done with zero implementation work and zero branch creation. Prior failure history: 5 stash-fail cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2) + phantom-done reset at f08db30b + THIS phantom-done (80809328). Stale phantom-done Graphiti edges 17bf6882 and 4532b3ac deleted. Status reset to pending. CRITICAL: This task requires human investigation into WHY the orchestrator keeps marking it done without creating any branch or commits. The fresh-worktree recommendation from previous cycles is moot — there is no branch to recover. The orchestrator must be inspected for task-completion logic that fires spuriously on this task.\n</info added on 2026-04-15T12:23:20.235Z>",
         "testStrategy": "",
         "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:52:35.664Z",
+        "updatedAt": "2026-04-15T12:46:59.594Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/si_units.rs",
@@ -35095,7 +35131,7 @@
               "si_units disambiguate prefix_combos SiDerivedUnit"
             ]
           },
-          "_causation_id": "f08db30b-65e0-4c3a-b67c-92bf80f570c7",
+          "_causation_id": "80809328-74a0-4d58-a68c-1858a4d5a0f9",
           "stash_fail_cycle_count": 5,
           "stash_fail_cycles": [
             "2e441149",
@@ -35108,7 +35144,14 @@
           "requires_manual_intervention": true,
           "phantom_done_reset": true,
           "phantom_done_run": "f08db30b",
-          "fresh_worktree_mandatory": true
+          "fresh_worktree_mandatory": true,
+          "phantom_done_count": 2,
+          "total_failure_events": 7,
+          "phantom_done_runs": [
+            "f08db30b",
+            "80809328"
+          ],
+          "branch_does_not_exist": true
         }
       },
       {
@@ -35520,10 +35563,11 @@
         "metadata": {
           "memory_hints": {
             "searches": [
-              "solver_hint annotation implementation task 275 zero-argument",
-              "solver_hint_tests missing kind diagnostic branch"
+              "solver_hint annotation ValueCellDecl implementation task 275",
+              "solver_hint_tests.rs existing test cases missing kind diagnostic",
+              "solver_hint zero-argument annotation missing collection diagnostic branch"
             ],
-            "entities": []
+            "_causation_id": "d4c8f1c9-93de-49d4-b970-5104794176fd"
           },
           "_causation_id": "8a9210de-78df-4834-a133-09f74785f437",
           "files": [
@@ -35714,7 +35758,7 @@
         "description": "`is_geometry_let` in `crates/reify-compiler/src/geometry.rs:3-9` only matches `ExprKind::FunctionCall` expressions. When a user writes `let alias = body` where `body` is itself a geometry let, `alias` is not recognized as a geometry let and won't appear in the `geometry_lets` HashMap. This means `let r = difference(alias, x)` will fail to resolve `alias`.\n\nThe fix is to extend `is_geometry_let` (or the HashMap construction in `entity.rs`) to transitively recognize `ExprKind::Ident` expressions whose referent is another geometry let. This requires either a two-pass approach or iterative fixpoint over the let declarations.\n\n## memory_hints\n- search: \"is_geometry_let forward reference\"\n- search: \"compile_geometry_call boolean op arguments\"\n- entity: \"is_geometry_let\"\n- entity: \"compile_geometry_call\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -35728,7 +35772,8 @@
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T12:16:29.313Z"
       },
       {
         "id": "1709",
@@ -35889,12 +35934,15 @@
             "crates/reify-compiler/src/scope.rs"
           ],
           "memory_hints": {
-            "entities": [],
-            "queries": [
-              "doc comment mismatch scope.rs entity.rs",
-              "module doc conditional branches match arms clarification",
-              "scope.rs entity.rs stale doc comments task 1588 review"
-            ]
+            "searches": [
+              "doc comment mismatch scope.rs entity.rs inaccurate diverged",
+              "module doc conditional branches match arms clarification reify-compiler"
+            ],
+            "mem0_ids": [
+              "00fb2c91",
+              "00e618fc"
+            ],
+            "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
           },
           "_causation_id": "90e09f11-316a-485e-b6c4-b2cd1afa5d10"
         }
@@ -36081,7 +36129,7 @@
         "id": "1728",
         "title": "Wire GeometryOp::Chamfer through compiler dispatch, eval, and FFI",
         "description": "GeometryOp::Chamfer exists in reify-types and has a stdlib implementation (task 315 done), but there is no compiler dispatch path for it. The compiler→eval→FFI wiring is missing. Code review of task 1588 (70-module review, 2026-04-15) identified this gap via mem0 entries 1f659e54 and 26d8f165.",
-        "details": "## Problem\nGeometryOp::Chamfer is defined in reify-types but the compiler has no dispatch arm for it. Without a compiler dispatch path, the op can never be emitted from user code, making the stdlib implementation unreachable.\n\n## Required work\n1. Add `GeometryOp::Chamfer` handling to the compiler's geometry dispatch (likely in `crates/reify-compiler/src/geometry.rs` or the compile_geometry_op function)\n2. Ensure eval handles `GeometryOp::Chamfer` (check `crates/reify-eval/src/` for the eval dispatch)\n3. Verify FFI/CAD kernel call is wired up\n4. Add compiler test: chamfer(body, ...) should compile to a GeometryOp::Chamfer op\n5. Add eval/integration test: chamfered shape evaluates correctly\n\n## memory_hints\n- search: \"GeometryOp::Chamfer compiler dispatch\"\n- search: \"task 315 chamfer stdlib implementation\"\n- search: \"compile_geometry_op geometry dispatch arms\"\n- entity: \"GeometryOp::Chamfer\"",
+        "details": "## Problem\nGeometryOp::Chamfer is defined in reify-types but the compiler has no dispatch arm for it. Without a compiler dispatch path, the op can never be emitted from user code, making the stdlib implementation unreachable.\n\n## Required work\n1. Add `GeometryOp::Chamfer` handling to the compiler's geometry dispatch (likely in `crates/reify-compiler/src/geometry.rs` or the compile_geometry_op function)\n2. Ensure eval handles `GeometryOp::Chamfer` (check `crates/reify-eval/src/` for the eval dispatch)\n3. Verify FFI/CAD kernel call is wired up\n4. Add compiler test: chamfer(body, ...) should compile to a GeometryOp::Chamfer op\n5. Add eval/integration test: chamfered shape evaluates correctly\n\n## memory_hints\n- search: \"GeometryOp::Chamfer compiler dispatch\"\n- search: \"task 315 chamfer stdlib implementation\"\n- search: \"compile_geometry_op geometry dispatch arms\"\n- entity: \"GeometryOp::Chamfer\"\n<info added on 2026-04-15T11:12:32.317Z>\n- search: \"Task 1715 geometry dispatch restructuring\"\n- search: \"geometry_arg_indices table Chamfer argument classification\"\n- reference: \"Follow pattern from 14 functions fixed in Task 1715 for Chamfer wiring\"\n</info added on 2026-04-15T11:12:32.317Z>",
         "testStrategy": "",
         "status": "pending",
         "dependencies": [],
@@ -36099,7 +36147,20 @@
             "crates/reify-kernel-occt/src/ffi.rs",
             "crates/reify-kernel-occt/src/handle.rs",
             "crates/reify-kernel-occt/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "GeometryOp",
+              "compile_geometry_call",
+              "geometry_arg_indices",
+              "GeomRef"
+            ],
+            "queries": [
+              "GeometryOp dispatch compile_geometry_call geometry.rs",
+              "geometry_arg_indices metadata table Chamfer argument positions",
+              "geometry FFI kernel OCCT chamfer operation"
+            ]
+          }
         }
       },
       {
@@ -36369,7 +36430,24 @@
             "gui/src/stores/viewStateStore.ts",
             "gui/src/types.ts",
             "gui/src/viewport/meshManager.ts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "reify-gui",
+              "Three.js viewport",
+              "DesignTree",
+              "viewStateStore",
+              "meshManager"
+            ],
+            "searches": [
+              "GUI panel layout App.tsx right panel PropertyEditor tab bar",
+              "meshManager Three.js scene mesh sync rendering",
+              "engineStore state meshes evaluation complete event",
+              "design tree entity hierarchy instance elaborated graph reify-gui",
+              "get_entity_tree Tauri command entity path kind type"
+            ],
+            "_causation_id": "9255cb58-9827-4ba9-a1de-71532f4fe900"
+          }
         }
       },
       {
@@ -36378,11 +36456,20 @@
         "description": "Implement the ghost rendering mode for entities with visibility state \"ghost\". Ghost meshes render as transparent, non-selectable, neutral-colored overlays that provide spatial context without competing for attention. Uses MeshBasicMaterial with low opacity, no depth-write, excluded from raycasting.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 5.1 (States table) and 11 (Ghost Rendering).\n\n### Implementation\n\n1. **Ghost material setup** (`viewport/ghostMaterial.ts` or inline in meshManager)\n   - `MeshBasicMaterial` — no lighting response\n   - Color: Catppuccin `surface0` or similar neutral from theme\n   - transparent: true, opacity: 0.12-0.18\n   - depthWrite: false\n   - side: THREE.FrontSide (no backface rendering)\n\n2. **Ghost mesh group** (`viewport/meshManager.ts`)\n   - Add a `ghostGroup` to the Three.js scene, rendered after opaque meshes\n   - When entity visibility = ghost: clone the mesh geometry reference (not the buffer — share vertex/index data), apply ghost material, add to ghostGroup\n   - When entity visibility = show: remove from ghostGroup, add to main scene group with normal material\n   - When entity visibility = hidden: remove from both groups\n\n3. **Raycasting exclusion** (`viewport/selection.ts`)\n   - Exclude ghostGroup from raycaster intersection tests\n   - Clicks on ghost meshes pass through to opaque geometry behind, or to empty space\n   - No hover tooltips for ghost meshes\n\n4. **Performance**\n   - Ghost meshes share vertex/index buffers with opaque counterparts (no geometry duplication)\n   - Switching show<->ghost is a material swap + group reassignment, not a geometry rebuild\n   - Target: < 16ms for visibility toggle (within one frame)\n\n5. **Z-fighting mitigation**\n   - Apply `polygonOffset` on ghost material: `polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1`\n   - This pushes ghost surfaces slightly behind coplanar opaque surfaces\n\n### Requirements covered\nVIS-1, VIS-2, VIS-3, Ghost Rendering section (11.1, 11.2, 11.3)\n\n### memory_hints\n- search: \"meshManager Three.js mesh rendering\"\n- search: \"selection raycasting viewport\"\n- search: \"Catppuccin theme colors\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T10:29:35.356Z"
+        "updatedAt": "2026-04-15T11:56:56.065Z",
+        "metadata": {
+          "memory_hints": {
+            "searches": [
+              "ghost visibility state Three.js raycasting transparent non-selectable",
+              "view state model cascading ghost rendering viewport"
+            ],
+            "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
+          }
+        }
       },
       {
         "id": "1743",
@@ -36395,7 +36482,19 @@
           "1741"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/viewStore.ts",
+            "gui/src/stores/index.ts",
+            "gui/src/components/VisibilityContextMenu.tsx",
+            "gui/src/__tests__/viewStore.test.ts"
+          ],
+          "modules": [
+            "gui/src/stores",
+            "gui/src/components"
+          ]
+        }
       },
       {
         "id": "1744",
@@ -36408,7 +36507,21 @@
           "1741"
         ],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/selectionStore.ts",
+            "gui/src/viewport/selection.ts",
+            "gui/src/panels/DesignTree.tsx",
+            "gui/src/__tests__/selectionStore.test.ts",
+            "gui/src/__tests__/viewport/selection.test.ts"
+          ],
+          "modules": [
+            "gui/src/stores",
+            "gui/src/viewport",
+            "gui/src/panels"
+          ]
+        }
       },
       {
         "id": "1745",
@@ -36421,7 +36534,16 @@
           "1743"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/viewStore.ts",
+            "gui/src/__tests__/viewStore.test.ts"
+          ],
+          "modules": [
+            "gui/src/stores"
+          ]
+        }
       },
       {
         "id": "1746",
@@ -36434,7 +36556,19 @@
           "1745"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/viewStore.ts",
+            "gui/src/components/ViewSelector.tsx",
+            "gui/src/__tests__/viewStore.test.ts",
+            "gui/src/__tests__/ViewSelector.test.tsx"
+          ],
+          "modules": [
+            "gui/src/stores",
+            "gui/src/components"
+          ]
+        }
       },
       {
         "id": "1747",
@@ -36447,7 +36581,19 @@
           "1746"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/viewportStore.ts",
+            "gui/src/stores/index.ts",
+            "gui/src/viewport/Viewport.tsx",
+            "gui/src/__tests__/viewportStore.test.ts"
+          ],
+          "modules": [
+            "gui/src/stores",
+            "gui/src/viewport"
+          ]
+        }
       },
       {
         "id": "1748",
@@ -36461,7 +36607,21 @@
           "1750"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/App.tsx",
+            "gui/src/viewport/Viewport.tsx",
+            "gui/src/stores/viewportStore.ts",
+            "gui/src/viewport/DualViewport.tsx",
+            "gui/src/__tests__/viewport/DualViewport.test.tsx"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/viewport",
+            "gui/src/stores"
+          ]
+        }
       },
       {
         "id": "1749",
@@ -36475,7 +36635,20 @@
           "1750"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/viewStore.ts",
+            "gui/src/utils/viewPersistence.ts",
+            "gui/src/bridge.ts",
+            "gui/src/__tests__/viewPersistence.test.ts"
+          ],
+          "modules": [
+            "gui/src/stores",
+            "gui/src/utils",
+            "gui/src"
+          ]
+        }
       },
       {
         "id": "1750",
@@ -36483,11 +36656,38 @@
         "description": "Backend work to support the Design Tree & View System. Three new Tauri commands: get_entity_tree (hierarchical entity tree from evaluation graph with kind/type/trait metadata), get_def_preview (prototype instance of a definition for the def preview viewport), and get_entity_identity_map (content hashes and structural fingerprints for fuzzy persistence matching).",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 3.3 (Backend Support), 12 (Engine Integration).\n\n### Implementation\n\n1. **`get_entity_tree` Tauri command** (`src-tauri/src/engine.rs` or new `tree.rs`)\n   - Walk the evaluation graph to produce a hierarchical tree\n   - Each node:\n     - `entity_path: String` — dot-separated (e.g., \"Assembly.housing.geometry\")\n     - `kind: String` — \"structure\", \"sub\", \"let\", \"param\", \"port\"\n     - `type_name: Option<String>` — e.g., \"Solid\", \"BoltFlange\", \"List<Vent>\"\n     - `has_mesh: bool` — whether this entity produced tessellated geometry\n     - `trait_geometry: bool` — true if this is the `geometry` param from Physical trait\n     - `children: Vec<EntityTreeNode>`\n   - The tree reflects the INSTANCE structure (elaborated graph), not the definition structure\n   - Emitted on every evaluation complete, alongside mesh/value/constraint updates\n   - Serialization: JSON via serde, sent as Tauri event or command response\n\n2. **Determining `trait_geometry` flag**\n   - During elaboration, when a structure implements `Physical` (or any refinement), the compiler knows which param is `geometry`\n   - Tag this in the evaluation graph so it's queryable at GUI time\n   - If the trait metadata isn't readily available at tessellation time, an alternative: check if the entity path ends in `.geometry` AND the parent structure's type implements Physical. This heuristic covers the common case.\n\n3. **`get_def_preview` Tauri command** (`src-tauri/src/engine.rs`)\n   - Input: definition name (e.g., \"BoltFlange\") or qualified path\n   - Process:\n     1. Look up the definition in the current compilation unit\n     2. Create a temporary Engine scope (or lightweight instance)\n     3. Instantiate the definition with all param defaults applied\n     4. Evaluate to produce geometry\n     5. Tessellate all Solid results\n     6. Build and return a GuiState (meshes + values + constraints)\n     7. Discard the temporary scope\n   - Caching: cache by (definition name, definition body content hash). Return cached result if definition body hasn't changed.\n   - Performance target: < 500ms for typical single-structure definitions\n   - Error handling: if definition has required params with no defaults (undef), return partial state with diagnostics\n\n4. **`get_entity_identity_map` Tauri command** (`src-tauri/src/engine.rs`)\n   - Returns a map: entity_path -> EntityIdentity\n   - `EntityIdentity`:\n     - `content_hash: String` — hash of the entity's definition body (stable across renames)\n     - `structural_fingerprint: String` — \"{type_name}:{parent_type}:{child_count}:{child_types_hash}\"\n     - `source_span: Option<SourceSpan>` — file + line range\n   - Used by frontend fuzzy persistence matching\n   - Can be computed lazily (only when persistence layer requests it)\n\n5. **`get_containing_definition` Tauri command**\n   - Input: file path, line number, column number\n   - Output: Option<DefInfo> where DefInfo = { name, kind, span }\n   - Implementation: walk the AST for the file, find the innermost `structure def` or `occurrence def` containing the position\n   - Can reuse existing LSP infrastructure (document symbols, or direct AST query)\n\n6. **New IPC types** (`src-tauri/src/types.rs`)\n   - `EntityTreeNode { entity_path, kind, type_name, has_mesh, trait_geometry, children }`\n   - `EntityIdentity { content_hash, structural_fingerprint, source_span }`\n   - `DefInfo { name, kind, span }`\n\n### Requirements covered\nSections 3.3, 12.1, 12.2, 12.4, plus backend support for T-6 (trait_geometry flag), VP-5 (def preview), P-5 (identity hints)\n\n### memory_hints\n- search: \"EngineSession build_gui_state tessellate\"\n- search: \"GuiState MeshData ValueData\"\n- search: \"entity_path evaluation graph\"\n- search: \"Physical trait geometry param\"\n- entity: \"reify-eval Engine\"\n- entity: \"reify-gui EngineSession\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T10:29:35.140Z"
+        "updatedAt": "2026-04-15T12:42:49.879Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "Design Tree",
+              "Entity Tree",
+              "Def Preview",
+              "Dual Viewport"
+            ],
+            "queries": [
+              "engine entity tree emission def preview identity hints",
+              "Design Tree instance structure elaborated evaluation graph",
+              "intermediate geometry let-bindings hidden Physical trait",
+              "Dual viewport depends on Viewport-view decoupling",
+              "Engine entity tree+def preview depends on Dual viewport"
+            ]
+          },
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "gui/src-tauri/src/main.rs",
+            "gui/src/bridge.ts"
+          ],
+          "modules": [
+            "crates/reify-eval/src",
+            "gui/src-tauri/src",
+            "gui/src"
+          ]
+        }
       },
       {
         "id": "1751",
@@ -36495,11 +36695,39 @@
         "description": "Update examples/m5_geometry_flange.ri so that BoltFlange implements the Rigid trait, declares a material param, and assigns the CSG result to `param geometry : Solid`. This makes the example correctly distinguish construction intermediates from the designated result geometry, and serves as the reference pattern for the Design Tree panel's default visibility rules.",
         "details": "## Scope\n\nUpdate the BoltFlange example from:\n```\nstructure def BoltFlange {\n    let body = cylinder(outer_radius, height)\n    let hole = translate(...)\n    let holes = circular_pattern(...)\n    let flange = difference(body, holes)\n}\n```\n\nTo:\n```\nstructure def BoltFlange : Rigid {\n    param outer_radius : Length = 60mm\n    param height : Length = 12mm\n    param hole_count : Int = 8\n    param bolt_circle_radius : Length = 45mm\n    param hole_radius : Length = 4mm\n    param material : Material  // from Physical trait\n\n    constraint outer_radius > bolt_circle_radius\n    constraint hole_count > 0\n\n    let body = cylinder(outer_radius, height)\n    let hole = translate(cylinder(hole_radius, height), bolt_circle_radius, 0mm, 0mm)\n    let holes = circular_pattern(hole, point3(0mm, 0mm, 0mm), vec3(0, 0, 1), hole_count, 360deg)\n    param geometry : Solid = difference(body, holes)\n}\n```\n\nKey changes:\n1. `: Rigid` trait implementation\n2. `param material : Material` (required by Physical)\n3. `param geometry : Solid = difference(body, holes)` (designated result)\n4. Fix param types from `Scalar` to `Length` (dimensionally correct)\n5. Fix `circular_pattern` args to use proper types (Point3, Vec3, Angle)\n\nAlso verify that the example compiles and renders correctly in the GUI.\n\n### memory_hints\n- search: \"Physical trait geometry Solid\"\n- search: \"Rigid Physical trait\"\n- search: \"circular_pattern signature\"\n- search: \"m5_geometry example\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T10:29:36.778Z"
+        "updatedAt": "2026-04-15T11:09:51.755Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/guards.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/type_resolution.rs",
+            "crates/reify-eval/tests/m5_integration.rs",
+            "examples/m5_geometry_flange.ri"
+          ],
+          "memory_hints": {
+            "entities": [
+              "BoltFlange",
+              "Physical trait",
+              "Rigid trait",
+              "circular_pattern"
+            ],
+            "searches": [
+              "Physical trait geometry Solid param designated result",
+              "Rigid Physical trait material param conformance",
+              "circular_pattern signature Point3 Vec3 Angle reify stdlib",
+              "m5_geometry example BoltFlange CSG operations",
+              "geometry-producing param declaration entity compiler"
+            ],
+            "_causation_id": "9255cb58-9827-4ba9-a1de-71532f4fe900"
+          }
+        }
       },
       {
         "id": "1752",
@@ -36507,11 +36735,18 @@
         "description": "In crates/reify-compiler/src/geometry.rs (~line 457), the loft fallback maps ALL non-geometry profiles to the same GeomRef::Step(step_offset). For a loft with N non-geometry args, every profile references the same step, which is semantically meaningless (loft requires distinct cross-sections). The old code emitted a per-argument diagnostic; the new code silently falls back.\n\nFix either: (a) emit a diagnostic per non-geometry loft argument while still using step_offset (preserving user feedback), or (b) use GeomRef::Step(step_offset + i) per profile to maintain index uniqueness in the fallback, consistent with the sweep path fallback pattern at line 605.\n\nNote: Task 1732 covers the related but distinct Step(0)→Step(step_offset) fix.\n\nmemory_hints: search \"loft fallback GeomRef step_offset per-profile\", search \"compile_geometry_call loft non-geometry profiles\", get_entity \"compile_geometry_call\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T10:29:37.340Z"
+        "updatedAt": "2026-04-15T11:07:12.703Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-eval/tests/stress_sweep_degenerate.rs"
+          ]
+        }
       },
       {
         "id": "1753",
@@ -36562,7 +36797,20 @@
           "modules": [
             "crates/reify-eval/src/lib.rs",
             "crates/reify-types/src/geometry.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "GeometryHandle",
+              "GeomRef",
+              "INVALID sentinel"
+            ],
+            "searches": [
+              "INVALID sentinel GeometryHandle u64::MAX content_hash guard debug_assert",
+              "step_handles rollback saturating_sub unsigned underflow compile_geometry_op",
+              "sentinel placeholder compile_geometry_op None task 612 completed"
+            ],
+            "_causation_id": "9255cb58-9827-4ba9-a1de-71532f4fe900"
+          }
         }
       },
       {
@@ -36571,18 +36819,604 @@
         "description": "The new geometry error handling tests (crates/reify-eval/tests/geometry_error_handling.rs ~lines 1512-1788) thoroughly cover the build() path (sentinel_placeholder_continues_independent_ops, sentinel_had_failure_triggers_rollback, draft_plane_invalid_sentinel), but there are no corresponding tests for tessellate_from_values() or build_snapshot() paths.\n\nSince the sentinel logic was duplicated across all three loops, at least one test per additional loop would provide confidence against copy-paste divergence. Add a test calling engine.tessellate_realizations() with the same mixed-success scenario to verify sentinel behavior in the tessellate path (similar to tessellate_aborts_cascading_compile_failures which was updated but tests all-fail, not mixed-fail).\n\nmemory_hints: search \"tessellate_from_values build_snapshot sentinel test\", search \"geometry_error_handling mixed-success test\"",
         "details": "",
         "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T11:29:30.435Z",
+        "metadata": {
+          "memory_hints": {
+            "searches": [
+              "tessellate_from_values build_snapshot sentinel mixed-success geometry error handling",
+              "geometry_error_handling.rs sentinel placeholder continues independent ops rollback"
+            ],
+            "_causation_id": "7778484b-d564-4512-800a-866f013b74e9"
+          }
+        }
+      },
+      {
+        "id": "1757",
+        "title": "Clean up sentinel test helpers: self-contained assertion + remove noise param",
+        "description": "Two small improvements to the sentinel test helpers in crates/reify-eval/tests/geometry_error_handling.rs:\n\n1. **Rename and refactor `assert_sentinel_kernel_ops` (line ~97)**: Currently accepts a pre-computed `compile_failure_count` from the caller, splitting assertion logic across caller and helper. Change signature to `fn assert_sentinel_invariants(kernel_ops: &[GeometryOpRecord], diagnostics: &[Diagnostic])` and have the helper compute the compile-failure count internally. Rename to `assert_sentinel_invariants` to reflect its broader scope.\n\n2. **Remove unnecessary `param` from `make_sentinel_module` (line ~82)**: The `.param(e, \"width\", ...)` call is inherited from the original test and not relevant to sentinel behavior. Since none of the sentinel tests exercise parameter behavior, remove it to reduce noise in the shared helper.\n\nmemory_hints: search \"assert_sentinel_kernel_ops geometry_error_handling\", get_entity \"make_sentinel_module\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T11:42:44.976Z"
+      },
+      {
+        "id": "1758",
+        "title": "Robustness hardening in module_dag.rs: block-scope borrow, debug_assert, doc fix",
+        "description": "Three small robustness/doc improvements in the reify-compiler prelude compilation path, all stemming from the task-1392 refactor:\n\n1. **Block-scope the shared borrow in compile_module** (module_dag.rs ~lines 191-199): compile_project already wraps its collect_import_preludes + compile_with_prelude_refs in an explicit block scope (lines 261-264) so the shared borrow of modules is visually bounded. compile_module relies on a comment instead. Wrap lines 196-199 in a block: `let compiled = { let preludes = collect_import_preludes(&parsed, &self.modules); crate::compile_with_prelude_refs(&parsed, &preludes) };` to make both call sites consistent.\n\n2. **Add debug_assert in collect_import_preludes** (module_dag.rs lines 20-35): The function silently skips imports not found in the modules map. Add `debug_assert!(result.is_some(), \"import '{}' not yet compiled\", import.path);` inside the filter_map to surface invariant violations during development.\n\n3. **Fix misleading doc on compile_with_prelude** (lib.rs ~lines 74-81): The performance note says callers in a hot loop should use compile_with_prelude_refs \"directly\", but that function is pub(crate) so external callers cannot. Amend to: \"crate-internal callers in a hot loop should use compile_with_prelude_refs directly to avoid repeated allocation.\"\n\nmemory_hints: search \"collect_import_preludes block scope borrow\" and \"compile_with_prelude doc\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T11:57:37.045Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/module_dag.rs"
+          ]
+        }
+      },
+      {
+        "id": "1759",
+        "title": "Test coverage: #no_prelude interaction and private visibility with reference-based prelude",
+        "description": "Two test coverage gaps for the reference-based prelude signature introduced in task 1392:\n\n1. **#no_prelude with imports present**: Add a test where a module declares both imports and #no_prelude pragma. Verify that the empty-slice shadowing at lib.rs line 131 (`let prelude: &[&CompiledModule] = if has_no_prelude { &[] } else { prelude };`) works correctly — imported definitions should NOT be visible, and sub_components referencing them should fail to resolve or produce diagnostics.\n\n2. **Private definition filtering through reference indirection**: Add a test where module C defines a non-pub structure, module B imports C and tries to use the structure. Assert that it either fails to compile or produces an appropriate diagnostic. This exercises the `if cu.is_pub` filter through the new reference indirection to confirm private definitions aren't accidentally exposed.\n\nBoth tests belong in crates/reify-compiler/tests/module_dag_tests.rs alongside the existing compile_module/compile_project tests (lines 612-813).\n\nmemory_hints: search \"no_prelude pragma\" and \"is_pub filter prelude\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:02:55.360Z"
+      },
+      {
+        "id": "1760",
+        "title": "meshManager robustness: orphan visibility cleanup, defensive getGhostMeshes, disposal ordering comment",
+        "description": "Address three robustness issues in gui/src/viewport/meshManager.ts from task 1742 review:\n\n1. **Orphan visibilityMap entries (S1)**: setVisibility unconditionally writes to visibilityMap even for unknown entities. Add a cleanup sweep in sync() that prunes visibilityMap keys absent from both meshMap and the incoming meshes record, or guard the write when entity is unknown and not yet in meshMap.\n\n2. **getGhostMeshes returns mutable internal Map (S2)**: Unlike getSceneMeshes() which returns a cached copy, getGhostMeshes() returns ghostMeshMap directly. Return a frozen or copied Map, or follow the same cache pattern as getSceneMeshes().\n\n3. **Geometry disposal ordering comment (S7)**: In removeMesh(), removeGhostClone MUST precede geometry disposal. Add a comment documenting this invariant at line ~202.\n\n4. **fitToView ghost exclusion comment (S4 — add-on)**: fitToView in selection.ts uses getMeshes() (getSceneMeshes) so it excludes ghosts, while adjustClipping in Viewport.tsx includes them. Add a comment in fitToView explaining this is intentional (ghost = secondary context, not primary framing target).\n\n### memory_hints\n- search: \"meshManager ghost visibility viewport\"\n- search: \"getGhostMeshes getSceneMeshes encapsulation\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T13:07:00.468Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/viewport",
+            "gui/src/viewport/meshManager.ts",
+            "gui/src/viewport/selection.ts"
+          ]
+        }
+      },
+      {
+        "id": "1761",
+        "title": "Viewport test quality: extract shared Three.js mocks, fix brittle assertion, add ghost edge-case tests",
+        "description": "Address three test quality issues from task 1742 review:\n\n1. **Extract shared mock (S6)**: MockMeshBasicMaterial is duplicated nearly identically between meshManager.test.ts (lines 74-95) and ghostMaterial.test.ts (lines 7-29). Extract into a shared test utility file at gui/src/__tests__/viewport/mocks/threeMocks.ts and import in both.\n\n2. **Fix brittle opacity assertion (S5)**: ghostMaterial.test.ts line 62-63 asserts opacity in range [0.12, 0.18] but implementation uses fixed 0.15. Change to exact assertion: expect((mat as any).opacity).toBe(0.15).\n\n3. **Add missing edge-case tests (S8)**: In meshManager.test.ts, add tests for:\n   - ghost→ghost idempotency: setVisibility('A', 'ghost') called twice doesn't double-add ghost clones or throw, and no scene operations occur on the second call\n   - orphan visibility: setVisibility on an entity that was never synced and never arrives doesn't cause issues\n\n### memory_hints\n- search: \"viewport test mock three.js\"\n- search: \"ghost material test quality\"",
+        "details": "",
+        "testStrategy": "",
         "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T10:29:39.217Z"
+        "updatedAt": "2026-04-15T16:03:51.543Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/viewport"
+          ]
+        }
+      },
+      {
+        "id": "1762",
+        "title": "Add `pi` (and `tau`) constants to stdlib",
+        "description": "The Reify language has no `pi` constant. Writing `2 * pi` as an angle argument fails silently. Add `pi` (3.14159...) and `tau` (6.28318...) as built-in constants accessible from any structure scope.",
+        "details": "memory_hints: search \"stdlib builtin constants\", get_entity \"reify-stdlib\"\n\nCurrently the only way to use pi is to hardcode `6.2832` or define `let pi = 3.14159`. The stdlib should export these as pre-defined constants. Check how other constants (like unit definitions `mm`, `kg`) are registered and follow the same pattern.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:08:05.852Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/constants.rs",
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/constant_compile_tests.rs",
+            "crates/reify-eval/tests/stdlib_constants_e2e.rs",
+            "crates/reify-stdlib/src/lib.rs",
+            "crates/reify-stdlib/src/trig.rs"
+          ]
+        }
+      },
+      {
+        "id": "1763",
+        "title": "circular_pattern angle should accept degrees (CAD convention) or convert internally",
+        "description": "The `circular_pattern` function passes its angle argument directly to OCCT's `SetRotation` which expects radians, but users and examples write `360` expecting degrees. This causes holes to be placed at wrong angles (360 rad ≈ 57 full rotations).",
+        "details": "memory_hints: search \"circular_pattern angle radians degrees\", search \"OCCT SetRotation\"\n\nThe OCCT C++ FFI (`occt_wrapper.cpp:445`) calls `trsf.SetRotation(axis, angle_i)` which takes radians. The Rust kernel test correctly uses `2.0 * PI`, but the example file and compiler test both use `360` assuming degrees.\n\nOptions:\n1. Convert degrees→radians in reify-eval compile_geometry_op for CircularPattern (breaking change for anyone using radians)\n2. Add an angle unit type (e.g. `360deg` vs `6.2832rad`) with proper dimensional analysis\n3. Document radians requirement and fix examples (least user-friendly)\n\nRecommend option 2 long-term, option 1 as interim fix (all existing examples use degrees).\n\nFiles: crates/reify-eval/src/lib.rs (line ~3854), crates/reify-kernel-occt/cpp/occt_wrapper.cpp (line 445), crates/reify-compiler/src/geometry.rs (line 388), examples/m5_geometry_flange.ri",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T16:11:25.628Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/lib.rs"
+          ]
+        }
+      },
+      {
+        "id": "1764",
+        "title": "Show visible compile/tessellation errors in GUI when geometry compilation fails",
+        "description": "When geometry compilation fails (e.g. undefined variable in a geometry argument), the failure is logged to stderr but the GUI shows no error — the viewport silently shows stale meshes from the last successful evaluation. Users have no way to know their edit broke something.",
+        "details": "memory_hints: search \"tessellation error diagnostic GUI\", search \"silent defaults pattern\"\n\nCurrently `build_gui_state` calls `tessellate_snapshot` which returns diagnostics, but these are only printed to stderr (`eprintln!`). The GUI should:\n1. Surface tessellation/compilation errors in the status bar or as inline editor diagnostics\n2. Show a visual indicator (red status bar, error icon) when the last evaluation failed\n3. Distinguish \"no geometry\" from \"geometry compilation failed\"\n\nFiles: gui/src-tauri/src/engine.rs (line ~475, tessellation diagnostics), gui/src/App.tsx (status handling)",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:08:52.351Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri/src/diff.rs",
+            "gui/src-tauri/src/engine.rs",
+            "gui/src-tauri/src/tests",
+            "gui/src-tauri/src/types.rs",
+            "gui/src/App.tsx",
+            "gui/src/__tests__/StatusBar.test.tsx",
+            "gui/src/__tests__/engineStore.test.ts",
+            "gui/src/bridge.ts",
+            "gui/src/panels/StatusBar.module.css",
+            "gui/src/panels/StatusBar.tsx",
+            "gui/src/stores/engineStore.ts",
+            "gui/src/types.ts"
+          ],
+          "memory_hints": {
+            "entities": [
+              "compile_geometry_op",
+              "DiagnosticInfo"
+            ],
+            "queries": [
+              "show visible compile tessellation errors GUI geometry compilation fails",
+              "sentinel error placeholder step_handles compile_geometry_op returns None",
+              "geometry-arg resolution task 1715 error-path fallbacks GeomRef::Step",
+              "GUI uses DiagnosticInfo SelectionInfo directly MCP types"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1765",
+        "title": "Editor store content doesn't sync with live CodeMirror edits — F5 re-sends stale content",
+        "description": "The `editorStore.openFiles[].content` is set once when a file is opened but never updated as the user types. The F5 (re-evaluate) shortcut reads from the store, so it re-sends the original file content instead of the current editor content.",
+        "details": "memory_hints: search \"editorStore updateFileContent\", search \"F5 re-evaluate\"\n\nIn Editor.tsx, the `updateListener` calls `markDirty()` and the debounced `updateSource(path, doc.toString())` on keystroke, but never calls `updateFileContent()` to sync the store. The F5 handler in App.tsx reads `file.content` from the store, getting stale content.\n\nFix: Either (a) call `store.updateFileContent(path, doc.toString())` in the updateListener alongside markDirty, or (b) have F5 read content from the CodeMirror view directly instead of the store.\n\nFiles: gui/src/editor/Editor.tsx (line ~134, updateListener), gui/src/App.tsx (line ~171, onReEvaluate), gui/src/stores/editorStore.ts",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T16:03:51.329Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/Editor.test.tsx",
+            "gui/src/editor/Editor.tsx"
+          ]
+        }
+      },
+      {
+        "id": "1766",
+        "title": "Add menu bar with hotkey annotations (File: Open, Save, Refresh, etc.)",
+        "description": "The GUI has no visible menu bar. Users can't discover available actions or their keyboard shortcuts. Add a menu bar with at minimum: File (Open ^O, Save ^S, Export), Edit (Undo, Redo), View (Refresh F5, Fit to View, Toggle Grid), Help.",
+        "details": "memory_hints: search \"GUI menu bar keyboard shortcuts\"\n\nThe toolbar area exists (data-testid=\"toolbar\") but contains no menus. Keyboard shortcuts exist (F5, Ctrl+O, Ctrl+S, Ctrl+E) but are invisible to users. A standard menu bar with hotkey annotations would solve discoverability.\n\nConsider using Tauri's native menu API or a custom menu component. Tauri 2 supports app menus via tauri-plugin-menu.\n\nFiles: gui/src/App.tsx (keyboard shortcuts), gui/src-tauri/src/main.rs (Tauri setup)",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:11:36.048Z",
+        "metadata": {
+          "modules": [
+            "gui/src/App.tsx",
+            "gui/src/__tests__/KeyboardHelp.test.tsx",
+            "gui/src/__tests__/MenuBar.test.tsx",
+            "gui/src/__tests__/panels-smoke.test.tsx",
+            "gui/src/__tests__/shortcuts.test.ts",
+            "gui/src/__tests__/useKeyboardShortcuts.test.ts",
+            "gui/src/components/KeyboardHelp.tsx",
+            "gui/src/hooks/useKeyboardShortcuts.ts",
+            "gui/src/panels/MenuBar.module.css",
+            "gui/src/panels/MenuBar.tsx",
+            "gui/src/panels/index.ts",
+            "gui/src/shortcuts.ts"
+          ]
+        }
+      },
+      {
+        "id": "1767",
+        "title": "Fix editor color contrast and cursor visibility (too low contrast, 1px black cursor on dark bg)",
+        "description": "The CodeMirror editor has poor color contrast — syntax highlighting colors are too dim on the dark background, and the cursor is nearly invisible (1px wide black on dark grey). This makes the editor very hard to use.",
+        "details": "memory_hints: search \"editor theme CodeMirror contrast cursor\"\n\nThe cursor needs to be either wider (2px) or a light color. Syntax highlighting needs higher contrast colors. Check if a CodeMirror dark theme is applied correctly, or if the theme CSS has been overridden/broken by recent changes.\n\nFiles: gui/src/editor/Editor.tsx (CodeMirror setup), gui/src/index.css or equivalent theme file",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:34:56.852Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [
+              "GUI Editor",
+              "CodeMirror"
+            ],
+            "queries": [
+              "editor color contrast cursor visibility dark background",
+              "GUI editor color theme styling",
+              "reify-debug MCP server viewport state tool camera mesh bounds"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1768",
+        "title": "Ctrl+O (open file) broken when editor has focus",
+        "description": "The Ctrl+O keyboard shortcut to open a file does not work when the CodeMirror editor has focus. The shortcut likely gets captured by CodeMirror before it reaches the app-level handler.",
+        "details": "memory_hints: search \"Ctrl+O open file keyboard shortcut CodeMirror\"\n\nThe shortcut is registered via `useKeyboardShortcuts` in App.tsx, but CodeMirror may intercept the keydown event before it bubbles up. Fix by either:\n1. Adding Ctrl+O to the CodeMirror keymap that delegates to the app handler\n2. Using a higher-priority event listener (capture phase)\n3. Using Tauri's global shortcut API\n\nFiles: gui/src/App.tsx (useKeyboardShortcuts, onOpen), gui/src/editor/Editor.tsx (keymap)",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:06:26.312Z",
+        "metadata": {
+          "modules": [
+            "gui/src/App.tsx",
+            "gui/src/__tests__/Editor.test.tsx",
+            "gui/src/__tests__/useKeyboardShortcuts.test.ts",
+            "gui/src/editor/Editor.tsx"
+          ],
+          "memory_hints": {
+            "entities": [
+              "GUI Editor",
+              "CodeMirror"
+            ],
+            "queries": [
+              "CodeMirror keyboard shortcut capture focus handling",
+              "GUI editor global keybinding Ctrl+O open file handler",
+              "editor key event propagation stop bubble"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1769",
+        "title": "Add type equality assertion in collection sub equivalence test",
+        "description": "In crates/reify-compiler/tests/self_keyword_tests.rs, the `self.bolts` vs bare `bolts` equivalence test (lines ~787-849) asserts both paths reference the same `__list_bolts__diameter` cell ID, but does not directly compare their result types. Since the whole point of the task-1280 fix is that `self.bolts` ≡ bare `bolts`, add a direct type equality assertion.\n\nAfter the individual `matches!(…, List(_))` assertions, add:\n```rust\nassert_eq!(self_ty, bare_ty, \"via_self and via_bare should have identical result types\");\n```\n\nThis requires extracting the resolved type from each value cell's `default_expr`. The types are available via the compiled expression's type field.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project; look at self_keyword_tests.rs equivalence test near line 787.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:24:31.352Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/self_keyword_tests.rs"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "collection sub self keyword resolution",
+              "self.items bare items asymmetry fix task 1280",
+              "self_keyword_tests equivalence test collection sub"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1770",
+        "title": "Test and fix resolve_collection_sub_to_list fallback path",
+        "description": "Two related issues in the fallback path of `resolve_collection_sub_to_list` (crates/reify-compiler/src/expr.rs:63-69):\n\n1. **Missing test coverage**: No test covers the fallback path when `sub_member_types` has no entry for the sub (e.g., ad-hoc structures, forward references, or empty params). This path produces a different `ValueCellId` (`__list_{sub}` vs `__list_{sub}__{member}`) and a different type (`StructureRef(field_name)` vs the real member type). Add a test with a collection sub whose structure template is not yet compiled or has no params, verifying the fallback cell ID and coarse type.\n\n2. **Inaccurate StructureRef in fallback**: The fallback constructs `Type::StructureRef(sub_name.to_owned())` using the *field name* (e.g., `\"bolts\"`) rather than the structure *type name* (e.g., `\"Bolt\"`). Any downstream consumer that tries to look up a structure by this name will fail. Now that `self.sub` resolves through this function (task 1280), this path may be reached more often. Consider looking up the structure type name from `scope.sub_component_types` in the fallback:\n```rust\nlet type_name = scope.sub_component_types.get(sub_name)\n    .cloned()\n    .unwrap_or_else(|| sub_name.to_owned());\nlet list_type = Type::List(Box::new(Type::StructureRef(type_name)));\n```\n\nRelated: Task 1281 addresses error-recovery fallback types in lib.rs but does not touch the `resolve_collection_sub_to_list` helper in expr.rs.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project; inspect expr.rs resolve_collection_sub_to_list function near line 51.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:28:30.911Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/tests/self_keyword_tests.rs"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolve_collection_sub_to_list fallback path expr.rs",
+              "collection sub self keyword resolution task 1280",
+              "StructureRef sub_component_types fallback type correction"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1771",
+        "title": "Migrate existing compile_project tests to use compile_errors helper and move helper to common module",
+        "description": "The `compile_errors` helper introduced in task 1759 (module_dag_tests.rs lines 23-33) extracts the pattern already duplicated inline in existing tests (e.g., lines 474-486 and 552-565). Those existing call sites still use the verbose inline version.\n\n1. Move `compile_errors` into `tests/common/mod.rs` so it can be reused by other test files.\n2. Migrate existing `compile_project`-based tests that only inspect error-severity diagnostics from the entry module to use the helper (e.g., `compile_project_detects_duplicate_unit_from_import`, `compile_project_stdlib_unit_collision`).\n3. Tests that also check labels or non-error diagnostics may need a variant that returns full diagnostics — consider adding one if needed.\n\nmemory_hints: search \"compile_errors helper\" and \"module_dag_tests\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/common/mod.rs",
+            "crates/reify-compiler/tests/module_dag_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "compile_errors helper module_dag_tests",
+              "task 1759 no_prelude private visibility tests compile_errors",
+              "tests/common/mod.rs shared test helpers"
+            ]
+          }
+        },
+        "updatedAt": "2026-04-15T16:03:31.136Z"
+      },
+      {
+        "id": "1772",
+        "title": "Replace manual temp directory cleanup with tempfile::TempDir in module_dag_tests.rs",
+        "description": "Tests in module_dag_tests.rs use manual `fs::remove_dir_all` at the end of each test for cleanup. If an assertion panics before reaching the cleanup lines, temp directories are leaked. This is a pre-existing file-wide pattern, but task 1759 added tests that each create two directories (dir and dir2), doubling the leak surface.\n\nReplace manual cleanup with `tempfile::TempDir` (or a Drop-based scope guard) so cleanup is guaranteed even on test failure. This affects all tests in the file that use manual temp directory management.\n\nmemory_hints: search \"module_dag_tests temp directory\" and \"tempfile TempDir\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/module_dag_tests.rs",
+            "crates/reify-compiler/Cargo.toml"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests",
+            "crates/reify-compiler"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "module_dag_tests temp directory cleanup",
+              "tempfile TempDir drop-based cleanup pattern",
+              "task 1759 module_dag tests temp directory"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1774",
+        "title": "Guard cross-kind scope pre-registration + add constraint coexistence test",
+        "description": "Two related follow-ups from the task-1287 review (kind-aware seen_defaults dedup):\n\n**Robustness (conformance.rs:269-280):** The pre-registration loop `scope.register(name, ty)` can be called twice for the same name when cross-kind defaults survive (e.g., Param `x : Length` and Let `x : Real`). `CompilationScope::register` uses `HashMap::insert`, so the second call silently overwrites the first type. If a default expression in the earlier kind references `x`, it will resolve to the wrong type. Fix: guard with `if !scope.names.contains_key(name)` or use the `entry` API, or register once per kind by keying on `(name, kind)` in a pre-pass.\n\n**Test coverage (trait_merge_tests.rs):** No test covers a Constraint default coexisting with a Param or Let default for the same member name. The `DefaultKindTag::Constraint` variant is the third leg of the composite key and should be exercised. Add a test with two traits: one providing `param x : Real = 1.0`, the other providing `constraint x : x > 0`. Verify no conflict error and both the Param cell and Constraint are emitted.\n\nMemory hints: search \"scope register pre-registration cross-kind default overwrite\", search \"DefaultKindTag Constraint Param coexistence test\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "scope register pre-registration cross-kind default overwrite",
+              "DefaultKindTag Constraint Param coexistence test",
+              "kind-aware seen_defaults dedup task 1287 conformance.rs"
+            ]
+          }
+        },
+        "updatedAt": "2026-04-15T12:40:28.130Z"
+      },
+      {
+        "id": "1776",
+        "title": "Guard cross-kind scope pre-registration + constraint coexistence test",
+        "description": "From task-1287 review. (1) conformance.rs:269-280: scope.register(name,ty) overwrites when cross-kind defaults coexist. Guard with contains_key or entry API. (2) trait_merge_tests.rs: add test for Constraint+Param coexistence on same member name.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1777",
+        "title": "Guard cross-kind scope pre-registration + constraint coexistence test",
+        "description": "From task-1287 review. (1) conformance.rs:269-280: scope.register overwrites type for cross-kind defaults. Guard with contains_key. (2) Add test for Constraint+Param coexistence.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1778",
+        "title": "Guard cross-kind scope pre-registration + constraint coexistence test",
+        "description": "From task-1287 review. (1) conformance.rs:269-280: scope.register overwrites type for cross-kind defaults. Guard with contains_key. (2) Add test for Constraint+Param coexistence.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1779",
+        "title": "Complete editorTheme highlight test coverage and fix misleading hex-concatenation comment",
+        "description": "Two small improvements to editorTheme module from task 1767 review:\n\n1. **Test coverage gap**: Add t.paren and t.brace to the syntax tag coverage test array in editorTheme.test.ts (lines 57-66). These tags are defined in reifyHighlightStyle (lines 64-65 of editorTheme.ts) but missing from the test cases, so regressions in their highlight rules would go undetected.\n\n2. **Misleading comment**: The NOTE comment at editorTheme.ts:25-27 claims \"all THEME_TOKENS values are guaranteed to be 6-digit hex strings\" but THEME_TOKENS also contains spacing values ('2px'), font stacks, and radii. Narrow the comment to specify that only the color tokens used in hex-concatenation (surface0, accent) are 6-digit hex — not all tokens.\n\nmemory_hints: search \"editorTheme highlight style test coverage\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/editor/editorTheme.ts",
+            "gui/src/__tests__/editorTheme.test.ts"
+          ],
+          "modules": [
+            "gui/src/editor",
+            "gui/src/__tests__"
+          ]
+        },
+        "updatedAt": "2026-04-15T12:40:37.593Z"
+      },
+      {
+        "id": "1780",
+        "title": "Fix GeometryHandleId(0) fallback in export path when no geometry ops exist",
+        "description": "**Bug:** In `crates/reify-eval/src/lib.rs:3229`, the export path uses `step_handles.last().copied().unwrap_or(GeometryHandleId(0))`. When `total_ops == 0` (no geometry ops in any template) but a geometry kernel is present, this tries to export handle 0.\n\n**Why it's wrong:**\n1. Handle IDs start at 1 (`next_id: 1` in kernel), so handle 0 never exists → confusing \"export error: shape not found\" instead of clean \"no geometry\" result\n2. Uses `GeometryHandleId(0)` as a sentinel but the codebase standard sentinel is `GeometryHandleId::INVALID` (`u64::MAX`) — inconsistent with the 8+ sites that filter using `!= GeometryHandleId::INVALID`\n3. Violates the silent-defaults convention — should not silently substitute a bogus handle\n\n**Fix:** Restructure the conditional so `step_handles.is_empty()` always returns `None` (no geometry output), regardless of `total_ops`. Only emit the \"all ops failed\" diagnostic when `total_ops > 0`. Use `.unwrap()` (safe: non-empty proven by branch) instead of `unwrap_or`.\n\n```rust\nif step_handles.is_empty() {\n    if total_ops > 0 {\n        diagnostics.push(Diagnostic::error(\"all geometry operations failed; no geometry output produced\"));\n    }\n    None\n} else {\n    let export_handle = *step_handles.last().unwrap(); // safe: non-empty\n    ...\n}\n```\n\n**memory_hints:** search \"GeometryHandleId INVALID sentinel\" for context on handle ID conventions",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
+      },
+      {
+        "id": "1781",
+        "title": "Surface mutex-poison errors in entity-tree and containing-definition commands",
+        "description": "In gui/src-tauri/src/commands.rs, fix get_entity_tree_impl (line 106-111) and get_containing_definition_impl (lines 140-149) to propagate mutex poisoning consistently with get_def_preview_impl. Option A: change both to return Result<T, String> with an Err on lock failure. Option B (minimal): add log::warn! on poison before returning the default. Also update get_entity_identity_map_impl (lines 116-123) which has the same silent-swallow pattern.\n\n### memory_hints\n- search: \"mutex poison get_def_preview_impl commands.rs\"\n- search: \"get_entity_tree_impl get_containing_definition_impl\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T16:03:52.121Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri/src/commands.rs",
+            "gui/src-tauri/src/main.rs",
+            "gui/src-tauri/src/tests"
+          ]
+        }
+      },
+      {
+        "id": "1782",
+        "title": "Cache parse result and line offsets in EngineSession for get_containing_definition",
+        "description": "In gui/src-tauri/src/engine.rs, cache the parsed syntax tree (reify_syntax::parse result) and the line-offset table alongside the loaded source in EngineSession. Invalidate both caches in commit_state alongside def_preview_cache. This eliminates the O(M) source re-scan and full re-parse on every call to get_containing_definition (line 637). At minimum, add a caller-debounce note to the doc comment.\n\n### memory_hints\n- search: \"EngineSession commit_state def_preview_cache\"\n- search: \"get_containing_definition line_col_to_byte_offset build_line_offsets\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:47:13.648Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri/src/engine.rs",
+            "gui/src-tauri/src/tests"
+          ]
+        }
+      },
+      {
+        "id": "1783",
+        "title": "Fix structural_fingerprint root sentinel, template-uniqueness assertion, and content_hash semantics",
+        "description": "In gui/src-tauri/src/engine.rs: (1) Replace the empty parent field in structural_fingerprint for template roots (line 515) with a sentinel like 'root' to avoid the double-colon ambiguity 'structure::3:hash'. (2) Add a debug_assert! or doc comment in build_template_node (lines 695-716) asserting template names are unique within a compiled module. (3) Rename or document the content_hash field in EntityIdentity for value-cell entries (line 537) — it hashes the cell ID, not its content, which is inconsistent with template-level content_hash semantics; rename to identity_hash or add a doc comment explaining the distinction. Update any affected tests in engine_tests.rs.\n\n### memory_hints\n- search: \"structural_fingerprint content_hash EntityIdentity\"\n- search: \"build_template_node template names unique\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:46:51.447Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri/src/engine.rs",
+            "gui/src-tauri/src/tests",
+            "gui/src-tauri/src/types.rs"
+          ]
+        }
+      },
+      {
+        "id": "1784",
+        "title": "Remove dead builder fixtures from get_entity_tree test cases",
+        "description": "In gui/src-tauri/src/tests/engine_tests.rs: (1) In get_entity_tree_no_realization_has_mesh_false (lines 2254-2278), remove the TopologyTemplateBuilder/CompiledModuleBuilder setup and the bracket_compiled_module() call — they are suppressed with let _ = ... and contribute nothing to the test assertions. (2) In get_entity_tree_sub_component_produces_nested_node (lines 2283-2318), remove the bolt_template/assembly_template/compiled builder code and the let _ = vcid(...) line for the same reason. If builder-based coverage is desired, add a separate focused test using build_template_node directly.\n\n### memory_hints\n- search: \"get_entity_tree_no_realization_has_mesh_false get_entity_tree_sub_component_produces_nested_node\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T12:46:00.974Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri/src/tests"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T11:06:52.276Z",
-      "taskCount": 1753,
-      "completedCount": 1502,
+      "lastModified": "2026-04-15T16:11:59.097Z",
+      "taskCount": 1779,
+      "completedCount": 1518,
       "tags": [
         "master"
       ]

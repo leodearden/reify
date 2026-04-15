@@ -3,34 +3,7 @@
 //! Tests that the compiler emits Warning diagnostics when a deprecated entity
 //! is referenced at a use-site (not at its definition site).
 
-/// Helper: parse and compile source, return compiled module.
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("deprecated_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: return only error-severity diagnostics (ignoring warnings).
-fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect()
-}
-
-/// Helper: return only warning-severity diagnostics.
-fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Warning)
-        .collect()
-}
+use reify_test_support::{compile_source, errors_only, warnings_only};
 
 /// Helper: filter warnings whose message contains the given substring.
 fn deprecation_warnings<'a>(
@@ -55,7 +28,7 @@ fn deprecated_structure_used_as_sub_emits_warning() {
             sub b = OldBolt()
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -118,7 +91,7 @@ fn deprecated_structure_with_no_message_sub_emits_generic_warning() {
             sub p = OldPart()
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -152,7 +125,7 @@ fn deprecated_function_called_emits_warning() {
             let y = old_calc(x)
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -183,7 +156,7 @@ fn deprecated_trait_used_as_trait_bound_emits_warning() {
 
         structure S : OldTrait { param w : Real = 1.0 }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -214,7 +187,7 @@ fn deprecated_trait_used_as_refinement_emits_warning() {
 
         trait Derived : Base { param y : Real }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -241,7 +214,7 @@ fn deprecated_structure_used_as_purpose_param_emits_warning() {
             constraint 1 > 0
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -270,7 +243,7 @@ fn defining_deprecated_entity_without_using_produces_no_use_warning() {
         @deprecated("Old")
         structure OldBolt { param d : Real = 1.0 }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -295,7 +268,7 @@ fn multiple_uses_of_deprecated_structure_produce_multiple_warnings() {
         structure Assembly1 { sub b1 = OldBolt() }
         structure Assembly2 { sub b2 = OldBolt() }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -322,7 +295,7 @@ fn deprecated_no_args_produces_warning_without_trailing_colon() {
             let y = old_fn(x)
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -352,7 +325,7 @@ fn deprecated_no_args_produces_warning_without_trailing_colon() {
 fn annotation_compile_tests_no_regression() {
     // Ensure that compiling a @deprecated annotation on a struct without using it
     // does NOT produce a use-site warning (regression guard for annotation_compile_tests).
-    let module = compile_module(r#"@deprecated("old") structure S { param x : Real }"#);
+    let module = compile_source(r#"@deprecated("old") structure S { param x : Real }"#);
     let errors: Vec<_> = errors_only(&module);
     assert!(errors.is_empty(), "errors: {:?}", errors);
 
@@ -370,7 +343,7 @@ fn annotation_compile_tests_no_regression() {
 #[test]
 fn deprecated_fn_and_trait_definition_alone_produce_no_warning() {
     // deprecated fn — no call-site
-    let module = compile_module(r#"@deprecated("old") fn only_fn(x: Real) -> Real { x }"#);
+    let module = compile_source(r#"@deprecated("old") fn only_fn(x: Real) -> Real { x }"#);
     assert!(
         errors_only(&module).is_empty(),
         "fn: errors: {:?}",
@@ -383,7 +356,7 @@ fn deprecated_fn_and_trait_definition_alone_produce_no_warning() {
     );
 
     // deprecated trait — no implementor
-    let module = compile_module(r#"@deprecated("old") trait OnlyTrait { param w : Real }"#);
+    let module = compile_source(r#"@deprecated("old") trait OnlyTrait { param w : Real }"#);
     assert!(
         errors_only(&module).is_empty(),
         "trait: errors: {:?}",
@@ -408,7 +381,7 @@ fn deprecation_warning_message_format_contract() {
             sub b = OldBolt()
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",

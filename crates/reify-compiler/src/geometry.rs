@@ -440,6 +440,57 @@ pub(crate) fn compile_geometry_call(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1, dx2, dy2, dz2, count2, spacing2)
+        "linear_pattern_2d" => {
+            if compiled_args.len() != 11 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "linear_pattern_2d() expects 11 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Linear2D,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("dx1".to_string(), it.next().unwrap()),
+                    ("dy1".to_string(), it.next().unwrap()),
+                    ("dz1".to_string(), it.next().unwrap()),
+                    ("count1".to_string(), it.next().unwrap()),
+                    ("spacing1".to_string(), it.next().unwrap()),
+                    ("dx2".to_string(), it.next().unwrap()),
+                    ("dy2".to_string(), it.next().unwrap()),
+                    ("dz2".to_string(), it.next().unwrap()),
+                    ("count2".to_string(), it.next().unwrap()),
+                    ("spacing2".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // arbitrary_pattern(target, dx1, dy1, dz1, dx2, dy2, dz2, ...)
+        "arbitrary_pattern" => {
+            if compiled_args.len() < 4 || !(compiled_args.len() - 1).is_multiple_of(3) {
+                diagnostics.push(Diagnostic::error(format!(
+                    "arbitrary_pattern() expects target + N*(dx,dy,dz) triples (>= 4 args, (len-1) % 3 == 0), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let mut args = vec![("target".to_string(), it.next().unwrap())];
+            let coords: Vec<_> = it.collect();
+            for (idx, chunk) in coords.chunks_exact(3).enumerate() {
+                args.push((format!("t{}_dx", idx), chunk[0].clone()));
+                args.push((format!("t{}_dy", idx), chunk[1].clone()));
+                args.push((format!("t{}_dz", idx), chunk[2].clone()));
+            }
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Arbitrary,
+                target: GeomRef::Step(0),
+                args,
+            }])
+        }
         // --- Sweeps ---
         // loft(profile1, profile2, ...)
         "loft" => {

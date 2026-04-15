@@ -517,6 +517,8 @@ pub enum PatternKind {
     Linear,
     Circular,
     Mirror,
+    Linear2D,
+    Arbitrary,
 }
 
 /// Sweep operations.
@@ -575,3 +577,4 @@ pub struct CompiledTypeAlias {
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
+

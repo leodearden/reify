@@ -1659,6 +1659,91 @@ mod tests {
     }
 
     #[test]
+    fn mock_execute_linear_pattern_2d_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.01),
+                height: Value::length(0.01),
+                depth: Value::length(0.01),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::LinearPattern2D {
+                target: target.id,
+                direction1: [1.0, 0.0, 0.0],
+                count1: 3,
+                spacing1: Value::length(0.02),
+                direction2: [0.0, 1.0, 0.0],
+                count2: 4,
+                spacing2: Value::length(0.03),
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::LinearPattern2D {
+                target,
+                direction1,
+                count1,
+                spacing1,
+                direction2,
+                count2,
+                spacing2,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*direction1, [1.0, 0.0, 0.0]);
+                assert_eq!(*count1, 3);
+                assert_eq!(*spacing1, Value::length(0.02));
+                assert_eq!(*direction2, [0.0, 1.0, 0.0]);
+                assert_eq!(*count2, 4);
+                assert_eq!(*spacing2, Value::length(0.03));
+            }
+            other => panic!("expected LinearPattern2D, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_arbitrary_pattern_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.01),
+                height: Value::length(0.01),
+                depth: Value::length(0.01),
+            })
+            .unwrap();
+
+        let transforms = vec![
+            [0.02, 0.0, 0.0],
+            [0.0, 0.02, 0.0],
+            [0.02, 0.02, 0.0],
+        ];
+        let handle = kernel
+            .execute(&GeometryOp::ArbitraryPattern {
+                target: target.id,
+                transforms: transforms.clone(),
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::ArbitraryPattern {
+                target,
+                transforms: recorded_transforms,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(recorded_transforms.len(), 3);
+                assert_eq!(recorded_transforms[0], [0.02, 0.0, 0.0]);
+                assert_eq!(recorded_transforms[1], [0.0, 0.02, 0.0]);
+                assert_eq!(recorded_transforms[2], [0.02, 0.02, 0.0]);
+            }
+            other => panic!("expected ArbitraryPattern, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn mock_execute_fillet_records_op() {
         let mut kernel = MockGeometryKernel::new();
         let target = kernel

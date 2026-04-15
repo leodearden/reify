@@ -107,7 +107,12 @@ pub(crate) fn check_trait_conformance(
     // Maps name → (type/hash, originating trait name) so conflict diagnostics can name
     // both traits instead of just saying "conflicting traits".
     let mut seen_requirement_names: HashMap<String, (Type, String)> = HashMap::new();
-    let mut seen_default_names: HashMap<String, (Type, String)> = HashMap::new();
+    // Keyed by (name, DefaultKindTag): Param and Let defaults for the same member name
+    // occupy independent dedup/conflict-detection slots. This prevents a Param default
+    // from silently discarding a same-named Let default (or vice versa) and prevents
+    // cross-kind type comparisons from emitting false conflict diagnostics.
+    let mut seen_default_names: HashMap<(String, DefaultKindTag), (Type, String)> =
+        HashMap::new();
     let mut seen_let_hashes: HashMap<String, (ContentHash, String)> = HashMap::new();
 
     for trait_bound in structure.trait_bounds {
@@ -131,7 +136,10 @@ pub(crate) fn check_trait_conformance(
     // requirement only by a `let` default. A kind mismatch is treated the same as "no
     // default" so the user sees "missing required member" rather than a confusing
     // kind-mismatch error (the fix is the same either way: provide the member).
-    #[derive(Copy, Clone, PartialEq, Eq)]
+    //
+    // See also `DefaultKindTag` (module-level) — this enum intentionally omits
+    // `Constraint` because constraints are never candidates for satisfying requirements.
+    #[derive(Copy, Clone, PartialEq, Eq, Hash)]
     enum AvailableDefaultKind {
         Param,
         Let,
@@ -141,7 +149,12 @@ pub(crate) fn check_trait_conformance(
     // Used to cross-check requirements: a requirement is satisfied if the structure
     // provides the member OR if another trait in the bound set provides a matching default
     // of the SAME kind. Kind mismatches are ignored (treated as absent).
-    let available_defaults: HashMap<String, (AvailableDefaultKind, Type)> = all_defaults
+    //
+    // Keyed by (name, AvailableDefaultKind) so Param and Let defaults for the same
+    // member name occupy separate slots and are looked up independently. A Param default
+    // can satisfy a Param requirement, and a Let default can satisfy a Let requirement,
+    // without interfering with each other.
+    let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = all_defaults
         .iter()
         .filter_map(|d| {
             let name = d.name.as_deref()?;
@@ -152,7 +165,7 @@ pub(crate) fn check_trait_conformance(
                 DefaultKind::Let(_) => (AvailableDefaultKind::Let, Type::Real),
                 DefaultKind::Constraint(_) => return None,
             };
-            Some((name.to_string(), (kind, ty)))
+            Some(((name.to_string(), kind), ty))
         })
         .collect();
 
@@ -182,16 +195,22 @@ pub(crate) fn check_trait_conformance(
                         // Check if a matching default from another trait satisfies this requirement.
                         // Only a same-kind default can satisfy: a `let` default does NOT satisfy
                         // a `param` requirement (param slots must be externally settable).
-                        match available_defaults.get(&req.name) {
-                            Some((default_kind, default_type))
-                                if *default_kind == required_default_kind
-                                    && implicitly_converts_to(default_type, expected_type) =>
+                        // The (name, kind) composite key means the lookup is already kind-filtered —
+                        // no additional kind-guard is needed on the match arms.
+                        //
+                        // Note: `.get(&(req.name.clone(), ...))` allocates a String on every lookup
+                        // because `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`.
+                        // Requirement counts are small in practice so this is not a hot path; if it
+                        // ever becomes one, switch to a two-level map `HashMap<String, HashMap<K, V>>`.
+                        match available_defaults
+                            .get(&(req.name.clone(), required_default_kind))
+                        {
+                            Some(default_type)
+                                if implicitly_converts_to(default_type, expected_type) =>
                             {
                                 // Same-kind default with matching type satisfies the requirement.
                             }
-                            Some((default_kind, default_type))
-                                if *default_kind == required_default_kind =>
-                            {
+                            Some(default_type) => {
                                 // Same-kind default but wrong type → type mismatch.
                                 diagnostics.push(
                                     Diagnostic::error(format!(
@@ -205,8 +224,8 @@ pub(crate) fn check_trait_conformance(
                                     )),
                                 );
                             }
-                            _ => {
-                                // No default, or a default of the wrong kind — treat as missing.
+                            None => {
+                                // No default of the required kind — treat as missing.
                                 // A param requirement with only a let default in scope means the
                                 // structure must provide a settable param slot itself.
                                 diagnostics.push(
@@ -351,6 +370,22 @@ pub(crate) fn check_trait_conformance(
     }
 }
 
+/// Kind tag for the `seen_defaults` composite key `(name, DefaultKindTag)`.
+///
+/// Keeping Param, Let, and Constraint in separate slots means:
+/// - A Param default and a Let default for the same member name do not interfere.
+/// - Cross-kind type comparisons never produce false conflict diagnostics.
+/// - Same-kind dedup and conflict detection continue to work as before.
+///
+/// `AvailableDefaultKind` (used for requirement matching) intentionally has no
+/// `Constraint` variant — constraints are never candidates for satisfying requirements.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum DefaultKindTag {
+    Param,
+    Let,
+    Constraint,
+}
+
 /// Recursively collect all requirements and defaults from a trait and its refinements.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_all_requirements(
@@ -361,7 +396,7 @@ pub(crate) fn collect_all_requirements(
     visited: &mut HashSet<String>,
     // Maps member name → (type, originating trait name) for conflict reporting.
     seen_names: &mut HashMap<String, (Type, String)>,
-    seen_defaults: &mut HashMap<String, (Type, String)>,
+    seen_defaults: &mut HashMap<(String, DefaultKindTag), (Type, String)>,
     seen_let_hashes: &mut HashMap<String, (ContentHash, String)>,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
@@ -465,17 +500,26 @@ pub(crate) fn collect_all_requirements(
                 // Fall through to insert into seen_defaults and push.
             }
 
-            // Extract type for dedup comparison (non-Let defaults).
-            let default_type = match &default.kind {
-                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let(_) => Type::Real,
-                DefaultKind::Constraint(_) => Type::Bool, // sentinel for constraint label dedup
+            // Extract type and kind-tag for composite-key dedup.
+            // Param, Let, and Constraint each get their own (name, kind) slot so they
+            // never interfere with each other's dedup or conflict detection.
+            let (default_type, kind_tag) = match &default.kind {
+                DefaultKind::Param { cell_type, .. } => (cell_type.clone(), DefaultKindTag::Param),
+                DefaultKind::Let(_) => (Type::Real, DefaultKindTag::Let),
+                DefaultKind::Constraint(_) => (Type::Bool, DefaultKindTag::Constraint),
             };
 
-            if let Some((existing_type, existing_trait)) = seen_defaults.get(name.as_str()) {
+            // Note: `name.to_string()` allocates even on the `continue` (already-seen) path
+            // because `HashMap<(String, DefaultKindTag), _>` has no `Borrow` impl for
+            // `(&str, DefaultKindTag)`. Default counts per trait are tiny, so this is not a
+            // hot path. To eliminate the allocation a two-level map
+            // `HashMap<String, HashMap<DefaultKindTag, _>>` would allow a borrow-based outer
+            // lookup, but the added complexity is not worth it at current scale.
+            let key = (name.to_string(), kind_tag);
+            if let Some((existing_type, existing_trait)) = seen_defaults.get(&key) {
                 if existing_type != &default_type && !structure_members.contains_key(name.as_str())
                 {
-                    // Same name + different type + not overridden → conflict
+                    // Same (name, kind) + different type + not overridden → conflict
                     diagnostics.push(
                         Diagnostic::error(format!(
                             "conflicting trait defaults for '{}': \
@@ -488,10 +532,10 @@ pub(crate) fn collect_all_requirements(
                         )),
                     );
                 }
-                // Same name already seen → skip (deduplicate).
+                // Same (name, kind) already seen → skip (deduplicate).
                 continue;
             }
-            seen_defaults.insert(name.clone(), (default_type, trait_name.to_string()));
+            seen_defaults.insert(key, (default_type, trait_name.to_string()));
             defaults.push(default.clone());
         }
     }

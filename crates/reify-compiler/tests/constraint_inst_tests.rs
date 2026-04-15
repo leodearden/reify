@@ -6,31 +6,10 @@
 //! constraints into the parent entity's constraint list.
 
 use reify_compiler::*;
+use reify_test_support::{compile_source, compile_template};
 use reify_types::*;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Parse and compile, returning the template with the given name + diagnostics.
-fn compile_template(source: &str, name: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let module = compile_module(source);
-    let diags = module.diagnostics.clone();
-    let tmpl = module
-        .templates
-        .into_iter()
-        .find(|t| t.name == name)
-        .unwrap_or_else(|| panic!("expected template '{name}' in compiled module"));
-    (tmpl, diags)
-}
 
 /// Collect only error diagnostics from a list.
 fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
@@ -224,7 +203,7 @@ structure S {
     constraint UnknownDef(x: t)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = error_diags(&module.diagnostics);
     assert!(
         !errors.is_empty(),
@@ -256,7 +235,7 @@ structure S {
     constraint TwoParam(a: x)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = error_diags(&module.diagnostics);
     assert!(
         !errors.is_empty(),
@@ -286,7 +265,7 @@ structure S {
     constraint OneParam(a: x, b: 5)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = error_diags(&module.diagnostics);
     assert!(
         !errors.is_empty(),

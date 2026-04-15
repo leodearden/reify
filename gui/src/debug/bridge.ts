@@ -4,6 +4,8 @@
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import type { DebugStores, ReifyDebugContext } from './types';
+import { convertRawGuiState } from '../types';
+import type { RawGuiState } from '../types';
 import { Box3, Vector3 } from 'three';
 import type { Mesh, BufferGeometry } from 'three';
 
@@ -208,6 +210,24 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       if (!vp) return { error: 'viewport not ready' };
       vp.fitToView();
       return { ok: true };
+    },
+
+    open_file: (params) => {
+      const path = params.path as string;
+      const content = params.content as string;
+      if (!path || content === undefined) return { error: 'path and content are required' };
+
+      const { editor, engine } = ctx.stores;
+      editor.openFile({ path, content });
+
+      // If guiState was provided, init the engine store (meshes, values, constraints)
+      const rawGuiState = params.guiState as RawGuiState | undefined;
+      if (rawGuiState) {
+        const guiState = convertRawGuiState(rawGuiState);
+        engine.initFromState(guiState);
+      }
+
+      return { ok: true, path };
     },
   };
 }

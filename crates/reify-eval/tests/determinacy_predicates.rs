@@ -23,11 +23,9 @@ const EXAMPLE_PATH: &str = concat!(
 // -- Helper -------------------------------------------------------------------
 
 /// Parse, compile, eval, and return the result values map.
+/// Thin wrapper over reify_test_support::eval_source — returns ValueMap instead of EvalResult.
 fn eval_source(source: &str) -> reify_types::ValueMap {
-    let compiled = parse_and_compile(source);
-    let mut engine = make_engine();
-    let result = engine.eval(&compiled);
-    result.values
+    reify_test_support::eval_source(source).values
 }
 
 // == determined() predicate tests =============================================

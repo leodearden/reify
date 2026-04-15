@@ -5,6 +5,7 @@
 //! trait conformance and constraint injection work as expected.
 
 use reify_compiler::*;
+use reify_test_support::compile_first_template;
 use reify_types::*;
 use std::path::PathBuf;
 
@@ -29,28 +30,6 @@ fn load_stdlib_module() -> CompiledModule {
         parsed.errors
     );
     reify_compiler::compile(&parsed)
-}
-
-/// Compile inline source, returning the CompiledModule.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Compile inline source, return the first template + diagnostics.
-fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let module = compile_module(source);
-    let template = module
-        .templates
-        .into_iter()
-        .next()
-        .expect("expected at least 1 template");
-    (template, module.diagnostics)
 }
 
 // ─── step-1: file exists, parses, compiles without errors ────────────────────

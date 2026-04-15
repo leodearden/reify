@@ -70,9 +70,34 @@ pub fn compile_with_stdlib(parsed: &reify_syntax::ParsedModule) -> CompiledModul
 /// that are visible to the user module during compilation. The output
 /// `CompiledModule` contains only the user's own definitions — prelude
 /// definitions are used as context but not duplicated in the output.
+///
+/// This is a thin wrapper around [`compile_with_prelude_refs`] that accepts
+/// owned `CompiledModule` slices for external callers. Internal code should
+/// prefer `compile_with_prelude_refs` to avoid cloning.
+///
+/// **Performance note:** this wrapper allocates a `Vec<&CompiledModule>` on
+/// every call. For the typical call site with a small prelude this is
+/// negligible, but callers in a hot loop should use `compile_with_prelude_refs`
+/// (currently `pub(crate)`) directly to avoid repeated allocation.
 pub fn compile_with_prelude(
     parsed: &reify_syntax::ParsedModule,
     prelude: &[CompiledModule],
+) -> CompiledModule {
+    let refs: Vec<&CompiledModule> = prelude.iter().collect();
+    compile_with_prelude_refs(parsed, &refs)
+}
+
+/// Compile a parsed module with prelude definitions provided as references.
+///
+/// This is the inner implementation used by the module DAG to avoid cloning
+/// already-compiled modules. The `prelude` slice contains references to
+/// compiled modules whose exported definitions (units, traits, enums,
+/// constraint defs) are visible during compilation.
+///
+/// External callers should use [`compile_with_prelude`] instead.
+pub(crate) fn compile_with_prelude_refs(
+    parsed: &reify_syntax::ParsedModule,
+    prelude: &[&CompiledModule],
 ) -> CompiledModule {
     let mut imports = Vec::new();
     let mut functions = Vec::new();
@@ -103,7 +128,7 @@ pub fn compile_with_prelude(
     // the prelude parameter with an empty slice. This affects unit seeding,
     // trait/enum/function resolution, and constraint def imports.
     let has_no_prelude = parsed.pragmas.iter().any(|p| p.name == "no_prelude");
-    let prelude: &[CompiledModule] = if has_no_prelude { &[] } else { prelude };
+    let prelude: &[&CompiledModule] = if has_no_prelude { &[] } else { prelude };
 
     // Consolidated pre-pass: iterate declarations once, collecting references
     // for deferred compilation. This replaces 4 separate loops (enum, function,
@@ -921,6 +946,160 @@ mod tests {
     }
 
     #[test]
+    fn compile_linear_pattern_2d_produces_realization() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20, 0, 1, 0, 4, 30)
+}"#;
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat2d"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for linear_pattern_2d call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(
+                op,
+                CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Linear2D,
+                    ..
+                }
+            ),
+            "expected Pattern(Linear2D), got {:?}",
+            op
+        );
+        // Verify correct number of named args (11: target + 10 params)
+        if let CompiledGeometryOp::Pattern { args, .. } = op {
+            assert_eq!(args.len(), 11, "expected 11 args, got {}", args.len());
+            assert_eq!(args[0].0, "target");
+            assert_eq!(args[1].0, "dx1");
+            assert_eq!(args[4].0, "count1");
+            assert_eq!(args[5].0, "spacing1");
+            assert_eq!(args[6].0, "dx2");
+            assert_eq!(args[9].0, "count2");
+            assert_eq!(args[10].0, "spacing2");
+        }
+    }
+
+    #[test]
+    fn compile_linear_pattern_2d_wrong_arity_produces_diagnostic() {
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20)
+}"#;
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_linpat2d_err"));
+        assert!(parsed.errors.is_empty());
+        let compiled = compile(&parsed);
+        assert!(
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("linear_pattern_2d")
+                    && d.message.contains("11 arguments")),
+            "expected arity diagnostic, got: {:?}",
+            compiled.diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_arbitrary_pattern_produces_realization() {
+        // arbitrary_pattern(target, dx1, dy1, dz1, dx2, dy2, dz2) = 7 args = target + 2 triples
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let pattern = arbitrary_pattern(w, 10, 0, 0, 0, 20, 0)
+}"#;
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(
+            template.realizations.len(),
+            1,
+            "expected 1 realization for arbitrary_pattern call, got {}",
+            template.realizations.len()
+        );
+        let op = &template.realizations[0].operations[0];
+        assert!(
+            matches!(
+                op,
+                CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Arbitrary,
+                    ..
+                }
+            ),
+            "expected Pattern(Arbitrary), got {:?}",
+            op
+        );
+        // Verify args: target + 6 transform coords (2 triples)
+        if let CompiledGeometryOp::Pattern { args, .. } = op {
+            assert_eq!(args.len(), 7, "expected 7 args, got {}", args.len());
+            assert_eq!(args[0].0, "target");
+            assert_eq!(args[1].0, "t0_dx");
+            assert_eq!(args[2].0, "t0_dy");
+            assert_eq!(args[3].0, "t0_dz");
+            assert_eq!(args[4].0, "t1_dx");
+        }
+    }
+
+    #[test]
+    fn compile_arbitrary_pattern_too_few_args_produces_diagnostic() {
+        // Needs at least 4 args (target + 1 triple)
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let pattern = arbitrary_pattern(w, 10, 0)
+}"#;
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat_err1"));
+        assert!(parsed.errors.is_empty());
+        let compiled = compile(&parsed);
+        assert!(
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("arbitrary_pattern")),
+            "expected arity diagnostic, got: {:?}",
+            compiled.diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_arbitrary_pattern_non_triple_args_produces_diagnostic() {
+        // 6 args = target + 5 coords, but (6-1)%3 != 0
+        let source = r#"structure S {
+    param w: Scalar = 10mm
+    let pattern = arbitrary_pattern(w, 10, 0, 0, 5, 0)
+}"#;
+        let parsed =
+            reify_syntax::parse(source, reify_types::ModulePath::single("test_arbpat_err2"));
+        assert!(parsed.errors.is_empty());
+        let compiled = compile(&parsed);
+        assert!(
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("arbitrary_pattern")),
+            "expected arity diagnostic for non-triple args, got: {:?}",
+            compiled.diagnostics
+        );
+    }
+
+    #[test]
     fn compile_loft_produces_realization() {
         let source = r#"structure S {
     param r: Scalar = 10mm
@@ -1115,6 +1294,16 @@ mod tests {
     #[test]
     fn compile_geometry_intersection_all_recognized() {
         assert!(is_geometry_function("intersection_all"));
+    }
+
+    #[test]
+    fn compile_geometry_linear_pattern_2d_recognized() {
+        assert!(is_geometry_function("linear_pattern_2d"));
+    }
+
+    #[test]
+    fn compile_geometry_arbitrary_pattern_recognized() {
+        assert!(is_geometry_function("arbitrary_pattern"));
     }
 
     // --- Binary boolean op compilation tests (step-3) ---

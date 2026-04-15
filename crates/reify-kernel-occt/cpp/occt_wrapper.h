@@ -71,6 +71,15 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
     double ax, double ay, double az,
     uint32_t count, double total_angle);
 
+std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
+    double dx1, double dy1, double dz1,
+    uint32_t count1, double spacing1,
+    double dx2, double dy2, double dz2,
+    uint32_t count2, double spacing2);
+
+std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
+    const rust::Vec<double>& flat_transforms, uint32_t num_transforms);
+
 // --- Thicken / Shell ---
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
