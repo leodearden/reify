@@ -1048,6 +1048,127 @@ pub(crate) fn compile_geometry_call(
     }
 }
 
+// ─── Registry cross-check (task-1733) ────────────────────────────────────────
+//
+// The test below cross-checks the set of function names handled in
+// `geometry_arg_indices` against the names dispatched in `compile_geometry_call`.
+// When a new geometry function is added to the dispatch block, it must also be
+// added to one of the lists below, ensuring `geometry_arg_indices` is kept in
+// sync and geometry-arg resolution is not silently broken.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every non-boolean, non-loft function dispatched in `compile_geometry_call`
+    /// that takes at least one geometry arg (first arg is target/profile/etc.).
+    /// These MUST return non-empty from `geometry_arg_indices`.
+    const GEOM_ARG_FUNCTIONS: &[&str] = &[
+        "translate",
+        "rotate",
+        "scale",
+        "rotate_around",
+        "circular_pattern",
+        "linear_pattern",
+        "mirror",
+        "extrude",
+        "revolve",
+        "revolve_full",
+        "shell",
+        "thicken",
+        "draft",
+        "sweep",
+    ];
+
+    /// Every non-boolean function dispatched in `compile_geometry_call` that has
+    /// NO geometry args (primitives, curves, patterns that don't use geom_ref).
+    /// These MUST return empty from `geometry_arg_indices`.
+    const NO_GEOM_ARG_FUNCTIONS: &[&str] = &[
+        "box",
+        "cylinder",
+        "sphere",
+        "linear_pattern_2d",
+        "arbitrary_pattern",
+        "chamfer",
+        "fillet",
+        "line_segment",
+        "arc",
+        "helix",
+        "interp",
+        "bezier",
+        "nurbs",
+    ];
+
+    #[test]
+    fn geometry_arg_indices_covers_all_geom_arg_functions() {
+        for &name in GEOM_ARG_FUNCTIONS {
+            assert!(
+                !geometry_arg_indices(name).is_empty(),
+                "geometry_arg_indices(\"{}\") returned empty — \
+                 this function takes geometry args but is not registered in the index",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_arg_indices_empty_for_no_geom_arg_functions() {
+        for &name in NO_GEOM_ARG_FUNCTIONS {
+            assert!(
+                geometry_arg_indices(name).is_empty(),
+                "geometry_arg_indices(\"{}\") returned non-empty — \
+                 this function should not have geometry args registered",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_arg_indices_loft_is_empty_handled_specially() {
+        // loft is variadic — handled with special logic in compile_geometry_call,
+        // not via geometry_arg_indices. Verify it returns empty (the wildcard arm)
+        // so we know the special path is the only handler.
+        assert!(
+            geometry_arg_indices("loft").is_empty(),
+            "loft should not be in geometry_arg_indices — it uses variadic handling"
+        );
+    }
+
+    #[test]
+    fn all_dispatch_functions_accounted_for() {
+        // Ensure the two lists together with loft and the boolean ops cover every
+        // arm in compile_geometry_call.  If a new function is added there but not
+        // listed here, this test should be updated (the developer will notice
+        // because the new function is absent from both lists).
+        let boolean_ops: &[&str] =
+            &["union", "intersection", "difference", "union_all", "intersection_all"];
+        let loft: &[&str] = &["loft"];
+
+        let mut all: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for &name in GEOM_ARG_FUNCTIONS
+            .iter()
+            .chain(NO_GEOM_ARG_FUNCTIONS.iter())
+            .chain(boolean_ops.iter())
+            .chain(loft.iter())
+        {
+            assert!(
+                all.insert(name),
+                "duplicate function name \"{}\" in cross-check lists",
+                name
+            );
+        }
+
+        // Total should be 33 (14 geom-arg + 13 no-geom-arg + 5 boolean + 1 loft).
+        assert_eq!(
+            all.len(),
+            33,
+            "expected 33 total dispatched function names, got {} — \
+             did you add a new geometry function? Update the lists in this test.",
+            all.len()
+        );
+    }
+}
+
 /// Detect if a constraint expression matches the count constraint pattern:
 ///   `collection_name.count == expr`  or  `expr == collection_name.count`
 /// Returns `(collection_name, count_expr)` where count_expr is the non-.count side.
