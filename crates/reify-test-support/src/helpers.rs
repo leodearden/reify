@@ -112,6 +112,52 @@ mod tests {
     use crate::fixtures::bracket_source;
     use reify_types::Severity;
 
+    /// assert_no_eval_errors should not panic when the result has no diagnostics.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_assert_no_eval_errors_passes_on_clean_result() {
+        use reify_types::ValueMap;
+        use std::collections::HashMap;
+        let result = reify_eval::EvalResult {
+            values: ValueMap::new(),
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+        };
+        super::assert_no_eval_errors(&result);
+    }
+
+    /// assert_no_eval_errors should panic (with message containing "eval errors")
+    /// when the result contains at least one Error-severity diagnostic.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    #[should_panic(expected = "eval errors")]
+    fn test_assert_no_eval_errors_panics_on_error_diagnostic() {
+        use reify_types::{Diagnostic, ValueMap};
+        use std::collections::HashMap;
+        let result = reify_eval::EvalResult {
+            values: ValueMap::new(),
+            diagnostics: vec![Diagnostic::error("something went wrong")],
+            resolved_params: HashMap::new(),
+        };
+        super::assert_no_eval_errors(&result);
+    }
+
+    /// assert_no_eval_errors should not panic when the result has only warnings
+    /// (no Error-severity diagnostics).
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_assert_no_eval_errors_ignores_warnings() {
+        use reify_types::{Diagnostic, ValueMap};
+        use std::collections::HashMap;
+        let result = reify_eval::EvalResult {
+            values: ValueMap::new(),
+            diagnostics: vec![Diagnostic::warning("just a warning")],
+            resolved_params: HashMap::new(),
+        };
+        // Should not panic — warnings are not errors
+        super::assert_no_eval_errors(&result);
+    }
+
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_make_engine() {
