@@ -5,6 +5,7 @@
 //! conformance and constraint injection work as expected.
 
 use reify_compiler::*;
+use reify_test_support::compile_source_with_stdlib;
 use reify_types::*;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -192,15 +193,7 @@ structure def Bracket : Physical {
     param centroid_z : Real = 0.0
 }
 "#;
-    let prelude = stdlib_loader::load_stdlib();
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let compiled = compile_source_with_stdlib(source);
 
     let errors: Vec<_> = compiled
         .diagnostics
@@ -343,15 +336,7 @@ structure def Rubber : ElasticallyDeformable {
     param max_elastic_strain : Real = 5.0
 }
 "#;
-    let prelude = stdlib_loader::load_stdlib();
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let compiled = compile_source_with_stdlib(source);
 
     let errors: Vec<_> = compiled
         .diagnostics
@@ -393,15 +378,7 @@ structure def Block : Physical {
     param centroid_z : Real = 0.0
 }
 "#;
-    let prelude = stdlib_loader::load_stdlib();
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let compiled = compile_source_with_stdlib(source);
 
     let errors: Vec<_> = compiled
         .diagnostics
@@ -439,15 +416,7 @@ structure def Incomplete : Physical {
     param centroid_z : Real = 0.0
 }
 "#;
-    let prelude = stdlib_loader::load_stdlib();
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let compiled = compile_source_with_stdlib(source);
 
     let errors: Vec<_> = compiled
         .diagnostics
@@ -516,15 +485,7 @@ structure def Beam : Rigid {
     param moment_of_inertia : Real = 0.00012
 }
 "#;
-    let prelude = stdlib_loader::load_stdlib();
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let compiled = compile_source_with_stdlib(source);
 
     let errors: Vec<_> = compiled
         .diagnostics

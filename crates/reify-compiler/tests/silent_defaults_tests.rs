@@ -3,39 +3,7 @@
 //! These tests verify that the compiler emits diagnostics instead of silently
 //! swallowing errors or using misleading defaults.
 
-use reify_types::Severity;
-
-/// Helper: parse and compile source, return compiled module.
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(
-        source,
-        reify_types::ModulePath::single("silent_defaults_test"),
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: return only error-severity diagnostics.
-fn error_diagnostics(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect()
-}
-
-/// Helper: return only warning-severity diagnostics.
-fn warning_diagnostics(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Warning)
-        .collect()
-}
+use reify_test_support::{compile_source, errors_only, warnings_only};
 
 // ── H2: collection member typo should produce a diagnostic ──────────────
 
@@ -54,8 +22,8 @@ fn collection_member_typo_produces_diagnostic() {
             let d = bolts[0].diametr
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
 
     let has_unknown_member = errors.iter().any(|d| d.message.contains("unknown member"));
     assert!(
@@ -75,8 +43,8 @@ fn compile_field_returns_direct_value() {
             source = analytical { |p| p }
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
     assert_eq!(module.fields.len(), 1, "expected 1 compiled field");
     assert_eq!(module.fields[0].name, "temp");
@@ -92,8 +60,8 @@ fn duplicate_function_signature_diagnostic_has_context() {
         fn add(a: Scalar, b: Scalar) -> Scalar { a + b }
         fn add(a: Scalar, b: Scalar) -> Scalar { a - b }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
 
     let dup_error = errors
         .iter()
@@ -128,8 +96,8 @@ trait Bounded {
     constraint x > 0mm
 }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
     let trait_def = module
@@ -166,8 +134,8 @@ trait Configurable {
     let area = width * height
 }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
     let trait_def = module
@@ -207,8 +175,8 @@ fn box_wrong_arg_count_produces_preexisting_diagnostic() {
             let shape = box(10mm, 20mm)
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
 
     let has_arg_count_error = errors
         .iter()
@@ -235,8 +203,8 @@ fn trait_member_no_type_annotation_emits_diagnostic() {
             param x = 5.0
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
 
     let has_type_annotation_error = errors.iter().any(|d| {
         d.message.contains("no type annotation")
@@ -266,8 +234,8 @@ fn trait_let_no_type_annotation_compiles_clean() {
             let y = x * 2.0
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
 
     assert!(
         errors.is_empty(),
@@ -289,8 +257,8 @@ fn structure_param_resolves_without_ice() {
             param x : Real = 1.0
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
 
     let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
     assert!(
@@ -315,8 +283,8 @@ fn port_member_resolves_without_ice() {
             }
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
 
     let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
     assert!(
@@ -343,8 +311,8 @@ fn guarded_param_resolves_without_ice() {
             }
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
 
     let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
     assert!(
@@ -372,8 +340,8 @@ fn port_param_unknown_type_name_emits_error() {
             }
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
 
     let has_type_error = errors.iter().any(|d| {
         d.message.contains("Nonexistent") || d.message.contains("unresolved type name")
@@ -397,15 +365,15 @@ fn empty_list_literal_emits_type_inference_warning() {
             let x = []
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
     assert!(
         errors.is_empty(),
         "empty list should not produce errors, got: {:?}",
         errors
     );
 
-    let warnings = warning_diagnostics(&module);
+    let warnings = warnings_only(&module);
     let has_type_warning = warnings
         .iter()
         .any(|d| d.message.contains("empty list") || d.message.contains("cannot infer"));
@@ -425,15 +393,15 @@ fn empty_set_literal_emits_type_inference_warning() {
             let x = set{}
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
     assert!(
         errors.is_empty(),
         "empty set should not produce errors, got: {:?}",
         errors
     );
 
-    let warnings = warning_diagnostics(&module);
+    let warnings = warnings_only(&module);
     let has_type_warning = warnings
         .iter()
         .any(|d| d.message.contains("empty set") || d.message.contains("cannot infer"));
@@ -453,15 +421,15 @@ fn empty_map_literal_emits_type_inference_warning() {
             let x = map{}
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
     assert!(
         errors.is_empty(),
         "empty map should not produce errors, got: {:?}",
         errors
     );
 
-    let warnings = warning_diagnostics(&module);
+    let warnings = warnings_only(&module);
     let has_type_warning = warnings
         .iter()
         .any(|d| d.message.contains("empty map") || d.message.contains("cannot infer"));
@@ -489,8 +457,8 @@ fn range_valid_compiles_without_ice() {
             let x = 1.0..10.0
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
     let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
     assert!(
         !has_ice,
@@ -517,15 +485,15 @@ fn stdlib_fn_no_args_emits_type_inference_warning() {
             let x = __test_zero_arg_fn()
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
     assert!(
         errors.is_empty(),
         "zero-arg stdlib call should not produce errors, got: {:?}",
         errors
     );
 
-    let warnings = warning_diagnostics(&module);
+    let warnings = warnings_only(&module);
     let has_type_warning = warnings.iter().any(|d| {
         d.message.contains("zero-arg function") && d.message.contains("defaulting to Real")
     });
@@ -561,8 +529,8 @@ fn sub_member_type_resolves_without_ice() {
             let d = parts.(MechTrait::diameter)
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
 
     let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
     assert!(
@@ -604,8 +572,8 @@ fn non_collection_sub_member_type_resolves_without_ice() {
             let d = part.(MechTrait::diameter)
         }
     "#;
-    let module = compile_module(source);
-    let errors = error_diagnostics(&module);
+    let module = compile_source(source);
+    let errors = errors_only(&module);
 
     let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
     assert!(
