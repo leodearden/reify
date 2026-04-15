@@ -167,16 +167,19 @@ fn mass_propagation_steel_beam() {
 
     let mass_val = match mass {
         Value::Real(v) => *v,
+        Value::Int(v) => *v as f64,
         Value::Scalar { si_value, .. } => *si_value,
         other => panic!("SteelBeam.mass should be Real or Scalar, got {:?}", other),
     };
     let vol_val = match volume {
         Value::Real(v) => *v,
+        Value::Int(v) => *v as f64,
         Value::Scalar { si_value, .. } => *si_value,
         other => panic!("SteelBeam.volume should be Real or Scalar, got {:?}", other),
     };
     let den_val = match density {
         Value::Real(v) => *v,
+        Value::Int(v) => *v as f64,
         Value::Scalar { si_value, .. } => *si_value,
         other => panic!("SteelBeam.density should be Real or Scalar, got {:?}", other),
     };
@@ -213,16 +216,19 @@ fn mass_propagation_aluminum_plate() {
 
     let mass_val = match mass {
         Value::Real(v) => *v,
+        Value::Int(v) => *v as f64,
         Value::Scalar { si_value, .. } => *si_value,
         other => panic!("AluminumPlate.mass should be Real or Scalar, got {:?}", other),
     };
     let vol_val = match volume {
         Value::Real(v) => *v,
+        Value::Int(v) => *v as f64,
         Value::Scalar { si_value, .. } => *si_value,
         other => panic!("AluminumPlate.volume should be Real or Scalar, got {:?}", other),
     };
     let den_val = match density {
         Value::Real(v) => *v,
+        Value::Int(v) => *v as f64,
         Value::Scalar { si_value, .. } => *si_value,
         other => panic!("AluminumPlate.density should be Real or Scalar, got {:?}", other),
     };
@@ -247,6 +253,7 @@ fn total_mass_computed() {
         .unwrap_or_else(|| panic!("LargeAssembly.total_mass not found in eval result"));
     let val = match total {
         Value::Real(v) => *v,
+        Value::Int(v) => *v as f64,
         Value::Scalar { si_value, .. } => *si_value,
         other => panic!("LargeAssembly.total_mass should be Real or Scalar, got {:?}", other),
     };
