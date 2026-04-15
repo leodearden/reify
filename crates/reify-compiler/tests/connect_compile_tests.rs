@@ -1517,6 +1517,46 @@ structure def ForwardConnector { param grade : Real = 8.8 }
     );
 }
 
+// ── task-370/amend-5: asymmetric_located_port_right_side_emits_warning ──────
+
+#[test]
+fn asymmetric_located_port_right_side_emits_warning() {
+    // Reversed direction: the RIGHT port (mech) satisfies LocatedPort, but the
+    // LEFT port (data) does not.  The warning must fire regardless of which side
+    // carries the spatial frame.
+    let source = r#"
+trait LocatedPort { param frame : Real }
+trait MechPort : LocatedPort { param shaft_dia : Length }
+trait DataPort { param rate : Real }
+structure def S {
+    port data : out DataPort { param rate : Real = 100.0 }
+    port mech : in MechPort { param shaft_dia : Length = 10mm }
+    connect data -> mech
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+    let located_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("LocatedPort")
+                && d.message.contains("asymmetric")
+        })
+        .collect();
+    assert!(
+        !located_warnings.is_empty(),
+        "expected a warning about asymmetric LocatedPort (right side located), got diagnostics: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        located_warnings.len(),
+        1,
+        "expected exactly one LocatedPort warning, got: {:?}",
+        located_warnings
+    );
+}
+
 // ── task-370/step-4: dotted_port_no_false_located_port_warning ───────
 
 #[test]
