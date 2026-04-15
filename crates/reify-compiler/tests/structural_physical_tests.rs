@@ -709,7 +709,7 @@ structure def PlasticBody : Plastic {
 /// message when the wrong operator is passed. Deliberately passes `BinOp::Gt`
 /// for `plastic_strain` (the real constraint is `BinOp::Ge`).
 #[test]
-#[should_panic(expected = "plastic_strain")]
+#[should_panic(expected = "plastic_strain constraint expected BinOp::Gt")]
 fn assert_constraint_op_detects_wrong_operator() {
     let compiled = compile_structure(
         r#"
