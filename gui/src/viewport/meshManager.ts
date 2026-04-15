@@ -198,7 +198,9 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
       scene.remove(mesh);
     }
 
-    // Clean up any ghost clone for this entity
+    // removeGhostClone MUST precede geometry disposal: the ghost clone shares
+    // the original mesh's BufferGeometry reference. Disposing the geometry first
+    // would leave the ghost clone referencing invalid GPU buffers.
     removeGhostClone(entityPath);
 
     (mesh.geometry as any).disposeBoundsTree();
