@@ -5,7 +5,7 @@
 //! to generic function call resolution.
 
 use reify_compiler::{CompiledGuardedGroup, TopologyTemplate};
-use reify_types::{CompiledExprKind, DimensionVector, Severity, Type};
+use reify_types::{CompiledExprKind, Diagnostic, DimensionVector, Severity, Type};
 
 /// Helper: compile source, return the first topology template and diagnostics.
 fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<reify_types::Diagnostic>) {
@@ -31,12 +31,7 @@ fn compile_and_get_expr(
 
     let compiled = reify_compiler::compile(&parsed);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert_no_errors(&compiled.diagnostics);
 
     let template = &compiled.templates[0];
     let cell = template
@@ -56,6 +51,15 @@ fn compile_expecting_errors(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
     reify_compiler::compile(&parsed)
+}
+
+/// Helper: assert that none of the diagnostics have error severity.
+fn assert_no_errors(diagnostics: &[Diagnostic]) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
 // ---------------------------------------------------------------------------
@@ -140,12 +144,7 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert_no_errors(&compiled.diagnostics);
 
     let template = &compiled.templates[0];
     let cell = template
@@ -310,12 +309,7 @@ structure S {
 
     let compiled = reify_compiler::compile(&parsed);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors for `let x = none`, got: {:?}", errors);
+    assert_no_errors(&compiled.diagnostics);
 
     let template = &compiled.templates[0];
     let cell = template
@@ -360,11 +354,7 @@ structure def S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     assert_eq!(template.ports.len(), 1, "expected 1 port");
     let port = &template.ports[0];
@@ -424,11 +414,7 @@ structure def S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     assert_eq!(template.ports.len(), 1, "expected 1 port");
     let port = &template.ports[0];
@@ -484,11 +470,7 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     assert_eq!(
         template.guarded_groups.len(),
@@ -548,11 +530,7 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     assert_eq!(
         template.guarded_groups.len(),
@@ -618,11 +596,7 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     // The inner guarded group contains 'x'; find it by searching all groups.
     let group = template
@@ -687,11 +661,7 @@ structure S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
 
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    assert_no_errors(&diagnostics);
 
     assert_eq!(
         template.guarded_groups.len(),
@@ -728,6 +698,67 @@ structure S {
     assert!(
         matches!(&default.kind, CompiledExprKind::OptionNone),
         "expected OptionNone for guarded param with type alias, got {:?}",
+        default.kind
+    );
+}
+
+// ---------------------------------------------------------------------------
+// task 1725: guarded else-branch param Option<Length> = none → typed OptionNone
+// ---------------------------------------------------------------------------
+
+/// Guarded else-branch param with Option<Length> annotation and none default should
+/// produce a ValueCellDecl in guarded_groups[0].else_members with
+/// cell_type == Option<Length> and default_expr that is OptionNone with
+/// result_type == Option<Length> (not the fallback Option<Real>).
+#[test]
+fn guarded_else_param_none_with_typed_annotation_gets_correct_type() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    where active {
+    } else {
+        param x : Option<Length> = none
+    }
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    assert_no_errors(&diagnostics);
+
+    assert_eq!(
+        template.guarded_groups.len(),
+        1,
+        "expected 1 guarded group"
+    );
+    let group: &CompiledGuardedGroup = &template.guarded_groups[0];
+
+    let member = group
+        .else_members
+        .iter()
+        .find(|m| m.id.member == "x")
+        .expect("should have else-branch guarded member 'x'");
+
+    assert_eq!(
+        member.cell_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "else-branch guarded param cell_type should be Option<Length>, got {:?}",
+        member.cell_type
+    );
+
+    let default = member
+        .default_expr
+        .as_ref()
+        .expect("else-branch guarded member 'x' should have a default_expr");
+
+    assert_eq!(
+        default.result_type,
+        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
+        "else-branch guarded param default_expr.result_type should be Option<Length>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "expected OptionNone for else-branch guarded param, got {:?}",
         default.kind
     );
 }
