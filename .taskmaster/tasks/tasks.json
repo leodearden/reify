@@ -37217,7 +37217,15 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "scope register pre-registration cross-kind default overwrite",
+              "DefaultKindTag Constraint Param coexistence test",
+              "kind-aware seen_defaults dedup task 1287 conformance.rs"
+            ]
+          }
         },
         "updatedAt": "2026-04-15T12:40:28.130Z"
       },
