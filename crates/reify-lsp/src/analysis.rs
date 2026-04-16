@@ -959,6 +959,72 @@ mod tests {
         assert_eq!(info.decl_name, "S");
     }
 
+    // --- refactor regression: top-level + guarded-group lookup coexistence ---
+
+    #[test]
+    fn find_parsed_member_span_and_doc_top_level_after_refactor_regression() {
+        // Pins the contract that the refactored private
+        // `find_parsed_member_span_and_doc` preserves top-level resolution
+        // and did not accidentally divert all lookups through the
+        // guarded-group path. Source contains BOTH a top-level param/let
+        // AND a guarded-group param; every MemberInfo field is asserted.
+        let source = r#"structure S {
+    /// top-level param
+    param top_p : Scalar = 3mm
+    /// top-level let
+    let top_l = 9
+    param cond : Bool = true
+    where cond {
+        /// guarded param
+        param guarded_p : Scalar = 4mm
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+
+        // --- top-level param ---
+        let top_p = ctx
+            .find_member_decl("top_p", None)
+            .expect("top-level param 'top_p' must still resolve after refactor");
+        assert_eq!(top_p.name, "top_p");
+        assert_eq!(top_p.kind, ValueCellKind::Param);
+        assert_eq!(*top_p.cell_type, Type::length());
+        assert_eq!(top_p.doc, Some("top-level param"));
+        assert_eq!(top_p.decl_name, "S");
+        let top_p_start = source.find("param top_p").unwrap() as u32;
+        let top_p_end = (source.find("3mm").unwrap() + "3mm".len()) as u32;
+        assert_eq!(top_p.span.start, top_p_start);
+        assert_eq!(top_p.span.end, top_p_end);
+
+        // --- top-level let ---
+        let top_l = ctx
+            .find_member_decl("top_l", None)
+            .expect("top-level let 'top_l' must still resolve after refactor");
+        assert_eq!(top_l.name, "top_l");
+        assert_eq!(top_l.kind, ValueCellKind::Let);
+        assert_eq!(*top_l.cell_type, Type::Int);
+        assert_eq!(top_l.doc, Some("top-level let"));
+        assert_eq!(top_l.decl_name, "S");
+        let top_l_start = source.find("let top_l").unwrap() as u32;
+        let nine_pos = source.find("= 9").unwrap() + "= ".len();
+        let top_l_end = (nine_pos + 1) as u32;
+        assert_eq!(top_l.span.start, top_l_start);
+        assert_eq!(top_l.span.end, top_l_end);
+
+        // --- guarded-group param (different code path) ---
+        let guarded = ctx
+            .find_member_decl("guarded_p", None)
+            .expect("guarded-group param 'guarded_p' must resolve");
+        assert_eq!(guarded.name, "guarded_p");
+        assert_eq!(guarded.kind, ValueCellKind::Param);
+        assert_eq!(*guarded.cell_type, Type::length());
+        assert_eq!(guarded.doc, Some("guarded param"));
+        assert_eq!(guarded.decl_name, "S");
+        let guarded_start = source.find("param guarded_p").unwrap() as u32;
+        let guarded_end = (source.find("4mm").unwrap() + "4mm".len()) as u32;
+        assert_eq!(guarded.span.start, guarded_start);
+        assert_eq!(guarded.span.end, guarded_end);
+    }
+
     // --- decl_name field tests ---
 
     #[test]
