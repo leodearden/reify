@@ -143,13 +143,12 @@ pub(crate) fn register_guarded_names<'a>(
                 };
                 // Solid-typed params with a geometry-call default are treated
                 // symmetrically to geometry lets (mirrors entity.rs pre-pass, step-4).
-                if ty == Type::Geometry {
-                    if let Some(default_expr) = &param.default {
-                        if is_geometry_let(default_expr, functions, known_geometry_lets) {
-                            scope.has_geometry = true;
-                            known_geometry_lets.insert(param.name.as_str());
-                        }
-                    }
+                if ty == Type::Geometry
+                    && let Some(default_expr) = &param.default
+                    && is_geometry_let(default_expr, functions, known_geometry_lets)
+                {
+                    scope.has_geometry = true;
+                    known_geometry_lets.insert(param.name.as_str());
                 }
                 scope.register(&param.name, ty);
             }
