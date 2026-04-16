@@ -274,3 +274,49 @@ structure S : HasX {
     );
 }
 
+// ── task 1834 step-2: injected let uses annotation type, not expr type ───────
+
+/// Trait with `let x : Length = 5mm` injected into structure `S : HasX`.
+/// The injected `ValueCellDecl` for `x` must have `cell_type ==
+/// Type::Scalar { dimension: DimensionVector::LENGTH }`.
+///
+/// This pins the "annotation-is-authoritative" semantics of improvement 1:
+/// after the fix, even if the expression's inferred type drifts (e.g. via a
+/// new implicit-conversion rule that makes expr type and annotation type
+/// differ while still being compatible), the annotation stays authoritative
+/// on the cell — same invariant as the scope pre-registration, which already
+/// uses the annotation via `.unwrap_or`.
+#[test]
+fn annotated_let_injected_cell_uses_annotation_type() {
+    let source = r#"
+trait HasX {
+    let x : Length = 5mm
+}
+structure S : HasX {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("expected value_cell 'x' to be injected from trait HasX");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "annotation type must be authoritative on the injected cell"
+    );
+}
+
