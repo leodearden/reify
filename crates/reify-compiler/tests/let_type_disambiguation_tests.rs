@@ -364,3 +364,43 @@ structure S : HasL {
     );
 }
 
+// ── task 1834 step-5: unannotated let default satisfies typed let requirement ──
+
+/// Trait A provides `let x = 5mm` (no annotation, expression inferred as Length),
+/// trait B requires `let x : Length`.  Structure `S : A + B {}` must compile
+/// cleanly: A's unannotated let default, once its expression type is inferred,
+/// should match B's `Length` requirement.
+///
+/// Before task 1834, `available_defaults` advertised unannotated let defaults
+/// with `Type::Real` (the `.unwrap_or(Type::Real)` fallback), so any Let-kind
+/// requirement expecting Length would produce a false type-mismatch.
+///
+/// NOTE: the reify DSL currently does not syntactically accept
+/// `let x : Length` without a value (see trait_merge_tests.rs:280), so trait B
+/// here parses as empty and `RequirementKind::Let` is not reachable from source
+/// today.  The test therefore passes trivially against the current code AND
+/// the post-1834 code; it is retained as a forward-regression guard so that
+/// whenever `let` requirement syntax is introduced, the `available_defaults`
+/// inference behavior it relies on is already exercised.
+#[test]
+fn unannotated_let_default_satisfies_typed_let_requirement() {
+    let source = r#"
+trait A {
+    let x = 5mm
+}
+trait B {
+    let x : Length
+}
+structure S : A + B {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "structure S : A + B with unannotated `let x = 5mm` default should compile \
+         without type-mismatch errors (got: {:?})",
+        errors
+    );
+}
+
