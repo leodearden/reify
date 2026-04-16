@@ -55,6 +55,54 @@ fn solid_param_has_no_value_cell() {
     );
 }
 
+// ─── step-7: Guarded Solid-typed param must not emit a ValueCellDecl ─────────
+
+/// A `Solid`-typed param inside a block-level `where` guard must behave the same
+/// as a geometry let in a guarded block: it must NOT appear as a `ValueCellDecl`
+/// in the guarded group's `members`, and must produce a `RealizationDecl` in the
+/// template's top-level realizations list.
+///
+/// Expect failure until `guards.rs` is updated (step-8):
+/// - `register_guarded_names` currently does not add Solid params to
+///   `known_geometry_lets`, so the guarded-members pass treats `g` as a
+///   regular scalar param and emits a `ValueCellDecl`.
+/// - No realization is emitted for the guarded geometry param.
+#[test]
+fn guarded_solid_param_compiles_as_realization() {
+    let source = r#"structure def W {
+    param some_cond : Bool = true
+    where some_cond {
+        param g : Solid = cylinder(10mm, 20mm)
+    }
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "W")
+        .expect("W template not found");
+
+    // (a) `g` must NOT appear as a ValueCellDecl in top-level value_cells.
+    assert!(
+        !template.value_cells.iter().any(|c| c.id.member == "g"),
+        "top-level ValueCellDecl for 'g' must not exist"
+    );
+    // (b) `g` must NOT appear in any guarded group's members.
+    for group in &template.guarded_groups {
+        assert!(
+            !group.members.iter().any(|m| m.id.member == "g"),
+            "guarded ValueCellDecl for 'g' must not exist; Solid-typed guarded params \
+             should be lowered as realizations, not scalar value cells"
+        );
+    }
+    // (c) At least one RealizationDecl must be emitted for the guarded geometry param.
+    assert!(
+        !template.realizations.is_empty(),
+        "expected at least one RealizationDecl for guarded `param g : Solid = cylinder(...)`, \
+         got none"
+    );
+}
+
 // ─── step-3: Solid-typed param should lower to a realization ─────────────────
 
 /// `param g : Solid = cylinder(10mm, 20mm)` must:
