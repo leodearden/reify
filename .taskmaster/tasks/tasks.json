@@ -38693,6 +38693,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1857,
+        "title": "Refactor chamfer/fillet e2e tests to use run_modify_pipeline helper for setup",
+        "description": "The existing `chamfer_full_pipeline_creates_correct_geometryop` test in `chamfer_e2e.rs` (and the similar test in `fillet_e2e.rs`) contains boilerplate that `run_modify_pipeline` now encapsulates. Refactor these e2e tests to use the new helper for setup while retaining their detailed op-value assertions on the returned `ops`.\n\n## memory_hints\n- search: \"run_modify_pipeline test helper reify-test-support\"\n- get_entity: \"chamfer_e2e.rs\"\n- get_entity: \"fillet_e2e.rs\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -38705,7 +38716,7 @@
       ],
       "created": "2026-04-16T03:15:20.560Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-16T03:15:20.579Z"
+      "updated": "2026-04-16T03:16:08.175Z"
     }
   }
 }
