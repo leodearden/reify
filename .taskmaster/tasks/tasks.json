@@ -39574,15 +39574,16 @@
         "description": "Follow-up from Task 1887 review (esc-1887-53). Check 2 in tests/infra/test_tasks_json_id_types.sh (lines 52-58) trivially passes if a future edit ever removes all `subtasks` arrays from .taskmaster/tasks/tasks.json: `subtasks[]?` suppresses iteration over missing/empty arrays, jq outputs nothing, and `! ... | grep -q` returns success on empty input. Not currently a bug (the file has 8 subtask entries), but it leaves a silent-pass hole.\n\nFix: add a non-zero-count guard before the type/pattern checks, e.g.\n  assert \"tasks.json has at least one subtask\" \\\n      bash -c \"[ \\\"\\$(jq '[.master.tasks[].subtasks[]?] | length' '$TASKS_JSON')\\\" -gt 0 ]\"\n\nSame hardening principle could be considered for Check 1 (top-level tasks), though an empty .master.tasks[] is far less likely than an empty subtasks[].",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T23:33:20.576Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T23:33:15.909Z",
+      "lastModified": "2026-04-16T23:33:20.576Z",
       "taskCount": 1889,
       "completedCount": 1627,
       "tags": [
