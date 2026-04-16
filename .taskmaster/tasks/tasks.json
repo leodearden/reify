@@ -36763,11 +36763,11 @@
         "description": "In crates/reify-compiler/src/geometry.rs (~line 457), the loft fallback maps ALL non-geometry profiles to the same GeomRef::Step(step_offset). For a loft with N non-geometry args, every profile references the same step, which is semantically meaningless (loft requires distinct cross-sections). The old code emitted a per-argument diagnostic; the new code silently falls back.\n\nFix either: (a) emit a diagnostic per non-geometry loft argument while still using step_offset (preserving user feedback), or (b) use GeomRef::Step(step_offset + i) per profile to maintain index uniqueness in the fallback, consistent with the sweep path fallback pattern at line 605.\n\nNote: Task 1732 covers the related but distinct Step(0)→Step(step_offset) fix.\n\nmemory_hints: search \"loft fallback GeomRef step_offset per-profile\", search \"compile_geometry_call loft non-geometry profiles\", get_entity \"compile_geometry_call\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-16T02:54:58.256Z",
+        "updatedAt": "2026-04-16T06:34:17.472Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
@@ -37981,11 +37981,11 @@
         "description": "Two improvements to the MenuBar component from task 1794 review:\n\n1. ShortcutId union type (gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx): Add `as const` to the SHORTCUTS array, derive `type ShortcutId = typeof SHORTCUTS[number]['id']`, export it, and use it as the type for MenuItemDef.shortcutId. Also update getShortcut() and shortcutKey() parameter types. This catches typos at compile time instead of silently falling back to empty string via the `?? ''` fallback.\n2. Test assertion specificity (gui/src/__tests__/MenuBar.test.tsx): Replace ~12 instances of expect(element).toBeTruthy() with expect(element).toBeDefined() for DOM query results. Focus on lines 10, 21-24, 33, 73, 213-214, 224, 233, 247, 253.\n\nSkipped: adding a comment to the non-Node mousedown target test — existing inline comments already document the scenario adequately.\n\nFiles: gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx, gui/src/__tests__/MenuBar.test.tsx",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T03:10:00.560Z",
+        "updatedAt": "2026-04-16T06:34:17.571Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/MenuBar.test.tsx",
@@ -38817,7 +38817,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T06:34:17.335Z",
+      "lastModified": "2026-04-16T06:34:17.571Z",
       "taskCount": 1855,
       "completedCount": 1591,
       "tags": [
