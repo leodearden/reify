@@ -86,6 +86,74 @@ fn eval_with_prelude_trait_conformance() {
     }
 }
 
+// ─── step-1: Shadowing regression ────────────────────────────────────
+
+/// Regression guard: user-defined functions shadow prelude functions with
+/// identical signatures. A user-defined `symmetric_tolerance` that returns
+/// `nominal - deviation` (subtraction) must win over the prelude's
+/// `nominal + deviation` (addition) implementation.
+///
+/// With `5mm, 2mm`:
+///   - user impl → 3mm = 0.003 m  (expected)
+///   - prelude impl → 7mm = 0.007 m  (would indicate shadowing is broken)
+#[test]
+fn user_function_shadows_prelude_function() {
+    let source = r#"
+fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {
+    nominal - deviation
+}
+
+structure S {
+    let v : Length = symmetric_tolerance(5mm, 2mm)
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no error diagnostics, got: {:?}",
+        eval_errors
+    );
+
+    let cell_id = ValueCellId::new("S", "v");
+    let value = result.values.get(&cell_id).unwrap_or_else(|| {
+        panic!(
+            "eval should produce a value for S.v, but it was missing. \
+             Available values: {:?}",
+            result
+                .values
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .collect::<Vec<_>>()
+        )
+    });
+    let actual = value.as_f64().unwrap_or_else(|| {
+        panic!("S.v should be numeric, got: {:?}", value)
+    });
+    // User impl: 5mm - 2mm = 3mm = 0.003 m
+    // Prelude impl (if shadowing were broken): 5mm + 2mm = 7mm = 0.007 m
+    assert!(
+        (actual - 0.003).abs() < 1e-9,
+        "user function should shadow prelude: expected 0.003 (3mm), got {} (prelude would give 0.007)",
+        actual
+    );
+}
+
 // ─── step-9: End-to-end prelude pipeline ─────────────────────────────
 
 /// Full pipeline: .ri source → compile_with_prelude → Engine::eval.
