@@ -36266,13 +36266,13 @@
         "description": "The loft error-path fallback (geometry.rs line 462) uses `GeomRef::Step(0)` and the sweep profile fallback (line 597) also uses `GeomRef::Step(0)`. When `compile_geometry_call` is invoked with a non-zero `step_offset` (e.g., loft/sweep nested inside a boolean op or another geometry function), `Step(0)` references a completely unrelated step.\n\nFix: Change line 462 to `GeomRef::Step(step_offset)` and line 597 to `GeomRef::Step(step_offset)` to match the convention used in the `geom_ref` closure (line 304). The sweep path fallback at line 605 already correctly uses `step_offset + 1`.\n\n## memory_hints\n- search: \"compile_geometry_call step_offset GeomRef fallback\"\n- entity: \"compile_geometry_call\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1715"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T07:21:15.538Z",
+        "updatedAt": "2026-04-16T02:21:22.672Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
@@ -38442,7 +38442,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:21:16.655Z",
+      "lastModified": "2026-04-16T02:21:22.672Z",
       "taskCount": 1839,
       "completedCount": 1570,
       "tags": [
