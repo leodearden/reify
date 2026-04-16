@@ -33,14 +33,6 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
     compiled
 }
 
-/// Like `compile_no_errors` but returns the `CompiledModule` without asserting
-/// that diagnostics are absent.  Used by pin-down tests that intentionally
-/// inspect whatever diagnostic behavior the compiler currently exhibits, so
-/// that any future change to that behavior becomes a deliberate, reviewable
-/// test update rather than a silent semantic drift.
-fn compile_allowing_errors(source: &str) -> reify_compiler::CompiledModule {
-    parse_and_compile(source)
-}
 
 
 // ─── step-5: Solid-typed param must NOT emit a ValueCellDecl ─────────────────
@@ -336,7 +328,10 @@ fn solid_param_with_non_geometry_default_silently_accepts() {
     let source = r#"structure def W3 {
     param g : Solid = 42
 }"#;
-    let compiled = compile_allowing_errors(source);
+    // pin-down: parse+compile without asserting absence of diagnostics — the test
+    // intentionally inspects whatever diagnostic behavior the compiler currently
+    // exhibits so any future change becomes a deliberate, reviewable test update.
+    let compiled = parse_and_compile(source);
     let template = compiled
         .templates
         .iter()
