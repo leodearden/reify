@@ -11118,7 +11118,7 @@
         "description": "Two related issues in Engine::eval(): repeated allocation and undocumented invariant.",
         "details": "1. self.functions is rebuilt on every eval() call by cloning module.functions and extending with prelude functions. Pre-collect prelude functions once at Engine construction time into a prelude_functions field. In eval(), replace the per-call loop with self.functions.extend(self.prelude_functions.iter().cloned()).\n\n2. User functions shadow prelude functions because module functions are stored before prelude functions are appended (first-match lookup). Add a comment explaining this invariant and a regression test proving user definitions take precedence.\n\nFiles: crates/reify-eval/src/lib.rs\n\nmemory_hints: search \"Engine eval prelude functions\" | entities: Engine, eval",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11141,7 +11141,7 @@
             }
           ]
         },
-        "updatedAt": "2026-04-13T23:11:15.569Z"
+        "updatedAt": "2026-04-16T21:19:27.200Z"
       },
       {
         "id": "507",
@@ -39023,7 +39023,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T21:19:23.512Z",
+      "lastModified": "2026-04-16T21:19:27.200Z",
       "taskCount": 1864,
       "completedCount": 1600,
       "tags": [
