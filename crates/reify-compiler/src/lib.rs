@@ -1936,4 +1936,75 @@ structure S {
             diagnostics
         );
     }
+
+    #[test]
+    fn sweep_profile_fallback_uses_step_offset() {
+        // Construct a sweep(NumberLiteral, NumberLiteral) expr.
+        // Neither arg is a geometry ref so both error-path fallbacks fire.
+        // With step_offset=3 we expect:
+        //   profile (arg 0) → Step(3)   [currently buggy: Step(0)]
+        //   path    (arg 1) → Step(4)   [already correct: step_offset + 1]
+        let num_lit = |v: f64| reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral(v),
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "sweep".to_string(),
+                args: vec![num_lit(1.0), num_lit(2.0)],
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            3, // step_offset
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("sweep() should return Some even for non-geometry args");
+        let sweep_op = ops.last().expect("expected at least one op");
+        if let CompiledGeometryOp::Sweep { kind, profiles, .. } = sweep_op {
+            assert_eq!(*kind, SweepKind::Sweep, "expected Sweep kind");
+            assert_eq!(profiles.len(), 2, "expected 2 profiles");
+            assert_eq!(
+                profiles[0],
+                GeomRef::Step(3),
+                "sweep profile fallback should be GeomRef::Step(step_offset=3), got {:?}",
+                profiles[0]
+            );
+            assert_eq!(
+                profiles[1],
+                GeomRef::Step(4),
+                "sweep path fallback should be GeomRef::Step(step_offset+1=4), got {:?}",
+                profiles[1]
+            );
+        } else {
+            panic!("expected Sweep(Sweep) op, got {:?}", sweep_op);
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("sweep() profile (argument 1) must be a geometry expression")),
+            "expected diagnostic for profile, got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("sweep() path (argument 2) must be a geometry expression")),
+            "expected diagnostic for path, got: {:?}",
+            diagnostics
+        );
+    }
 }
