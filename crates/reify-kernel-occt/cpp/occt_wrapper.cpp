@@ -12,8 +12,9 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 
-// OCCT fillet
+// OCCT fillet / chamfer
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 
@@ -258,6 +259,28 @@ std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radiu
         throw std::runtime_error(std::string("OCCT fillet_all_edges: unexpected: ") + e.what());
     } catch (...) {
         throw std::runtime_error("OCCT fillet_all_edges: unknown C++ exception");
+    }
+}
+
+std::unique_ptr<OcctShape> chamfer_all_edges(const OcctShape& shape, double distance) {
+    try {
+        BRepFilletAPI_MakeChamfer chamfer(shape.shape);
+        for (TopExp_Explorer ex(shape.shape, TopAbs_EDGE); ex.More(); ex.Next()) {
+            chamfer.Add(distance, TopoDS::Edge(ex.Current()));
+        }
+        chamfer.Build();
+        if (!chamfer.IsDone()) {
+            throw std::runtime_error("BRepFilletAPI_MakeChamfer failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = chamfer.Shape();
+        return result;
+    } catch (Standard_Failure const& e) {
+        throw std::runtime_error(std::string("OCCT chamfer_all_edges: ") + e.GetMessageString());
+    } catch (std::exception const& e) {
+        throw std::runtime_error(std::string("OCCT chamfer_all_edges: unexpected: ") + e.what());
+    } catch (...) {
+        throw std::runtime_error("OCCT chamfer_all_edges: unknown C++ exception");
     }
 }
 

@@ -35,6 +35,36 @@ fn msgs_mention_self(msgs: &[String]) -> bool {
     mentions_word(msgs.iter().map(String::as_str), "self")
 }
 
+/// Asserts that `ty` is `Type::List(Box::new(Type::StructureRef(expected_name)))`.
+///
+/// `label` is an optional context prefix (e.g. `"via_self:"`) that is prepended
+/// to failure messages to distinguish calls when the same helper is invoked
+/// multiple times in one test.  Pass `""` when no label is needed.
+///
+/// Panics with a descriptive message if the type does not match.
+/// Extracted from duplicated match-assert blocks that appeared in the three
+/// collection-sub fallback tests added in task 1770.
+fn assert_list_of_struct_ref(ty: &reify_types::Type, expected_name: &str, label: &str) {
+    let prefix = if label.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", label)
+    };
+    match ty {
+        reify_types::Type::List(inner) => {
+            assert_eq!(
+                inner.as_ref(),
+                &reify_types::Type::StructureRef(expected_name.to_string()),
+                "{}expected List(StructureRef({:?})), got List({:?})",
+                prefix,
+                expected_name,
+                inner,
+            );
+        }
+        other => panic!("{}expected List type, got: {:?}", prefix, other),
+    }
+}
+
 #[test]
 fn test_mentions_word() {
     // (1) exact match: the word 'self' appears as its own token
@@ -72,6 +102,40 @@ fn test_mentions_word() {
     ));
 }
 
+#[test]
+fn test_assert_list_of_struct_ref_valid() {
+    // Calling with a List(StructureRef("Foo")) and expected name "Foo" should not panic.
+    let ty = reify_types::Type::List(Box::new(reify_types::Type::StructureRef("Foo".to_string())));
+    assert_list_of_struct_ref(&ty, "Foo", "");
+}
+
+#[test]
+#[should_panic(expected = "expected List type")]
+fn test_assert_list_of_struct_ref_non_list_panics() {
+    // Calling with a non-List type should panic with "expected List type".
+    let ty = reify_types::Type::Bool;
+    assert_list_of_struct_ref(&ty, "Foo", "");
+}
+
+#[test]
+#[should_panic(expected = "expected List(StructureRef")]
+fn test_assert_list_of_struct_ref_wrong_name_panics() {
+    // Calling with List(StructureRef("Bar")) but expecting "Foo" should panic with
+    // a message that includes "expected List(StructureRef".
+    let ty = reify_types::Type::List(Box::new(reify_types::Type::StructureRef("Bar".into())));
+    assert_list_of_struct_ref(&ty, "Foo", "");
+}
+
+#[test]
+#[should_panic(expected = "ctx:")]
+fn test_assert_list_of_struct_ref_label_in_panic() {
+    // Calling with a non-List type and a non-empty label should produce a panic
+    // message that includes the label prefix.  This exercises the `prefix` formatting
+    // path (lines 48-52) together with the outer `other =>` panic branch (line 64),
+    // producing "ctx: expected List type, got: Bool".
+    let ty = reify_types::Type::Bool;
+    assert_list_of_struct_ref(&ty, "Foo", "ctx:");
+}
 
 // ─── step-1: self.param resolves to correct ValueRef ───
 
@@ -851,6 +915,193 @@ structure S {
         "via_bare must NOT reference __list_bolts__length, got: {:?}",
         bare_refs
     );
+}
+
+// ─── task-1770 steps: fallback path tests ───
+// step-1: empty-params structure (sub_member_types["parts"] = Some(empty BTreeMap))
+// step-3: forward reference      (sub_member_types.get("bolts") = None)
+// step-4: self/bare equivalence on fallback path
+
+// ─── task-1770 step-1: fallback path — empty-params structure ───
+
+#[test]
+fn collection_sub_fallback_empty_structure_cell_id_and_type() {
+    // `structure Empty {}` has no params, so sub_member_types["parts"] is Some(empty BTreeMap).
+    // resolve_collection_sub_to_list falls back to the coarse path and should produce:
+    //   (a) cell ID  : S.__list_parts  (not __list_parts__<member>, since there is no member)
+    //   (b) type     : List(StructureRef("Empty"))  ← structure TYPE name, not field name
+    //
+    // Before the fix this test FAILS because the fallback produces StructureRef("parts")
+    // (the field name) instead of StructureRef("Empty") (the structure type name).
+    let source = r#"structure Empty {}
+structure S {
+    sub parts : List<Empty>
+    let x = self.parts
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let x_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("x value cell");
+
+    // (a) cell ID must be S.__list_parts (fallback coarse ID)
+    let expected_id = ValueCellId::new("S", "__list_parts");
+    let x_refs = x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .collect_value_refs();
+    assert!(
+        x_refs.contains(&expected_id),
+        "self.parts should reference S.__list_parts (fallback coarse ID), got: {:?}",
+        x_refs
+    );
+
+    // (b) type must be List(StructureRef("Empty")) — the structure type name, not the field name
+    let x_ty = &x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .result_type;
+    assert_list_of_struct_ref(x_ty, "Empty", "");
+}
+
+// ─── task-1770 step-3: fallback path — forward reference (sub_member_types returns None) ───
+
+#[test]
+fn collection_sub_fallback_forward_ref_uses_type_name() {
+    // S is declared BEFORE Bolt.  When the compiler processes S, Bolt's template has not
+    // yet been compiled, so sub_member_types.get("bolts") returns None — triggering the
+    // outer-None branch of the fallback (different from step-1's empty-BTreeMap branch).
+    // The fix should make both branches produce List(StructureRef("Bolt")), not
+    // List(StructureRef("bolts")).
+    //
+    // Assertions:
+    //   (a) cell ID : S.__list_bolts  (coarse fallback ID)
+    //   (b) type    : List(StructureRef("Bolt"))  — structure TYPE name
+    let source = r#"structure S {
+    sub bolts : List<Bolt>
+    let x = self.bolts
+}
+structure Bolt {
+    param diameter : Scalar = 10mm
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let x_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("x value cell");
+
+    // (a) cell ID must be S.__list_bolts (coarse fallback — Bolt was not yet compiled)
+    let expected_id = ValueCellId::new("S", "__list_bolts");
+    let x_refs = x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .collect_value_refs();
+    assert!(
+        x_refs.contains(&expected_id),
+        "forward-ref fallback should reference S.__list_bolts, got: {:?}",
+        x_refs
+    );
+
+    // (b) type must be List(StructureRef("Bolt")) — the structure type name
+    let x_ty = &x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .result_type;
+    assert_list_of_struct_ref(x_ty, "Bolt", "");
+}
+
+// ─── task-1770 step-4: self/bare equivalence on the fallback path ───
+
+#[test]
+fn collection_sub_fallback_equivalence_self_and_bare() {
+    // Extends the equivalence pattern from self_dot_collection_sub_equivalence_with_bare
+    // to the fallback scenario: `structure Empty {}` (no params) triggers the fallback.
+    // Both `self.parts` and bare `parts` should resolve to the same cell and type.
+    //
+    // Assertions:
+    //   (a) both via_self and via_bare reference S.__list_parts (same coarse ID)
+    //   (b) both have type List(StructureRef("Empty"))
+    let source = r#"structure Empty {}
+structure S {
+    sub parts : List<Empty>
+    let via_self = self.parts
+    let via_bare = parts
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let via_self_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_self")
+        .expect("via_self value cell");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    // (a) Both should reference S.__list_parts
+    let expected_id = ValueCellId::new("S", "__list_parts");
+
+    let self_refs = via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .collect_value_refs();
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        self_refs.contains(&expected_id),
+        "via_self (fallback) should reference S.__list_parts, got: {:?}",
+        self_refs
+    );
+    assert!(
+        bare_refs.contains(&expected_id),
+        "via_bare (fallback) should reference S.__list_parts, got: {:?}",
+        bare_refs
+    );
+
+    // (b) Both should have type List(StructureRef("Empty"))
+    let self_ty = &via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .result_type;
+    let bare_ty = &via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .result_type;
+
+    assert_list_of_struct_ref(self_ty, "Empty", "via_self:");
+    assert_list_of_struct_ref(bare_ty, "Empty", "via_bare:");
 }
 
 // ─── task-1281 step-3: self.collection_sub.member error uses correct fallback type ───

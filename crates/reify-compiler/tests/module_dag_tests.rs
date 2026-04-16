@@ -3,7 +3,6 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 
@@ -686,6 +685,104 @@ fn compile_module_multi_import_prelude() {
     );
 }
 
+// ── task-370/step-9: circular_import_error_message_deterministic ──────────────
+
+/// Validate that circular-import error messages are deterministic.
+///
+/// Creates a three-module cycle: cherry -> apple -> banana -> cherry.
+/// Module names are chosen so alphabetical order (apple, banana, cherry)
+/// DIFFERS from DFS traversal order (cherry, apple, banana).  This ensures
+/// IndexSet insertion-order is the source of determinism, not alphabetical sorting.
+///
+/// Compiles twice (with independent `ModuleDag` instances) and asserts:
+/// (a) both runs produce an error mentioning "circular" or "cycle",
+/// (b) the error messages are identical between runs, and
+/// (c) the module names appear in DFS traversal order within the message
+///     ("cherry" before "apple" before "banana").
+///
+/// IndexSet preserves insertion order (= DFS traversal order), so the message
+/// reads "cherry -> apple -> banana -> cherry" — showing the actual import chain.
+#[test]
+fn circular_import_error_message_deterministic() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // cherry imports apple (DFS entry point)
+    fs::write(
+        dir.join("cherry.ri"),
+        "import apple\nstructure Cherry { param x: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    // apple imports banana
+    fs::write(
+        dir.join("apple.ri"),
+        "import banana\nstructure Apple { param y: Scalar = 2mm }",
+    )
+    .unwrap();
+
+    // banana imports cherry (closes the cycle: cherry -> apple -> banana -> cherry)
+    fs::write(
+        dir.join("banana.ri"),
+        "import cherry\nstructure Banana { param z: Scalar = 3mm }",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+
+    // First compilation — DFS visits cherry, apple, banana, then detects cherry again.
+    // in_progress = [cherry, apple, banana] (insertion order); message: cherry -> apple -> banana -> cherry.
+    let mut dag1 = ModuleDag::new();
+    let result1 = dag1.compile_module("cherry", &resolver);
+    assert!(result1.is_err(), "expected error for 3-cycle (first run)");
+    let msg1 = result1
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+    assert!(
+        msg1.contains("circular") || msg1.contains("cycle"),
+        "first run: error should mention circular dependency, got: {}",
+        msg1
+    );
+
+    // Second compilation (fresh dag)
+    let mut dag2 = ModuleDag::new();
+    let result2 = dag2.compile_module("cherry", &resolver);
+    assert!(result2.is_err(), "expected error for 3-cycle (second run)");
+    let msg2 = result2
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // (b) Messages must be identical between runs (determinism)
+    assert_eq!(
+        msg1, msg2,
+        "circular-import error messages must be identical across compilations"
+    );
+
+    // (c) Module names must appear in DFS traversal order within the message.
+    // DFS order: cherry < apple < banana (cherry is the entry, then apple, then banana).
+    // The message should read "cherry -> apple -> banana -> cherry".
+    // cherry appears twice (start and end of the arrow chain); take the first occurrence.
+    let cherry_pos = msg1.find("cherry").expect("'cherry' must appear in error");
+    let apple_pos = msg1.find("apple").expect("'apple' must appear in error");
+    let banana_pos = msg1.find("banana").expect("'banana' must appear in error");
+    assert!(
+        cherry_pos < apple_pos,
+        "expected 'cherry' before 'apple' (DFS traversal order), got: {}",
+        msg1
+    );
+    assert!(
+        apple_pos < banana_pos,
+        "expected 'apple' before 'banana' (DFS traversal order), got: {}",
+        msg1
+    );
+}
+
 // ── amendment (task-1392): compile_project multi-import prelude path ──────────
 
 /// Covers the block-scoped prelude path in `compile_project` (lines 257-260 in
@@ -882,5 +979,71 @@ fn private_unit_not_exported_through_import_prelude() {
         errors2.is_empty(),
         "positive control (pub unit): expected zero errors but got: {:#?}",
         errors2
+    );
+}
+
+// ── step-2 (task-1833): cycle_error_excludes_non_cycle_ancestors ─────────────
+
+/// Validates that cycle detection excludes non-cycle ancestors from the error
+/// message, showing only the modules that are part of the actual cycle.
+///
+/// Creates a 4-module graph: d -> a -> b -> a
+///   - d is an ancestor that triggers the DFS, but is NOT part of the cycle
+///   - a -> b -> a is the actual cycle
+///
+/// The error message should show exactly "a -> b -> a" without mentioning "d".
+/// IndexSet::get_index_of finds where 'a' starts in in_progress ([d, a, b]),
+/// then slices from that index to exclude the non-cycle ancestor.
+#[test]
+fn cycle_error_excludes_non_cycle_ancestors() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // d imports a (DFS entry; d is NOT in the cycle)
+    fs::write(
+        dir.join("d.ri"),
+        "import a\nstructure D { param v: Scalar = 4mm }",
+    )
+    .unwrap();
+
+    // a imports b
+    fs::write(
+        dir.join("a.ri"),
+        "import b\nstructure A { param v: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    // b imports a (closes the cycle: a -> b -> a)
+    fs::write(
+        dir.join("b.ri"),
+        "import a\nstructure B { param v: Scalar = 2mm }",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("d", &resolver);
+    assert!(result.is_err(), "expected error for cycle a->b->a triggered via d");
+
+    let msg = result
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // (a) error mentions circular/cycle
+    assert!(
+        msg.contains("circular") || msg.contains("cycle"),
+        "error should mention circular dependency, got: {}",
+        msg
+    );
+
+    // (b) message is exactly the cycle chain — this positive assertion proves 'd'
+    // is absent without fragile per-pattern negative checks.
+    assert_eq!(
+        msg,
+        "circular dependency detected: a -> b -> a",
+        "message should contain exactly the cycle, not non-cycle ancestors"
     );
 }

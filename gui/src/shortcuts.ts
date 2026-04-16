@@ -51,6 +51,8 @@ export interface ShortcutDef {
   key: string;
   /** Human-readable description of the action */
   description: string;
+  /** When true, the shortcut is defined but not currently functional */
+  disabled?: boolean;
   /** Structured binding for event matching. Absent when there is no keyboard shortcut. */
   bind?: KeyBinding;
 }
@@ -64,8 +66,8 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'export',     key: 'Ctrl+E',       description: 'Export',               bind: { key: 'e', ctrl: true, shift: false } },
   // shift: false makes the undo intent explicit and prevents it from shadowing redo
   // (which requires shift: true) if a callback were ever wired to undo in ID_TO_CALLBACK.
-  { id: 'undo',       key: 'Ctrl+Z',       description: 'Undo',                 bind: { key: 'z', ctrl: true, shift: false } },
-  { id: 'redo',       key: 'Ctrl+Shift+Z', description: 'Redo',                 bind: { key: 'z', ctrl: true, shift: true } },
+  { id: 'undo',       key: 'Ctrl+Z',       description: 'Undo',                 disabled: true, bind: { key: 'z', ctrl: true, shift: false } },
+  { id: 'redo',       key: 'Ctrl+Shift+Z', description: 'Redo',                 disabled: true, bind: { key: 'z', ctrl: true, shift: true } },
   { id: 'reEvaluate', key: 'F5',           description: 'Re-evaluate',          bind: { key: 'F5' } },
   { id: 'fitToView',  key: '',             description: 'Fit to view' },
   { id: 'toggleChat', key: 'Ctrl+J',       description: 'Toggle chat panel',    bind: { key: 'j', ctrl: true, shift: false } },

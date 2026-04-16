@@ -3,7 +3,7 @@
 //! Tests for compiling connect and chain declarations into CompiledConnection entries.
 
 use reify_compiler::*;
-use reify_test_support::{compile_first_template, compile_source};
+use reify_test_support::{assert_has_diagnostic, assert_no_diagnostic, compile_first_template, compile_source};
 use reify_types::*;
 
 // ── Step 13: compile_connect_generates_connection ────────────────────
@@ -1363,37 +1363,241 @@ structure def S {
     );
 }
 
-// ── task-393 test helpers ─────────────────────────────────────────────────
+// ── task-370/step-1: asymmetric_located_port_emits_warning ───────────
 
-/// Assert that at least one diagnostic matches `severity` and has a message
-/// containing `contains`.  Panics with the full diagnostics list on failure.
-fn assert_has_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
-    let matched: Vec<_> = diagnostics
+#[test]
+fn asymmetric_located_port_emits_warning() {
+    // MechPort : LocatedPort (satisfies LocatedPort transitively via refinement)
+    // DataPort does NOT satisfy LocatedPort.
+    // Connecting a MechPort to a DataPort is asymmetric — one side has a spatial
+    // frame, the other does not. The compiler must emit a warning.
+    let source = r#"
+trait LocatedPort { param frame : Real }
+trait MechPort : LocatedPort { param shaft_dia : Length }
+trait DataPort { param rate : Real }
+structure def S {
+    port mech : out MechPort { param shaft_dia : Length = 10mm }
+    port data : in DataPort { param rate : Real = 100.0 }
+    connect mech -> data
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+    let located_warnings: Vec<_> = diagnostics
         .iter()
-        .filter(|d| d.severity == severity && d.message.contains(contains))
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("LocatedPort")
+                && d.message.contains("asymmetric")
+        })
         .collect();
     assert!(
-        !matched.is_empty(),
-        "expected diagnostic with severity={:?} containing {:?}, got: {:?}",
-        severity,
-        contains,
+        !located_warnings.is_empty(),
+        "expected a warning about asymmetric LocatedPort connection, got diagnostics: {:?}",
         diagnostics
+    );
+    assert_eq!(
+        located_warnings.len(),
+        1,
+        "expected exactly one LocatedPort warning, got: {:?}",
+        located_warnings
     );
 }
 
-/// Assert that no diagnostic matches `severity` with a message containing
-/// `contains`.  Panics with the matching diagnostics on failure.
-fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
-    let matched: Vec<_> = diagnostics
+// ── task-370/step-2: symmetric_located_port_no_warning ───────────────
+
+#[test]
+fn symmetric_located_port_no_warning() {
+    // Both ports are MechPort (which satisfies LocatedPort).
+    // A symmetric connection — no asymmetric LocatedPort warning should be emitted.
+    let source = r#"
+trait LocatedPort { param frame : Real }
+trait MechPort : LocatedPort { param shaft_dia : Length }
+structure def S {
+    port a : out MechPort { param shaft_dia : Length = 10mm }
+    port b : in MechPort { param shaft_dia : Length = 10mm }
+    connect a -> b
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+    let located_warnings: Vec<_> = diagnostics
         .iter()
-        .filter(|d| d.severity == severity && d.message.contains(contains))
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("LocatedPort"))
         .collect();
     assert!(
-        matched.is_empty(),
-        "expected no diagnostic with severity={:?} containing {:?}, got: {:?}",
-        severity,
-        contains,
-        matched
+        located_warnings.is_empty(),
+        "expected no LocatedPort warnings for symmetric connection, got: {:?}",
+        located_warnings
+    );
+}
+
+// ── task-370/step-3: neither_located_port_no_warning ─────────────────
+
+#[test]
+fn neither_located_port_no_warning() {
+    // Both ports are DataPort — neither satisfies LocatedPort.
+    // No asymmetric LocatedPort warning should be emitted.
+    let source = r#"
+trait LocatedPort { param frame : Real }
+trait DataPort { param rate : Real }
+structure def S {
+    port a : out DataPort { param rate : Real = 1.0 }
+    port b : in DataPort { param rate : Real = 1.0 }
+    connect a -> b
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+    let located_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("LocatedPort"))
+        .collect();
+    assert!(
+        located_warnings.is_empty(),
+        "expected no LocatedPort warnings when neither port satisfies LocatedPort, got: {:?}",
+        located_warnings
+    );
+}
+
+// ── task-370/step-8: forward_ref_connector_type_accepted ─────────────
+
+#[test]
+fn forward_ref_connector_type_accepted() {
+    // The connector type (ForwardConnector) is defined AFTER the structure that uses it.
+    // Documents the design decision: connector_type is stored as a string in
+    // SubComponentDecl without compile-time name resolution, so forward references
+    // work naturally — no error should be produced.
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b : ForwardConnector { grade = 8.8 }
+}
+structure def ForwardConnector { param grade : Real = 8.8 }
+"#;
+
+    let module = compile_source(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors for forward-ref connector type, got: {:?}",
+        errors
+    );
+
+    let s_template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    assert_eq!(s_template.connections.len(), 1);
+    // connector_sub should reference ForwardConnector by name
+    let conn = &s_template.connections[0];
+    assert!(conn.connector_sub.is_some(), "expected connector_sub");
+    let connector_name = conn.connector_sub.as_ref().unwrap();
+    assert!(
+        connector_name.starts_with("__connector_"),
+        "expected __connector_ prefix, got {}",
+        connector_name
+    );
+    let connector_sub = s_template
+        .sub_components
+        .iter()
+        .find(|s| s.name == *connector_name)
+        .expect("expected sub_component for connector");
+    assert_eq!(
+        connector_sub.structure_name, "ForwardConnector",
+        "expected structure_name to be ForwardConnector"
+    );
+}
+
+// ── task-370/amend-5: asymmetric_located_port_right_side_emits_warning ──────
+
+#[test]
+fn asymmetric_located_port_right_side_emits_warning() {
+    // Reversed direction: the RIGHT port (mech) satisfies LocatedPort, but the
+    // LEFT port (data) does not.  The warning must fire regardless of which side
+    // carries the spatial frame.
+    let source = r#"
+trait LocatedPort { param frame : Real }
+trait MechPort : LocatedPort { param shaft_dia : Length }
+trait DataPort { param rate : Real }
+structure def S {
+    port data : out DataPort { param rate : Real = 100.0 }
+    port mech : in MechPort { param shaft_dia : Length = 10mm }
+    connect data -> mech
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+    let located_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("LocatedPort")
+                && d.message.contains("asymmetric")
+        })
+        .collect();
+    assert!(
+        !located_warnings.is_empty(),
+        "expected a warning about asymmetric LocatedPort (right side located), got diagnostics: {:?}",
+        diagnostics
+    );
+    assert_eq!(
+        located_warnings.len(),
+        1,
+        "expected exactly one LocatedPort warning, got: {:?}",
+        located_warnings
+    );
+}
+
+// ── task-370/step-4: dotted_port_no_false_located_port_warning ───────
+
+#[test]
+fn dotted_port_no_false_located_port_warning() {
+    // Sub-component ports connected via dotted syntax (motor.shaft -> recv.input).
+    // These are dotted references that cannot be resolved to Assembly's port list.
+    // The LocatedPort check must gracefully skip — no false warning should be emitted.
+    let source = r#"
+trait LocatedPort { param frame : Real }
+trait MechPort : LocatedPort { param shaft_dia : Length }
+trait DataPort { param rate : Real }
+structure def Motor {
+    port shaft : out MechPort { param shaft_dia : Length = 10mm }
+}
+structure def Receiver {
+    port input : in DataPort { param rate : Real = 100.0 }
+}
+structure def Assembly {
+    sub motor = Motor()
+    sub recv = Receiver()
+    connect motor.shaft -> recv.input
+}
+"#;
+
+    let module = compile_source(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    let located_warnings: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("LocatedPort"))
+        .collect();
+    assert!(
+        located_warnings.is_empty(),
+        "expected no LocatedPort warning for dotted-port connections, got: {:?}",
+        located_warnings
     );
 }
 
@@ -1478,6 +1682,211 @@ structure def S {
     assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
 
+// ── task-1838: hoisted_lookup split tests ────────────────────────────────────
+
+/// Case (a): bare port found, direction compatible (Out→In) → auto-match runs
+/// and produces identity mapping for param 'd'.
+#[test]
+fn hoisted_lookup_bare_found_auto_match() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    port b : in T { param d : Length = 5mm }
+    connect a -> b
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1, "expected 1 connection");
+    // Auto-match ran and produced identity mapping for param 'd'
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected auto-generated identity mapping for param 'd'"
+    );
+}
+
+/// Case (b): bare port not found → undefined-port error is emitted and names the port.
+#[test]
+fn hoisted_lookup_bare_not_found_undefined() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    connect a -> nonexistent
+}
+"#;
+    let (_template, diagnostics) = compile_first_template(source);
+    let undef_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+        .collect();
+    assert!(
+        !undef_errors.is_empty(),
+        "expected undefined-port error, got: {:?}",
+        diagnostics
+    );
+    // The undefined port name is included in the error message
+    let names_nonexistent = undef_errors
+        .iter()
+        .any(|d| d.message.contains("nonexistent"));
+    assert!(
+        names_nonexistent,
+        "error message should name the undefined port, got: {:?}",
+        undef_errors
+    );
+}
+
+/// Case (c): dotted ports (motor.shaft → gear.input) → no undefined-port check,
+/// no auto-match, empty port_mappings.
+#[test]
+fn hoisted_lookup_dotted_no_check() {
+    let source = r#"
+trait RotaryPort { param d : Length }
+structure def Motor {
+    port shaft : out RotaryPort { param d : Length = 10mm }
+}
+structure def Gear {
+    port input : in RotaryPort { param d : Length = 10mm }
+}
+structure def Assembly {
+    sub motor = Motor()
+    sub gear = Gear()
+    connect motor.shaft -> gear.input
+}
+"#;
+    let module = compile_source(source);
+    let asm = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly template");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(asm.connections.len(), 1, "expected 1 connection");
+    assert_eq!(
+        asm.connections[0].left_port,
+        "motor.shaft",
+        "expected dotted left_port"
+    );
+    assert_eq!(
+        asm.connections[0].right_port,
+        "gear.input",
+        "expected dotted right_port"
+    );
+    // Dotted ports: no undefined-port error, no auto-match, empty port_mappings
+    let undef_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+        .collect();
+    assert!(
+        undef_errors.is_empty(),
+        "expected NO undefined-port errors for dotted ports, got: {:?}",
+        undef_errors
+    );
+    assert_eq!(
+        asm.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings for dotted port references"
+    );
+}
+
+/// Case (d): mixed — one bare+found ('a'), one dotted ('motor.shaft') → no auto-match.
+/// When only one side is dotted, is_bare(&l) && is_bare(&r) is false, so auto-match
+/// never runs even though the bare side resolved successfully. The dotted side is
+/// also exempt from the undefined-port check because is_bare returns false for it.
+#[test]
+fn hoisted_lookup_mixed_bare_dotted() {
+    let source = r#"
+trait T { param d : Length }
+structure def Motor {
+    port shaft : in T { param d : Length = 5mm }
+}
+structure def Coupler {
+    port a : out T { param d : Length = 5mm }
+    sub motor = Motor()
+    connect a -> motor.shaft
+}
+"#;
+    let module = compile_source(source);
+    let coupler = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Coupler")
+        .expect("Coupler template");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(coupler.connections.len(), 1, "expected 1 connection");
+    assert_eq!(
+        coupler.connections[0].left_port,
+        "a",
+        "expected bare left_port"
+    );
+    assert_eq!(
+        coupler.connections[0].right_port,
+        "motor.shaft",
+        "expected dotted right_port"
+    );
+    // Mixed bare+dotted: no auto-match runs, so port_mappings is empty
+    assert_eq!(
+        coupler.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings for mixed bare+dotted connect"
+    );
+}
+
+/// Edge case: both ports are bare; left ('a') exists, right ('missing') does not.
+/// Verifies: (1) undefined-port error is emitted for 'missing', (2) the connection
+/// still appears (compile_connection does not early-return on undefined ports),
+/// (3) port_mappings is empty because auto_match_port_members returns Vec::new()
+/// when right_compiled is None, and (4) no "do not match" warning is emitted
+/// (the unmatched-members path is never reached when one port is None).
+#[test]
+fn hoisted_lookup_bare_one_undefined_no_auto_match() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    connect a -> missing
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    // (1) undefined-port error emitted for 'missing'
+    let undef_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+        .collect();
+    assert!(
+        !undef_errors.is_empty(),
+        "expected undefined-port error for 'missing', got: {:?}",
+        diagnostics
+    );
+    // (2) connection still appears in template.connections
+    assert_eq!(template.connections.len(), 1, "expected 1 connection");
+    // (3) port_mappings is empty — auto_match short-circuits on None
+    assert_eq!(
+        template.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings when right port is undefined"
+    );
+    // (4) no "do not match" warning — unmatched-members path not reached
+    assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
+}
+
 // ── task-393/step-5: compatible_directions_still_emits_unmatched_warning ──
 
 #[test]
@@ -1503,4 +1912,61 @@ structure def S {
 
     assert_no_diagnostic(&diagnostics, Severity::Error, "incompatible port directions");
     assert_has_diagnostic(&diagnostics, Severity::Warning, "do not match");
+}
+
+// ── task-1832/step-3: auto_match_with_prelooked_ports_same_result ────────────
+
+/// Pinning test: verifies that compile_connection with pre-looked-up (hoisted) port
+/// references produces exactly the same auto-match output as the original lookup-based
+/// path. This pins expected behavior before the auto_match_port_members signature change.
+///
+/// Scenario: two bare ports of same trait with two matching params (radius, angle).
+/// Compatible Out->In direction. Expected: identity mappings sorted alphabetically.
+#[test]
+fn auto_match_with_prelooked_ports_same_result() {
+    let source = r#"
+trait PipePort {
+    param radius : Length
+    param angle : Real
+}
+structure def S {
+    port feed : out PipePort {
+        param radius : Length = 12mm
+        param angle : Real = 0.0
+    }
+    port inlet : in PipePort {
+        param radius : Length = 12mm
+        param angle : Real = 0.0
+    }
+    connect feed -> inlet
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1);
+
+    // Auto-match should produce sorted identity mappings: angle, radius
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![
+            ("angle".to_string(), "angle".to_string()),
+            ("radius".to_string(), "radius".to_string()),
+        ],
+        "expected sorted identity mappings for PipePort members (angle, radius)"
+    );
+
+    // No warnings — ports match completely
+    let warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "expected no warnings, got: {:?}",
+        warnings
+    );
 }

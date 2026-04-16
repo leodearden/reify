@@ -162,7 +162,9 @@ pub(crate) fn check_trait_conformance(
                 DefaultKind::Param { cell_type, .. } => {
                     (AvailableDefaultKind::Param, cell_type.clone())
                 }
-                DefaultKind::Let(_) => (AvailableDefaultKind::Let, Type::Real),
+                DefaultKind::Let { cell_type, .. } => {
+                    (AvailableDefaultKind::Let, cell_type.clone().unwrap_or(Type::Real))
+                }
                 DefaultKind::Constraint(_) => return None,
             };
             Some(((name.to_string(), kind), ty))
@@ -266,17 +268,22 @@ pub(crate) fn check_trait_conformance(
 
     // Pre-register default member names in scope so their expressions can
     // reference each other (e.g., constraint x > 0 references param x from same trait).
+    // register_if_absent provides the no-overwrite guarantee: first-seen type wins,
+    // and the method itself is safe against cross-kind overwrites without a call-site guard.
     for default in &all_defaults {
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
-            && !scope.names.contains_key(name)
         {
             let ty = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let(_) => Type::Real,
+                DefaultKind::Let { cell_type, .. } => cell_type.clone().unwrap_or(Type::Real),
                 DefaultKind::Constraint(_) => continue,
             };
-            scope.register(name, ty);
+            let _was_new = scope.register_if_absent(name, ty);
+            // If _was_new is false, a prior default already registered this name
+            // (first-seen type wins). Useful hook for future debug-level logging
+            // to surface trait-merge conflicts where two traits supply the same
+            // default name with different types.
         }
     }
 
@@ -314,7 +321,7 @@ pub(crate) fn check_trait_conformance(
                     });
                 }
             }
-            DefaultKind::Let(let_decl) => {
+            DefaultKind::Let { let_decl, .. } => {
                 let name = default
                     .name
                     .as_deref()
@@ -469,11 +476,14 @@ pub(crate) fn collect_all_requirements(
     for default in &compiled_trait.defaults {
         if default.name.is_none() {
             // Unnamed defaults (e.g., unlabeled constraints) — always push.
+            // Dedup is implicit: the `visited` set (checked above before recursing into
+            // each trait) prevents re-processing the same trait, so each unnamed default
+            // is encountered at most once regardless of how many paths lead to that trait.
             defaults.push(default.clone());
         } else if let Some(name) = &default.name {
             // For let bindings: use content_hash comparison to distinguish same
             // expression (dedup) vs different expression (conflict).
-            if let DefaultKind::Let(let_decl) = &default.kind {
+            if let DefaultKind::Let { let_decl, .. } = &default.kind {
                 if let Some((existing_hash, existing_trait)) = seen_let_hashes.get(name.as_str()) {
                     if existing_hash != &let_decl.content_hash
                         && !structure_members.contains_key(name.as_str())
@@ -506,7 +516,7 @@ pub(crate) fn collect_all_requirements(
             // never interfere with each other's dedup or conflict detection.
             let (default_type, kind_tag) = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => (cell_type.clone(), DefaultKindTag::Param),
-                DefaultKind::Let(_) => (Type::Real, DefaultKindTag::Let),
+                DefaultKind::Let { cell_type, .. } => (cell_type.clone().unwrap_or(Type::Real), DefaultKindTag::Let),
                 DefaultKind::Constraint(_) => (Type::Bool, DefaultKindTag::Constraint),
             };
 

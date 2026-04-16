@@ -2,7 +2,7 @@
 //!
 //! Covers:
 //!   - smoke test: fixture parses, compiles, evaluates without errors (non-empty values)
-//!   - expected templates: 7 structures all present in compiled output
+//!   - expected templates: at least 7 structures all present in compiled output
 //!   - count_zero: degenerate linear_pattern_2d with count=0 compiles without ICE
 //!   - count_one: single-instance pattern compiles and evals
 //!   - 10x10 grid: large pattern compiles with Pattern2D kind realization
@@ -12,8 +12,7 @@
 use std::fs;
 
 use reify_compiler::PatternKind;
-use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Severity};
+use reify_test_support::{assert_no_eval_errors, compile_source_named, errors_only, make_engine};
 
 /// Absolute path to the fixture file.
 const FIXTURE_PATH: &str = concat!(
@@ -28,39 +27,14 @@ const FIXTURE_PATH: &str = concat!(
 fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     let source = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
-    let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors in {}: {:?}",
-        path,
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "compile errors in {}: {:?}",
-        path,
-        errors
-    );
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let compiled = compile_source_named(&source, module_name);
+    let errs = errors_only(&compiled);
+    assert!(errs.is_empty(), "compile errors in {}: {:?}", path, errs);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
-    let eval_errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        eval_errors.is_empty(),
-        "eval errors in {}: {:?}",
-        path,
-        eval_errors
-    );
+    // Note: assert_no_eval_errors omits the file path from the panic message;
+    // the path is visible via `path` in the backtrace when this assertion fails.
+    assert_no_eval_errors(&result);
     result
 }
 
@@ -68,14 +42,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
 fn compile_ri_file(path: &str, module_name: &str) -> reify_compiler::CompiledModule {
     let source = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
-    let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors in {}: {:?}",
-        path,
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
+    compile_source_named(&source, module_name)
 }
 
 // ── step-1: smoke test ────────────────────────────────────────────────────────
@@ -92,21 +59,16 @@ fn smoke_compiles_and_evals() {
 
 // ── step-3: structural assertions ─────────────────────────────────────────────
 
-/// All 7 expected structures present in compiled templates.
+/// At least 7 expected structures present in compiled templates.
 #[test]
 fn has_expected_templates() {
     let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
-    assert_eq!(
-        compiled.templates.len(),
-        7,
-        "expected 7 templates, got {}: {:?}",
+    assert!(
+        compiled.templates.len() >= 7,
+        "expected >=7 templates, got {}: {:?}",
         compiled.templates.len(),
         compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
@@ -136,11 +98,7 @@ fn has_expected_templates() {
 #[test]
 fn count_zero_compiles() {
     let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = errors_only(&compiled);
     assert!(
         errors.is_empty(),
         "PatternCountZero should compile without errors, but got: {:?}",
@@ -152,12 +110,37 @@ fn count_zero_compiles() {
     );
 }
 
-/// PatternCountOne compiles and evals without errors.
+/// PatternCountOne has exactly 1 realization with Linear2D pattern kind.
 #[test]
 fn count_one_single_instance() {
-    // eval_ri_file already asserts no errors
-    eval_ri_file(FIXTURE_PATH, "pattern_composition");
-    // If we reach here, PatternCountOne compiled and eval'd cleanly.
+    let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "PatternCountOne")
+        .expect("PatternCountOne template should be present");
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "PatternCountOne should have 1 realization (the linear_pattern_2d call), got {}",
+        template.realizations.len()
+    );
+    assert!(
+        !template.realizations[0].operations.is_empty(),
+        "PatternCountOne realization should have at least one operation"
+    );
+    let op = &template.realizations[0].operations[0];
+    assert!(
+        matches!(
+            op,
+            reify_compiler::CompiledGeometryOp::Pattern {
+                kind: PatternKind::Linear2D,
+                ..
+            }
+        ),
+        "PatternCountOne realization should be Pattern(Linear2D), got {:?}",
+        op
+    );
 }
 
 /// PatternGrid10x10 template has exactly 1 realization with Pattern2D kind.

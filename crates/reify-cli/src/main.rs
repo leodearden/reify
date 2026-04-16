@@ -312,13 +312,16 @@ fn cmd_gui(args: &[String]) -> ExitCode {
 }
 
 fn cmd_lsp() -> ExitCode {
-    // Use a current-thread runtime: the LSP server handles one stdio connection
-    // and needs no parallelism.  A multi-threaded runtime spawns N worker
-    // threads (N = num_cpus) which takes longer to initialise, especially when
-    // the system is already under CPU load from concurrent test processes.
-    // A current-thread runtime runs everything on the calling OS thread and
-    // starts in microseconds, making the binary more responsive under load.
-    match tokio::runtime::Builder::new_current_thread()
+    // Use a multi-thread runtime with a capped worker count.  A current-thread
+    // runtime was tried (ceede7afc) to reduce startup latency, but tower-lsp
+    // relies on `tokio::spawn` internally to drive request/response futures
+    // concurrently with the stdin-reading loop.  With a single-threaded
+    // executor those spawned futures may not be polled until the next I/O
+    // yield, causing the initialize response to never arrive when the test
+    // sends only one message.  Two worker threads is the minimum safe count:
+    // one drives the serve loop, one drives handler/notification tasks.
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
     {

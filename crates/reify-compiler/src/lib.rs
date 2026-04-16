@@ -17,6 +17,11 @@ mod guards;
 mod conformance;
 mod functions;
 mod geometry;
+mod geometry_boolean;
+mod geometry_transform;
+mod geometry_modify;
+mod geometry_curve;
+mod constants;
 
 pub use types::*;
 pub use type_compat::{implicitly_converts_to, type_compatible};
@@ -38,6 +43,10 @@ pub(crate) use guards::*;
 pub(crate) use conformance::*;
 pub(crate) use functions::*;
 pub(crate) use geometry::*;
+pub(crate) use geometry_boolean::*;
+pub(crate) use geometry_transform::*;
+pub(crate) use geometry_modify::*;
+pub(crate) use geometry_curve::*;
 
 use std::collections::{HashMap, HashSet};
 
@@ -2180,5 +2189,169 @@ structure S {
             }
             other => panic!("expected Sweep(Loft), got {:?}", other),
         }
+    }
+
+    // --- compile_curve_op direct tests (step-1) ---
+
+    fn scalar_literal(v: f64) -> CompiledExpr {
+        CompiledExpr::literal(Value::Real(v), Type::Real)
+    }
+
+    #[test]
+    fn compile_curve_op_line_segment_direct() {
+        let args: Vec<CompiledExpr> = (1..=6).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_curve_op("line_segment", args.clone(), &mut diagnostics);
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("compile_curve_op line_segment should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Curve { kind: CurveKind::LineSegment, args: op_args } => {
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["x1", "y1", "z1", "x2", "y2", "z2"]);
+                assert_eq!(op_args.len(), 6);
+            }
+            other => panic!("expected Curve(LineSegment), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_curve_op_wrong_arg_count() {
+        let args: Vec<CompiledExpr> = (1..=3).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_curve_op("line_segment", args, &mut diagnostics);
+        assert!(result.is_none(), "expected None for wrong arg count");
+        assert!(!diagnostics.is_empty(), "expected diagnostic for wrong arg count");
+    }
+
+    // --- compile_transform_op direct tests (step-3) ---
+
+    #[test]
+    fn compile_transform_op_translate_direct() {
+        // translate(target, dx, dy, dz) — 4 args
+        let args: Vec<CompiledExpr> = (1..=4).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(0);
+        let result = compile_transform_op("translate", args, target.clone(), &mut diagnostics, vec![]);
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("compile_transform_op translate should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Transform { kind: TransformKind::Translate, target: op_target, args: op_args } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "dx", "dy", "dz"]);
+            }
+            other => panic!("expected Transform(Translate), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_transform_op_wrong_arg_count() {
+        // translate expects 4 args; pass 2
+        let args: Vec<CompiledExpr> = (1..=2).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_transform_op("translate", args, GeomRef::Step(0), &mut diagnostics, vec![]);
+        assert!(result.is_none(), "expected None for wrong arg count");
+        assert!(!diagnostics.is_empty(), "expected diagnostic for wrong arg count");
+    }
+
+    // --- compile_modify_op direct tests (step-5) ---
+
+    #[test]
+    fn compile_modify_op_shell_direct() {
+        // shell(target, thickness, face_0) — 3 args, target = GeomRef::Step(5)
+        let args: Vec<CompiledExpr> = (1..=3).map(|i| scalar_literal(i as f64)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(5);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_op("shell", args, target.clone(), span, &mut diagnostics, vec![]);
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("compile_modify_op shell should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify { kind: ModifyKind::Shell, target: op_target, args: op_args } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "thickness", "face_0"]);
+            }
+            other => panic!("expected Modify(Shell), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_modify_op_chamfer_preserves_step0() {
+        // The bug-preservation lives in the *caller* (geometry.rs), not in compile_modify_op.
+        // geometry.rs passes GeomRef::Step(0) explicitly for chamfer/fillet because they are
+        // not registered in geometry_arg_indices() — so geom_ref(0) would fall back to
+        // GeomRef::Step(step_offset) rather than a resolved geometry ref.
+        //
+        // This integration test verifies the full compile pipeline produces GeomRef::Step(0)
+        // for chamfer, confirming the caller upholds bug-for-bug compatibility.
+        let source = r#"structure S {
+    param target: Scalar = 5mm
+    param dist: Scalar = 2mm
+    let result = chamfer(target, dist)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_chamfer_step0"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        assert!(compiled.diagnostics.is_empty(), "unexpected diagnostics: {:?}", compiled.diagnostics);
+        let ops = &compiled.templates[0].realizations[0].operations;
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify { kind: ModifyKind::Chamfer, target: op_target, .. } => {
+                // Caller passes GeomRef::Step(0) for chamfer — bug preserved in dispatch
+                assert_eq!(*op_target, GeomRef::Step(0),
+                    "chamfer caller must pass GeomRef::Step(0) for bug-compat, got {:?}", op_target);
+            }
+            other => panic!("expected Modify(Chamfer), got {:?}", other),
+        }
+    }
+
+    // --- compile_boolean_op regression guards (step-7) ---
+    // These tests verify the full compile pipeline for boolean ops.
+    // They pass before extraction (boolean code is still inline) and remain
+    // as regression guards after step-8 extracts it into compile_boolean_op.
+
+    #[test]
+    fn compile_boolean_op_union_via_compile() {
+        let source = r#"structure S {
+    let a = union(sphere(1), cylinder(1, 2))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_bool_union"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1);
+        let ops = &template.realizations[0].operations;
+        // Expected: Primitive(Sphere), Primitive(Cylinder), Boolean{Union, Step(0), Step(1)}
+        assert_eq!(ops.len(), 3, "expected 3 ops, got {}: {:?}", ops.len(), ops);
+        assert!(matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
+        assert!(matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }));
+        match &ops[2] {
+            CompiledGeometryOp::Boolean { op: BooleanOp::Union, left: GeomRef::Step(0), right: GeomRef::Step(1) } => {}
+            other => panic!("expected Boolean{{Union, Step(0), Step(1)}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_boolean_op_union_all_via_compile() {
+        let source = r#"structure S {
+    let a = union_all(sphere(1), sphere(2), sphere(3))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_bool_union_all"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1);
+        let ops = &template.realizations[0].operations;
+        // Expected left-fold: Sphere(0), Sphere(1), Boolean{Union,0,1}(2), Sphere(3), Boolean{Union,2,3}(4)
+        assert_eq!(ops.len(), 5, "expected 5 ops, got {}: {:?}", ops.len(), ops);
+        assert!(matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
+        assert!(matches!(ops[1], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
+        assert!(matches!(ops[2], CompiledGeometryOp::Boolean { op: BooleanOp::Union, .. }));
+        assert!(matches!(ops[3], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Sphere, .. }));
+        assert!(matches!(ops[4], CompiledGeometryOp::Boolean { op: BooleanOp::Union, .. }));
     }
 }

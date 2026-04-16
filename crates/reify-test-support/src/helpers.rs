@@ -280,10 +280,177 @@ pub fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::C
     compiled
 }
 
+/// Assert that `diagnostics` contains at least one entry whose severity equals
+/// `severity` and whose message contains `contains`.
+///
+/// Use this to verify that a specific diagnostic was emitted — for example, to
+/// confirm that a particular error or warning appears after a compile step.
+///
+/// # Panics
+/// Panics if no diagnostic matches both `severity` and `contains`. The panic
+/// message includes the full `diagnostics` list for debugging.
+#[track_caller]
+pub fn assert_has_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.severity == severity && d.message.contains(contains)),
+        "expected diagnostic with severity={:?} containing {:?}, got: {:?}",
+        severity,
+        contains,
+        diagnostics
+    );
+}
+
+/// Assert that `diagnostics` contains no entry whose severity equals `severity`
+/// and whose message contains `contains`.
+///
+/// Use this as a negative assertion — for example, to confirm that a specific
+/// warning was suppressed, or that a particular error was not emitted.
+///
+/// # Panics
+/// Panics if any diagnostic matches both `severity` and `contains`. The panic
+/// message includes the matching diagnostics so it's clear which ones violated
+/// the assertion.
+#[track_caller]
+pub fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
+    let matched: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == severity && d.message.contains(contains))
+        .collect();
+    assert!(
+        matched.is_empty(),
+        "expected no diagnostic with severity={:?} containing {:?}, got: {:?}",
+        severity,
+        contains,
+        matched
+    );
+}
+
+/// Assert that `diagnostics` contains no `Severity::Error` entries.
+///
+/// `context` is a short label that appears in the panic message to identify
+/// which compilation or evaluation phase failed — e.g. `"compile"`, `"eval"`,
+/// or `"post-link"`. This is useful when a single test exercises multiple
+/// pipeline stages and you need to identify which one produced errors.
+///
+/// Warnings, Info, and other non-Error severities are allowed and do not
+/// cause a panic. Use [`assert_no_diagnostics`] instead when all severities
+/// must be absent.
+///
+/// # Panics
+/// Panics if any `Severity::Error` diagnostic is present. The panic message
+/// includes `context` and the list of error messages.
+#[track_caller]
+pub fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{context}: expected no error diagnostics, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Assert that `diagnostics` is completely empty — no diagnostics of any severity.
+///
+/// This is stricter than [`assert_no_error_diagnostics`]: it fails on Warnings,
+/// Info, and any other severity in addition to Errors. Use this for
+/// characterization tests where the intent is "absolutely nothing is emitted".
+///
+/// `context` is a short label that appears in the panic message to identify
+/// which compilation or evaluation phase failed — e.g. `"compile"`, `"guard block"`.
+///
+/// # Panics
+/// Panics if `diagnostics` is non-empty. The panic message includes `context`
+/// and the full list of diagnostic messages.
+#[track_caller]
+pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
+    assert!(
+        diagnostics.is_empty(),
+        "{context}: expected no diagnostics at all, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Run a standard 2-op modify pipeline through the eval engine and return the
+/// captured geometry operations.
+///
+/// Constructs a module with:
+///
+/// - **Op 0**: A 20×20×20 mm Box primitive that provides a geometry handle.
+/// - **Op 1**: `CompiledGeometryOp::Modify { kind, target: GeomRef::Step(0), args }`
+///   using the supplied `kind` and `args`.
+///
+/// Runs [`reify_eval::Engine::build`] with a fresh [`crate::mocks::MockGeometryKernel`]
+/// and returns the cloned `Vec<GeometryOpRecord>`.  Callers assert against `ops[1].op`
+/// for variant-specific fields (e.g. `GeometryOp::Chamfer { distance, .. }`).
+///
+/// This helper eliminates the ~40-line setup boilerplate shared by every modify-op
+/// pipeline test and will benefit future operations (Shell, Draft, Thicken, …) that
+/// follow the same 2-op pattern.
+///
+/// # Panics
+/// Panics if `Engine::build` panics, if the internal mutex is poisoned, or if
+/// the build produces any `Severity::Error` diagnostics.
+#[cfg(feature = "eval-helpers")]
+pub fn run_modify_pipeline(
+    kind: reify_compiler::ModifyKind,
+    args: Vec<(String, reify_types::CompiledExpr)>,
+) -> Vec<crate::mocks::GeometryOpRecord> {
+    use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind};
+    use reify_types::{ExportFormat, Type};
+
+    let mm_literal =
+        |v: f64| reify_types::CompiledExpr::literal(crate::values::mm(v), Type::length());
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(20.0)),
+            ("height".into(), mm_literal(20.0)),
+            ("depth".into(), mm_literal(20.0)),
+        ],
+    };
+
+    let modify_op = CompiledGeometryOp::Modify {
+        kind,
+        target: GeomRef::Step(0),
+        args,
+    };
+
+    let entity_name = "RunModifyPipeline";
+    let template = crate::builders::TopologyTemplateBuilder::new(entity_name)
+        .realization(entity_name, 0, vec![box_op, modify_op])
+        .build();
+
+    let module = crate::builders::CompiledModuleBuilder::new(
+        reify_types::ModulePath::single("run_modify_pipeline"),
+    )
+    .template(template)
+    .build();
+
+    let kernel = crate::mocks::MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine =
+        reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+    assert!(
+        result.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "engine build failed: {:?}",
+        result.diagnostics
+    );
+
+    ops_ref.lock().unwrap().clone()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
-    use reify_types::Severity;
+    use reify_types::{Diagnostic, Severity};
 
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
     #[cfg(feature = "eval-helpers")]
@@ -664,5 +831,216 @@ mod tests {
             !compiled.templates.is_empty(),
             "bracket source should produce at least one template"
         );
+    }
+
+    // ── assert_has_diagnostic ──────────────────────────────────────────────
+
+    /// assert_has_diagnostic should not panic when the diagnostics slice contains
+    /// an entry matching the requested severity and message substring.
+    #[test]
+    fn test_assert_has_diagnostic_passes_on_match() {
+        let diags = vec![
+            Diagnostic::warning("unused port x"),
+            Diagnostic::error("type mismatch for y"),
+        ];
+        // Should not panic — there is an Error-severity entry containing "type mismatch".
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    /// assert_has_diagnostic should panic when no diagnostic in the slice matches
+    /// the requested severity + message substring.
+    #[test]
+    #[should_panic(expected = "expected diagnostic")]
+    fn test_assert_has_diagnostic_panics_when_no_match() {
+        let diags = vec![Diagnostic::warning("unused port x")];
+        // Should panic — no Error-severity diagnostic exists.
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    /// assert_has_diagnostic should panic when the message substring matches but
+    /// the severity is wrong — confirming the severity filter applies in the
+    /// positive-assertion path.
+    #[test]
+    #[should_panic(expected = "expected diagnostic")]
+    fn test_assert_has_diagnostic_panics_when_wrong_severity() {
+        let diags = vec![Diagnostic::warning("type mismatch")];
+        // Should panic — the message matches but severity is Warning, not Error.
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    // ── assert_no_diagnostic ──────────────────────────────────────────────
+
+    /// assert_no_diagnostic should not panic when the slice is empty.
+    #[test]
+    fn test_assert_no_diagnostic_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_diagnostic(&diags, Severity::Error, "anything");
+    }
+
+    /// assert_no_diagnostic should not panic when diagnostics exist but none match
+    /// the requested severity + message substring.
+    #[test]
+    fn test_assert_no_diagnostic_passes_when_wrong_severity_or_message() {
+        let diags = vec![
+            Diagnostic::warning("type mismatch for x"),
+            Diagnostic::error("unrelated error"),
+        ];
+        // Warning has the phrase but is wrong severity; Error has wrong message — no match.
+        super::assert_no_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    /// assert_no_diagnostic should panic when a diagnostic matches both severity
+    /// and message substring.
+    #[test]
+    #[should_panic(expected = "expected no diagnostic")]
+    fn test_assert_no_diagnostic_panics_on_match() {
+        let diags = vec![Diagnostic::error("type mismatch for x")];
+        // Should panic — an Error-severity diagnostic containing "type mismatch" exists.
+        super::assert_no_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    // ── assert_no_error_diagnostics ───────────────────────────────────────
+
+    /// assert_no_error_diagnostics should not panic when the slice contains only
+    /// Warning diagnostics (no Error-severity entries).
+    #[test]
+    fn test_assert_no_error_diagnostics_passes_with_only_warnings() {
+        let diags = vec![
+            Diagnostic::warning("unused port x"),
+            Diagnostic::warning("deprecated syntax"),
+        ];
+        super::assert_no_error_diagnostics(&diags, "compile phase");
+    }
+
+    /// assert_no_error_diagnostics should not panic on an empty slice.
+    #[test]
+    fn test_assert_no_error_diagnostics_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_error_diagnostics(&diags, "eval phase");
+    }
+
+    /// assert_no_error_diagnostics should panic when an Error-severity diagnostic
+    /// is present; the panic message must include the context label.
+    #[test]
+    #[should_panic(expected = "compile phase")]
+    fn test_assert_no_error_diagnostics_panics_on_error() {
+        let diags = vec![Diagnostic::error("undefined identifier")];
+        super::assert_no_error_diagnostics(&diags, "compile phase");
+    }
+
+    // ── assert_no_diagnostics ─────────────────────────────────────────────
+
+    /// assert_no_diagnostics should not panic when the slice is empty.
+    #[test]
+    fn test_assert_no_diagnostics_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_diagnostics(&diags, "guard compile");
+    }
+
+    /// assert_no_diagnostics should panic even on an Info-severity diagnostic;
+    /// it is stricter than assert_no_error_diagnostics. The panic message must
+    /// include the context label.
+    #[test]
+    #[should_panic(expected = "guard compile")]
+    fn test_assert_no_diagnostics_panics_on_any_diagnostic() {
+        let diags = vec![Diagnostic::info("informational note")];
+        super::assert_no_diagnostics(&diags, "guard compile");
+    }
+
+    // ── run_modify_pipeline ───────────────────────────────────────────────
+
+    /// run_modify_pipeline with Chamfer kind returns 2 ops:
+    ///   ops[0].op is GeometryOp::Box (the implicit 20×20×20mm box primitive)
+    ///   ops[1].op is GeometryOp::Chamfer with target=ops[0].result_handle and
+    ///   distance≈0.003 m (3 mm in SI).
+    ///
+    /// This test fails before step-2 because run_modify_pipeline does not exist.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_run_modify_pipeline_chamfer_returns_two_ops() {
+        use crate::mocks::GeometryOpRecord;
+        use crate::values::mm;
+        use reify_compiler::ModifyKind;
+        use reify_types::{GeometryOp, Type};
+
+        let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+        let args = vec![("distance".to_string(), mm_literal(3.0))];
+        let ops: Vec<GeometryOpRecord> = super::run_modify_pipeline(ModifyKind::Chamfer, args);
+
+        assert_eq!(ops.len(), 2, "expected 2 ops, got {}", ops.len());
+
+        // op[0] must be a Box primitive
+        assert!(
+            matches!(ops[0].op, GeometryOp::Box { .. }),
+            "ops[0] should be GeometryOp::Box, got {:?}",
+            ops[0].op
+        );
+
+        // op[1] must be Chamfer with the correct target handle and ~0.003 m distance
+        let target_handle = ops[0].result_handle;
+        match &ops[1].op {
+            GeometryOp::Chamfer { target, distance } => {
+                assert_eq!(
+                    *target, target_handle,
+                    "Chamfer target should be handle from op 0 ({:?}), got {:?}",
+                    target_handle, target
+                );
+                let dist_si = distance.as_f64().expect("distance should be numeric");
+                assert!(
+                    (dist_si - 0.003).abs() < 1e-9,
+                    "Chamfer distance should be 0.003 m (3 mm SI), got {}",
+                    dist_si
+                );
+            }
+            other => panic!("ops[1] should be GeometryOp::Chamfer, got {:?}", other),
+        }
+    }
+
+    /// run_modify_pipeline with Fillet kind returns 2 ops:
+    ///   ops[0].op is GeometryOp::Box
+    ///   ops[1].op is GeometryOp::Fillet with target=ops[0].result_handle and
+    ///   radius≈0.003 m (3 mm in SI).
+    ///
+    /// Verifies the helper is generic over ModifyKind. Passes immediately
+    /// because the step-2 implementation is kind-agnostic.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_run_modify_pipeline_fillet_returns_two_ops() {
+        use crate::mocks::GeometryOpRecord;
+        use crate::values::mm;
+        use reify_compiler::ModifyKind;
+        use reify_types::{GeometryOp, Type};
+
+        let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+        let args = vec![("radius".to_string(), mm_literal(3.0))];
+        let ops: Vec<GeometryOpRecord> = super::run_modify_pipeline(ModifyKind::Fillet, args);
+
+        assert_eq!(ops.len(), 2, "expected 2 ops, got {}", ops.len());
+
+        // op[0] must be a Box primitive
+        assert!(
+            matches!(ops[0].op, GeometryOp::Box { .. }),
+            "ops[0] should be GeometryOp::Box, got {:?}",
+            ops[0].op
+        );
+
+        // op[1] must be Fillet with the correct target handle and ~0.003 m radius
+        let target_handle = ops[0].result_handle;
+        match &ops[1].op {
+            GeometryOp::Fillet { target, radius } => {
+                assert_eq!(
+                    *target, target_handle,
+                    "Fillet target should be handle from op 0 ({:?}), got {:?}",
+                    target_handle, target
+                );
+                let radius_si = radius.as_f64().expect("radius should be numeric");
+                assert!(
+                    (radius_si - 0.003).abs() < 1e-9,
+                    "Fillet radius should be 0.003 m (3 mm SI), got {}",
+                    radius_si
+                );
+            }
+            other => panic!("ops[1] should be GeometryOp::Fillet, got {:?}", other),
+        }
     }
 }

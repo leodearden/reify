@@ -18,6 +18,8 @@ pub(crate) fn is_geometry_function(name: &str) -> bool {
             | "shell"
             | "thicken"
             | "draft"
+            | "chamfer"
+            | "fillet"
             | "union"
             | "intersection"
             | "difference"

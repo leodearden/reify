@@ -224,8 +224,10 @@ fn lsp_full_interactive_loop_through_binary() {
         init_response.get("result").is_some(),
         "initialize should return a result"
     );
-    // Verify capabilities include textDocumentSync (replaces the removed
-    // lsp_initialize_returns_capabilities test which was flaky under load).
+    // Verify textDocumentSync capability is present (canonical assertion migrated
+    // from lsp_initialize_returns_capabilities, which was removed because it ran as
+    // a second subprocess test and was intermittently flaky under CPU load; all
+    // protocol coverage now lives in this single reliable test).
     let capabilities = &init_response["result"]["capabilities"];
     assert!(
         !capabilities["textDocumentSync"].is_null(),

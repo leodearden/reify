@@ -7799,11 +7799,11 @@
         "description": "Type::Real used as sentinel for \"no annotation\" in DefaultKind::Let (lib.rs:4271-4277). Explicitly-annotated `: Real` is indistinguishable from unannotated. Change cell_type to Option&lt;Type&gt; to disambiguate.\n\nMemory hints: search \"DefaultKind Let cell_type Type::Real sentinel\", entities: DefaultKind, compile_traits",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T12:17:39.549Z",
+        "updatedAt": "2026-04-15T21:46:58.555Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -7894,11 +7894,11 @@
         "description": "No warning when only one port satisfies LocatedPort (asymmetric frame mismatch) — likely user error goes unreported. Extract `const LOCATED_PORT_TRAIT` to replace hardcoded \"LocatedPort\" magic string (lib.rs:3931-3932). Fix HashSet iteration order in error message (lib.rs:3862-3866) — sort before join for deterministic output.\n\nMissing tests:\n- Asymmetric LocatedPort (one located, one not)\n- Forward-ref connector type (design decision: best-effort skip)\n- Dotted-port connections not emitting false type warnings\n- Dead OR branch in test assertion (line 497 — `port type mismatch` never matches)\n\nMemory hints: search \"LocatedPort frame_alignment connect_compile HashSet\", entities: compile_connections, LocatedPort",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T12:28:33.763Z",
+        "updatedAt": "2026-04-15T21:45:55.953Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8196,11 +8196,11 @@
         "description": "Review findings from task 189 (diamond trait hierarchy) that need follow-up:\n\nTESTS:\n1. Add diamond_type_conflict_produces_error test — two traits declare same param name with different types merged via diamond, assert exactly 1 conflicting-trait-requirements diagnostic. Exercises seen_names conflict path in collect_all_requirements (lib.rs:4321-4330).\n2. Add dedup count assertions to diamond_members_at_every_level — verify param d appears exactly once in template.value_cells.\n3. Add dedup count assertions to diamond_deep_five_level — verify x and y appear once each in value_cells.\n4. Add cell count assertion to diamond_single_bound_satisfied — verify x appears exactly once.\n5. Use errors[0].message instead of format!(\"{:?}\", errors[0]) in diamond_missing_member_single_error — Debug format is not stable API.\n6. Use more specific error message match than contains(\"x\") — match on \"missing required member 'x'\" or similar.\n\nCODE QUALITY:\n7. Add comment above unnamed defaults branch (lib.rs:4341) explaining dedup is via visited set, not seen_defaults.\n\nMemory hints: search \"diamond trait conformance collect_all_requirements seen_names\", entities: collect_all_requirements, diamond_missing_member_single_error",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T12:44:09.899Z",
+        "updatedAt": "2026-04-16T02:22:21.271Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8219,20 +8219,30 @@
         "description": "Review findings from task 190 (trait merge let-binding dedup):\n\nCORRECTNESS:\n1. After seen_let_hashes insert, use continue to skip seen_defaults path for Let bindings (lib.rs:4370-4376) — currently Let defaults fall through to seen_defaults with Type::Real sentinel, causing misleading error messages if a param default with the same name exists later.\n2. Guard seen_let_hashes insert on !structure_members.contains_key (lib.rs:4367) — align hash-recording with error-suppression semantics.\n3. Track seen_let_conflict_names to emit only 1 diagnostic per conflicting name instead of N-1 (lib.rs:4351-4365).\n\nCODE QUALITY:\n4. Introduce MergeContext struct to bundle the 4 mutable tracking maps (visited, seen_names, seen_defaults, seen_let_hashes) — collect_all_requirements has 12 parameters.\n5. Rename parse_compile_check to parse_and_compile in trait_merge_eval.rs — name implies Engine::check is called but it only parses+compiles.\n6. Fix stale \"FAIL\" comment in let_conflict_different_expr (trait_merge_tests.rs:361).\n\nTESTS:\n7. Add multi_trait_constraints_partial_violation eval test — x=150mm satisfies one bound but violates another.\n8. Use errors[0].message instead of format!(\"{:?}\", errors) across 5 test functions.\n9. Assert no eval diagnostics before accessing result.values in let_from_trait_evaluated.\n10. Add comment on implicit hash assumption in let_merge_same_expr.\n\nMemory hints: search \"collect_all_requirements seen_let_hashes trait merge\", entities: collect_all_requirements, seen_defaults",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T13:55:40.289Z",
+        "updatedAt": "2026-04-16T02:22:23.550Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/tests/trait_merge_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
-          ]
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs",
+            "crates/reify-eval/tests/trait_merge_eval.rs"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "MergeContext struct let-binding trait merge compiler",
+              "let-default dedup merge context cleanup reify compiler",
+              "trait merge let binding implementation"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         }
       },
       {
@@ -8295,7 +8305,7 @@
         "testStrategy": "",
         "priority": "medium",
         "dependencies": [],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -8307,10 +8317,18 @@
           "files": [
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/scope.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "empty meta block discrimination compiler reify",
+              "meta block discriminant compiler fix"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-15T12:48:03.965Z"
+        "updatedAt": "2026-04-16T02:41:00.942Z"
       },
       {
         "id": "389",
@@ -8320,7 +8338,7 @@
         "testStrategy": "",
         "priority": "medium",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -8343,7 +8361,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:18:52.271Z"
+        "updatedAt": "2026-04-15T16:54:00.823Z"
       },
       {
         "id": "390",
@@ -8353,7 +8371,7 @@
         "testStrategy": "",
         "priority": "medium",
         "dependencies": [],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -8365,7 +8383,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:11:58.379Z"
+        "updatedAt": "2026-04-15T17:21:54.092Z"
       },
       {
         "id": "391",
@@ -8722,14 +8740,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:33:17.801Z",
+        "updatedAt": "2026-04-15T17:27:25.638Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/m9_error_cases.rs"
           ]
         }
       },
@@ -9026,13 +9045,13 @@
         "description": "Consolidates unsafe raw UnitRegistry pointer replacement (safe ref threading in CompilationScope), DRY dimension mapping + entry API + struct duplication removal + content hash + diagnostic improvements, and test coverage gaps (missing units, dead assertions, edge cases, duplicate test).",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 417 plus 2 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 417: Replace unsafe raw UnitRegistry pointer with safe reference threading in CompilationScope\n\n\nCompilationScope stores UnitRegistry as *const UnitRegistry raw pointer (lib.rs:1099) to bypass lifetime constraints. All other registries are threaded as explicit parameters. Refactor to thread unit_registry as a &UnitRegistry parameter to compile_expr_guarded, and remove unit_registry_ptr, set_unit_registry, and lookup_unit_in_registry from CompilationScope.\n\nSource: review suggestions from esc-208-28 (task 208).\n\n\n\n<info added on 2026-04-10T07:13:22.488Z>\nTask 208 has been successfully merged into the main branch with commits 3682b2082 and 6a9cbd02d. The UnitRegistry code from task 208 is now available on the main branch, allowing this task to proceed. Replace the unsafe raw *const UnitRegistry pointer in CompilationScope with a safe &UnitRegistry reference threading.\n</info added on 2026-04-10T07:13:22.488Z>\n\n### Absorbed from task 418: Clean up UnitRegistry API: dimension mapping DRY, entry API, struct duplication, content hash, diagnostics\nSix code quality improvements in crates/reify-compiler/src/lib.rs:\n\n1. Extract shared dimension name->DimensionVector mapping used by both resolve_dimension_type and resolve_type_name.\n2. Use HashMap entry API in UnitRegistry::register() to avoid double lookup.\n3. Have register() return a reference to the inserted entry instead of requiring a separate lookup().\n4. Reduce field duplication between UnitEntry (7 fields) and CompiledUnit (6 of same fields).\n5. Include is_pub in unit content hash.\n6. Evaluate both sides of BinOp in evaluate_const_expr before returning, to collect all diagnostics.\n\nSource: review suggestions from esc-208-28 (task 208).\n\n### Absorbed from task 419: Fix unit_registry_tests coverage gaps (missing units, dead assertions, edge cases, duplicate test)\nSeven test issues in crates/reify-compiler/tests/unit_registry_tests.rs:\n\n1. Add missing 'in' (inch) and 's' (second) to regression_hardcoded_units_all_still_resolve.\n2. Assert all 3 params (mm, deg, kg) in hardcoded_units_still_work_without_declarations.\n3. Add test for Dimensionless dimension type.\n4. Add test for division-by-zero guard in evaluate_const_expr.\n5. Add test for non-constant expression rejection in unit conversion.\n6. Add test that user-declared unit overrides hardcoded unit.\n7. Remove duplicate test: evaluate_const_quantity_literal_cross_ref == unit_cross_ref_in_conversion_expr.\n\nSource: review suggestions from esc-208-28 (task 208).\n",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "208"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-11T07:44:49.000Z",
+        "updatedAt": "2026-04-15T21:19:53.812Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
@@ -34756,11 +34775,11 @@
         "description": "Add an early-return fast path at the top of Engine::dispatch_constraints in crates/reify-eval/src/lib.rs (~line 400) that short-circuits the bucketing/merging machinery when self.optimization_registry.is_empty() — the overwhelmingly common case. Build a ConstraintInput directly from entries (dropping the Option<&str> target field) and return self.constraint_checker.check(&input) with no BTreeMap, no Vec<Option<ConstraintResult>> scratch, no unzip, no rebuild. Behavior must remain identical; goal is to eliminate the 4-5 extra allocations per batch that Task 273 introduced on every check / edit_check / eval_cached hot-path call site, restoring pre-273 performance when no optimized impls are registered.",
         "details": "Source: esc-273-83 suggestion from reviewer_comprehensive (performance, hot path regression).\n\nCurrent state: dispatch_constraints is called from five constraint-checking sites and unconditionally allocates a results Vec<Option<_>>, a BTreeMap, a fallback Vec<(usize, _)>, then unzips into two more Vecs. Pre-Task-273 was a single self.constraint_checker.check(&input).\n\nFix shape:\n```rust\nfn dispatch_constraints(...) -> Vec<ConstraintResult> {\n    if entries.is_empty() { return Vec::new(); }\n    if self.optimization_registry.is_empty() {\n        let (_targets_dropped, constraints): (Vec<_>, Vec<_>) = entries\n            .into_iter()\n            .map(|(id, expr, _)| ((), (id, expr)))\n            .unzip();\n        let input = ConstraintInput { constraints, values, functions, determinacy };\n        return self.constraint_checker.check(&input);\n    }\n    // ... existing bucketing path ...\n}\n```\n(Or cleaner: collect directly into Vec<(ConstraintNodeId, &CompiledExpr)> in one pass.)\n\nVerify with a microbenchmark or existing constraint-heavy test (e.g. a large frame_constraint batch) that allocation counts drop back to pre-273 levels. All existing dispatch tests must continue to pass.\n\nModules: crates/reify-eval/src",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:11:31.377Z",
+        "updatedAt": "2026-04-15T16:55:43.981Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -34807,11 +34826,11 @@
         "description": "In crates/reify-eval/src/lib.rs dispatch_constraints (lines 456-463), convert the `assert_eq!` that checks `output.results.len() == indices.len()` for a registered OptimizedImpl into a soft failure: emit a Diagnostic::error naming the target and per-constraint ids, and reroute the affected constraints to the language-level self.constraint_checker fallback instead of panicking. The registry is a third-party extension point intended to support hot-reload and external impls, so a single buggy plugin should not crash the engine. Keep the internal ConstraintChecker result-count assertion (lines 481-487) as a debug_assert — that path is in-tree and far less likely to fire in production, but we still want the safety net during dev.",
         "details": "Source: esc-273-83 suggestion #5 (robustness) from reviewer_comprehensive.\n\nDesign trade-off: panicking is simpler and catches plugin bugs loudly, but for a user-extension point it converts a plugin defect into a process crash. Graceful degradation (diagnostic + fallback) is the right default.\n\nFlow:\n- On contract violation, push a Diagnostic::error with context like \"OptimizedImpl for target {:?} returned {} results for {} constraints — falling back to language-level checker for this batch\".\n- Rebuild a ConstraintInput from the bucket's (ConstraintNodeId, &CompiledExpr) pairs and dispatch through self.constraint_checker.check(...).\n- Weave those results into the `results` vec via the original indices as today.\n- The engine needs a handle to emit diagnostics from dispatch_constraints. Check whether the current call sites thread a diagnostic sink — if not, this task may need to collect violations and return them alongside ConstraintResult, or store them on the Engine for the caller to drain.\n\nTests to add:\n- A #[should_panic] test removed in favor of a test that registers a MockOptimizedImpl returning the wrong result count and asserts (a) a diagnostic is emitted, (b) all N constraints still get a ConstraintResult via the fallback.\n\nConvert the internal-path assertion to `debug_assert_eq!` in the same patch.\n\nModules: crates/reify-eval/src, crates/reify-eval/tests",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-14T05:10:19.103Z",
+        "updatedAt": "2026-04-15T17:52:55.082Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src"
@@ -35129,13 +35148,12 @@
         "id": "1675",
         "title": "si_units: disambiguate prefix_combos field semantics between SiPrefixBase and SiDerivedUnit",
         "description": "The `prefix_combos` field on `SiPrefixBase` and `SiDerivedUnit` shares the same name and type (`&'static [&'static str]`) but has opposite empty-slice semantics: `&[]` on `SiDerivedUnit` means \"no prefixed variants\" (unprefixed only), while `&[]` on `SiPrefixBase` means \"emit all 20 prefixes.\" This is a maintenance hazard.\n\nOptions:\n(a) Rename the field on `SiPrefixBase` to something distinct like `restrict_to_prefixes` to signal the different semantics.\n(b) Introduce a small enum wrapper (e.g. `PrefixSet::All` vs `PrefixSet::Only(&[&str])`) so both structs can share the same empty-means-none convention.\n\nModules: crates/reify-compiler/src/si_units.rs\n\nmemory_hints: search \"SiPrefixBase prefix_combos semantics\" for prior context on this inconsistency.",
-        "details": "<info added on 2026-04-15T00:58:48.074Z>\nRECONCILIATION WARNING (run 39b398b0, 2026-04-15): This task has experienced stash-fail revert cycles in three consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0). Normal stash-fail recovery is not working. Before attempting this task again, the implementor MUST: (1) inspect branch task/1675 for persistent merge conflicts or dirty state, (2) consider fresh worktree checkout or cherry-pick onto a clean branch rather than standard stash-pop recovery. Memory hints: search \"task 1675 stash fail recurring branch\" for history; search \"SiPrefixBase prefix_combos semantics\" for the implementation context.\n</info added on 2026-04-15T00:58:48.074Z>\n<info added on 2026-04-15T01:27:55.682Z>\nESCALATION UPDATE (run ed46c158, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FOUR consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158). Normal orchestrator recovery is NOT working. This task REQUIRES manual intervention before any further automated attempt. Required actions: (1) Inspect branch task/1675 for persistent merge conflicts, dirty state, or unresolved conflict markers. (2) Checkout a fresh worktree and cherry-pick any completed work onto it. (3) Do NOT attempt stash-pop recovery — create a clean branch instead. If no completed work exists on the branch, start fresh from main. This pattern has been escalated to the highest severity for the reify project.\n</info added on 2026-04-15T01:27:55.682Z>\n<info added on 2026-04-15T05:32:54.024Z>\nESCALATION UPDATE (run dc802ff2, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FIVE consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2). The previous update at run ed46c158 explicitly flagged this for manual intervention — that intervention has NOT occurred. This task must be manually unblocked before the orchestrator attempts it again. Suggested path: checkout task/1675 branch, inspect for persistent conflict markers or unresolved state, and either (a) force-resolve and push a clean branch, or (b) abandon the branch and create a fresh worktree from main. DO NOT allow the orchestrator to retry via stash-pop.\n</info added on 2026-04-15T05:32:54.024Z>\n<info added on 2026-04-15T06:43:56.673Z>\nRECONCILIATION RESET (run f08db30b, 2026-04-15, Stage 2): Stage 1 of this reconciliation cycle confirmed that the \"done\" status set at 06:09:27Z was PHANTOM — no implementation commits exist on branch task/1675. The add_memory call during that cycle returned memory_ids=[] confirming nothing was captured. Status reset to pending. This task has now had 5 stash-fail cycles AND a phantom done. MANDATORY: implementor must use a fresh worktree checkout from main — do NOT use stash-pop recovery on the existing task/1675 branch. The branch likely has persistent conflict markers or dirty state that prevents clean checkout.\n</info added on 2026-04-15T06:43:56.673Z>\n<info added on 2026-04-15T12:23:20.235Z>\nESCALATION UPDATE (run 80809328, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced its 6th phantom-done AND 7th total failure event. Git verification confirmed branch task/1675 does NOT EXIST anywhere in the repository (not local, not remote). The orchestrator marked this task done with zero implementation work and zero branch creation. Prior failure history: 5 stash-fail cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2) + phantom-done reset at f08db30b + THIS phantom-done (80809328). Stale phantom-done Graphiti edges 17bf6882 and 4532b3ac deleted. Status reset to pending. CRITICAL: This task requires human investigation into WHY the orchestrator keeps marking it done without creating any branch or commits. The fresh-worktree recommendation from previous cycles is moot — there is no branch to recover. The orchestrator must be inspected for task-completion logic that fires spuriously on this task.\n</info added on 2026-04-15T12:23:20.235Z>\n<info added on 2026-04-15T16:21:13.743Z>\nESCALATION UPDATE (run 4d504525, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced a THIRD phantom-done event. After run 80809328 reset status to pending, the orchestrator again marked it done with no branch or commits. Total failure history: 5 stash-fail cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2) + 3 phantom-done resets (f08db30b, 80809328, 4d504525). Branch task/1675 confirmed non-existent. Root cause identified: orchestrator checks `git log main..task/NNNN` — when branch doesn't exist, git returns empty, interpreted as \"zero unique commits → already merged → done.\" Fix required in dark-factory orchestrator task-completion logic. This task MUST NOT be automatically dispatched until the orchestrator bug is fixed. Status reset to pending again. Requires human intervention to prevent the phantom-done cycle from repeating.\n</info added on 2026-04-15T16:21:13.743Z>\n<info added on 2026-04-15T16:48:33.948Z>\nESCALATION UPDATE (run 1b7f4849, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced a FOURTH phantom-done event. After run 4d504525 reset status to pending, the orchestrator again marked it done with no branch or commits. Total failure history: 5 stash-fail cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2) + 4 phantom-done resets (f08db30b, 80809328, 4d504525, 1b7f4849). Branch task/1675 confirmed non-existent. Root cause confirmed: orchestrator checks `git log main..task/NNNN` — when branch doesn't exist, git returns empty output interpreted as \"already merged → done.\" This task MUST NOT be dispatched again until the orchestrator false-completion bug is fixed in dark-factory. Status reset to pending (4th reset). Human intervention required to patch the dark-factory orchestrator task-completion logic before this task cycles again.\n</info added on 2026-04-15T16:48:33.948Z>",
-        "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
+        "details": "<info added on 2026-04-15T00:58:48.074Z>\nRECONCILIATION WARNING (run 39b398b0, 2026-04-15): This task has experienced stash-fail revert cycles in three consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0). Normal stash-fail recovery is not working. Before attempting this task again, the implementor MUST: (1) inspect branch task/1675 for persistent merge conflicts or dirty state, (2) consider fresh worktree checkout or cherry-pick onto a clean branch rather than standard stash-pop recovery. Memory hints: search \"task 1675 stash fail recurring branch\" for history; search \"SiPrefixBase prefix_combos semantics\" for the implementation context.\n</info added on 2026-04-15T00:58:48.074Z>\n<info added on 2026-04-15T01:27:55.682Z>\nESCALATION UPDATE (run ed46c158, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FOUR consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158). Normal orchestrator recovery is NOT working. This task REQUIRES manual intervention before any further automated attempt. Required actions: (1) Inspect branch task/1675 for persistent merge conflicts, dirty state, or unresolved conflict markers. (2) Checkout a fresh worktree and cherry-pick any completed work onto it. (3) Do NOT attempt stash-pop recovery — create a clean branch instead. If no completed work exists on the branch, start fresh from main. This pattern has been escalated to the highest severity for the reify project.\n</info added on 2026-04-15T01:27:55.682Z>\n<info added on 2026-04-15T05:32:54.024Z>\nESCALATION UPDATE (run dc802ff2, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced stash-fail revert cycles in FIVE consecutive reconciliation cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2). The previous update at run ed46c158 explicitly flagged this for manual intervention — that intervention has NOT occurred. This task must be manually unblocked before the orchestrator attempts it again. Suggested path: checkout task/1675 branch, inspect for persistent conflict markers or unresolved state, and either (a) force-resolve and push a clean branch, or (b) abandon the branch and create a fresh worktree from main. DO NOT allow the orchestrator to retry via stash-pop.\n</info added on 2026-04-15T05:32:54.024Z>\n<info added on 2026-04-15T06:43:56.673Z>\nRECONCILIATION RESET (run f08db30b, 2026-04-15, Stage 2): Stage 1 of this reconciliation cycle confirmed that the \"done\" status set at 06:09:27Z was PHANTOM — no implementation commits exist on branch task/1675. The add_memory call during that cycle returned memory_ids=[] confirming nothing was captured. Status reset to pending. This task has now had 5 stash-fail cycles AND a phantom done. MANDATORY: implementor must use a fresh worktree checkout from main — do NOT use stash-pop recovery on the existing task/1675 branch. The branch likely has persistent conflict markers or dirty state that prevents clean checkout.\n</info added on 2026-04-15T06:43:56.673Z>\n<info added on 2026-04-15T12:23:20.235Z>\nESCALATION UPDATE (run 80809328, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced its 6th phantom-done AND 7th total failure event. Git verification confirmed branch task/1675 does NOT EXIST anywhere in the repository (not local, not remote). The orchestrator marked this task done with zero implementation work and zero branch creation. Prior failure history: 5 stash-fail cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2) + phantom-done reset at f08db30b + THIS phantom-done (80809328). Stale phantom-done Graphiti edges 17bf6882 and 4532b3ac deleted. Status reset to pending. CRITICAL: This task requires human investigation into WHY the orchestrator keeps marking it done without creating any branch or commits. The fresh-worktree recommendation from previous cycles is moot — there is no branch to recover. The orchestrator must be inspected for task-completion logic that fires spuriously on this task.\n</info added on 2026-04-15T12:23:20.235Z>\n<info added on 2026-04-15T16:21:13.743Z>\nESCALATION UPDATE (run 4d504525, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced a THIRD phantom-done event. After run 80809328 reset status to pending, the orchestrator again marked it done with no branch or commits. Total failure history: 5 stash-fail cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2) + 3 phantom-done resets (f08db30b, 80809328, 4d504525). Branch task/1675 confirmed non-existent. Root cause identified: orchestrator checks `git log main..task/NNNN` — when branch doesn't exist, git returns empty, interpreted as \"zero unique commits → already merged → done.\" Fix required in dark-factory orchestrator task-completion logic. This task MUST NOT be automatically dispatched until the orchestrator bug is fixed. Status reset to pending again. Requires human intervention to prevent the phantom-done cycle from repeating.\n</info added on 2026-04-15T16:21:13.743Z>\n<info added on 2026-04-15T16:48:33.948Z>\nESCALATION UPDATE (run 1b7f4849, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced a FOURTH phantom-done event. After run 4d504525 reset status to pending, the orchestrator again marked it done with no branch or commits. Total failure history: 5 stash-fail cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2) + 4 phantom-done resets (f08db30b, 80809328, 4d504525, 1b7f4849). Branch task/1675 confirmed non-existent. Root cause confirmed: orchestrator checks `git log main..task/NNNN` — when branch doesn't exist, git returns empty output interpreted as \"already merged → done.\" This task MUST NOT be dispatched again until the orchestrator false-completion bug is fixed in dark-factory. Status reset to pending (4th reset). Human intervention required to patch the dark-factory orchestrator task-completion logic before this task cycles again.\n</info added on 2026-04-15T16:48:33.948Z>\n<info added on 2026-04-15T17:07:16.621Z>\nESCALATION UPDATE (run ab12d9d3, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced a FIFTH phantom-done event. After run 1b7f4849 reset status to pending, the orchestrator again marked it done with no branch or commits. Total failure history: 5 stash-fail cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2) + 5 phantom-done resets (f08db30b, 80809328, 4d504525, 1b7f4849, ab12d9d3). Branch task/1675 confirmed non-existent. Root cause confirmed: orchestrator checks `git log main..task/NNNN` — when branch doesn't exist, git returns empty output interpreted as \"already merged → done.\" FIX REQUIRED IN DARK-FACTORY ORCHESTRATOR: verify branch existence with `git rev-parse --verify task/NNNN` before treating empty git-log as completion. Status reset to pending (5th reset). Human intervention required to patch dark-factory before this task cycles again. phantom_done_count updated to 5, total_failure_events updated to 10.\n</info added on 2026-04-15T17:07:16.621Z>\n<info added on 2026-04-15T21:21:06.012Z>\nRECONCILIATION RESET (run 2143e7fc, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced a SIXTH phantom-done event. After run ab12d9d3 reset status to pending, the orchestrator again marked it done with no branch or commits. Total failure history: 5 stash-fail cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2) + 6 phantom-done resets (f08db30b, 80809328, 4d504525, 1b7f4849, ab12d9d3, 2143e7fc). Branch task/1675 confirmed non-existent. Root cause confirmed: orchestrator checks `git log main..task/NNNN` — when branch does not exist, git returns empty output interpreted as \"already merged → done.\" DISPATCH BLOCKED: This task must NOT be dispatched again until dark-factory task 834 (orchestrator false-completion fix) is merged. Field dispatch_blocked=true set. Status reset to pending (6th reset). phantom_done_count updated to 6, total_failure_events updated to 11.\n</info added on 2026-04-15T21:21:06.012Z>\n<info added on 2026-04-15T21:44:19.889Z>\nESCALATION UPDATE (run fe6a32ff, 2026-04-15, Stage 2 Task-Knowledge Sync): This task has now experienced a SEVENTH phantom-done event. After run 2143e7fc reset status to pending, the orchestrator again marked it done with no branch or commits. Total failure history: 5 stash-fail cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2) + 7 phantom-done resets (f08db30b, 80809328, 4d504525, 1b7f4849, ab12d9d3, 2143e7fc, fe6a32ff). Branch task/1675 confirmed non-existent. Root cause confirmed: orchestrator checks `git log main..task/NNNN` — when branch does not exist, git returns empty output interpreted as \"already merged → done.\" DISPATCH BLOCKED: This task MUST NOT be dispatched again until dark-factory task 834 (orchestrator false-completion fix) is merged. dispatch_blocked=true remains set. Status reset to pending (7th reset). phantom_done_count updated to 7, total_failure_events updated to 12. Human escalation submitted — this is a critical loop that requires a code-level fix in the dark-factory orchestrator.\n</info added on 2026-04-15T21:44:19.889Z>\n<info added on 2026-04-16T02:01:41.016Z>\nESCALATION UPDATE (run b957358e, 2026-04-16, Stage 2 Task-Knowledge Sync): This task has now experienced an EIGHTH phantom-done event. After run fe6a32ff reset status to pending, the orchestrator again marked it done with no branch or commits. Stage 1's edge deletions (ea244273/0f3b03f5/0346b00d/709d806d) did NOT propagate — Stage 2 re-deleted all 4 and confirmed removal. Total failure history: 5 stash-fail cycles (2e441149, b4f37d8e, 39b398b0, ed46c158, dc802ff2) + 8 phantom-done resets (f08db30b, 80809328, 4d504525, 1b7f4849, ab12d9d3, 2143e7fc, fe6a32ff, b957358e). Branch task/1675 confirmed non-existent. dispatch_blocked=true metadata is INEFFECTIVE — orchestrator ignores it and dispatches anyway. Root cause confirmed: `git log main..task/NNNN` returns empty when branch nonexistent → false done. BLOCKED on dark-factory task 834. Status reset to pending (8th reset). phantom_done_count updated to 8, total_failure_events updated to 13.\n</info added on 2026-04-16T02:01:41.016Z>",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:52:48.434Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/si_units.rs",
@@ -35150,7 +35168,7 @@
               "si_units disambiguate prefix_combos SiDerivedUnit"
             ]
           },
-          "_causation_id": "1b7f4849-c72f-46f7-8a78-ba53838024ef",
+          "_causation_id": "b957358e-7e86-4336-8563-bd8c26b9a365",
           "stash_fail_cycle_count": 5,
           "stash_fail_cycles": [
             "2e441149",
@@ -35164,18 +35182,26 @@
           "phantom_done_reset": true,
           "phantom_done_run": "f08db30b",
           "fresh_worktree_mandatory": true,
-          "phantom_done_count": 4,
-          "total_failure_events": 9,
+          "phantom_done_count": 8,
+          "total_failure_events": 13,
           "phantom_done_runs": [
             "f08db30b",
             "80809328",
             "4d504525",
-            "1b7f4849"
+            "1b7f4849",
+            "ab12d9d3",
+            "2143e7fc",
+            "fe6a32ff"
           ],
           "branch_does_not_exist": true,
           "orchestrator_bug_confirmed": true,
-          "orchestrator_bug_description": "git log main..task/NNNN returns empty when branch nonexistent, triggers false done"
-        }
+          "orchestrator_bug_description": "git log main..task/NNNN returns empty when branch nonexistent, triggers false done",
+          "orchestrator_fix_required": "git rev-parse --verify task/NNNN before treating empty git-log as completion",
+          "dispatch_blocked": true,
+          "dispatch_blocked_reason": "phantom_done_loop_until_dark_factory_task_834_merged",
+          "dark_factory_dependency": "task_834"
+        },
+        "updatedAt": "2026-04-16T02:09:55.732Z"
       },
       {
         "id": "1676",
@@ -35928,11 +35954,11 @@
         "description": "Three assertion-quality fixes in crates/reify-eval/tests/incremental_integration.rs:\n1. Tighten >= 40 lower bounds on constraint_results.len() to >= 47 at lines ~263, ~358, ~393 (observed count is 49, esc-295-78 can drop to 47).\n2. Add lower-bound assertion (>= 45) to the XFAIL block at ~line 521 to prevent silent catastrophic regressions.\n3. Add error-path tests for edit_param/edit_check: invalid ValueCellId (nonexistent entity/param), dimension mismatch. Note: edit_param-before-eval is already covered in boundary5_engine.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T06:19:16.930Z",
+        "updatedAt": "2026-04-15T21:36:26.362Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -35946,11 +35972,11 @@
         "description": "Task 1588 (70-module review) found doc comment inaccuracies in two compiler modules:\\n\\n1. **scope.rs** — doc comments describe behaviour or fields that have diverged from the actual implementation (exact locations in mem0 entry 00fb2c91).\\n2. **entity.rs** — similar stale/inaccurate doc comments.\\n\\nAlso flagged: module-level doc comment needs clarification for conditional branches/match arms (mem0 entry 00e618fc) — the description of control-flow behavior in the doc comment does not accurately describe all code paths.\\n\\nActions:\\n- Audit the flagged doc comments against current code\\n- Rewrite inaccurate descriptions to match actual behavior\\n- Add clarifying notes for any conditional/match arm paths that are non-obvious\\n\\n## memory_hints\\n- search: \\\"doc comment mismatch scope.rs entity.rs\\\"\\n- search: \\\"module doc conditional branches match arms clarification\\\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:35:03.954Z",
+        "updatedAt": "2026-04-16T02:19:41.394Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -36154,11 +36180,11 @@
         "description": "GeometryOp::Chamfer exists in reify-types and has a stdlib implementation (task 315 done), but there is no compiler dispatch path for it. The compiler→eval→FFI wiring is missing. Code review of task 1588 (70-module review, 2026-04-15) identified this gap via mem0 entries 1f659e54 and 26d8f165.",
         "details": "## Problem\nGeometryOp::Chamfer is defined in reify-types but the compiler has no dispatch arm for it. Without a compiler dispatch path, the op can never be emitted from user code, making the stdlib implementation unreachable.\n\n## Required work\n1. Add `GeometryOp::Chamfer` handling to the compiler's geometry dispatch (likely in `crates/reify-compiler/src/geometry.rs` or the compile_geometry_op function)\n2. Ensure eval handles `GeometryOp::Chamfer` (check `crates/reify-eval/src/` for the eval dispatch)\n3. Verify FFI/CAD kernel call is wired up\n4. Add compiler test: chamfer(body, ...) should compile to a GeometryOp::Chamfer op\n5. Add eval/integration test: chamfered shape evaluates correctly\n\n## memory_hints\n- search: \"GeometryOp::Chamfer compiler dispatch\"\n- search: \"task 315 chamfer stdlib implementation\"\n- search: \"compile_geometry_op geometry dispatch arms\"\n- entity: \"GeometryOp::Chamfer\"\n<info added on 2026-04-15T11:12:32.317Z>\n- search: \"Task 1715 geometry dispatch restructuring\"\n- search: \"geometry_arg_indices table Chamfer argument classification\"\n- reference: \"Follow pattern from 14 functions fixed in Task 1715 for Chamfer wiring\"\n</info added on 2026-04-15T11:12:32.317Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:18:51.897Z",
+        "updatedAt": "2026-04-15T17:13:34.352Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
@@ -36257,32 +36283,26 @@
         "description": "The loft error-path fallback (geometry.rs line 462) uses `GeomRef::Step(0)` and the sweep profile fallback (line 597) also uses `GeomRef::Step(0)`. When `compile_geometry_call` is invoked with a non-zero `step_offset` (e.g., loft/sweep nested inside a boolean op or another geometry function), `Step(0)` references a completely unrelated step.\n\nFix: Change line 462 to `GeomRef::Step(step_offset)` and line 597 to `GeomRef::Step(step_offset)` to match the convention used in the `geom_ref` closure (line 304). The sweep path fallback at line 605 already correctly uses `step_offset + 1`.\n\n## memory_hints\n- search: \"compile_geometry_call step_offset GeomRef fallback\"\n- entity: \"compile_geometry_call\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1715"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T07:21:15.538Z",
+        "updatedAt": "2026-04-16T02:21:22.672Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
             "crates/reify-compiler/src/lib.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "GeomRef",
-              "geometry.rs",
-              "loft",
-              "sweep"
-            ],
+            "entities": [],
             "queries": [
-              "GeomRef::Step(0) loft sweep error-path fallback fix",
-              "compile_geometry_call geometry argument resolution task 1715",
-              "geometry step index tracking compile_geometry_op"
+              "GeomRef Step zero loft sweep error path fallback geometry",
+              "geometry reference step index error handling loft sweep"
             ]
           },
-          "_causation_id": "a6a69c0f-4d18-428a-aeb5-931c6a57d9d3"
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         }
       },
       {
@@ -36291,28 +36311,22 @@
         "description": "Three test improvements for the geometry-arg resolution system introduced in task 1715:\n\n1. **Registry cross-check (robustness):** Add a `#[cfg(test)]` test that cross-checks the set of function names handled in `geometry_arg_indices` against the set handled in the main `match name { ... }` dispatch block in `compile_geometry_call`. This catches silent omissions when new geometry functions are added. Currently the IMPORTANT comment (line 24) warns about this but there's no compile-time or CI enforcement.\n\n2. **Error-path tests:** Add tests using `compile_with_diagnostics` that pass non-geometry expressions (e.g., literal numbers) as geometry arguments of transform/sweep/loft functions. These exercise the `geom_ref` fallback closure and the loft/sweep diagnostic branches.\n\n3. **Loft 3+ profiles test:** Add a test like `loft_three_profiles_ops` that compiles `loft(p1, p2, p3)` with three let-bound geometry lets and asserts the expected op sequence `[Cylinder, Cylinder, Cylinder, Sweep(Loft, [0, 1, 2])]`. The current test only exercises loft with exactly 2 profiles.\n\n## memory_hints\n- search: \"compile_geometry_call geometry argument resolution\"\n- search: \"let_scope_tests geometry test patterns\"\n- entity: \"geometry_arg_indices\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "1715"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T07:22:08.760Z",
+        "updatedAt": "2026-04-15T17:28:07.601Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
             "crates/reify-compiler/tests/let_scope_tests.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "compile_geometry_call",
-              "GeomRef",
-              "geometry_arg_indices"
-            ],
+            "entities": [],
             "queries": [
-              "geometry-arg resolution test coverage let_scope_tests.rs",
-              "geometry registry cross-check argument type metadata table",
-              "compile_geometry_call fix task 1715 generic resolution"
+              "resolution for: Add geometry-arg resolution test coverage and registry cross-check"
             ]
           },
           "_causation_id": "a6a69c0f-4d18-428a-aeb5-931c6a57d9d3"
@@ -36423,11 +36437,11 @@
         "description": "Add a new Design Tree panel to the GUI (tabbed alongside PropertyEditor) showing a hierarchical tree of entities with geometric presence. Each node shows kind icon, name, type label, and an eye icon cycling show/ghost/hidden. Default rule: show `param geometry` from Physical trait, hide other Solid let-bindings. Collapse/expand for sub-structure hierarchy. Click to select (synced with viewport + PropertyEditor). State stored in a new SolidJS `designTreeStore` + `viewStateStore`.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 4 (Design Tree Panel) and 5.1 (Visibility States), 5.4 (Default Rules).\n\n### Frontend (gui/src/)\n\n1. **New component: `panels/DesignTree.tsx`**\n   - Recursive tree component rendering entity hierarchy\n   - Each node: chevron (expand/collapse), kind icon, name, type label (dimmed), eye icon\n   - Eye icon click cycles: show -> ghost -> hidden -> show\n   - Click selects entity (update selectionStore)\n   - Double-click flies camera to entity bounding box\n   - Tabbed with PropertyEditor (new tab bar in the right panel area of App.tsx)\n\n2. **New store: `stores/designTreeStore.ts`**\n   - Holds hierarchical entity tree from engine\n   - TreeNode: { entityPath, kind, typeName, hasMesh, traitGeometry, children, expanded }\n   - Rebuilt from `get_entity_tree()` Tauri command on evaluation complete\n   - Preserves expand/collapse state across rebuilds (by entity path)\n\n3. **New store: `stores/viewStateStore.ts`**\n   - Holds per-entity visibility state: show | ghost | hidden | inherit\n   - Default rule: if traitGeometry -> show, else if Solid let-binding -> hidden, else show\n   - `getEffectiveVisibility(entityPath)` resolves inherit chains\n\n4. **Modify `viewport/meshManager.ts`**\n   - Consult viewStateStore before adding meshes to scene\n   - Show: normal rendering (existing behavior)\n   - Hidden: don't add to scene / remove from scene\n   - Ghost: placeholder behavior for now (will be replaced by Task 2) — render with low opacity\n\n5. **Modify `App.tsx`**\n   - Add tab bar for Tree / Properties in right panel area\n   - Wire up DesignTree component\n\n### Backend (gui/src-tauri/)\n\n6. **New Tauri command: `get_entity_tree`**\n   - Walk the evaluation graph to produce hierarchical entity tree\n   - Each node: entity_path, kind (structure/sub/let/param/port), type_name, has_mesh, trait_geometry flag\n   - Emit on evaluation complete alongside existing mesh/value/constraint updates\n\n### Requirements covered\nT-1, T-2, T-3, T-4, T-5, T-6, T-7, T-8, T-13, T-14, VIS-1 (partial), VIS-3\n\n### memory_hints\n- search: \"GUI panel layout App.tsx\"\n- search: \"meshManager sync rendering\"\n- search: \"engineStore state meshes\"\n- search: \"PropertyEditor panel implementation\"\n- entity: \"reify-gui\"\n- entity: \"Three.js viewport\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T11:06:19.317Z",
+        "updatedAt": "2026-04-15T21:32:57.378Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/commands.rs",
@@ -36455,22 +36469,13 @@
             "gui/src/viewport/meshManager.ts"
           ],
           "memory_hints": {
-            "entities": [
-              "reify-gui",
-              "Three.js viewport",
-              "DesignTree",
-              "viewStateStore",
-              "meshManager"
-            ],
-            "searches": [
-              "GUI panel layout App.tsx right panel PropertyEditor tab bar",
-              "meshManager Three.js scene mesh sync rendering",
-              "engineStore state meshes evaluation complete event",
-              "design tree entity hierarchy instance elaborated graph reify-gui",
-              "get_entity_tree Tauri command entity path kind type"
-            ],
-            "_causation_id": "9255cb58-9827-4ba9-a1de-71532f4fe900"
-          }
+            "entities": [],
+            "queries": [
+              "Tree panel MVP visibility controls UI design reify",
+              "tree panel component hierarchy visibility architecture"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         }
       },
       {
@@ -36924,11 +36929,11 @@
         "description": "Address three test quality issues from task 1742 review:\n\n1. **Extract shared mock (S6)**: MockMeshBasicMaterial is duplicated nearly identically between meshManager.test.ts (lines 74-95) and ghostMaterial.test.ts (lines 7-29). Extract into a shared test utility file at gui/src/__tests__/viewport/mocks/threeMocks.ts and import in both.\n\n2. **Fix brittle opacity assertion (S5)**: ghostMaterial.test.ts line 62-63 asserts opacity in range [0.12, 0.18] but implementation uses fixed 0.15. Change to exact assertion: expect((mat as any).opacity).toBe(0.15).\n\n3. **Add missing edge-case tests (S8)**: In meshManager.test.ts, add tests for:\n   - ghost→ghost idempotency: setVisibility('A', 'ghost') called twice doesn't double-add ghost clones or throw, and no scene operations occur on the second call\n   - orphan visibility: setVisibility on an entity that was never synced and never arrives doesn't cause issues\n\n### memory_hints\n- search: \"viewport test mock three.js\"\n- search: \"ghost material test quality\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:03:51.543Z",
+        "updatedAt": "2026-04-15T17:36:11.923Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/viewport"
@@ -36941,11 +36946,11 @@
         "description": "The Reify language has no `pi` constant. Writing `2 * pi` as an angle argument fails silently. Add `pi` (3.14159...) and `tau` (6.28318...) as built-in constants accessible from any structure scope.",
         "details": "memory_hints: search \"stdlib builtin constants\", get_entity \"reify-stdlib\"\n\nCurrently the only way to use pi is to hardcode `6.2832` or define `let pi = 3.14159`. The stdlib should export these as pre-defined constants. Check how other constants (like unit definitions `mm`, `kg`) are registered and follow the same pattern.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:37:45.843Z",
+        "updatedAt": "2026-04-15T17:18:41.622Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/constants.rs",
@@ -36985,7 +36990,7 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-15T12:08:52.351Z",
+        "updatedAt": "2026-04-15T21:17:23.126Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/diff.rs",
@@ -37149,11 +37154,11 @@
         "description": "Two related issues in the fallback path of `resolve_collection_sub_to_list` (crates/reify-compiler/src/expr.rs:63-69):\n\n1. **Missing test coverage**: No test covers the fallback path when `sub_member_types` has no entry for the sub (e.g., ad-hoc structures, forward references, or empty params). This path produces a different `ValueCellId` (`__list_{sub}` vs `__list_{sub}__{member}`) and a different type (`StructureRef(field_name)` vs the real member type). Add a test with a collection sub whose structure template is not yet compiled or has no params, verifying the fallback cell ID and coarse type.\n\n2. **Inaccurate StructureRef in fallback**: The fallback constructs `Type::StructureRef(sub_name.to_owned())` using the *field name* (e.g., `\"bolts\"`) rather than the structure *type name* (e.g., `\"Bolt\"`). Any downstream consumer that tries to look up a structure by this name will fail. Now that `self.sub` resolves through this function (task 1280), this path may be reached more often. Consider looking up the structure type name from `scope.sub_component_types` in the fallback:\n```rust\nlet type_name = scope.sub_component_types.get(sub_name)\n    .cloned()\n    .unwrap_or_else(|| sub_name.to_owned());\nlet list_type = Type::List(Box::new(Type::StructureRef(type_name)));\n```\n\nRelated: Task 1281 addresses error-recovery fallback types in lib.rs but does not touch the `resolve_collection_sub_to_list` helper in expr.rs.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project; inspect expr.rs resolve_collection_sub_to_list function near line 51.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T12:28:30.911Z",
+        "updatedAt": "2026-04-15T21:27:13.381Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -37264,7 +37269,7 @@
         "description": "From task-1287 review. (1) conformance.rs:269-280: scope.register(name,ty) overwrites when cross-kind defaults coexist. Guard with contains_key or entry API. (2) trait_merge_tests.rs: add test for Constraint+Param coexistence on same member name.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -37278,7 +37283,7 @@
             "crates/reify-compiler/tests"
           ]
         },
-        "updatedAt": "2026-04-15T16:33:05.587Z"
+        "updatedAt": "2026-04-15T17:08:57.183Z"
       },
       {
         "id": "1777",
@@ -37286,7 +37291,7 @@
         "description": "From task-1287 review. (1) conformance.rs:269-280: scope.register overwrites type for cross-kind defaults. Guard with contains_key. (2) Add test for Constraint+Param coexistence.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -37299,7 +37304,8 @@
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T17:19:53.572Z"
       },
       {
         "id": "1778",
@@ -37307,7 +37313,7 @@
         "description": "From task-1287 review. (1) conformance.rs:269-280: scope.register overwrites type for cross-kind defaults. Guard with contains_key. (2) Add test for Constraint+Param coexistence.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -37320,7 +37326,8 @@
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-15T17:30:45.651Z"
       },
       {
         "id": "1779",
@@ -37350,7 +37357,7 @@
         "description": "**Bug:** In `crates/reify-eval/src/lib.rs:3229`, the export path uses `step_handles.last().copied().unwrap_or(GeometryHandleId(0))`. When `total_ops == 0` (no geometry ops in any template) but a geometry kernel is present, this tries to export handle 0.\n\n**Why it's wrong:**\n1. Handle IDs start at 1 (`next_id: 1` in kernel), so handle 0 never exists → confusing \"export error: shape not found\" instead of clean \"no geometry\" result\n2. Uses `GeometryHandleId(0)` as a sentinel but the codebase standard sentinel is `GeometryHandleId::INVALID` (`u64::MAX`) — inconsistent with the 8+ sites that filter using `!= GeometryHandleId::INVALID`\n3. Violates the silent-defaults convention — should not silently substitute a bogus handle\n\n**Fix:** Restructure the conditional so `step_handles.is_empty()` always returns `None` (no geometry output), regardless of `total_ops`. Only emit the \"all ops failed\" diagnostic when `total_ops > 0`. Use `.unwrap()` (safe: non-empty proven by branch) instead of `unwrap_or`.\n\n```rust\nif step_handles.is_empty() {\n    if total_ops > 0 {\n        diagnostics.push(Diagnostic::error(\"all geometry operations failed; no geometry output produced\"));\n    }\n    None\n} else {\n    let export_handle = *step_handles.last().unwrap(); // safe: non-empty\n    ...\n}\n```\n\n**memory_hints:** search \"GeometryHandleId INVALID sentinel\" for context on handle ID conventions",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -37361,7 +37368,8 @@
           "modules": [
             "crates/reify-eval/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-16T02:38:49.907Z"
       },
       {
         "id": "1781",
@@ -37462,11 +37470,11 @@
         "description": "Three closely related cleanup items in crates/reify-eval/tests/stress_large_assembly.rs:\n1. Replace the 3× repeated Value→f64 match blocks in mass_propagation_steel_beam (lines 168-185), mass_propagation_aluminum_plate (lines 217-234), and total_mass_computed (lines 254-258) with val.as_f64().unwrap_or_else(|| panic!(...)).\n2. Extract a helper fn assert_mass_equals_volume_times_density(result: &EvalResult, entity: &str) covering lines 149-193 and 197-243, then call it from each test.\n3. In compiled() (lines 45-54), remove the manual error-filtering assertion block that duplicates what parse_and_compile_with_stdlib already guarantees.\n\nmemory_hints: search \"Value::as_f64\" for the existing helper method; search \"parse_and_compile_with_stdlib\" for its error-handling guarantees.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:36:47.150Z",
+        "updatedAt": "2026-04-15T17:47:28.787Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/stress_large_assembly.rs"
@@ -37479,11 +37487,11 @@
         "description": "In crates/reify-eval/tests/stress_large_assembly.rs, wrap the EvalResult from eval_canonical() in a OnceLock (similar to compiled()) so that mass_propagation_steel_beam, mass_propagation_aluminum_plate, total_mass_computed, and smoke_compiles_and_evals share a single evaluation of the 54-component assembly instead of re-running it 4×. eval_canonical() creates a fresh engine each time so sharing the result is safe.\n\nmemory_hints: search \"OnceLock\" in test files for the existing pattern used by compiled().",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:33:09.855Z"
+        "updatedAt": "2026-04-15T17:05:29.502Z"
       },
       {
         "id": "1788",
@@ -37491,11 +37499,11 @@
         "description": "Four test quality fixes across both stress test files and the fixture:\n1. stress_pattern_composition.rs: count_one_single_instance (line 157-161) — add a PatternCountOne-specific assertion (template present, expected realization structure) so removing the template would fail the test.\n2. stress_pattern_composition.rs has_expected_templates (line 106): change assert_eq!(len, 7) to assert!(len >= 7) for resilience to fixture additions, matching stress_large_assembly.rs style.\n3. stress_large_assembly.rs eval_under_5_seconds (lines 319-344): increase the 5s wall-clock threshold (e.g. 15s) for CI resilience, add a comment explaining that cached helpers are intentionally not used here (measuring the full uncached pipeline), and consider #[ignore] for dedicated perf runs.\n4. examples/large_assembly.ri simulation_ready purpose (lines 270-278): replace `constraint 1 > 0` / `constraint 1 >= 0` with real Physical property constraints (e.g. `constraint subject.volume > 0`), or correct the doc comment to reflect that these are placeholder constraints for mechanism testing only.\n\nmemory_hints: search \"assert_eq\" in stress test files for current assertion patterns; get_entity \"PatternCountOne\" for template structure.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:38:01.501Z",
+        "updatedAt": "2026-04-15T21:19:55.799Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/stress_large_assembly.rs",
@@ -37510,11 +37518,11 @@
         "description": "In crates/reify-eval/tests/stress_pattern_composition.rs, replace the local eval_ri_file() (lines 28-65) and compile_ri_file() (lines 68-79) helpers with calls to existing reify_test_support functions (compile_source_named, make_engine, etc.) plus a one-liner fs::read_to_string. This eliminates duplicated parse→compile→eval plumbing and keeps the stress tests consistent with the broader test suite.\n\nmemory_hints: search \"compile_source_named\" for the existing helper API; search \"reify_test_support\" for available test utilities.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:34:19.818Z"
+        "updatedAt": "2026-04-15T17:02:14.125Z"
       },
       {
         "id": "1790",
@@ -37522,11 +37530,11 @@
         "description": "The `assert_has_diagnostic` and `assert_no_diagnostic` helpers in `connect_compile_tests.rs` (lines 1370-1397) are useful for asserting on diagnostic severity+message content. A similar pattern exists in `guard_compilation.rs` (`assert_no_error_diagnostics`). As the compiler test suite grows, these helpers should live in a shared test-utilities module to avoid duplication.\n\nSuggested approach: create a `test_helpers.rs` module (or similar) included via `mod test_helpers;` in each integration test file, containing these diagnostic assertion utilities. Also consider migrating the existing `assert_no_error_diagnostics` pattern from `guard_compilation.rs`.\n\nWhile extracting, consider using `Iterator::any()` instead of collecting into a Vec in `assert_has_diagnostic` (the `assert_no_diagnostic` needs the Vec for the panic message, so it should stay as-is).\n\n**memory_hints**: search \"compiler test helpers diagnostic assertions\" for prior art",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:37:48.092Z"
+        "updatedAt": "2026-04-15T17:09:16.506Z"
       },
       {
         "id": "1791",
@@ -37551,11 +37559,11 @@
         "description": "The `undo` and `redo` entries in shortcuts.ts have non-empty `key` values ('Ctrl+Z', 'Ctrl+Shift+Z') but no handlers are wired in useKeyboardShortcuts.ts. KeyboardHelp.tsx renders all SHORTCUTS entries with a non-empty `key`, so these appear as available shortcuts that do nothing when pressed. The MenuBar correctly marks them as disabled, but KeyboardHelp has no such distinction.\n\nFix: Either set the `key` to '' for undo and redo (hiding them from KeyboardHelp like fitToView), or add a `disabled` flag to ShortcutDef and filter/annotate accordingly in KeyboardHelp.\n\nmemory_hints: search \"undo redo shortcut handler KeyboardHelp\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:52:45.391Z"
+        "updatedAt": "2026-04-15T17:17:09.894Z"
       },
       {
         "id": "1793",
@@ -37563,11 +37571,17 @@
         "description": "Two test quality improvements from task 1766 review:\n\n1. The handleSave test in App.test.tsx covers the happy path but not the error path where bridgeSaveFile rejects. A failed save should show a toast and NOT call markClean. Add a test that mocks bridge.saveFile to reject, triggers Ctrl+S, and asserts that dirtyFiles still contains the path and that a toast with 'Save failed' is shown.\n\n2. Several callback tests in MenuBar.test.tsx use non-null assertion `!` on `.find()` results. If the find fails (e.g., due to a label text change), the test throws a confusing TypeError instead of a clear assertion failure. Add explicit expect(item).toBeTruthy() assertions before clicks.\n\nmemory_hints: search \"handleSave bridgeSaveFile error toast test\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:52:48.986Z"
+        "updatedAt": "2026-04-15T16:55:02.091Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/MenuBar.test.tsx"
+          ]
+        }
       },
       {
         "id": "1794",
@@ -37575,11 +37589,11 @@
         "description": "The four menu sections (File, Edit, View, Help) in MenuBar.tsx follow an identical structural pattern repeated 4 times: wrapper div with position:relative, trigger button with open/hover logic, Show guard with dropdown. Only the menu items differ.\n\nRefactor to a data-driven approach: define a MenuDef type with id, label, and items array, then render menus with a For loop. Also add a guard to handleMouseDown: `if (containerRef && e.target instanceof Node && !containerRef.contains(e.target))` for robustness.\n\nmemory_hints: search \"MenuBar data-driven refactor menu definition\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:52:49.433Z"
+        "updatedAt": "2026-04-15T17:45:39.318Z"
       },
       {
         "id": "1795",
@@ -37591,7 +37605,23 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:52:50.464Z"
+        "updatedAt": "2026-04-15T21:53:42.068Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/shortcuts.test.ts",
+            "gui/src/__tests__/useKeyboardShortcuts.test.ts",
+            "gui/src/hooks/useKeyboardShortcuts.ts",
+            "gui/src/shortcuts.ts"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "shortcut matching logic centralize shortcut registry reify",
+              "keybinding shortcut registry architecture"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
+        }
       },
       {
         "id": "1796",
@@ -37599,18 +37629,1012 @@
         "description": "The `undo` and `redo` entries in shortcuts.ts have non-empty `key` values ('Ctrl+Z', 'Ctrl+Shift+Z') but no handlers are wired in useKeyboardShortcuts.ts. KeyboardHelp.tsx renders all SHORTCUTS entries with a non-empty `key`, so these appear as available shortcuts that do nothing when pressed. The MenuBar correctly marks them as disabled, but KeyboardHelp has no such distinction.\n\nFix: Either set the `key` to '' for undo and redo (hiding them from KeyboardHelp like fitToView), or add a `disabled` flag to ShortcutDef and filter/annotate accordingly in KeyboardHelp.\n\nmemory_hints: search \"undo redo shortcut handler KeyboardHelp\"",
         "details": "",
         "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:52:37.081Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/KeyboardHelp.test.tsx",
+            "gui/src/__tests__/shortcuts.test.ts",
+            "gui/src/components/KeyboardHelp.tsx",
+            "gui/src/shortcuts.ts"
+          ]
+        }
+      },
+      {
+        "id": "1797",
+        "title": "Profile editor store sync performance with large documents",
+        "description": "The `updateFileContent()` call in Editor.tsx fires on every keystroke, serializing the entire document via `doc.toString()` and triggering Solid.js reactivity. For large files (10k+ lines) this could cause perceptible input lag. Profile the editor with large documents to validate acceptable latency. If needed, consider a micro-debounce (e.g. requestAnimationFrame) for the store sync, or use a dirty flag that the F5 handler checks to pull from `view.state.doc` on demand.\n\nmemory_hints: search \"editorStore updateFileContent performance\", get_entity \"Editor.tsx\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T17:03:47.683Z",
+        "metadata": {
+          "modules": [
+            "gui/src/App.tsx",
+            "gui/src/__tests__/Editor.test.tsx",
+            "gui/src/__tests__/editor-perf.test.ts",
+            "gui/src/__tests__/editorStore.test.ts",
+            "gui/src/editor/Editor.tsx",
+            "gui/src/stores/editorStore.ts"
+          ]
+        }
+      },
+      {
+        "id": "1798",
+        "title": "Add editor test coverage: null activeFile guard and multi-file F5",
+        "description": "Two test coverage gaps identified in the editor store sync tests from task 1765:\n\n1. **Null activeFile guard (Editor.test.tsx):** The updateListener in Editor.tsx guards on `if (path)` (line 139) but no test verifies that `updateFileContent` / `markDirty` are NOT called when `store.state.activeFile` is null. Add a test that dispatches a doc change with no active file and asserts the store is unchanged.\n\n2. **Multi-file F5 contract (App.test.tsx):** The existing re-evaluate test only covers a single open file. Add a test with multiple files open, edit a non-active file's content, press F5, and assert only the active file's content is sent to `bridge.updateSource`.\n\nmemory_hints: search \"editorStore updateFileContent test\", search \"F5 re-evaluate test\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:26:21.437Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/Editor.test.tsx"
+          ]
+        }
+      },
+      {
+        "id": "1799",
+        "title": "Add check_canonical_is_cached() test in stress_large_assembly.rs",
+        "description": "Add a check_canonical_is_cached() test that calls check_canonical() twice and asserts pointer equality, matching the pattern of the existing eval_canonical_is_cached() test (lines 96-104). Both eval_canonical() and check_canonical() were changed to use OnceLock caching, but only eval_canonical has a test verifying the caching behavior.\n\nInsert the new test near line 104, right after eval_canonical_is_cached().\n\nmemory_hints: search \"eval_canonical_is_cached\" in stress_large_assembly.rs for the pattern to follow.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:42:34.075Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/stress_large_assembly.rs"
+          ]
+        }
+      },
+      {
+        "id": "1800",
+        "title": "Strengthen constraint coexistence test assertion + add debug trace for scope conflicts",
+        "description": "Two small polish items from task-1776 review:\n\n(1) trait_merge_tests.rs ~line 1195: Change `template.constraints.len() >= 1` to `== 1` and, if the Constraint type exposes the expression string, assert it references `x > 0`. The current `>= 1` assertion is too weak and could mask regressions.\n\n(2) conformance.rs ~line 280: The `_was_new` return from `scope.register_if_absent(name, ty)` is captured but unused (underscore-prefixed). Add a `tracing::debug!` when `_was_new` is false to surface trait-merge type conflicts during development, or add a `// TODO(#NNN)` referencing a tracking issue for future observability.\n\nmemory_hints:\n- search: \"register_if_absent scope trait merge\"\n- entity: \"Scope\", \"register_if_absent\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T17:12:16.759Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/Cargo.toml",
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1801",
+        "title": "Strengthen constraint coexistence test assertion + add debug trace for scope conflicts",
+        "description": "Two small polish items from task-1776 review: (1) trait_merge_tests.rs ~line 1195: Change `template.constraints.len() >= 1` to `== 1` — the current assertion is too weak and could mask regressions. (2) conformance.rs ~line 280: Add `tracing::debug!` when `_was_new` is false to surface trait-merge type conflicts during development.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T17:12:38.038Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/Cargo.toml",
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1802",
+        "title": "Extract compile_modify_2arg helper for chamfer/fillet/draft/shell/thicken compiler arms",
+        "description": "The chamfer and fillet compiler arms in geometry.rs (lines ~867-909) are structurally identical, differing only in function name, ModifyKind variant, and second arg label. The same pattern exists for draft, shell, and thicken. Extract a shared helper like `compile_modify_2arg(kind, arg1_name, arg2_name, compiled_args, diagnostics, expr)` to reduce ~22 lines of near-identical code per arm.",
+        "details": "## Location\n`crates/reify-compiler/src/geometry.rs` — the match arms for \"chamfer\", \"fillet\", and likely \"draft\", \"shell\", \"thicken\"\n\n## Pattern\nEach arm:\n1. Checks `compiled_args.len() != 2`\n2. Pushes an error diagnostic with the function name and span label\n3. Builds `CompiledGeometryOp::Modify { kind, target: GeomRef::Step(0), args: [(\"target\", ...), (arg2_name, ...)] }`\n\n## memory_hints\n- search: \"compile_geometry_op modify arms\"\n- search: \"Task 1715 geometry dispatch restructuring\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T17:19:31.542Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/tests/let_scope_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1803",
+        "title": "Add fillet compiler and eval e2e tests analogous to chamfer_e2e.rs",
+        "description": "Task 1728 added fillet to the compiler dispatch (geometry.rs and units.rs) alongside chamfer, but only chamfer has end-to-end tests (chamfer_e2e.rs). The fillet compiler path is entirely new code that has no compiler/eval integration test coverage.",
+        "details": "## Required tests\n1. `fillet_compiler_rejects_one_arg` — fillet() with 1 arg should produce diagnostics\n2. `fillet_compiler_rejects_three_args` — fillet() with 3 args should produce diagnostics\n3. `fillet_compiler_accepts_two_args` — fillet(target, radius) compiles to Modify(Fillet) op\n4. `fillet_through_full_eval_pipeline` — compile→eval path produces GeometryOp::Fillet with correct target handle and radius\n\n## Reference\nPattern the tests after `crates/reify-eval/tests/chamfer_e2e.rs` which covers the exact same structure for chamfer.\n\n## memory_hints\n- search: \"chamfer_e2e.rs test structure\"\n- search: \"fillet compiler dispatch\"",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:08:43.050Z"
+      },
+      {
+        "id": "1804",
+        "title": "Revert cmd_lsp() to multi-thread tokio runtime to fix CI test timeout",
+        "description": "Commit ceede7afc switched cmd_lsp() in crates/reify-cli/src/main.rs from tokio::runtime::Runtime::new() (multi-thread) to Builder::new_current_thread().enable_all().build(). Under CI load, lsp_initialize_returns_capabilities times out at 30s because the single-thread runtime can't get enough CPU scheduling time when competing with parallel test binaries.\n\nFix: In crates/reify-cli/src/main.rs, revert cmd_lsp() to use tokio::runtime::Runtime::new() instead of Builder::new_current_thread(). Keep the 30s timeout in the test (better safety margin).\n\nmemory_hints: search \"cmd_lsp current_thread runtime ceede7afc\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:10:09.571Z"
+      },
+      {
+        "id": "1805",
+        "title": "Add constant shadowing test coverage: collection sub-name and cell-value assertions",
+        "description": "Strengthen builtin constant (pi/tau) shadowing tests added in task 1762.\n\n1. Add a test in `constant_compile_tests.rs` that creates a collection with a sub-structure named `pi` and asserts the identifier resolves to the collection list rather than the builtin constant literal. The code path (collection sub-names checked before `resolve_builtin_constant`) is correct by design, but an explicit test guards against future refactors that reorder checks.\n\n2. In the existing `user_let_pi_shadows_builtin` test, add an assertion that `get_cell_expr(&compiled, \"pi\")` resolves to `Literal(Int(42))` to confirm the user-provided value is preserved. Similarly strengthen `user_param_pi_shadows_builtin`.\n\nmemory_hints: search \"resolve_builtin_constant collection sub-name\", get_entity \"reify-compiler\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:21:28.487Z"
+      },
+      {
+        "id": "1806",
+        "title": "Add 'did you mean' hints for case-variant builtin constant names",
+        "description": "When a user writes `Pi`, `PI`, `TAU`, `Tau` etc., the identifier silently falls through to an \"unresolved name\" error. While case-sensitivity is consistent with the language's identifier rules, users coming from languages with uppercase constants may be surprised.\n\nIn the unresolved-name error path in `expr.rs`, add a check: if the lowercase version of the identifier matches a builtin constant name (via `resolve_builtin_constant`), include a \"did you mean `pi`?\" suggestion in the diagnostic. This is a UX improvement, not a correctness change.\n\nmemory_hints: search \"unresolved name error path expr.rs\", search \"resolve_builtin_constant\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:56:45.245Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/constants.rs",
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/tests/constant_compile_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1807",
+        "title": "Extract get_cell_expr helper from compiler tests to reify-test-support",
+        "description": "The `get_cell_expr` helper (navigates `compiled.templates[0].value_cells` to find a member's default expression) is duplicated across 3 compiler test files: `constant_compile_tests.rs`, `meta_compile_tests.rs`, and `collection_compile_tests.rs`. Extract it into `reify-test-support` (likely `helpers.rs`) and update the three files to import it.\n\nmemory_hints: search \"get_cell_expr helper reify-test-support\", search \"reify-test-support helpers.rs\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:08:53.972Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/collection_compile_tests.rs",
+            "crates/reify-compiler/tests/constant_compile_tests.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs",
+            "crates/reify-test-support/src/helpers.rs"
+          ]
+        }
+      },
+      {
+        "id": "1808",
+        "title": "Improve duplicate meta key diagnostic label precision and test assertions",
+        "description": "Two improvements to the duplicate-meta-key detection added in task 390:\n\n1. **Diagnostic label precision** (entity.rs ~line 455-460): The duplicate meta key diagnostic labels the entire `meta.span` with \"in this meta block\". Improve by including the key name in the label text (e.g., \"duplicate key 'a' in this meta block\") for better IDE hover UX. If entry-level spans become available in the syntax model (e.g., `Vec<(Spanned<String>, String)>`), use the entry-level span instead.\n\n2. **Test assertion precision** (meta_compile_tests.rs `duplicate_meta_key_multiple_duplicates`): The test checks that all errors contain \"duplicate meta key\" but doesn't verify that specific keys 'x' and 'y' are named. Add:\n```rust\nassert!(errors.iter().any(|d| d.message.contains(\"'x'\")));\nassert!(errors.iter().any(|d| d.message.contains(\"'y'\")));\n```\n\nmemory_hints: search \"duplicate meta key diagnostic\" and \"meta block span\"; get_entity \"MetaBlock\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:50:09.102Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1809",
+        "title": "Improve duplicate meta key diagnostic label precision and test assertions",
+        "description": "Two improvements to the duplicate-meta-key detection added in task 390:\n\n1. **Diagnostic label precision** (entity.rs ~line 455-460): The duplicate meta key diagnostic labels the entire `meta.span` with \"in this meta block\". Improve by including the key name in the label text (e.g., \"duplicate key 'a' in this meta block\") for better IDE hover UX. If entry-level spans become available in the syntax model (e.g., `Vec<(Spanned<String>, String)>`), use the entry-level span instead.\n\n2. **Test assertion precision** (meta_compile_tests.rs `duplicate_meta_key_multiple_duplicates`): The test checks that all errors contain \"duplicate meta key\" but doesn't verify that specific keys 'x' and 'y' are named. Add:\n```rust\nassert!(errors.iter().any(|d| d.message.contains(\"'x'\")));\nassert!(errors.iter().any(|d| d.message.contains(\"'y'\")));\n```\n\nmemory_hints: search \"duplicate meta key diagnostic\" and \"meta block span\"; get_entity \"MetaBlock\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:50:10.947Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/entity.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1810",
+        "title": "Extract geometry_ops and concurrent-edit modules from reify-eval/src/lib.rs",
+        "description": "Break up crates/reify-eval/src/lib.rs (6709 lines) into smaller modules to reduce orchestrator lock contention. This file is the #1 concurrency bottleneck — 15 tasks contend on it with max_per_module=1.\n\nmemory_hints:\n- search: \"reify-eval lib.rs extraction\" \"geometry_ops module\"\n- entity: reify-eval, Engine, compile_geometry_op",
+        "details": "## Extraction 1: geometry_ops.rs (~3500 lines, highest value)\n\nMove `compile_geometry_op` (line 3705) and its helpers to `crates/reify-eval/src/geometry_ops.rs`:\n- `compile_geometry_op` — free function, zero coupling to Engine\n- `eval_named_arg` (line 3602)\n- `eval_named_arg_f64` (line 3633)\n- `eval_all_args_to_f64` (line 3660)\n- All tests from lines 4799–6709 (~1910 lines) that test compile_geometry_op\n\nThis is the highest-value extraction: 6 of the 15 tasks touching lib.rs only need this code. After extraction they lock `geometry_ops.rs` instead, immediately enabling parallel execution.\n\n## Extraction 2: concurrent.rs (~500 lines)\n\nMove concurrent-edit Engine methods to `crates/reify-eval/src/concurrent.rs` via a separate impl block:\n- `prepare_concurrent_edit` (line 767)\n- `rollback_concurrent_edit` (line 849)\n- `apply_concurrent_edit` (line 867)\n- `resolve_concurrent_edit` (line 947)\n- `ConcurrentEditSetup` struct (line 208)\n- `ConcurrentNodeResult` struct (line 242)\n- `ConcurrentEditResult` struct (line 257)\n\nThese methods form a cohesive group. Use `impl Engine` in a separate file (Rust allows multiple impl blocks across files within the same crate).\n\n## Extraction 3: unfold.rs (~340 lines)\n\nMove recursive-unfolding free functions to `crates/reify-eval/src/unfold.rs`:\n- `unfold_recursive_sub` (line 4276)\n- `elaborate_child_instance` (line 4469)\n- `elaborate_child_params_only` (line 4516)\n- `elaborate_child_lets_only` (line 4611)\n\n## Expected concurrency impact\n\n- Extraction 1 alone moves ~6 tasks off the lib.rs lock key (40% contention reduction)\n- Extractions 1+2 together move ~9 tasks off (60% reduction)\n- Remaining ~6 tasks still contend on eval()/edit_param() which are tightly coupled to Engine internals\n\n## Constraints\n\n- All extractions are pure moves — no behavioral changes\n- Public API surface of reify-eval must not change (re-export moved items from lib.rs)\n- Tests must continue to pass: `cargo test --workspace`\n- Run `cargo clippy --workspace -- -D warnings` to verify no new warnings",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:38:46.038Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/concurrent.rs",
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/src/unfold.rs"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "geometry_ops concurrent-edit module extraction reify-eval lib.rs refactor",
+              "module extraction reify eval library structure"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
+        }
+      },
+      {
+        "id": "1811",
+        "title": "Extract geometry operator groups from compile_geometry_call in reify-compiler/src/geometry.rs",
+        "description": "Break up the ~1000-line compile_geometry_call() match statement in crates/reify-compiler/src/geometry.rs into per-group helper functions to reduce orchestrator lock contention. This file is a top-5 concurrency bottleneck — 7 tasks contend on it with max_per_module=1.\n\nmemory_hints:\n- search: \"reify-compiler geometry.rs extraction\" \"compile_geometry_call\"\n- entity: reify-compiler, compile_geometry_call",
+        "details": "## Background\n\n`compile_geometry_call()` (line 51, ~1000 lines) is a single massive match over 25+ geometry operation names. Each match arm is self-contained — arms don't share mutable state beyond the function's parameters. The 7 tasks touching this file each work on different operator classes, but all lock the same file.\n\n## Extraction plan\n\nExtract four helper functions, each called from the corresponding match arms in `compile_geometry_call`. The match arms become one-line dispatches.\n\n### 1. Boolean ops (~170 lines, lines 97–264)\nExtract `compile_boolean_op()` covering: union, intersection, difference, union_all, intersection_all.\nSelf-contained recursive logic with nested call handling.\n\n### 2. Transforms (~100 lines, lines 684–783)\nExtract `compile_transform_op()` covering: translate, rotate, scale, rotate_around.\nFormulaic pattern — each arm extracts named args and builds a GeometryOp variant.\n\n### 3. Modifies (~125 lines, lines 784–909)\nExtract `compile_modify_op()` covering: shell, thicken, draft, chamfer, fillet.\nTask 1802 is already partially doing this (compile_modify_fixed helper). Align with that work.\n\n### 4. Curves (~130 lines, lines 910–1040)\nExtract `compile_curve_op()` covering: line_segment, arc, helix, interp, bezier, nurbs.\nIsolated constructors that build GeometryOp::Curve variants.\n\n### What stays in compile_geometry_call\n- Pattern ops (linear_pattern, circular_pattern, etc.) — shared step_offset logic\n- Sweep/loft — complex multi-profile handling\n- Primitives (sphere, cylinder, etc.)\n- The match dispatch skeleton\n\n## Expected concurrency impact\n\n7 tasks currently contend on geometry.rs. After extraction:\n- Tasks working on boolean ops lock a different file than tasks working on transforms\n- Estimated ~70% contention reduction (most tasks cluster by operator class)\n- With max_per_module=1, enables 2-3 concurrent tasks where today only 1 can run\n\n## Constraints\n\n- All extractions are pure refactors — no behavioral changes\n- New helper functions should be pub(crate) in separate files (e.g., geometry_boolean.rs, geometry_transform.rs, geometry_modify.rs, geometry_curve.rs)\n- Re-export or call from geometry.rs so compile_geometry_call's public signature is unchanged\n- Tests must pass: `cargo test --workspace`\n- `cargo clippy --workspace -- -D warnings` must pass\n- Coordinate with task 1802 which is already extracting compile_modify_fixed",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:21:16.652Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/geometry_boolean.rs",
+            "crates/reify-compiler/src/geometry_curve.rs",
+            "crates/reify-compiler/src/geometry_modify.rs",
+            "crates/reify-compiler/src/geometry_transform.rs",
+            "crates/reify-compiler/src/lib.rs"
+          ]
+        }
+      },
+      {
+        "id": "1812",
+        "title": "meshManager visibility: cross-reference docs + edge case tests",
+        "description": "Three small improvements to meshManager visibility handling from task 1760 review:\n\n1. Add cross-reference comments in meshManager.ts (near line 289) and Viewport.tsx (near line 110) documenting that orphan pruning and post-sync setVisibility re-application form a coupled invariant.\n2. Add test case in meshManager.test.ts for the hidden-state prune-and-re-arrive path (pre-set hidden → sync with entity → sync without → sync with entity again, verify arrives as 'show').\n3. Extend test (r) in meshManager.test.ts to also assert that .set() and .clear() on the returned getGhostMeshes map do not affect internal state.\n\nFiles: gui/src/viewport/meshManager.ts, gui/src/viewport/Viewport.tsx, gui/src/__tests__/viewport/meshManager.test.ts",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:10:11.281Z"
+      },
+      {
+        "id": "1813",
+        "title": "Optimized registry fallback: comment + test DRY + batch fallback test",
+        "description": "Three improvements to the optimized registry fallback path from task 1657 review:\n\n1. Add a comment at crates/reify-eval/src/lib.rs:501 explaining why the internal ConstraintChecker assert_eq! is intentionally a panic (internal invariant) while the external OptimizedImpl count mismatch gets graceful fallback.\n2. Extract a helper function assert_has_fallback_diagnostic(diagnostics, expected_target) in crates/reify-eval/tests/optimized_registry_tests.rs to DRY up the identical 18-line diagnostic assertion blocks in tests 6, 8, and 9 (lines ~453-472, ~675-694, ~756-775).\n3. Add a new test for the multi-constraint batch fallback case: register a BrokenCountOptimizedImpl for a target, define a structure with 2 constraints both annotated with that target, have the impl return 1 result (wrong count for 2 constraints), and verify both constraints get correct fallback evaluation results in the correct result slots.\n\nFiles: crates/reify-eval/src/lib.rs, crates/reify-eval/tests/optimized_registry_tests.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:13:17.374Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/optimized_registry_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1814",
+        "title": "Fix unused Value import and stale doc comment in stress_large_assembly.rs",
+        "description": "Two small fixes in crates/reify-eval/tests/stress_large_assembly.rs from task 1786 review:\n\n1. Remove Value from the import on line 19 (now unused after as_f64() refactoring — will produce compiler warning).\n2. Update the doc comment on compiled() (line 39) to say 'Parse, compile with stdlib, and cache the result.' instead of claiming it asserts no compile errors — the assertion lives inside parse_and_compile_with_stdlib, not in this function body.\n\nFiles: crates/reify-eval/tests/stress_large_assembly.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:57:09.638Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/stress_large_assembly.rs"
+          ]
+        }
+      },
+      {
+        "id": "1815",
+        "title": "MenuBar: ShortcutId union type + test assertion specificity",
+        "description": "Two improvements to the MenuBar component from task 1794 review:\n\n1. ShortcutId union type (gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx): Add `as const` to the SHORTCUTS array, derive `type ShortcutId = typeof SHORTCUTS[number]['id']`, export it, and use it as the type for MenuItemDef.shortcutId. Also update getShortcut() and shortcutKey() parameter types. This catches typos at compile time instead of silently falling back to empty string via the `?? ''` fallback.\n2. Test assertion specificity (gui/src/__tests__/MenuBar.test.tsx): Replace ~12 instances of expect(element).toBeTruthy() with expect(element).toBeDefined() for DOM query results. Focus on lines 10, 21-24, 33, 73, 213-214, 224, 233, 247, 253.\n\nSkipped: adding a comment to the non-Node mousedown target test — existing inline comments already document the scenario adequately.\n\nFiles: gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx, gui/src/__tests__/MenuBar.test.tsx",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:12:33.056Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/MenuBar.test.tsx",
+            "gui/src/__tests__/shortcuts.test.ts",
+            "gui/src/panels/MenuBar.tsx",
+            "gui/src/shortcuts.ts"
+          ]
+        }
+      },
+      {
+        "id": "1816",
+        "title": "MenuBar: ShortcutId union type + test assertion specificity",
+        "description": "Two improvements to the MenuBar component from task 1794 review:\n\n1. ShortcutId union type (gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx): Add `as const` to the SHORTCUTS array, derive `type ShortcutId = typeof SHORTCUTS[number]['id']`, export it, and use it as the type for MenuItemDef.shortcutId.\n2. Test assertion specificity (gui/src/__tests__/MenuBar.test.tsx): Replace ~12 instances of expect(element).toBeTruthy() with expect(element).toBeDefined().\n\nFiles: gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx, gui/src/__tests__/MenuBar.test.tsx",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:11:36.328Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/MenuBar.test.tsx",
+            "gui/src/__tests__/types.typecheck.ts",
+            "gui/src/panels/MenuBar.tsx",
+            "gui/src/shortcuts.ts"
+          ]
+        }
+      },
+      {
+        "id": "1817",
+        "title": "MenuBar: ShortcutId union type + test assertion specificity",
+        "description": "From task 1794 review: (1) Derive ShortcutId union type from SHORTCUTS registry in shortcuts.ts, use it in MenuItemDef.shortcutId. (2) Replace ~12 toBeTruthy() with toBeDefined() in MenuBar.test.tsx.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:11:13.091Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/MenuBar.test.tsx",
+            "gui/src/__tests__/shortcuts.test.ts",
+            "gui/src/panels/MenuBar.tsx",
+            "gui/src/shortcuts.ts"
+          ]
+        }
+      },
+      {
+        "id": "1818",
+        "title": "MenuBar ShortcutId union type and test assertion fixes",
+        "description": "Task 1794 review follow-up: derive ShortcutId type from SHORTCUTS array, replace toBeTruthy with toBeDefined in MenuBar tests. Files: gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx, gui/src/__tests__/MenuBar.test.tsx",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:12:40.921Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/MenuBar.test.tsx",
+            "gui/src/__tests__/shortcuts.test.ts",
+            "gui/src/panels/MenuBar.tsx",
+            "gui/src/shortcuts.ts"
+          ]
+        }
+      },
+      {
+        "id": "1819",
+        "title": "Fix misleading \"structurally required\" comment in fillet_e2e.rs and align with chamfer_e2e.rs",
+        "description": "In fillet_e2e.rs:156-160, the comment claims the \"target\" arg slot is \"structurally required by the IR format\", but this is inaccurate. The eval layer (lib.rs:3731-3733) only extracts \"radius\" by name for Fillet — it never looks up \"target\" from args. The internal unit test at lib.rs:5946-5949 constructs a Fillet with only (\"radius\", ...) in args and works fine.\n\nEither remove the dummy (\"target\".into(), mm_literal(0.0)) entry entirely (matching the internal unit test pattern), or correct the comment to match chamfer_e2e.rs line 153 which already says: \"target\" arg is not evaluated; actual handle resolved from GeomRef::Step(0).\n\nWhichever approach is chosen, align both fillet_e2e.rs and chamfer_e2e.rs so the test patterns stay consistent.\n\n## memory_hints\n- search: \"fillet eval args target\"\n- search: \"chamfer_e2e.rs test structure\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:39:42.549Z"
+      },
+      {
+        "id": "1820",
+        "title": "Replace exact __list_pi__ member assertion with prefix check in constant_compile_tests",
+        "description": "In `crates/reify-compiler/tests/constant_compile_tests.rs`, the `collection_sub_named_pi_shadows_builtin` test (line ~201) asserts `id.member == \"__list_pi__diameter\"`. This couples the test to the internal naming scheme and the assumption that PiPart has exactly one param whose name is lexicographically first.\n\nReplace with a prefix check: `assert!(id.member.starts_with(\"__list_pi__\"), ...)` to validate shadowing while being resilient to member-set changes in the test fixture.\n\nmemory_hints: search \"resolve_builtin_constant collection sub-name\", get_entity \"constant_compile_tests\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:22:38.413Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/constant_compile_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1821",
+        "title": "Fix self-referential count assertion in all_dispatch_functions_accounted_for test",
+        "description": "In `crates/reify-compiler/src/geometry.rs` (lines ~1161-1179), the `all_dispatch_functions_accounted_for` test's count assertion is tautological. It builds a `HashSet` from four lists and asserts `all.len() == GEOM_ARG_FUNCTIONS.len() + NO_GEOM_ARG_FUNCTIONS.len() + boolean_ops.len() + loft.len()`. Since `all` is constructed from exactly those lists, this can only fail if there are duplicates — which the `all.insert()` assert already catches two lines earlier. The count check cannot detect a function added to `compile_geometry_call` without being added to the test lists.\n\nFix: Replace the derived `expected` count with a hardcoded literal (e.g., `assert_eq!(all.len(), 33)`) with a comment explaining it must be bumped when new geometry functions are added. This makes the assertion actually fail when a new dispatch arm is added without updating the test lists.\n\n## memory_hints\n- search: \"compile_geometry_call dispatch functions cross-check\"\n- entity: \"geometry_arg_indices\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:35:27.707Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs"
+          ]
+        }
+      },
+      {
+        "id": "1822",
+        "title": "Fix misleading test comment in Editor.test.tsx and add defensive waitFor in App.test.tsx",
+        "description": "Two small test accuracy/consistency fixes from task 1798 review:\n\n1. **Fix misleading comment (Editor.test.tsx:163):** The comment says \"the guard (if path) must prevent the call\" but this is incorrect. At dispatch time (line 158), `activeFile` is non-null so the `if (path)` guard at Editor.tsx:139 passes and the 300ms debounce timer IS scheduled. What actually prevents `updateSource` from firing is the `createEffect` at Editor.tsx:218-224, which watches `activeFile` and calls `clearTimeout(debounceTimer)` when `closeFile` sets it to null. Change the comment to: `// When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call`\n\n2. **Add defensive waitFor (App.test.tsx:1340):** The multi-file F5 test accesses `capturedEditorStore!` without first asserting it's been set. Other tests in this file (lines 883, 907, 931, 1016, 2360) use `await waitFor(() => expect(capturedEditorStore).toBeTruthy())` before accessing the store. Add this guard after the `waitFor` for `app-layout` and before the `capturedEditorStore!.updateFileContent(...)` calls at line 1340.\n\nmemory_hints: search \"capturedEditorStore waitFor pattern\", search \"Editor.tsx createEffect clearTimeout\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:34:52.308Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/Editor.test.tsx"
+          ]
+        }
+      },
+      {
+        "id": "1823",
+        "title": "Evaluate chamfer/fillet hardcoded GeomRef::Step(0) vs geom_ref() inconsistency",
+        "description": "In `crates/reify-compiler/src/geometry.rs`, the chamfer arm (line ~881) and fillet arm (line ~902) hardcode `target: GeomRef::Step(0)` directly. Other modifier functions (shell, thicken, draft) use the `geom_ref(0)` closure which resolves let-bound geometry references. This means `let c = chamfer(my_box, 2)` where `my_box` is a let-bound geometry may not resolve the reference correctly.\n\nThe test lists (NO_GEOM_ARG_FUNCTIONS) correctly classify chamfer/fillet as having no geometry args, which matches the current implementation. But the current behavior may be a bug: if chamfer/fillet should support let-bound geometry targets like other modifiers, they should use `geom_ref(0)` and be moved to GEOM_ARG_FUNCTIONS.\n\nInvestigate: (a) whether chamfer/fillet with let-bound geometry targets works correctly today, (b) if not, whether they should use `geom_ref(0)` like shell/thicken/draft, and (c) update the cross-check test lists accordingly. Note: task 1802 addresses DRY extraction of chamfer/fillet/draft/shell/thicken arms — coordinate to avoid conflicts.\n\n## memory_hints\n- search: \"chamfer fillet geometry_arg_indices geom_ref\"\n- search: \"compile_geometry_call modifier functions\"\n- entity: \"geometry_arg_indices\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1733"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:38:12.281Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/tests/let_scope_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1824",
+        "title": "Fix misleading test comment in Editor.test.tsx and add defensive waitFor in App.test.tsx",
+        "description": "Two small test accuracy/consistency fixes from task 1798 review:\n\n1. **Fix misleading comment (Editor.test.tsx:163):** Change \"the guard (if path) must prevent the call\" to \"When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call\". The if(path) guard already passed at dispatch time.\n\n2. **Add defensive waitFor (App.test.tsx:~1340):** Add `await waitFor(() => expect(capturedEditorStore).toBeTruthy())` before accessing `capturedEditorStore!`, matching the pattern at lines 883, 907, 931, 1016, 2360.\n\nmemory_hints: search \"capturedEditorStore waitFor pattern\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:34:45.617Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/Editor.test.tsx"
+          ]
+        }
+      },
+      {
+        "id": "1825",
+        "title": "Fix misleading test comment and add defensive waitFor in editor tests",
+        "description": "Two test fixes from task 1798 review: (1) Editor.test.tsx:163 comment misattributes safety to if(path) guard instead of createEffect clearing debounce timer. (2) App.test.tsx:~1340 missing defensive waitFor for capturedEditorStore before access.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:35:47.036Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/Editor.test.tsx"
+          ]
+        }
+      },
+      {
+        "id": "1826",
+        "title": "Fix misleading test comment and add defensive waitFor in editor tests",
+        "description": "Two test accuracy/consistency fixes from task 1798 review: (1) Fix misleading comment in Editor.test.tsx:163. (2) Add defensive waitFor in App.test.tsx:~1340.",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "details": "1. Update the comment in Editor.test.tsx:163 to correctly describe the mechanism preventing updateSource from firing. Change to: \"// When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call.\" 2. Add await waitFor(() => expect(capturedEditorStore).toBeTruthy()) in App.test.tsx:~1340 after the waitFor for app-layout and before accessing capturedEditorStore!.updateFileContent(...).",
+        "testStrategy": "1. Verify that the updated comment in Editor.test.tsx:163 accurately describes the behavior by reviewing the code logic. 2. Ensure the waitFor pattern in App.test.tsx:~1340 is correctly implemented by running the test and confirming it passes consistently.",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Update misleading comment in Editor.test.tsx",
+            "description": "Change the comment at Editor.test.tsx:163 to correctly describe the debounce timer mechanism.",
+            "dependencies": [],
+            "details": "Change comment to: \"// When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call.\"",
+            "status": "pending",
+            "testStrategy": "Review the comment change and verify it matches the code logic.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 2,
+            "title": "Add defensive waitFor in App.test.tsx",
+            "description": "Add await waitFor(() => expect(capturedEditorStore).toBeTruthy()) in App.test.tsx:~1340.",
+            "dependencies": [],
+            "details": "Insert the waitFor pattern after the waitFor for app-layout and before accessing capturedEditorStore!.updateFileContent(...).",
+            "status": "pending",
+            "testStrategy": "Run the test to ensure it passes consistently with the new waitFor pattern.",
+            "parentId": "undefined"
+          }
+        ],
+        "metadata": {
+          "source": "steward-triage",
+          "spawn_context": "steward-triage",
+          "spawned_from": "1798",
+          "modules": [
+            "gui/src/__tests__/Editor.test.tsx",
+            "gui/src/__tests__/App.test.tsx"
+          ]
+        }
+      },
+      {
+        "id": "1827",
+        "title": "Extract assert_list_of_struct_ref helper in self_keyword_tests.rs",
+        "description": "The `match ty { Type::List(inner) => assert_eq!(...), other => panic!(...) }` pattern is duplicated 5 times across the 3 collection-sub fallback tests added in task 1770 (lines ~910-1078 of self_keyword_tests.rs). Extract a local helper:\n\n```rust\nfn assert_list_of_struct_ref(ty: &reify_types::Type, expected_name: &str) {\n    match ty {\n        reify_types::Type::List(inner) => assert_eq!(\n            inner.as_ref(),\n            &reify_types::Type::StructureRef(expected_name.to_string()),\n            \"expected StructureRef(\\\"{expected_name}\\\"), got: {inner:?}\",\n        ),\n        other => panic!(\"expected List type, got: {other:?}\"),\n    }\n}\n```\n\nReplace all 5 inline match blocks with calls to this helper.\n\nmemory_hints: search \"assert_list_of_struct_ref\" or \"collection_sub fallback test\" in reify project.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:54:55.912Z"
+      },
+      {
+        "id": "1828",
+        "title": "Add unit test for sub_component_types lookup in resolve_collection_sub_to_list",
+        "description": "The existing unit test in expr.rs (~line 1737) covers the safety fallback (sub_component_types absent), but there is no unit-level test for the primary new behavior: when sub_component_types IS present and returns a different name than sub_name.\n\nAdd a sibling unit test that populates `scope.sub_component_types.insert(\"parts\".to_string(), \"Fastener\".to_string())` and asserts the result type is `List(StructureRef(\"Fastener\"))`, proving the lookup works at the function level without depending on the full compilation pipeline.\n\nIntegration tests cover this indirectly via the forward-ref and empty-structure tests in self_keyword_tests.rs, but a focused unit test makes the core logic change directly verifiable in isolation.\n\nmemory_hints: search \"resolve_collection_sub_to_list unit test\" in reify project; inspect expr.rs near line 1737.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:04:05.735Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/expr.rs"
+          ]
+        }
+      },
+      {
+        "id": "1829",
+        "title": "Broaden edit_param type-kind validation beyond Scalar-to-Scalar dimension check",
+        "description": "The `edit_param` validation in `Engine` (lib.rs ~line 1842) only catches dimension mismatches when both the cell type is `Type::Scalar` and the supplied value is `Value::Scalar`. If a caller passes a wrong Value variant (e.g., `Value::Bool(true)` to a `Type::Scalar` cell, or `Value::Scalar` to a `Type::Bool` cell), the check silently passes and the type-mismatched value propagates into the eval graph.\n\nTwo fixes needed:\n1. **Validation**: Add a broader type-kind check in `edit_param` that rejects mismatched Value variants (e.g., Value::Bool for Type::Scalar). Consider a new `EngineError::TypeKindMismatch` variant or extend the existing validation logic.\n2. **Tests**: Add `edit_param_wrong_value_kind` and `edit_check_wrong_value_kind` tests in `incremental_integration.rs` that pass wrong Value variants (e.g., `Value::Bool(true)` to the height Scalar cell) and assert the expected error behavior.\n\nmemory_hints: search \"EngineError edit_param validation\" for the validation code context; get_entity \"edit_param\" for related patterns.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:41:58.800Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/incremental_integration.rs"
+          ]
+        }
+      },
+      {
+        "id": "1830",
+        "title": "Strengthen chamfer/fillet e2e tests: assert build results and fix stale line-number comments",
+        "description": "Three improvements to chamfer_e2e.rs and fillet_e2e.rs from task 1819 review:\n\n1. **Assert build results** (chamfer_e2e.rs:244, fillet_e2e.rs:248): Both `chamfer_modify_only_needs_distance_arg` and `fillet_modify_only_needs_radius_arg` discard `engine.build()` with `let _result`. Assert that the result contains no error-level diagnostics. Apply to both the new minimal-args tests and the original full-pipeline tests.\n\n2. **Fix stale line-number references** (chamfer_e2e.rs:153, fillet_e2e.rs:157): Comments reference specific line numbers in geometry.rs (882-884 and 900-907) that will drift. Replace with function/match-arm references, e.g., \"Mirrors what the compiler emits in compile_geometry_call() for chamfer/fillet\".\n\n## memory_hints\n- search: \"engine.build diagnostics assertion pattern\"\n- search: \"e2e test assertion conventions\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T22:00:42.239Z"
+      },
+      {
+        "id": "1831",
+        "title": "Extract shared test helper for chamfer/fillet e2e modify pipeline boilerplate",
+        "description": "The chamfer_e2e.rs and fillet_e2e.rs modify pipeline tests (both the original full-pipeline tests and the new minimal-args contract tests from task 1819) are structurally identical — ~60 lines of boilerplate each (Box primitive setup, template/module building, engine creation, ops extraction). The only differences are ModifyKind (Chamfer vs Fillet), the parameter arg name ('distance' vs 'radius'), and the GeometryOp variant matched.\n\nConsider extracting a shared helper, e.g.:\n```rust\nfn run_modify_pipeline(kind: ModifyKind, args: Vec<(String, CompiledExpr)>) -> Vec<GeometryOpRecord>\n```\ninto a test utility module. The match/assertion at the end can remain test-specific since the GeometryOp variants differ.\n\nNote: This is distinct from task 1802 which covers compiler-side deduplication of `compile_modify_2arg` in geometry.rs. This task covers test-side deduplication.\n\n## memory_hints\n- search: \"test helper extraction patterns reify-eval\"\n- get_entity: \"chamfer_e2e.rs\"\n- get_entity: \"fillet_e2e.rs\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:43:17.769Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/chamfer_e2e.rs",
+            "crates/reify-eval/tests/fillet_e2e.rs",
+            "crates/reify-test-support/src/helpers.rs"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "chamfer fillet e2e modify pipeline test helper boilerplate reify",
+              "shared test helper extraction chamfer fillet geometry tests"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
+        }
+      },
+      {
+        "id": "1832",
+        "title": "connect.rs: deduplicate is_bare closure and hoist port lookups",
+        "description": "Two code duplication issues in compile_connection (connect.rs):\n\n1. **Remove redundant `is_bare` closure** (~line 279): The `let is_bare = |name: &str| !name.contains('.');` closure is redefined identically inside the asymmetric LocatedPort check block, but the same closure already exists at ~line 197 and is still in scope. Remove the inner definition.\n\n2. **Hoist port lookups to avoid double linear scans** (~lines 281-282): `ctx.ports.iter().find(|p| p.name == left_port)` and the equivalent for `right_port` duplicate the linear scans already done by the `dir_of` closure (~lines 189-194). Hoist port lookups into a single pass early in the function and reuse the result for both direction extraction and type extraction, eliminating duplicate O(n) scans.\n\nMemory hints: search \"compile_connection is_bare port lookup ctx.ports connect.rs\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:05:51.986Z"
+      },
+      {
+        "id": "1833",
+        "title": "module_dag.rs: preserve import chain order in cycle error using IndexSet",
+        "description": "The cycle detection error message in compile_module (module_dag.rs ~lines 144-149) was changed from non-deterministic HashSet iteration to a sorted list for determinism (task 370). However, sorting loses the actual DFS traversal order — the user can no longer see which module imports which (e.g., `a -> b -> c -> a`).\n\nReplace the `HashSet` used for `in_progress` with an `IndexSet` (from the `indexmap` crate). This preserves insertion order deterministically while providing O(1) lookups, so the error message can show the actual import chain in traversal order without needing a sort.\n\nNote: `indexmap` is not currently a dependency — it will need to be added to reify-compiler's Cargo.toml. It is a widely-used, zero-unsafe crate commonly pulled in transitively (check if it's already in the lockfile as a transitive dep).\n\nMemory hints: search \"module_dag cycle detection in_progress HashSet compile_module\", entity: module_dag",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:13:47.171Z"
+      },
+      {
+        "id": "1834",
+        "title": "Let default type coherence: annotation cross-check and scope inference in conformance",
+        "description": "Two related improvements to let-default type handling in conformance.rs, identified during task 366 review:\n\n1. **Annotation vs expression type cross-check** (conformance.rs ~line 342): When injecting a let default into a structure, the cell_type comes from `compiled_expr.result_type`, ignoring the annotation type stored in `DefaultKind::Let { cell_type, .. }`. Now that cell_type is `Option<Type>`, add a diagnostic when `cell_type` is `Some(ty)` and `compiled_expr.result_type` differs from `ty` (e.g., `let x : Length = 5.0` — annotation says Length, expression evaluates to Real).\n\n2. **Scope pre-registration for unannotated lets** (conformance.rs ~line 279): `cell_type.clone().unwrap_or(Type::Real)` means unannotated let defaults get `Type::Real` in scope regardless of what their expression evaluates to. Same pattern at ~lines 153 and 473. This is a design limitation since scope registration happens before expression compilation. Consider either a two-pass approach (compile expressions first, then register types) or documenting as intentional simplification.\n\nMemory hints: search \"DefaultKind Let cell_type conformance scope registration\", entities: DefaultKind, compile_traits, Type",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:56:40.918Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/src/scope.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1835",
+        "title": "Derive MenuBar undo/redo disabled state from shortcut registry",
+        "description": "MenuBar.tsx hardcodes `disabled: true` on its undo/redo MenuItemDef entries (lines 49-50), independently of the `ShortcutDef.disabled` field in shortcuts.ts. The disabled state is now expressed in two places that can drift. If undo/redo are later enabled in the registry, MenuBar would remain disabled.\n\nFix: Have MenuBar derive its disabled state from the shortcut registry, e.g. `disabled: getShortcut(item.shortcutId)?.disabled ?? false`, or restructure so MenuItemDef reads from the registry rather than duplicating the flag.\n\nmemory_hints: search \"undo redo shortcut disabled MenuBar registry\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-15T21:57:24.126Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/MenuBar.test.tsx",
+            "gui/src/__tests__/shortcuts.test.ts",
+            "gui/src/panels/MenuBar.tsx",
+            "gui/src/shortcuts.ts"
+          ]
+        }
+      },
+      {
+        "id": "1836",
+        "title": "Add test for assert_list_of_struct_ref label parameter",
+        "description": "The `assert_list_of_struct_ref` helper in `self_keyword_tests.rs` accepts a `label` parameter that prefixes panic messages, but none of the 3 existing tests (lines 106-127) pass a non-empty label. Add a fourth test that passes a non-empty label and asserts the panic message contains it:\n\n```rust\n#[test]\n#[should_panic(expected = \"ctx:\")]\nfn test_assert_list_of_struct_ref_label_in_panic() {\n    let ty = reify_types::Type::Bool;\n    assert_list_of_struct_ref(&ty, \"Foo\", \"ctx:\");\n}\n```\n\nThis verifies the label actually appears in the panic message, which is the whole reason the parameter exists.\n\nmemory_hints: search \"assert_list_of_struct_ref\" in reify project.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:05:21.555Z"
+      },
+      {
+        "id": "1837",
+        "title": "Add BUILTIN_NAMES sync test and remove redundant assertion in constant_compile_tests",
+        "description": "Two small improvements in the builtin constants test file from task 1806 review:\n\n1. **Sync test** (`constants.rs` + test file): Add a unit test `builtin_names_covers_all_constants` that iterates `BUILTIN_NAMES` and asserts each entry resolves via `resolve_builtin_constant`. This catches the scenario where a name is added to `BUILTIN_NAMES` but not to the match arms in `resolve_builtin_constant` — which would produce a hint suggesting a name that also doesn't resolve. The reverse (adding to `resolve_builtin_constant` without `BUILTIN_NAMES`) is acceptable per the existing comment, but the test should catch the worse case.\n\n2. **Dead assertion** (`constant_compile_tests.rs`): In `user_defined_pi_caps_in_scope_no_hint` (line ~314), the assertion `!errors.iter().any(|d| d.message.contains(\"did you mean\"))` at line ~319-322 is dead code — the preceding `assert!(errors.is_empty(), ...)` already guarantees `errors` is empty. Remove the redundant check, consistent with the pattern in `lowercase_pi_no_hint` and `lowercase_tau_no_hint` which explicitly removed this redundant guard.\n\nmemory_hints: search \"BUILTIN_NAMES resolve_builtin_constant\", search \"user_defined_pi_caps_in_scope_no_hint\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:41:25.188Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/constants.rs",
+            "crates/reify-compiler/tests/constant_compile_tests.rs"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "BUILTIN_NAMES sync test constant compile redundant assertion reify",
+              "builtin names synchronization compiler constant tests"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
+        }
+      },
+      {
+        "id": "1838",
+        "title": "Split hoisted_lookup_matches_original_behavior into isolated tests and add bare-undefined edge case",
+        "description": "Two improvements to connect_compile_tests.rs test structure:\n\n1. **Split `hoisted_lookup_matches_original_behavior`** (lines 1693-1876): This single test packs 4 independent sub-cases (a-d) into one function using nested blocks. If case (a) panics, cases (b)-(d) never run, hiding regressions. Split into 4 separate `#[test]` functions:\n   - `hoisted_lookup_bare_found_auto_match` — case (a): bare port found, direction compatible, auto-match runs\n   - `hoisted_lookup_bare_not_found_undefined` — case (b): bare port not found → undefined-port error\n   - `hoisted_lookup_dotted_no_check` — case (c): dotted port → no undefined check, no auto-match\n   - `hoisted_lookup_mixed_bare_dotted` — case (d): mixed bare+dotted → no auto-match\n\n2. **Add missing edge case test**: Both ports are bare, one exists and one doesn't. Verify that (a) the undefined-port error is emitted AND (b) `auto_match_port_members` returns empty mappings (no unmatched-members warning). Case (b) above partially covers this but doesn't explicitly assert auto-match returns empty.\n\nMemory hints: search \"hoisted_lookup_matches_original_behavior auto_match_port_members connect_compile_tests\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:24:35.242Z"
+      },
+      {
+        "id": "1839",
+        "title": "Add sub_ops parameter to compile_curve_op for consistency with other helpers",
+        "description": "compile_curve_op is the only extracted geometry helper that does not accept sub_ops. All other helpers (compile_transform_op, compile_modify_op, compile_boolean_op) accept and propagate sub_ops. If a future curve constructor is registered in geometry_arg_indices(), the compiled sub-ops would be silently discarded.\n\nFix: Either pass sub_ops to compile_curve_op (prepend to returned vec for consistency) or add debug_assert!(sub_ops.is_empty()) at the call site in geometry.rs:548-549 to catch future mismatches at test time.\n\nmemory_hints:\n- search: \"compile_curve_op sub_ops geometry helper\"\n- entity: compile_curve_op, geometry_arg_indices",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:23:58.692Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/geometry_curve.rs",
+            "crates/reify-compiler/src/lib.rs"
+          ]
+        }
+      },
+      {
+        "id": "1840",
+        "title": "Add fillet Step(0) bug-compat regression test parallel to chamfer test",
+        "description": "compile_modify_op_chamfer_preserves_step0 (lib.rs:2282) tests that chamfer's GeomRef::Step(0) bug-compat is preserved through the full compile pipeline. There is no corresponding test for fillet. While they share the same dispatch arm today, a fillet-specific test would guard against accidental divergence if someone later splits the match arms.\n\nAdd compile_modify_op_fillet_preserves_step0 using `fillet(target, radius)` source, structurally parallel to the chamfer test.\n\nmemory_hints:\n- search: \"chamfer fillet Step(0) bug-compat test\"\n- entity: compile_modify_op, GeomRef",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:22:38.857Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/lib.rs"
+          ]
+        }
+      },
+      {
+        "id": "1841",
+        "title": "Strengthen compiler test assertions: ValueCellId consistency, arm ordering doc, self-rejection specificity",
+        "description": "Three test quality improvements from task 1717 review:\n\n1. **ValueCellId consistency across conditional branches** (constraint_inst_tests.rs ~lines 471-490): The Conditional substitution test checks that condition, then-branch, and else-branch each have their top-level parameter replaced with ValueRefs, but does not verify that the *same* parameter appearing in multiple branches resolves to the *same* ValueCellId. Extract the ValueCellId from each branch's left operand and assert they are equal (e.g. `assert_eq!(condition_left_id, then_left_id)`).\n\n2. **Document arm ordering invariant** (constraint_inst_tests.rs ~lines 541-543): The Match substitution test checks `arms[0].patterns == vec![\"Standard\"]` and `arms[1].patterns == vec![\"Premium\"]`, coupling to arm ordering. Add a brief comment like `// Arms are emitted in source order by the compiler` documenting this reliance.\n\n3. **Tighten self_in_purpose_body_rejected assertion** (purpose_compile_tests.rs ~lines 419-435): The test asserts that at least one error contains either 'self' or 'unresolved' (case-insensitive), but this is too broad — could match unrelated errors. Tighten to check that the error mentions both 'self' and 'unresolved', or match against the specific diagnostic message.\n\n## memory_hints\n- search: \"constraint instantiation substitution test ValueRef\"\n- search: \"self_in_purpose_body_rejected test assertion\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:46:03.790Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "ValueCellId consistency compiler test assertions arm ordering diamond",
+              "value cell id test assertions self-rejection specificity compiler"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
+        }
+      },
+      {
+        "id": "1842",
+        "title": "Extract shared arg-count validation helper across geometry helper modules",
+        "description": "The arg-count-check → diagnostic → return None pattern is repeated verbatim across all arms in geometry_boolean.rs, geometry_transform.rs, geometry_modify.rs, and geometry_curve.rs. A small helper like `fn check_arg_count(name: &str, got: usize, expected: usize, span: SourceSpan, diagnostics: &mut Vec<Diagnostic>) -> bool` could eliminate ~60 lines of boilerplate across the four files.\n\nThis is a pure DRY refactor — no behavioral changes.\n\nmemory_hints:\n- search: \"geometry arg count check diagnostic pattern\"\n- entity: compile_boolean_op, compile_transform_op, compile_modify_op, compile_curve_op",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:25:00.494Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/geometry_boolean.rs",
+            "crates/reify-compiler/src/geometry_curve.rs",
+            "crates/reify-compiler/src/geometry_modify.rs",
+            "crates/reify-compiler/src/geometry_transform.rs",
+            "crates/reify-compiler/src/lib.rs"
+          ]
+        }
+      },
+      {
+        "id": "1843",
+        "title": "Add boolean op regression tests for difference and intersection_all",
+        "description": "Boolean op regression tests (lib.rs:2317-2356) only cover union and union_all. There are no tests for intersection, difference, or intersection_all. A typo in the BooleanOp mapping (e.g., swapping Intersection and Difference) would not be caught.\n\nAdd at minimum:\n1. compile_boolean_op_difference_via_compile — difference is the only non-commutative boolean op, making it the most important to verify correct operand ordering (left vs right).\n2. compile_boolean_op_intersection_all_via_compile — covers the _all fold path for a non-union op.\n\nmemory_hints:\n- search: \"boolean op compile test union intersection difference\"\n- entity: compile_boolean_op, BooleanOp",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:23:36.986Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/lib.rs"
+          ]
+        }
+      },
+      {
+        "id": "1844",
+        "title": "Extract shared arg-count validation helper across geometry helper modules",
+        "description": "The arg-count-check → diagnostic → return None pattern is repeated verbatim across all arms in geometry_boolean.rs, geometry_transform.rs, geometry_modify.rs, and geometry_curve.rs. A small helper like `fn check_arg_count(name: &str, got: usize, expected: usize, span: SourceSpan, diagnostics: &mut Vec<Diagnostic>) -> bool` could eliminate ~60 lines of boilerplate across the four files.\n\nThis is a pure DRY refactor — no behavioral changes.\n\nmemory_hints:\n- search: \"geometry arg count check diagnostic pattern\"\n- entity: compile_boolean_op, compile_transform_op, compile_modify_op, compile_curve_op",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:25:56.678Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/geometry_boolean.rs",
+            "crates/reify-compiler/src/geometry_curve.rs",
+            "crates/reify-compiler/src/geometry_modify.rs",
+            "crates/reify-compiler/src/geometry_transform.rs"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "arg-count validation helper geometry modules reify shared helper",
+              "argument count validation geometry helper extraction"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
+        }
+      },
+      {
+        "id": "1845",
+        "title": "Enhance assert_single_value_cell to return cell ref + add type assertions to diamond tests",
+        "description": "Three related improvements to trait_conformance_tests.rs diamond tests (from task 384 review):\n\n1. **Return cell from helper (code_reuse):** Change `assert_single_value_cell` return type from `()` to `&ValueCellDecl`. Return `cells[0]` after the assertion so callers can optionally inspect further properties (type, default_expr) without a redundant search. Update existing call sites (they can ignore the return value).\n\n2. **Add dedup assertion to type conflict test (test_coverage):** In `diamond_type_conflict_produces_error` (line ~892), capture the template from `compile_first_template` (currently discarded with `_`) and add `assert_single_value_cell(&template, \"x\", \"diamond_type_conflict\")` to verify both conflict detection AND correct dedup in the same scenario.\n\n3. **Assert cell types in deep diamond test (test_coverage):** In `diamond_deep_five_level` (line ~880), after `assert_single_value_cell` for x and y, find each cell and assert its `cell_type` matches the expected dimension (e.g., `Type::Scalar { dimension: DimensionVector::LENGTH }` for x). This catches future bugs that swap which requirement survives.\n\nMemory hints: search \"diamond trait conformance assert_single_value_cell ValueCellDecl\", entities: assert_single_value_cell, diamond_type_conflict_produces_error, diamond_deep_five_level",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:37:33.685Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "assert_single_value_cell cell ref type assertions diamond tests reify",
+              "value cell assertion helper diamond test enhancement"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
+        }
+      },
+      {
+        "id": "1846",
+        "title": "Simplify run_modify_pipeline unit tests and add geometry_output assertion",
+        "description": "Two improvements to `run_modify_pipeline` in `crates/reify-test-support/src/helpers.rs`:\n\n1. **Simplify unit tests (lines 960-1045):** The two verbose tests (`test_run_modify_pipeline_chamfer_returns_two_ops` and `test_run_modify_pipeline_fillet_returns_two_ops`) are near-identical to the e2e tests in `chamfer_e2e.rs` and `fillet_e2e.rs`, duplicating ~50 lines of assertion logic each. Since the e2e tests already exercise `run_modify_pipeline` end-to-end with identical assertions, these helper-level tests add little incremental coverage. Replace both with a single parameterized smoke test that checks `ops.len() == 2` and matches `ops[1].op` variant against the expected `ModifyKind`, without re-checking numeric values already covered by the e2e tests.\n\n2. **Add geometry_output assertion (lines 436-439):** The helper asserts no `Severity::Error` diagnostics but ignores the build result's `geometry_output`. Add `assert!(result.geometry_output.is_some(), \"engine should produce geometry output\")` to catch potential regressions in the engine's geometry pipeline.\n\n## memory_hints\n- search: \"run_modify_pipeline test helper reify-test-support\"\n- get_entity: \"helpers.rs\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:38:34.573Z"
+      },
+      {
+        "id": "1847",
+        "title": "geometry_ops robustness: upper-bound check, Shell face index validation",
+        "description": "Three robustness issues in crates/reify-eval/src/geometry_ops.rs identified during review of task 1810:\n\n1. **validate_pattern_count missing upper bound** (lines 99-125): Doc says it \"Rejects values exceeding a reasonable upper bound\" but there is no upper-bound check. A user-supplied count like 1e15 passes validation and produces `raw as usize` → ~10^15, causing massive allocation and likely OOM. Add an upper-bound check (e.g. `if raw > 100_000.0 { ... return None; }`) and emit a diagnostic warning.\n\n2. **Shell face indices silently dropped** (lines 236-249): In the Shell modifier, face indices that evaluate to non-numeric values (NaN, String, Bool) are silently dropped via `filter_map` without any diagnostic. Every other argument path in this file emits a warning when evaluation fails. Add a diagnostic warning when a face_N arg evaluates to a non-numeric value.\n\n3. **Shell negative face index wrapping** (lines 236-249): `v as usize` for negative f64 values produces a very large usize (wrapping), which could silently select wrong faces. Add validation: `v.as_f64().filter(|f| f.is_finite() && *f >= 0.0).map(|v| v as usize)` and emit a diagnostic for negative or non-finite face indices.\n\nmemory_hints:\n- search: \"validate_pattern_count\" \"Shell face index\"\n- entity: geometry_ops, compile_geometry_op",
+        "details": "",
+        "testStrategy": "",
         "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-15T16:52:47.089Z"
+        "updatedAt": "2026-04-16T02:38:34.071Z"
+      },
+      {
+        "id": "1848",
+        "title": "concurrent.rs cleanup: resolve API fragility, redundant insert, misleading timestamps",
+        "description": "Three cleanup items in crates/reify-eval/src/concurrent.rs identified during review of task 1810:\n\n1. **resolve_concurrent_edit split-mutation pattern** (lines 291-459): Method takes `&mut ConcurrentEditResult` and directly mutates result.values and result.snapshot_values, but returns `(resolved_params, diagnostics)` as a tuple that the caller must manually assign back. This hybrid mutation pattern is fragile — a caller that forgets re-assignment silently loses resolver output. Either assign resolved_params and diagnostics directly onto `result` inside the method (making it fully &mut), or return a separate ResolutionOutcome struct and don't mutate result at all.\n\n2. **Redundant values.insert** (line 134): The loop at lines 130-132 iterates new_snapshot_values (which already has the updated cell from line 117-119) and copies all values into the `values` map. The subsequent `values.insert(cell.clone(), new_value)` at line 134 overwrites with the same value. Remove line 134 and the comment on line 133.\n\n3. **Misleading journal timestamps** (lines 207-237): apply_concurrent_edit records journal Started/Completed events with `Instant::now()` from the apply phase, not from the actual concurrent evaluation. The Duration payload measures apply-loop time, not actual node evaluation time. Consider adding actual start/end timestamps or Duration to ConcurrentNodeResult so journal events reflect real evaluation timing, or document clearly that timestamps reflect apply-time.\n\nmemory_hints:\n- search: \"resolve_concurrent_edit API\" \"concurrent edit journal\"\n- entity: Engine, ConcurrentEditResult",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:38:36.865Z"
+      },
+      {
+        "id": "1849",
+        "title": "Add #[must_use] to assert_single_value_cell and assert cell type in diamond_type_conflict test",
+        "description": "Two related improvements to assert_single_value_cell in trait_conformance_tests.rs (from task 1845 review):\n\n1. **#[must_use] attribute:** Add `#[must_use = \"inspect the returned cell or use `let _ =` to explicitly discard\"]` to `assert_single_value_cell` (line ~13) to prevent future callers from accidentally ignoring the return value. Currently 4 of 5 call sites use the return; the one that doesn't (line 969) should either use it or explicitly discard with `let _ =`.\n\n2. **Assert cell type in diamond_type_conflict_produces_error:** At line 969, capture the return value of `assert_single_value_cell` and assert on `x_cell.cell_type` to document and lock down the compiler's conflict-resolution behavior (which type survives when Length vs Angle conflict).\n\nMemory hints: search \"assert_single_value_cell ValueCellDecl diamond_type_conflict cell_type\", entities: assert_single_value_cell, diamond_type_conflict_produces_error",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:47:37.294Z"
+      },
+      {
+        "id": "1850",
+        "title": "Add integration tests for Engine concurrent edit pipeline",
+        "description": "The tests in crates/reify-eval/src/concurrent.rs (lines 463-530) only verify struct construction and field access for ConcurrentNodeResult and ConcurrentEditResult. The four Engine methods (prepare_concurrent_edit, rollback_concurrent_edit, apply_concurrent_edit, resolve_concurrent_edit) — which contain the actual logic — have no unit tests.\n\nThe rollback ID restoration logic and the two-wave resolution propagation are particularly subtle and untested at this level. Add integration-level tests that exercise the prepare → resolve → apply pipeline, and specifically test rollback behavior (verifying IDs are restored and cache nodes return to Final state). These may require test helpers for Engine construction.\n\nmemory_hints:\n- search: \"concurrent edit test\" \"Engine test helper\"\n- entity: Engine, ConcurrentEditSetup, ConcurrentEditResult",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:45:17.533Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests/concurrent.rs"
+          ]
+        }
+      },
+      {
+        "id": "1851",
+        "title": "Strengthen BUILTIN_NAMES_COUNT exhaustiveness guard or document its limitation",
+        "description": "The `builtin_names_is_exhaustive` test in `constants.rs` compares `BUILTIN_NAMES.len()` against a manually-maintained `BUILTIN_NAMES_COUNT` constant. This is a weak guard: if a developer adds a new match arm to `resolve_builtin_constant` without updating either `BUILTIN_NAMES` or `BUILTIN_NAMES_COUNT`, both tests pass silently.\n\nEither:\n(a) Replace `BUILTIN_NAMES_COUNT` with a more robust reverse check — e.g., test a superset of plausible constant names and assert only `BUILTIN_NAMES` entries resolve, or resolve every `BUILTIN_NAMES` entry and verify the set of resolved names is exactly `BUILTIN_NAMES`. This eliminates the manually-maintained count entirely.\n(b) Update the doc comments on `builtin_names_is_exhaustive` to accurately describe its limited guarantee: it catches `BUILTIN_NAMES` growing without a count update, but NOT new match arms added to `resolve_builtin_constant` without a corresponding `BUILTIN_NAMES` entry.\n\nOption (a) is preferred if feasible. The `builtin_names_covers_all_constants` test already covers the forward direction (BUILTIN_NAMES → resolve_builtin_constant); this task focuses on strengthening the reverse direction.\n\nmemory_hints: search \"BUILTIN_NAMES resolve_builtin_constant\", get_entity \"BUILTIN_NAMES_COUNT\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:41:29.065Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-15T16:52:50.464Z",
-      "taskCount": 1791,
-      "completedCount": 1528,
+      "lastModified": "2026-04-16T02:50:10.947Z",
+      "taskCount": 1846,
+      "completedCount": 1581,
       "tags": [
         "master"
       ]
