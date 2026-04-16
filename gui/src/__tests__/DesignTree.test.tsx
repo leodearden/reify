@@ -96,13 +96,16 @@ describe('DesignTree — baseline rendering', () => {
     expect(eyeBtn.getAttribute('aria-label')).toBe('show');
   });
 
-  it('eye icon aria-label updates when explicit visibility changes', () => {
+  it('eye icon aria-label updates reactively after setVisibility', () => {
     const nodes = [makeNode({ entity_path: 'Root.A' })];
     const store = makeStore(nodes);
-    store.setVisibility('Root.A', 'ghost', false);
     render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    // Initial render: default effective visibility is 'show'
     const eyeBtn = screen.getByTestId('eye-icon-Root.A');
-    expect(eyeBtn.getAttribute('aria-label')).toBe('ghost');
+    expect(eyeBtn.getAttribute('aria-label')).toBe('show');
+    // After mutation, aria-label should reactively update
+    store.setVisibility('Root.A', 'ghost', false);
+    expect(screen.getByTestId('eye-icon-Root.A').getAttribute('aria-label')).toBe('ghost');
   });
 });
 
@@ -124,6 +127,23 @@ describe('DesignTree — eye icon cycle', () => {
     fireEvent.click(eyeBtn);
     fireEvent.click(eyeBtn);
     expect(store.state.explicit['Root.A']).toBe('hidden');
+  });
+
+  it('eye icon aria-label and glyph update reactively on click', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const eyeBtn = screen.getByTestId('eye-icon-Root.A');
+    // Initial: show
+    expect(eyeBtn.getAttribute('aria-label')).toBe('show');
+    // Click once: show → ghost
+    fireEvent.click(eyeBtn);
+    expect(eyeBtn.getAttribute('aria-label')).toBe('ghost');
+    expect(eyeBtn.textContent).toContain('◑');
+    // Click again: ghost → hidden
+    fireEvent.click(eyeBtn);
+    expect(eyeBtn.getAttribute('aria-label')).toBe('hidden');
+    expect(eyeBtn.textContent).toContain('○');
   });
 
   it('cycle cascades: descendant explicit becomes null', () => {
