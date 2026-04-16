@@ -802,6 +802,15 @@ pub fn compile_with_prelude(
 mod tests {
     use super::*;
 
+    /// Convenience helper: build a bare number-literal expression.
+    /// Used by multiple tests to construct non-geometry arguments.
+    fn num_lit(v: f64) -> reify_syntax::Expr {
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral(v),
+            span: reify_types::SourceSpan::new(0, 1),
+        }
+    }
+
     #[test]
     fn entity_kind_display() {
         assert_eq!(EntityKind::Structure.to_string(), "structure");
@@ -1876,11 +1885,7 @@ structure S {
         // Construct a loft(NumberLiteral, NumberLiteral) expr.
         // NumberLiterals are not geometry refs so the loft error-path fires for
         // both args.  We call compile_geometry_call with step_offset=5 so that
-        // correct Step(5) is clearly distinct from the buggy Step(0).
-        let num_lit = |v: f64| reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral(v),
-            span: reify_types::SourceSpan::new(0, 1),
-        };
+        // correct Step(5+i) is clearly distinct from the buggy Step(0).
         let expr = reify_syntax::Expr {
             kind: reify_syntax::ExprKind::FunctionCall {
                 name: "loft".to_string(),
@@ -1943,12 +1948,8 @@ structure S {
         // Construct a sweep(NumberLiteral, NumberLiteral) expr.
         // Neither arg is a geometry ref so both error-path fallbacks fire.
         // With step_offset=3 we expect:
-        //   profile (arg 0) → Step(3)   [currently buggy: Step(0)]
+        //   profile (arg 0) → Step(3)   [was buggy: Step(0)]
         //   path    (arg 1) → Step(4)   [already correct: step_offset + 1]
-        let num_lit = |v: f64| reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral(v),
-            span: reify_types::SourceSpan::new(0, 1),
-        };
         let expr = reify_syntax::Expr {
             kind: reify_syntax::ExprKind::FunctionCall {
                 name: "sweep".to_string(),
@@ -2030,10 +2031,12 @@ structure S {
         assert_eq!(template.realizations.len(), 1, "expected 1 realization");
         // ops layout: [0]=box, [1]=loft, [2]=Boolean(Union, Step(0), Step(1))
         let ops = &template.realizations[0].operations;
+        assert_eq!(ops.len(), 3, "expected 3 ops (box + loft + union), got {}", ops.len());
+        // ops[0] must be the Box primitive.
         assert!(
-            ops.len() >= 2,
-            "expected at least 2 ops (box + loft), got {}",
-            ops.len()
+            matches!(&ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected ops[0] to be a Box primitive, got {:?}",
+            ops[0]
         );
         // The loft op is at index 1.
         if let CompiledGeometryOp::Sweep { kind, profiles, .. } = &ops[1] {
