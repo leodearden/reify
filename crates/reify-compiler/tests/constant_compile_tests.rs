@@ -197,6 +197,8 @@ structure S {
     // x must resolve to the collection list ValueRef, NOT Literal(Real(PI)).
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
+            // Exact __list_*__<field> naming is tested in collection_sub_tests.rs;
+            // here we only check the prefix to focus on shadowing.
             assert!(
                 id.member.starts_with("__list_pi__"),
                 "expected member starting with '__list_pi__' for collection sub 'pi', got {:?}",
