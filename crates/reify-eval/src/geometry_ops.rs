@@ -122,6 +122,13 @@ fn validate_pattern_count(
         )));
         return None;
     }
+    if raw > 100_000.0 {
+        diagnostics.push(Diagnostic::warning(format!(
+            "pattern {:?} dropped: {}={} exceeds upper bound of 100000",
+            kind_label, arg_name, raw
+        )));
+        return None;
+    }
     Some(raw as usize)
 }
 
