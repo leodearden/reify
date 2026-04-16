@@ -229,3 +229,24 @@ fn depth_limit_returns_none_beyond_limit() {
         "param beyond MAX_MEMBER_NESTING_DEPTH should NOT be found"
     );
 }
+
+// ── (g) hand-constructed slice edge cases ─────────────────────────
+
+#[test]
+fn find_named_member_span_hand_constructed_depth_2_match() {
+    // Exercises GuardedGroup.members recursion at exactly depth-2 on a
+    // hand-constructed slice (as opposed to parsed source). Complements
+    // the parsed-source tests above by isolating the recursion to a
+    // deterministic 2-level slice.
+    use reify_types::SourceSpan;
+    let members = build_nested_guarded_members(2, "target");
+    let result = find_named_member_span(&members, "target");
+    assert!(result.is_some(), "param at depth-2 should be found");
+    let info = result.unwrap();
+    assert_eq!(
+        info.span,
+        SourceSpan::new(0, 1),
+        "returned MemberSpanInfo should carry the dummy span (0,1) used by the helper"
+    );
+    assert_eq!(info.doc, None, "helper builds param with no doc");
+}
