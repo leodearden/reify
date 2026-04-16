@@ -285,17 +285,62 @@ pub(crate) fn check_trait_conformance(
         }
     }
 
+    // Cache of compiled expressions for unannotated let defaults, keyed by
+    // default name.  Populated by the pre-register pass below and drained by
+    // the injection loop (task 1834 step-9) to avoid double-compilation of
+    // the same expression.
+    //
+    // DESIGN LIMITATION (acknowledged simplification): type inference for
+    // unannotated lets proceeds in `ctx.defaults` iteration order.  Two
+    // unannotated lets that forward-reference each other — e.g., `let a = b + 1mm`
+    // where `let b = 5mm` is *also* unannotated and appears *after* `a` in
+    // iteration order — will fail inference for the forward-referencing
+    // binding (`b` is not in scope when `a`'s expression is compiled), yielding
+    // a diagnostic from `compile_expr`.  Adding an annotation to either
+    // binding unblocks the case.  A topological ordering pass could resolve
+    // every such pair but is explicitly out of scope for task 1834 ("documenting
+    // as intentional simplification").
+    let mut inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
+
     // Pre-register default member names in scope so their expressions can
     // reference each other (e.g., constraint x > 0 references param x from same trait).
     // register_if_absent provides the no-overwrite guarantee: first-seen type wins,
     // and the method itself is safe against cross-kind overwrites without a call-site guard.
+    //
+    // Two branches for Let defaults:
+    //   - annotated (cell_type: Some(ty))   → register the annotation directly,
+    //   - unannotated (cell_type: None)     → compile the expression in the
+    //     partial scope, register the inferred `result_type`, and cache the
+    //     compiled_expr in `inferred_let_exprs` for the injection loop.
     for default in &ctx.defaults {
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
         {
             let ty = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let { cell_type, .. } => cell_type.clone().unwrap_or(Type::Real),
+                DefaultKind::Let {
+                    cell_type: Some(annotation_ty),
+                    ..
+                } => annotation_ty.clone(),
+                DefaultKind::Let {
+                    cell_type: None,
+                    let_decl,
+                } => {
+                    // Unannotated let: infer the type from the expression,
+                    // compiled in the partial scope visible so far (structure
+                    // members + already-registered defaults).  Cache the
+                    // compiled_expr so the injection loop can reuse it.
+                    let compiled_expr = compile_expr(
+                        &let_decl.value,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                    );
+                    let inferred_ty = compiled_expr.result_type.clone();
+                    inferred_let_exprs.insert(name.clone(), compiled_expr);
+                    inferred_ty
+                }
                 DefaultKind::Constraint(_) => continue,
             };
             // `ty` is cloned here so we retain the value for the debug event on
