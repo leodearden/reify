@@ -548,6 +548,23 @@ mod tests {
         super::assert_no_check_errors(&result);
     }
 
+    /// assert_no_check_errors should not panic when the CheckResult has only warnings
+    /// (no Error-severity diagnostics).
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_assert_no_check_errors_passes_with_warnings_only() {
+        use reify_types::{Diagnostic, ValueMap};
+        use std::collections::HashMap;
+        let result = reify_eval::CheckResult {
+            values: ValueMap::new(),
+            constraint_results: vec![],
+            diagnostics: vec![Diagnostic::warning("just a warning")],
+            resolved_params: HashMap::new(),
+        };
+        // Should not panic — warnings are not errors
+        super::assert_no_check_errors(&result);
+    }
+
     /// assert_no_eval_errors should not panic when the result has only warnings
     /// (no Error-severity diagnostics).
     #[cfg(feature = "eval-helpers")]
