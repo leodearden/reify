@@ -56,6 +56,13 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
 /// Lambda and quantifier bodies respect lexical shadowing — when a binder
 /// introduces a name that overlaps a constraint param, the inner name takes
 /// precedence and substitution is suppressed for that name inside the body.
+/// Match arms recurse into the body with the full set of bindings — arm
+/// patterns are structural (enum variants, literals) and do not introduce
+/// shadowing. If pattern bindings are introduced in the future (e.g.
+/// `x @ Pattern` or destructuring), arm-level shadowing suppression must be
+/// added here. Conditional branches (`if/then/else`) are traversed
+/// transparently; substitution applies to condition, then-branch, and
+/// else-branch alike.
 pub(crate) fn substitute_expr(
     expr: &reify_syntax::Expr,
     bindings: &HashMap<String, reify_syntax::Expr>,
