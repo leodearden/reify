@@ -125,13 +125,13 @@ impl Engine {
         let dirty_cone = crate::dirty::compute_dirty_cone(&changed_set, &state.reverse_index);
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
-        // Build the full ValueMap from snapshot values
+        // Build the full ValueMap from snapshot values.
+        // new_snapshot_values already contains the updated cell (inserted above),
+        // so copying all entries here is sufficient — no separate insert needed.
         let mut values = ValueMap::new();
         for (id, (val, _det)) in new_snapshot_values.iter() {
             values.insert(id.clone(), val.clone());
         }
-        // Overwrite with the new param value
-        values.insert(cell.clone(), new_value);
 
         // Bump snapshot/version IDs
         let snapshot_id = self.next_snapshot_id;
