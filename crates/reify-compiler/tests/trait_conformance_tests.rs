@@ -7,6 +7,25 @@ use reify_compiler::*;
 use reify_test_support::{compile_first_template, compile_source};
 use reify_types::*;
 
+/// Assert that `template.value_cells` contains exactly one cell whose member name equals
+/// `member`. Prints `context` in the failure message for easy diagnosis.
+fn assert_single_value_cell(template: &TopologyTemplate, member: &str, context: &str) {
+    let cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == member)
+        .collect();
+    assert_eq!(
+        cells.len(),
+        1,
+        "{}: expected exactly 1 value cell '{}', got {}: {:?}",
+        context,
+        member,
+        cells.len(),
+        cells
+    );
+}
+
 /// Step 1: Compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs.
 #[test]
 fn compile_trait_produces_compiled_trait() {
@@ -596,18 +615,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via both B->D and C->D paths; must appear exactly once.
-    let x_cells: Vec<_> = template
-        .value_cells
-        .iter()
-        .filter(|vc| vc.id.member == "x")
-        .collect();
-    assert_eq!(
-        x_cells.len(),
-        1,
-        "expected exactly 1 value cell 'x' (diamond dedup), got {}: {:?}",
-        x_cells.len(),
-        x_cells
-    );
+    assert_single_value_cell(&template, "x", "diamond_satisfies_once");
 }
 
 /// Task-189 step-3: Missing member in deep diamond produces exactly 1 error.
@@ -655,7 +663,7 @@ structure def S : A {
     let msg = &errors[0].message;
     assert!(
         msg.contains("missing required member 'x'"),
-        "expected 'missing required member \\'x\\'' in error message, got: {}",
+        "expected 'missing required member 'x'' in error message, got: {}",
         msg
     );
 }
@@ -785,18 +793,7 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // d comes from trait D, reachable via both B->D and C->D; must appear exactly once.
-    let d_cells: Vec<_> = template
-        .value_cells
-        .iter()
-        .filter(|vc| vc.id.member == "d")
-        .collect();
-    assert_eq!(
-        d_cells.len(),
-        1,
-        "expected exactly 1 value cell 'd' (diamond dedup), got {}: {:?}",
-        d_cells.len(),
-        d_cells
-    );
+    assert_single_value_cell(&template, "d", "diamond_default_from_D_once");
 }
 
 /// Task-189 step-11: Let default from D injected exactly once in deep diamond.
@@ -881,32 +878,10 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via B->E->D and C->D; must appear exactly once.
-    let x_cells: Vec<_> = template
-        .value_cells
-        .iter()
-        .filter(|vc| vc.id.member == "x")
-        .collect();
-    assert_eq!(
-        x_cells.len(),
-        1,
-        "expected exactly 1 value cell 'x' (diamond dedup), got {}: {:?}",
-        x_cells.len(),
-        x_cells
-    );
+    assert_single_value_cell(&template, "x", "deep_diamond_A_B_E_D_C_D");
 
     // y comes from E, reachable via one path (B->E); must also appear exactly once.
-    let y_cells: Vec<_> = template
-        .value_cells
-        .iter()
-        .filter(|vc| vc.id.member == "y")
-        .collect();
-    assert_eq!(
-        y_cells.len(),
-        1,
-        "expected exactly 1 value cell 'y', got {}: {:?}",
-        y_cells.len(),
-        y_cells
-    );
+    assert_single_value_cell(&template, "y", "deep_diamond_A_B_E_D_C_D");
 }
 
 /// Task-384 step-1: Diamond with conflicting param types produces exactly 1 error.
@@ -954,6 +929,21 @@ structure def S : A {
         errors[0].message.contains("conflicting trait requirements"),
         "expected 'conflicting trait requirements' in error message, got: {}",
         errors[0].message
+    );
+
+    assert!(
+        errors[0].message.contains("x"),
+        "expected mention of 'x' in conflict message, got: {}",
+        errors[0].message
+    );
+
+    assert!(
+        !errors[0].labels.is_empty(),
+        "expected at least one label on conflict diagnostic"
+    );
+    assert!(
+        !errors[0].labels[0].span.is_empty(),
+        "expected non-empty span on conflict diagnostic label"
     );
 }
 
