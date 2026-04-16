@@ -137,6 +137,61 @@ describe('viewStateStore — setVisibility with cascade=true', () => {
   });
 });
 
+describe('viewStateStore — setVisibilityWithoutCascade and walk-up', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+            ],
+          }),
+        ],
+      }),
+    ];
+  }
+
+  it('setVisibilityWithoutCascade does not clear any descendant explicit state', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.setVisibility('Root.A.a1', 'hidden', false);
+      store.setVisibilityWithoutCascade('Root.A', 'ghost');
+      // a1 must still have its own explicit 'hidden'
+      expect(store.state.explicit['Root.A.a1']).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('after priming a1 with hidden then setVisibility(A, show, false), a1 remains hidden (effective)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.setVisibility('Root.A.a1', 'hidden', false);
+      // no-cascade variant — a1 keeps its own explicit
+      store.setVisibility('Root.A', 'show', false);
+      expect(store.getEffectiveVisibility('Root.A.a1')).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('getEffectiveVisibility walks up and returns first non-null ancestor explicit state', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      // Root has explicit 'ghost'; A.a1 has no explicit
+      store.setVisibility('Root', 'ghost', false);
+      expect(store.getEffectiveVisibility('Root.A.a1')).toBe('ghost');
+      dispose();
+    });
+  });
+});
+
 describe('viewStateStore — skeleton', () => {
   it('has empty explicit map on creation', () => {
     createRoot((dispose) => {
