@@ -78,8 +78,15 @@ const DesignTree: Component<Props> = (props) => {
     function handleDocumentClick() {
       if (menu()) setMenu(null);
     }
+    function handleDocumentKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape' && menu()) setMenu(null);
+    }
     document.addEventListener('click', handleDocumentClick);
-    onCleanup(() => document.removeEventListener('click', handleDocumentClick));
+    document.addEventListener('keydown', handleDocumentKeyDown);
+    onCleanup(() => {
+      document.removeEventListener('click', handleDocumentClick);
+      document.removeEventListener('keydown', handleDocumentKeyDown);
+    });
   });
 
   const renderNode = (node: EntityTreeNode, depth = 0) => {
