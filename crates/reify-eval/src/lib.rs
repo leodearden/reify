@@ -54,8 +54,8 @@ pub enum EngineError {
     /// (e.g., passing Value::Bool to a Type::Scalar cell.)
     TypeKindMismatch {
         cell: reify_types::ValueCellId,
-        expected: reify_types::Type,
-        got: reify_types::Value,
+        expected: Box<reify_types::Type>,
+        got: Box<reify_types::Value>,
     },
 }
 
@@ -105,8 +105,13 @@ fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -
         Value::Undef => true,
         // Exact outer-variant correspondences.
         Value::Bool(_) => matches!(ty, Type::Bool),
-        Value::Int(_) => matches!(ty, Type::Int),
-        Value::Real(_) => matches!(ty, Type::Real),
+        // Allow numeric coercion: Real values may be supplied to Int cells and
+        // vice versa.  The engine handles these mismatches by emitting a Warning
+        // diagnostic rather than a hard error, so the kind check must not reject
+        // them.  This is intentional and mirrors the pre-existing collection
+        // count behaviour (see edit_param_non_int_*_count_emits_warning tests).
+        Value::Int(_) => matches!(ty, Type::Int | Type::Real),
+        Value::Real(_) => matches!(ty, Type::Real | Type::Int),
         Value::String(_) => matches!(ty, Type::String),
         Value::Scalar { .. } => matches!(ty, Type::Scalar { .. }),
         Value::Enum { .. } => matches!(ty, Type::Enum(_)),
@@ -1468,8 +1473,8 @@ impl Engine {
         if !value_type_kind_matches(&new_value, &cell_node.cell_type) {
             return Err(EngineError::TypeKindMismatch {
                 cell,
-                expected: cell_node.cell_type.clone(),
-                got: new_value,
+                expected: Box::new(cell_node.cell_type.clone()),
+                got: Box::new(new_value),
             });
         }
 
