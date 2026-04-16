@@ -2539,4 +2539,136 @@ mod tests {
             "Boolean(Step(0), Step(1)) should return None: Step(1) is INVALID and filtered out"
         );
     }
+
+    // ── validate_pattern_count upper-bound tests ──────────────────────────────
+
+    #[test]
+    fn validate_pattern_count_rejects_huge_count() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // count=1e15 is way above the upper bound and should be rejected
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(1.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(1e15)),
+                ("spacing".into(), literal_length(0.01)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "count=1e15 should return None, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && (d.message.contains("upper bound") || d.message.contains("exceeds"))
+            }),
+            "expected a Warning mentioning 'upper bound' or 'exceeds', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn validate_pattern_count_boundary_100000_succeeds() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // count=100_000 is exactly at the upper bound and should be accepted
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(1.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(100_000.0)),
+                ("spacing".into(), literal_length(0.01)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Some(reify_types::GeometryOp::LinearPattern { count, .. }) => {
+                assert_eq!(count, 100_000, "count=100_000 should be accepted");
+            }
+            other => panic!("expected Some(LinearPattern) for count=100_000, got {:?}", other),
+        }
+        // No upper-bound diagnostic should be emitted for a valid boundary value
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("upper bound") || d.message.contains("exceeds")
+            }),
+            "count=100_000 should not emit an upper-bound diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn validate_pattern_count_boundary_100001_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // count=100_001 exceeds the upper bound by one and should be rejected
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(1.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(100_001.0)),
+                ("spacing".into(), literal_length(0.01)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "count=100_001 should return None, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && (d.message.contains("upper bound") || d.message.contains("exceeds"))
+            }),
+            "expected a Warning for count=100_001, got: {:?}",
+            diagnostics
+        );
+    }
 }
