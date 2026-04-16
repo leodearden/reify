@@ -194,6 +194,11 @@ fn duplicate_meta_key_error() {
         "expected 'duplicate meta key' error, got: {:?}",
         errors
     );
+    assert!(
+        errors[0].labels.iter().any(|l| l.message.contains("'a'")),
+        "label should name the duplicate key 'a', got labels: {:?}",
+        errors[0].labels
+    );
 
     // First occurrence should be kept; second (duplicate) should be discarded.
     assert_eq!(
