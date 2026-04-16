@@ -3116,3 +3116,40 @@ fn all_new_commands_callable_on_bracket_fixture() {
         preview
     );
 }
+
+// ---- Cache tests: parsed_cache + line_offsets_cache ----
+
+/// Fresh session returns None from parsed_cache_for_test.
+/// After load_from_source, returns Some with the Bracket declaration present.
+#[test]
+fn commit_state_populates_parsed_cache() {
+    // Fresh session → None
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+    assert!(
+        session.parsed_cache_for_test().is_none(),
+        "fresh session: parsed_cache should be None"
+    );
+
+    // After load → Some with at least one declaration
+    let checker2 = SimpleConstraintChecker;
+    let mut session2 = EngineSession::new(Box::new(checker2), None);
+    session2
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let cached = session2
+        .parsed_cache_for_test()
+        .expect("after load, parsed_cache should be Some");
+    assert!(
+        !cached.declarations.is_empty(),
+        "parsed cache should contain at least one declaration"
+    );
+    let has_bracket = cached.declarations.iter().any(|d| {
+        if let reify_syntax::Declaration::Structure(s) = d {
+            s.name == "Bracket"
+        } else {
+            false
+        }
+    });
+    assert!(has_bracket, "parsed cache should contain the Bracket structure declaration");
+}
