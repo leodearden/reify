@@ -527,4 +527,42 @@ mod tests {
         assert_eq!(result.node_results[0].value, Value::Real(7.0));
         assert_eq!(result.actual_eval_set.len(), 1);
     }
+
+    /// step-1: After prepare_concurrent_edit, values.get(cell) equals the new value.
+    ///
+    /// The loop at lines 130-132 copies every entry from new_snapshot_values into
+    /// values, which already includes the updated cell (inserted at lines 117-119).
+    /// This test establishes the baseline we must preserve after removing the
+    /// redundant values.insert at line 134.
+    #[test]
+    fn prepare_concurrent_edit_values_has_updated_cell() {
+        use reify_test_support::bracket_compiled_module;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let module = bracket_compiled_module();
+        let checker = MockConstraintChecker::new();
+        let mut engine = Engine::new(Box::new(checker), None);
+        let _initial = engine.eval(&module);
+
+        let e = "Bracket";
+        let width_id = ValueCellId::new(e, "width");
+        let new_width = Value::length(0.1);
+
+        let setup = engine
+            .prepare_concurrent_edit(width_id.clone(), new_width.clone())
+            .unwrap();
+
+        // values.get(width_id) must equal the new value — established by the
+        // loop that copies all new_snapshot_values entries into values.
+        assert_eq!(
+            setup.values.get(&width_id),
+            Some(&new_width),
+            "values map must contain the updated cell value (loop covers it)"
+        );
+
+        // snapshot_values should agree: it was updated before the loop.
+        let (snap_val, snap_det) = setup.snapshot_values.get(&width_id).unwrap();
+        assert_eq!(snap_val, &new_width, "snapshot_values should match");
+        assert_eq!(snap_det, &DeterminacyState::Determined);
+    }
 }
