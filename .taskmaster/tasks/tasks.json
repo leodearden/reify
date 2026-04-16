@@ -39083,7 +39083,7 @@
         "id": 1869,
         "title": "Improve comments on EngineError::TypeKindMismatch boxing and value_type_kind_matches completeness",
         "description": "Two small documentation improvements in crates/reify-eval/src/lib.rs:\n\n1. Lines 53-57: EngineError::TypeKindMismatch boxes both `expected: Box<Type>` and `got: Box<Value>` while the sibling DimensionMismatch variant keeps its payload unboxed. The boxing keeps EngineError's discriminant size bounded (Value is a large enum), but the inconsistency deserves a one-line rationale. Either add a short comment on the variant or align DimensionMismatch to also use Box.\n\n2. Lines 141-147: The trailing comment says \"If a future Value::GeometryHandle variant is added, add a matching arm here so the compiler enforces completeness.\" This is misleading — Rust's exhaustive match already enforces completeness on Value variants, so a new Value variant is a compile error. The actual gap is the opposite direction: adding a new Type variant falls silently into default-reject without a compile error. Rewrite the note to flag Type variants (not Value variants) as the reviewer-required extension point.\n\nSource: task 1829 review suggestions (reviewer_comprehensive).",
-        "details": "<info added on 2026-04-16T21:53:18.712Z>\nAdd a comment explaining the rationale for boxing `expected: Box<Type>` and `got: Box<Value>` in `EngineError::TypeKindMismatch` to maintain a bounded discriminant size due to the large size of the `Value` enum. Consider aligning `DimensionMismatch` to use `Box` for consistency or provide a brief explanation for the current inconsistency.\n\nRewrite the misleading comment regarding `Value::GeometryHandle` to correctly indicate that the extension point requiring review is the addition of new `Type` variants, which can silently fall into default-reject without a compile error.\n</info added on 2026-04-16T21:53:18.712Z>",
+        "details": "<info added on 2026-04-16T21:53:18.712Z>\nAdd a comment explaining the rationale for boxing `expected: Box<Type>` and `got: Box<Value>` in `EngineError::TypeKindMismatch` to maintain a bounded discriminant size due to the large size of the `Value` enum. Consider aligning `DimensionMismatch` to use `Box` for consistency or provide a brief explanation for the current inconsistency.\n\nRewrite the misleading comment regarding `Value::GeometryHandle` to correctly indicate that the extension point requiring review is the addition of new `Type` variants, which can silently fall into default-reject without a compile error.\n</info added on 2026-04-16T21:53:18.712Z>\n<info added on 2026-04-16T22:02:52.300Z>\nmemory_hints:\n- entity: Engine, EngineError\n- search: \"EngineError TypeKindMismatch boxing Value enum size discriminant\"\n- search: \"value_type_kind_matches GeometryHandle comment Type variants extension point\"\n\nNote: depends on 1868 (lib.rs module-lock sequencing); 1867 depends on this task.\n</info added on 2026-04-16T22:02:52.300Z>",
         "testStrategy": "",
         "status": "pending",
         "dependencies": [
@@ -39095,7 +39095,18 @@
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Engine",
+              "EngineError"
+            ],
+            "queries": [
+              "EngineError TypeKindMismatch boxing Value enum size",
+              "value_type_kind_matches GeometryHandle comment Type variants extension point"
+            ]
+          },
+          "_causation_id": "86dd833d-661e-45f0-93df-933158f67e8b"
         }
       },
       {
@@ -39225,17 +39236,6 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-16T22:02:03.917Z"
-      },
-      {
-        "id": 1879,
-        "title": "Tighten m5_integration Rigid conformance assertion beyond nominal bound string",
-        "description": "`crates/reify-eval/tests/m5_integration.rs:1318-1326` checks only `flange.trait_bounds.contains(&\"Rigid\".to_string())`, which passes even if Rigid's transitive supertrait chain (Physical → Material) was not evaluated. Either tighten the assertion to verify trait-conformance diagnostics are clean for Physical/Material, or narrow the test's docstring to clearly state that it only checks the nominal bound string.",
-        "details": "From reviewer_comprehensive suggestion on task 1751 (esc-1751-27).\n\n### memory_hints\n- search: \"trait_bounds conformance Rigid Physical Material\"",
-        "testStrategy": "",
-        "status": "pending",
-        "dependencies": [],
-        "priority": "low",
-        "subtasks": []
       }
     ],
     "metadata": {
@@ -39247,8 +39247,7 @@
         "master"
       ],
       "created": "2026-04-16T22:02:21.185Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-16T22:02:51.440Z"
+      "description": "Tasks for master context"
     }
   }
 }
