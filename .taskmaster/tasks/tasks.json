@@ -38760,7 +38760,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T03:18:56.654Z"
+        "updatedAt": "2026-04-16T03:18:56.654Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance/trait_merge_tests.rs",
+            "crates/reify-eval/tests/trait_merge_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src/conformance",
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 1859,
@@ -38771,7 +38781,19 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/src/conformance/trait_merge_tests.rs",
+            "crates/reify-eval/tests/trait_merge_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/src/conformance",
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 1860,
