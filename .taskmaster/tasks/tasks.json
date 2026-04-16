@@ -39053,7 +39053,7 @@
         "id": 1868,
         "title": "Regression-lock additional edit_param type-kind cases (non-Scalar cells, Tensor/Matrix cross-variant)",
         "description": "Current tests in crates/reify-eval/tests/incremental_integration.rs (edit_param_wrong_value_kind, edit_check_wrong_value_kind, ~line 848-932) exercise only a Scalar cell receiving Value::Bool for the error path, plus Int↔Real numeric coercion. Other category mismatches are not regression-locked and could silently break if behaviour is tightened: (a) a non-Scalar typed cell such as a Type::Bool param being edited with Value::Int should error with TypeKindMismatch; (b) the documented Tensor/Matrix cross-variant acceptance (Value::Matrix into a Type::Tensor cell and vice versa) should return Ok. Add at least one test for each case. Source: task 1829 review suggestion (reviewer_comprehensive).",
-        "details": "Reference implementation is in lib.rs value_type_kind_matches (lines 101-143). The Int/Real numeric-coercion allowance and the Tensor↔Matrix cross-match are intentional design decisions documented in match arms; these tests should regression-lock them. Fixtures used by existing edit_param tests (Assembly.height, RecursiveBeam.depth, Assembly.load_auto) may need augmentation with a Bool-typed param and a Tensor- or Matrix-typed param.\n<info added on 2026-04-16T21:53:13.395Z>\nAdd regression tests to ensure that the Tensor/Matrix cross-variant type-kind acceptance behaves as expected. Specifically, verify that a Value::Matrix can be correctly assigned to a Type::Tensor cell and vice versa, returning Ok. Additionally, confirm that attempts to edit a non-Scalar typed cell, such as a Type::Bool param with a Value::Int, result in a TypeKindMismatch error. These tests should be added to the existing suite in crates/reify-eval/tests/incremental_integration.rs. Ensure the Engine module is referenced for related type-kind validation logic.\n</info added on 2026-04-16T21:53:13.395Z>",
+        "details": "Reference implementation is in lib.rs value_type_kind_matches (lines 101-143). The Int/Real numeric-coercion allowance and the Tensor↔Matrix cross-match are intentional design decisions documented in match arms; these tests should regression-lock them. Fixtures used by existing edit_param tests (Assembly.height, RecursiveBeam.depth, Assembly.load_auto) may need augmentation with a Bool-typed param and a Tensor- or Matrix-typed param.\n<info added on 2026-04-16T21:53:13.395Z>\nAdd regression tests to ensure that the Tensor/Matrix cross-variant type-kind acceptance behaves as expected. Specifically, verify that a Value::Matrix can be correctly assigned to a Type::Tensor cell and vice versa, returning Ok. Additionally, confirm that attempts to edit a non-Scalar typed cell, such as a Type::Bool param with a Value::Int, result in a TypeKindMismatch error. These tests should be added to the existing suite in crates/reify-eval/tests/incremental_integration.rs. Ensure the Engine module is referenced for related type-kind validation logic.\n</info added on 2026-04-16T21:53:13.395Z>\n<info added on 2026-04-16T22:02:46.764Z>\nmemory_hints:\n- entity: Engine, EngineError\n- search: \"edit_param type kind mismatch regression test\"\n- search: \"value_type_kind_matches Tensor Matrix cross-variant Int Real coercion\"\n</info added on 2026-04-16T22:02:46.764Z>",
         "testStrategy": "",
         "status": "in-progress",
         "dependencies": [],
@@ -39065,7 +39065,18 @@
             "crates/reify-eval/src/lib.rs",
             "crates/reify-eval/tests/incremental_integration.rs",
             "examples/integration_full_v01.ri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Engine",
+              "EngineError"
+            ],
+            "queries": [
+              "edit_param type kind mismatch regression test",
+              "value_type_kind_matches Tensor Matrix cross-variant Int Real numeric coercion"
+            ]
+          },
+          "_causation_id": "86dd833d-661e-45f0-93df-933158f67e8b"
         }
       },
       {
