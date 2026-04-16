@@ -230,6 +230,20 @@ mod tests {
             .count() as u32
     }
 
+    #[test]
+    fn line_end_char_returns_utf16_units() {
+        // Supplementary-plane emoji U+1F600 is 1 `char` but 2 UTF-16 code units.
+        // "abc\u{1F600}" → 3 ASCII chars + 1 emoji = 4 chars but 5 UTF-16 code units.
+        // LSP Position.character is defined in UTF-16 code units (PositionEncodingKind::UTF16),
+        // so line_end_char must return 5, not 4.
+        let source = "abc\u{1F600}";
+        assert_eq!(
+            line_end_char(source, 0),
+            5,
+            "line_end_char must return UTF-16 code unit count, not char count"
+        );
+    }
+
     // --- step-7: go-to-definition tests ---
 
     #[test]
