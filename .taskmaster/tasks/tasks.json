@@ -38387,10 +38387,11 @@
         "description": "compile_modify_op_chamfer_preserves_step0 (lib.rs:2282) tests that chamfer's GeomRef::Step(0) bug-compat is preserved through the full compile pipeline. There is no corresponding test for fillet. While they share the same dispatch arm today, a fillet-specific test would guard against accidental divergence if someone later splits the match arms.\n\nAdd compile_modify_op_fillet_preserves_step0 using `fillet(target, radius)` source, structurally parallel to the chamfer test.\n\nmemory_hints:\n- search: \"chamfer fillet Step(0) bug-compat test\"\n- entity: compile_modify_op, GeomRef",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:20:31.439Z"
       },
       {
         "id": "1841",
@@ -38417,7 +38418,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:20:31.040Z",
+      "lastModified": "2026-04-16T02:20:31.439Z",
       "taskCount": 1837,
       "completedCount": 1569,
       "tags": [
