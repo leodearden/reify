@@ -38539,7 +38539,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T02:22:24.010Z"
+        "updatedAt": "2026-04-16T02:22:24.010Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "assert_single_value_cell cell ref type assertions diamond tests reify",
+              "value cell assertion helper diamond test enhancement"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
+        }
       }
     ],
     "metadata": {
