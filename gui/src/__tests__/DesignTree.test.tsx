@@ -234,9 +234,13 @@ describe('DesignTree — context menu', () => {
     const addSpy = vi.spyOn(document, 'addEventListener');
     try {
       render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+      // Capture baseline after render — onMount has already registered its listener(s).
+      // Asserting count is unchanged (not merely ≤ 1) proves no accumulation while
+      // also requiring that at least one listener exists (0 would mean dismiss is broken).
+      const baselineClickAdds = addSpy.mock.calls.filter((c) => c[0] === 'click').length;
       fireEvent.contextMenu(screen.getByTestId('tree-row-Root.A'));
       fireEvent.contextMenu(screen.getByTestId('tree-row-Root.B'));
-      expect(addSpy.mock.calls.filter((c) => c[0] === 'click').length).toBeLessThanOrEqual(1);
+      expect(addSpy.mock.calls.filter((c) => c[0] === 'click').length).toBe(baselineClickAdds);
       fireEvent.click(document.body);
       expect(screen.queryByTestId('design-tree-context-menu')).toBeNull();
     } finally {
@@ -251,13 +255,21 @@ describe('DesignTree — context menu', () => {
     const removeSpy = vi.spyOn(document, 'removeEventListener');
     try {
       const { unmount } = render(() => <DesignTree tree={nodes} viewStateStore={store} />);
-      const clickAdds = addSpy.mock.calls.filter((c) => c[0] === 'click').length;
-      const keydownAdds = addSpy.mock.calls.filter((c) => c[0] === 'keydown').length;
+      // Capture (event, handler) pairs registered during render — function-reference
+      // comparison is stricter than count matching and immune to coincidental
+      // add/remove pairs from the testing harness or solid-js runtime.
+      const addedPairs = addSpy.mock.calls
+        .filter((c) => c[0] === 'click' || c[0] === 'keydown')
+        .map((c) => [c[0], c[1]] as [string, EventListener]);
       unmount();
-      const clickRemoves = removeSpy.mock.calls.filter((c) => c[0] === 'click').length;
-      const keydownRemoves = removeSpy.mock.calls.filter((c) => c[0] === 'keydown').length;
-      expect(clickRemoves).toBe(clickAdds);
-      expect(keydownRemoves).toBe(keydownAdds);
+      const removedPairs = removeSpy.mock.calls
+        .filter((c) => c[0] === 'click' || c[0] === 'keydown')
+        .map((c) => [c[0], c[1]] as [string, EventListener]);
+      // Every handler that was added must appear in removeEventListener with the
+      // same event type and the exact same function reference.
+      for (const [event, handler] of addedPairs) {
+        expect(removedPairs.some(([re, rh]) => re === event && rh === handler)).toBe(true);
+      }
     } finally {
       addSpy.mockRestore();
       removeSpy.mockRestore();

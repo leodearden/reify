@@ -75,16 +75,23 @@ const DesignTree: Component<Props> = (props) => {
   }
 
   onMount(() => {
-    function handleDocumentClick() {
-      if (menu()) setMenu(null);
+    function handleDocumentClick(e: MouseEvent) {
+      if (!menu()) return;
+      // If the click lands inside the open context menu, let the item's own
+      // click handler call setMenu(null) via handleAction — don't dismiss early.
+      if ((e.target as Element).closest?.('[data-testid="design-tree-context-menu"]')) return;
+      setMenu(null);
     }
     function handleDocumentKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape' && menu()) setMenu(null);
     }
-    document.addEventListener('click', handleDocumentClick);
+    // Use capture phase so the dismiss fires even when a child element (e.g. chevron
+    // or eye-icon button) calls stopPropagation(), which would otherwise suppress the
+    // bubbled click before it reaches the document listener.
+    document.addEventListener('click', handleDocumentClick, { capture: true });
     document.addEventListener('keydown', handleDocumentKeyDown);
     onCleanup(() => {
-      document.removeEventListener('click', handleDocumentClick);
+      document.removeEventListener('click', handleDocumentClick, { capture: true });
       document.removeEventListener('keydown', handleDocumentKeyDown);
     });
   });
