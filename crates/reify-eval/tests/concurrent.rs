@@ -571,13 +571,12 @@ fn resolve_concurrent_edit_without_solver_is_noop_fresh_input() {
     assert!(result.diagnostics.is_empty(), "no solver => no diagnostics");
 }
 
-/// Verifies that `resolve_concurrent_edit` panics in debug builds when
-/// `result.resolved_params` is not empty on entry.
+/// Verifies that `resolve_concurrent_edit` panics in both debug and release
+/// builds when `result.resolved_params` is not empty on entry.
 ///
 /// Callers must pass a fresh `ConcurrentEditResult`; pre-populating
 /// `resolved_params` indicates a double-call or incorrect usage. The
-/// `debug_assert!` guard catches this during development.
-#[cfg(debug_assertions)]
+/// `assert!` guard enforces this contract uniformly across profiles.
 #[test]
 #[should_panic(expected = "resolved_params must be empty")]
 fn resolve_concurrent_edit_panics_on_prepopulated_resolved_params() {
@@ -594,12 +593,11 @@ fn resolve_concurrent_edit_panics_on_prepopulated_resolved_params() {
     engine.resolve_concurrent_edit(&setup, &mut result);
 }
 
-/// Verifies that `resolve_concurrent_edit` panics in debug builds when
-/// `result.diagnostics` is not empty on entry.
+/// Verifies that `resolve_concurrent_edit` panics in both debug and release
+/// builds when `result.diagnostics` is not empty on entry.
 ///
 /// Only `diagnostics` is pre-populated here so the `resolved_params`
-/// debug_assert passes and the `diagnostics` debug_assert is the one that fires.
-#[cfg(debug_assertions)]
+/// assert passes and the `diagnostics` assert is the one that fires.
 #[test]
 #[should_panic(expected = "diagnostics must be empty")]
 fn resolve_concurrent_edit_panics_on_prepopulated_diagnostics() {
