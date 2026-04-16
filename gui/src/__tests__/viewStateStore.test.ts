@@ -18,6 +18,44 @@ function makeNode(overrides: Partial<EntityTreeNode> & { entity_path: string }):
   };
 }
 
+describe('viewStateStore — default rules', () => {
+  it('node with trait_geometry=true → getEffectiveVisibility returns "show"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree([makeNode({ entity_path: 'Root', trait_geometry: true })]);
+      expect(store.getEffectiveVisibility('Root')).toBe('show');
+      dispose();
+    });
+  });
+
+  it('node with kind="let" and type_name containing "Solid" → "hidden"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree([makeNode({ entity_path: 'Root.geo', kind: 'let', type_name: 'MySolid' })]);
+      expect(store.getEffectiveVisibility('Root.geo')).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('node with kind="param", trait_geometry=false → "show"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree([makeNode({ entity_path: 'Root.w', kind: 'param', trait_geometry: false })]);
+      expect(store.getEffectiveVisibility('Root.w')).toBe('show');
+      dispose();
+    });
+  });
+
+  it('node with kind="structure" → "show"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree([makeNode({ entity_path: 'Root', kind: 'structure' })]);
+      expect(store.getEffectiveVisibility('Root')).toBe('show');
+      dispose();
+    });
+  });
+});
+
 describe('viewStateStore — skeleton', () => {
   it('has empty explicit map on creation', () => {
     createRoot((dispose) => {
