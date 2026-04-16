@@ -3,19 +3,23 @@
 //! A `Solid`-typed param with a geometry-call default should be lowered as a
 //! realization (like a geometry let) rather than a scalar ValueCellDecl.
 
-use reify_compiler::{TopologyTemplate, ValueCellKind};
+use reify_compiler::{BooleanOp, CompiledGeometryOp, PrimitiveKind, RealizationDecl, ValueCellKind};
 use reify_types::{Severity, Type};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
+fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_solid_param"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
         parsed.errors
     );
-    let compiled = reify_compiler::compile(&parsed);
+    reify_compiler::compile(&parsed)
+}
+
+fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
+    let compiled = parse_and_compile(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -35,13 +39,27 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 /// that any future change to that behavior becomes a deliberate, reviewable
 /// test update rather than a silent semantic drift.
 fn compile_allowing_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_solid_param"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
+    parse_and_compile(source)
+}
+
+/// Looks up a realization by name within a fixed declaration order.
+///
+/// `names` must list every realization in source order; `target` is the name
+/// to look up.  More self-documenting than raw index access and resilient to
+/// minor ordering changes when `names` is updated alongside the source.
+fn realization_named<'a>(realizations: &'a [RealizationDecl], names: &[&str], target: &str) -> &'a RealizationDecl {
+    assert_eq!(
+        names.len(),
+        realizations.len(),
+        "names count ({}) does not match realizations count ({})",
+        names.len(),
+        realizations.len()
     );
-    reify_compiler::compile(&parsed)
+    let idx = names
+        .iter()
+        .position(|&n| n == target)
+        .unwrap_or_else(|| panic!("realization '{}' not found in names list {:?}", target, names));
+    &realizations[idx]
 }
 
 // ─── step-5: Solid-typed param must NOT emit a ValueCellDecl ─────────────────
@@ -202,15 +220,42 @@ fn solid_param_referenced_by_downstream_boolean_op() {
         template.realizations.len()
     );
 
-    // (c) The `out` realization (index 2) must have >= 3 ops, proving that
+    // (c) The `out` realization must have >= 3 ops, proving that
     //     difference(g, other) inlined the resolved primitives via the
     //     geometry_lets map rather than emitting a degenerate single-op realization.
-    let out_realization = &template.realizations[2];
+    //     Use realization_named to avoid brittle index-based access.
+    let out_realization = realization_named(&template.realizations, &["g", "other", "out"], "out");
     assert!(
         out_realization.operations.len() >= 3,
         "expected `out` realization to have >= 3 ops (cylinder + sphere + difference); \
          got {} — likely geometry_lets map plumbing regressed",
         out_realization.operations.len()
+    );
+
+    // Also verify op kinds to tighten the regression anchor: at least one
+    // Primitive (Cylinder or Sphere) op and one Boolean(Difference) op must be
+    // present.  This rules out a fallback that happens to emit 3 unrelated ops.
+    let has_primitive = out_realization.operations.iter().any(|compiled_op| matches!(
+        compiled_op,
+        CompiledGeometryOp::Primitive { kind, .. }
+            if *kind == PrimitiveKind::Cylinder || *kind == PrimitiveKind::Sphere
+    ));
+    assert!(
+        has_primitive,
+        "expected at least one Primitive (Cylinder or Sphere) op in `out` realization; \
+         got: {:#?} — geometry_lets map may not be inlining the Solid param operand",
+        out_realization.operations
+    );
+
+    let has_difference = out_realization.operations.iter().any(|compiled_op| matches!(
+        compiled_op,
+        CompiledGeometryOp::Boolean { op: BooleanOp::Difference, .. }
+    ));
+    assert!(
+        has_difference,
+        "expected at least one Boolean(Difference) op in `out` realization; \
+         got: {:#?} — the difference call may not have been compiled correctly",
+        out_realization.operations
     );
 }
 
