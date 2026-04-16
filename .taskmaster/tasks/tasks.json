@@ -36508,7 +36508,7 @@
         "description": "Implement the full view state model: recursive visibility cascading (parent changes propagate to all descendants), per-node override (child explicit state survives parent cascade), and the \"inherit\" mechanism. Includes right-click context menu for bulk visibility operations (show/ghost/hide this, children, only this).",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 5.2 (Cascading), 5.3 (Effective Visibility Resolution), 4.3 (Interaction — right-click menu).\n\n### Implementation\n\n1. **Extend `viewStateStore.ts`**\n   - Per-node state: `explicit: \"show\" | \"ghost\" | \"hidden\" | null` (null = inherit)\n   - `setVisibility(entityPath, state, cascade: boolean)`:\n     - Sets explicit state on the target node\n     - If cascade=true: sets all descendant nodes to `inherit` (clearing their overrides) so they follow the parent\n   - `setVisibilityWithoutCascade(entityPath, state)`:\n     - Sets explicit state on target only; descendants keep their current state\n   - `resetToInherit(entityPath)`:\n     - Clears explicit state on target, making it follow parent\n   - `getEffectiveVisibility(entityPath) -> \"show\" | \"ghost\" | \"hidden\"`:\n     - Walk up the tree: first node with explicit state wins; if root reached with no explicit state, use view default\n\n2. **Eye icon behavior in DesignTree**\n   - Single click on eye icon: cycles show -> ghost -> hidden -> show\n   - This is a cascading change (sets target + all descendants follow)\n   - Visual indicator on eye icon reflects effective state, with a small \"override\" dot if the node has an explicit state different from what it would inherit\n\n3. **Right-click context menu** (`panels/DesignTreeContextMenu.tsx`)\n   - \"Show this and children\" — set explicit show, cascade\n   - \"Ghost this and children\" — set explicit ghost, cascade\n   - \"Hide this and children\" — set explicit hidden, cascade\n   - \"Show only this\" — hide all siblings and their children, show this + cascade\n   - \"Reset to default\" — clear all explicit overrides on this node and descendants\n   - Separator\n   - \"Show only this (no cascade)\" — show this node only, don't affect children\n   \n4. **Keyboard shortcuts** (when tree panel is focused)\n   - `H`: toggle selected node(s) to hidden\n   - `G`: toggle selected node(s) to ghost  \n   - `S` or `Enter`: toggle selected node(s) to show\n\n### Requirements covered\nVIS-4, VIS-5, VIS-6, VIS-7, T-9\n\n### memory_hints\n- search: \"viewStateStore visibility\"\n- search: \"DesignTree component\"\n- search: \"SolidJS context menu\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1741"
         ],
@@ -36535,7 +36535,7 @@
             "gui/src/types.ts"
           ]
         },
-        "updatedAt": "2026-04-16T21:16:05.515Z"
+        "updatedAt": "2026-04-16T21:17:36.721Z"
       },
       {
         "id": "1744",
@@ -38987,7 +38987,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T21:17:35.768Z",
+      "lastModified": "2026-04-16T21:17:36.721Z",
       "taskCount": 1861,
       "completedCount": 1599,
       "tags": [
