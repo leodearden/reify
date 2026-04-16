@@ -894,42 +894,44 @@ fn edit_check_wrong_value_kind() {
     assert_eq!(*got, Value::Bool(true), "got should be the supplied Value::Bool(true)");
 }
 
-/// edit_param Assembly.enabled (Type::Bool) with Value::Int(1)
+/// edit_param Assembly.grade (Type::Enum("Grade")) with Value::Int(1)
 /// should return Err(EngineError::TypeKindMismatch { .. }) because
 /// Value::Int hits the `Value::Int(_) => matches!(ty, Type::Int | Type::Real)` arm
-/// which returns false for a Bool cell — category (a) non-Scalar cell regression-lock.
+/// which returns false for an Enum cell — non-Scalar cell regression-lock via an
+/// existing fixture let binding (no dedicated Bool param required).
 #[test]
-fn edit_param_bool_cell_wrong_value_kind() {
+fn edit_param_enum_cell_wrong_value_kind() {
     let (mut engine, _initial) = make_eval_engine();
-    let enabled_id = ValueCellId::new("Assembly", "enabled");
-    // Value::Int is the wrong variant for a Type::Bool cell.
+    let grade_id = ValueCellId::new("Assembly", "grade");
+    // Value::Int is the wrong variant for a Type::Enum("Grade") cell.
     let err = engine
-        .edit_param(enabled_id.clone(), Value::Int(1))
+        .edit_param(grade_id.clone(), Value::Int(1))
         .expect_err("edit_param with wrong value kind should return Err");
     let reify_eval::EngineError::TypeKindMismatch { cell, expected, got } = err else {
         panic!("expected EngineError::TypeKindMismatch, got {err:?}");
     };
-    assert_eq!(cell, enabled_id, "cell should be the enabled cell id");
-    assert_eq!(*expected, reify_types::Type::Bool, "expected should be Type::Bool");
+    assert_eq!(cell, grade_id, "cell should be the grade cell id");
+    assert_eq!(*expected, reify_types::Type::Enum("Grade".to_string()), "expected should be Type::Enum(\"Grade\")");
     assert_eq!(*got, Value::Int(1), "got should be the supplied Value::Int(1)");
 }
 
-/// edit_check Assembly.enabled (Type::Bool) with Value::Int(1)
+/// edit_check Assembly.grade (Type::Enum("Grade")) with Value::Int(1)
 /// should return Err(EngineError::TypeKindMismatch { .. }) (delegates to edit_param via ?).
-/// Regression-locks the delegation path for a non-Scalar typed cell.
+/// Regression-locks the delegation path for a non-Scalar typed cell via an existing
+/// fixture let binding (no dedicated Bool param required).
 #[test]
-fn edit_check_bool_cell_wrong_value_kind() {
+fn edit_check_enum_cell_wrong_value_kind() {
     let (mut engine, _initial) = make_eval_engine();
-    let enabled_id = ValueCellId::new("Assembly", "enabled");
-    // Value::Int is the wrong variant for a Type::Bool cell.
+    let grade_id = ValueCellId::new("Assembly", "grade");
+    // Value::Int is the wrong variant for a Type::Enum("Grade") cell.
     let err = engine
-        .edit_check(enabled_id.clone(), Value::Int(1))
+        .edit_check(grade_id.clone(), Value::Int(1))
         .expect_err("edit_check with wrong value kind should return Err");
     let reify_eval::EngineError::TypeKindMismatch { cell, expected, got } = err else {
         panic!("expected EngineError::TypeKindMismatch, got {err:?}");
     };
-    assert_eq!(cell, enabled_id, "cell should be the enabled cell id");
-    assert_eq!(*expected, reify_types::Type::Bool, "expected should be Type::Bool");
+    assert_eq!(cell, grade_id, "cell should be the grade cell id");
+    assert_eq!(*expected, reify_types::Type::Enum("Grade".to_string()), "expected should be Type::Enum(\"Grade\")");
     assert_eq!(*got, Value::Int(1), "got should be the supplied Value::Int(1)");
 }
 
