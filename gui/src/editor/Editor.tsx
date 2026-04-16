@@ -207,7 +207,7 @@ export function Editor(props: EditorProps) {
       view!.dispatch(setDiagnostics(view!.state, diagnostics));
     }).then((unlisten) => {
       if (diagnosticsListenerCancelled) {
-        unlisten(); // Component already unmounted — tear down immediately
+        unlisten?.(); // Component already unmounted — tear down immediately
       } else {
         unlistenDiagnostics = unlisten;
       }
