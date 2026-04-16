@@ -39646,15 +39646,16 @@
         "description": "gui/src/__tests__/editor-perf.test.tsx installs `vi.useFakeTimers()` in a top-level beforeEach (line ~64), which affects the wall-clock benchmark test. That test switches to real timers as its first action, but the ordering is fragile: any future helper added before `vi.useRealTimers()` that relies on timers (or a microtask-ticking utility) would silently misbehave. Fix: scope fake timers to the two describe blocks that need them (invariant guards), and let the wall-clock describe default to real timers. Makes intent local and prevents cross-contamination.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T23:56:23.405Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T23:56:22.768Z",
+      "lastModified": "2026-04-16T23:56:23.405Z",
       "taskCount": 1895,
       "completedCount": 1627,
       "tags": [
