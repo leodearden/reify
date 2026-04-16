@@ -39195,11 +39195,11 @@
         "description": "Introduce `point3(x, y, z)` and `vec3(x, y, z)` stdlib constructors and update `circular_pattern` to accept `(target, origin: Point3, axis: Vec3, count: Int, angle: Angle)` instead of the current 9-scalar form `(target, ox, oy, oz, ax, ay, az, count, angle)`.",
         "details": "## Scope\nSpawned from task 1751 esc-1751-2. Task 1751 kept the 9-scalar `circular_pattern` signature because `point3`/`vec3` constructors do not exist in stdlib/compiler.\n\n## Deliverables\n1. Stdlib: add `point3(x: Length, y: Length, z: Length) -> Point3` and `vec3(x: Real, y: Real, z: Real) -> Vec3` (or `Length` components; TBD).\n2. Compiler: recognise `Point3`/`Vec3` types; extend `compile_geometry_op` for `circular_pattern` to dispatch on arity/type.\n3. Backwards-compatible transition: either keep both signatures or migrate all call sites (`examples/m5_geometry_flange.ri:28`, tests).\n4. Update examples and tests to use the typed form.\n\n## Files touched (initial estimate)\n- crates/reify-compiler/src/geometry.rs (circular_pattern signature)\n- crates/reify-compiler/src/type_resolution.rs (Point3/Vec3 recognition)\n- crates/reify-compiler/stdlib/*\n- examples/m5_geometry_flange.ri\n- crates/reify-eval/tests/m5_integration.rs\n\n### memory_hints\n- search: \"circular_pattern signature geometry\"\n- search: \"Point3 Vec3 stdlib types\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-16T21:59:40.308Z"
+        "updatedAt": "2026-04-16T22:10:45.940Z"
       },
       {
         "id": "1876",
@@ -39248,7 +39248,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T22:08:04.121Z",
+      "lastModified": "2026-04-16T22:10:45.944Z",
       "taskCount": 1873,
       "completedCount": 1606,
       "tags": [
