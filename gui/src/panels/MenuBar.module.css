@@ -1,0 +1,82 @@
+/* MenuBar — top-level menu bar container */
+.container {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  background: var(--reify-background);
+  border-bottom: 1px solid var(--reify-border);
+  padding: 0;
+  position: relative;
+  z-index: 100;
+  user-select: none;
+}
+
+/* Individual top-level menu trigger button */
+.trigger {
+  background: transparent;
+  border: none;
+  color: var(--reify-text);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 10px;
+  position: relative;
+}
+
+.trigger:hover,
+.triggerOpen {
+  background: var(--reify-surface-hover, var(--reify-surface));
+}
+
+/* Dropdown menu panel */
+.dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 180px;
+  background: var(--reify-surface, var(--reify-background));
+  border: 1px solid var(--reify-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  z-index: 200;
+  padding: 4px 0;
+}
+
+/* Individual menu item */
+.item {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--reify-text);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 12px;
+  width: 100%;
+  text-align: left;
+  gap: 24px;
+}
+
+.item:hover {
+  background: var(--reify-surface-hover, var(--reify-accent));
+}
+
+/* Shortcut annotation inside a menu item */
+.shortcut {
+  color: var(--reify-text-secondary, var(--reify-text));
+  opacity: 0.6;
+  font-size: 11px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Disabled menu item (e.g. Undo/Redo not yet wired to app-level state) */
+.itemDisabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.itemDisabled:hover {
+  background: transparent;
+}

@@ -624,7 +624,7 @@ structure def S : ProvidesParamX + ProvidesLetX {
         .iter()
         .filter(|vc| vc.kind == ValueCellKind::Let)
         .collect();
-    assert_eq!(let_cells.len(), 1, "expected exactly 1 Let 'x' cell");
+    assert_eq!(let_cells.len(), 1, "expected exactly 1 Let 'x' cell (let_default_not_discarded)");
 }
 
 /// Step 1b: Two traits each requiring `param x : Length`.
@@ -911,5 +911,292 @@ structure def S : FirstParam + SecondParam {
         x_cells[0].kind,
         ValueCellKind::Param,
         "the surviving cell should be Param"
+    );
+}
+
+/// Cross-kind pre-registration must not overwrite an already-registered name.
+///
+/// Trait A provides `param x : Length = 10mm` and `constraint x - 1mm > 0mm`.
+/// Trait B provides `let x = 5.0` (type Real).
+/// Structure implements both with no override.
+///
+/// Without the guard, the pre-registration loop registers x as Length (from Param A),
+/// then overwrites it with Real (from Let B). The subtraction `x - 1mm` then sees
+/// x as Real and emits an 'incompatible types in subtraction: Real vs Length' error.
+///
+/// With the guard (`!scope.names.contains_key(name)`), the second registration is
+/// skipped, x stays Length, and the constraint compiles cleanly.
+///
+/// Note: comparison operators (>, <, etc.) have no type checking in the compiler
+/// (only Add/Sub do). The subtraction in `x - 1mm > 0mm` is what triggers the
+/// observable type error when x is overwritten from Length to Real.
+#[test]
+fn cross_kind_pre_registration_preserves_first_type() {
+    let source = r#"
+trait TraitA {
+    param x : Length = 10mm
+    constraint x - 1mm > 0mm
+}
+
+trait TraitB {
+    let x = 5.0
+}
+
+structure def S : TraitA + TraitB {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors: the constraint `x - 1mm > 0mm` should compile cleanly \
+         because x is registered as Length (not overwritten to Real by the Let default). \
+         Got errors: {:?}",
+        errors
+    );
+
+    // At least 1 constraint injected (from TraitA).
+    assert!(
+        template.constraints.len() >= 1,
+        "expected at least 1 constraint injected from TraitA, got {}",
+        template.constraints.len()
+    );
+
+    // 2 'x' value cells: one Param (from TraitA), one Let (from TraitB).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        2,
+        "expected 2 'x' value cells (one Param from TraitA, one Let from TraitB), got {}",
+        x_cells.len()
+    );
+
+    let param_cells: Vec<_> = x_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Param)
+        .collect();
+    assert_eq!(param_cells.len(), 1, "expected exactly 1 Param 'x' cell");
+
+    let let_cells: Vec<_> = x_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Let)
+        .collect();
+    assert_eq!(let_cells.len(), 1, "expected exactly 1 Let 'x' cell");
+}
+
+/// Constraint default coexists with a param default for the same member name.
+///
+/// Trait A provides `param x : Real = 1.0`.
+/// Trait B provides `constraint x > 0` (unlabeled — `name: None`).
+/// Structure implements both with no override.
+///
+/// Unlabeled constraints have `name: None` and are pushed unconditionally in
+/// `collect_all_requirements` (conformance.rs:469-471), bypassing the composite-key
+/// dedup that applies to named Param/Let defaults. They never conflict with a
+/// same-named param, so this test should pass immediately.
+///
+/// This test exercises the Constraint + Param coexistence path through the full
+/// compilation pipeline: pre-registration → expression compilation → constraint
+/// injection.
+#[test]
+fn constraint_default_coexists_with_param_default() {
+    let source = r#"
+trait HasParam {
+    param x : Real = 1.0
+}
+
+trait HasConstraint {
+    constraint x > 0
+}
+
+structure def S : HasParam + HasConstraint {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors when a constraint default coexists with a param default: {:?}",
+        errors
+    );
+
+    // Exactly 1 'x' value cell (the Param from HasParam).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell (Param from HasParam), got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the 'x' cell should be a Param, got {:?}",
+        x_cells[0].kind
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Real,
+        "the Param 'x' should have type Real, got {:?}",
+        x_cells[0].cell_type
+    );
+    assert!(
+        x_cells[0].default_expr.is_some(),
+        "the Param 'x' should have a default expression (= 1.0)"
+    );
+
+    // At least 1 constraint injected (the `x > 0` from HasConstraint).
+    assert!(
+        template.constraints.len() >= 1,
+        "expected at least 1 constraint injected from HasConstraint, got {}",
+        template.constraints.len()
+    );
+}
+
+/// Documents order-sensitivity of the pre-registration guard (known design limitation).
+///
+/// The pre-registration loop uses first-registration-wins semantics: the first trait
+/// bound in the `structure def S : ... {}` declaration wins the scope type for a
+/// shared name. Reversing the bound order (`S : TraitB + TraitA` instead of
+/// `S : TraitA + TraitB`) changes which type gets registered.
+///
+/// In this scenario:
+/// - TraitA provides `param x : Length = 10mm` + `constraint x - 1mm > 0mm`
+/// - TraitB provides `let x = 5.0` (type Real)
+/// - Structure lists TraitB first: `S : TraitB + TraitA`
+///
+/// With TraitB first, the pre-registration loop visits the Let default before the
+/// Param default. It registers x as Real. When TraitA's Param default is visited
+/// next, `scope.names.contains_key("x")` is already true, so it is skipped.
+/// The constraint `x - 1mm > 0mm` from TraitA then sees x as Real, and the
+/// subtraction `x - 1mm` (Real - Length) produces an 'incompatible types' error.
+///
+/// This test asserts that the reversed order DOES produce an error, documenting
+/// the order-sensitivity as expected (not silent or undefined) behavior. Users who
+/// hit this should reorder trait bounds so the Param-typed trait appears first.
+#[test]
+fn cross_kind_pre_registration_order_sensitivity_reversed_order_produces_error() {
+    let source = r#"
+trait TraitA {
+    param x : Length = 10mm
+    constraint x - 1mm > 0mm
+}
+
+trait TraitB {
+    let x = 5.0
+}
+
+structure def S : TraitB + TraitA {
+}
+"#;
+
+    let (_template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // With TraitB listed first, the Let default (type Real) registers x before the
+    // Param default (type Length). The contains_key guard then skips the Param
+    // registration, leaving x as Real in scope. The constraint `x - 1mm > 0mm`
+    // performs Real - Length, which the expression compiler rejects.
+    //
+    // This documents order-sensitivity as a known design limitation of the
+    // first-registration-wins approach. To avoid this, users should list the
+    // Param-typed trait before the Let-typed trait.
+    assert!(
+        !errors.is_empty(),
+        "expected at least one type error when the Let-typed trait (TraitB) is listed \
+         before the Param-typed trait (TraitA): the constraint `x - 1mm > 0mm` should \
+         see x as Real (not Length) and fail. This documents the order-sensitivity of \
+         the pre-registration guard."
+    );
+}
+
+/// Verifies that a single trait providing BOTH `param x` and `constraint x > 0` compiles
+/// cleanly when a structure uses that trait with no override.
+///
+/// Unlike `constraint_default_coexists_with_param_default` (which uses two separate traits),
+/// this test exercises the intra-trait pre-registration path: both defaults come from the
+/// same trait's defaults list, so the pre-registration loop must register `x` before the
+/// constraint expression `x > 0` is compiled. If `x` were not pre-registered, the constraint
+/// expression compilation would fail with an "unresolved name" error.
+#[test]
+fn constraint_and_param_coexist_same_trait_same_name() {
+    let source = r#"
+trait HasParamAndConstraint {
+    param x : Real = 1.0
+    constraint x > 0
+}
+
+structure def S : HasParamAndConstraint {
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors when a single trait provides both param x and constraint x > 0: {:?}",
+        errors
+    );
+
+    // Exactly 1 'x' value cell (the Param from HasParamAndConstraint).
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell (Param from HasParamAndConstraint), got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the 'x' cell should be a Param, got {:?}",
+        x_cells[0].kind
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Real,
+        "the Param 'x' should have type Real, got {:?}",
+        x_cells[0].cell_type
+    );
+    assert!(
+        x_cells[0].default_expr.is_some(),
+        "the Param 'x' should have a default expression (= 1.0)"
+    );
+
+    // At least 1 constraint injected (the `x > 0` from HasParamAndConstraint).
+    assert!(
+        template.constraints.len() >= 1,
+        "expected at least 1 constraint injected from HasParamAndConstraint, got {}",
+        template.constraints.len()
     );
 }

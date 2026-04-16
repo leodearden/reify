@@ -280,10 +280,105 @@ pub fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::C
     compiled
 }
 
+/// Assert that `diagnostics` contains at least one entry whose severity equals
+/// `severity` and whose message contains `contains`.
+///
+/// Use this to verify that a specific diagnostic was emitted — for example, to
+/// confirm that a particular error or warning appears after a compile step.
+///
+/// # Panics
+/// Panics if no diagnostic matches both `severity` and `contains`. The panic
+/// message includes the full `diagnostics` list for debugging.
+#[track_caller]
+pub fn assert_has_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.severity == severity && d.message.contains(contains)),
+        "expected diagnostic with severity={:?} containing {:?}, got: {:?}",
+        severity,
+        contains,
+        diagnostics
+    );
+}
+
+/// Assert that `diagnostics` contains no entry whose severity equals `severity`
+/// and whose message contains `contains`.
+///
+/// Use this as a negative assertion — for example, to confirm that a specific
+/// warning was suppressed, or that a particular error was not emitted.
+///
+/// # Panics
+/// Panics if any diagnostic matches both `severity` and `contains`. The panic
+/// message includes the matching diagnostics so it's clear which ones violated
+/// the assertion.
+#[track_caller]
+pub fn assert_no_diagnostic(diagnostics: &[Diagnostic], severity: Severity, contains: &str) {
+    let matched: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == severity && d.message.contains(contains))
+        .collect();
+    assert!(
+        matched.is_empty(),
+        "expected no diagnostic with severity={:?} containing {:?}, got: {:?}",
+        severity,
+        contains,
+        matched
+    );
+}
+
+/// Assert that `diagnostics` contains no `Severity::Error` entries.
+///
+/// `context` is a short label that appears in the panic message to identify
+/// which compilation or evaluation phase failed — e.g. `"compile"`, `"eval"`,
+/// or `"post-link"`. This is useful when a single test exercises multiple
+/// pipeline stages and you need to identify which one produced errors.
+///
+/// Warnings, Info, and other non-Error severities are allowed and do not
+/// cause a panic. Use [`assert_no_diagnostics`] instead when all severities
+/// must be absent.
+///
+/// # Panics
+/// Panics if any `Severity::Error` diagnostic is present. The panic message
+/// includes `context` and the list of error messages.
+#[track_caller]
+pub fn assert_no_error_diagnostics(diagnostics: &[Diagnostic], context: &str) {
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{context}: expected no error diagnostics, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Assert that `diagnostics` is completely empty — no diagnostics of any severity.
+///
+/// This is stricter than [`assert_no_error_diagnostics`]: it fails on Warnings,
+/// Info, and any other severity in addition to Errors. Use this for
+/// characterization tests where the intent is "absolutely nothing is emitted".
+///
+/// `context` is a short label that appears in the panic message to identify
+/// which compilation or evaluation phase failed — e.g. `"compile"`, `"guard block"`.
+///
+/// # Panics
+/// Panics if `diagnostics` is non-empty. The panic message includes `context`
+/// and the full list of diagnostic messages.
+#[track_caller]
+pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
+    assert!(
+        diagnostics.is_empty(),
+        "{context}: expected no diagnostics at all, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
-    use reify_types::Severity;
+    use reify_types::{Diagnostic, Severity};
 
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
     #[cfg(feature = "eval-helpers")]
@@ -664,5 +759,119 @@ mod tests {
             !compiled.templates.is_empty(),
             "bracket source should produce at least one template"
         );
+    }
+
+    // ── assert_has_diagnostic ──────────────────────────────────────────────
+
+    /// assert_has_diagnostic should not panic when the diagnostics slice contains
+    /// an entry matching the requested severity and message substring.
+    #[test]
+    fn test_assert_has_diagnostic_passes_on_match() {
+        let diags = vec![
+            Diagnostic::warning("unused port x"),
+            Diagnostic::error("type mismatch for y"),
+        ];
+        // Should not panic — there is an Error-severity entry containing "type mismatch".
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    /// assert_has_diagnostic should panic when no diagnostic in the slice matches
+    /// the requested severity + message substring.
+    #[test]
+    #[should_panic(expected = "expected diagnostic")]
+    fn test_assert_has_diagnostic_panics_when_no_match() {
+        let diags = vec![Diagnostic::warning("unused port x")];
+        // Should panic — no Error-severity diagnostic exists.
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    /// assert_has_diagnostic should panic when the message substring matches but
+    /// the severity is wrong — confirming the severity filter applies in the
+    /// positive-assertion path.
+    #[test]
+    #[should_panic(expected = "expected diagnostic")]
+    fn test_assert_has_diagnostic_panics_when_wrong_severity() {
+        let diags = vec![Diagnostic::warning("type mismatch")];
+        // Should panic — the message matches but severity is Warning, not Error.
+        super::assert_has_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    // ── assert_no_diagnostic ──────────────────────────────────────────────
+
+    /// assert_no_diagnostic should not panic when the slice is empty.
+    #[test]
+    fn test_assert_no_diagnostic_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_diagnostic(&diags, Severity::Error, "anything");
+    }
+
+    /// assert_no_diagnostic should not panic when diagnostics exist but none match
+    /// the requested severity + message substring.
+    #[test]
+    fn test_assert_no_diagnostic_passes_when_wrong_severity_or_message() {
+        let diags = vec![
+            Diagnostic::warning("type mismatch for x"),
+            Diagnostic::error("unrelated error"),
+        ];
+        // Warning has the phrase but is wrong severity; Error has wrong message — no match.
+        super::assert_no_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    /// assert_no_diagnostic should panic when a diagnostic matches both severity
+    /// and message substring.
+    #[test]
+    #[should_panic(expected = "expected no diagnostic")]
+    fn test_assert_no_diagnostic_panics_on_match() {
+        let diags = vec![Diagnostic::error("type mismatch for x")];
+        // Should panic — an Error-severity diagnostic containing "type mismatch" exists.
+        super::assert_no_diagnostic(&diags, Severity::Error, "type mismatch");
+    }
+
+    // ── assert_no_error_diagnostics ───────────────────────────────────────
+
+    /// assert_no_error_diagnostics should not panic when the slice contains only
+    /// Warning diagnostics (no Error-severity entries).
+    #[test]
+    fn test_assert_no_error_diagnostics_passes_with_only_warnings() {
+        let diags = vec![
+            Diagnostic::warning("unused port x"),
+            Diagnostic::warning("deprecated syntax"),
+        ];
+        super::assert_no_error_diagnostics(&diags, "compile phase");
+    }
+
+    /// assert_no_error_diagnostics should not panic on an empty slice.
+    #[test]
+    fn test_assert_no_error_diagnostics_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_error_diagnostics(&diags, "eval phase");
+    }
+
+    /// assert_no_error_diagnostics should panic when an Error-severity diagnostic
+    /// is present; the panic message must include the context label.
+    #[test]
+    #[should_panic(expected = "compile phase")]
+    fn test_assert_no_error_diagnostics_panics_on_error() {
+        let diags = vec![Diagnostic::error("undefined identifier")];
+        super::assert_no_error_diagnostics(&diags, "compile phase");
+    }
+
+    // ── assert_no_diagnostics ─────────────────────────────────────────────
+
+    /// assert_no_diagnostics should not panic when the slice is empty.
+    #[test]
+    fn test_assert_no_diagnostics_passes_on_empty() {
+        let diags: Vec<Diagnostic> = vec![];
+        super::assert_no_diagnostics(&diags, "guard compile");
+    }
+
+    /// assert_no_diagnostics should panic even on an Info-severity diagnostic;
+    /// it is stricter than assert_no_error_diagnostics. The panic message must
+    /// include the context label.
+    #[test]
+    #[should_panic(expected = "guard compile")]
+    fn test_assert_no_diagnostics_panics_on_any_diagnostic() {
+        let diags = vec![Diagnostic::info("informational note")];
+        super::assert_no_diagnostics(&diags, "guard compile");
     }
 }

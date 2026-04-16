@@ -272,6 +272,38 @@ mod occt_tests {
     }
 
     #[test]
+    fn chamfer_edges() {
+        if !reify_kernel_occt::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: mm(20.0),
+                height: mm(20.0),
+                depth: mm(20.0),
+            })
+            .unwrap();
+
+        let chamfered = kernel
+            .execute(&GeometryOp::Chamfer {
+                target: handle.id,
+                distance: mm(2.0),
+            })
+            .unwrap();
+
+        // Export to STEP to verify valid shape
+        let mut output = Vec::new();
+        kernel
+            .export(chamfered.id, ExportFormat::Step, &mut output)
+            .unwrap();
+        let step_str = String::from_utf8(output).unwrap();
+        assert!(!step_str.is_empty(), "chamfered STEP should be non-empty");
+        assert!(step_str.contains("ISO-10303-21"));
+    }
+
+    #[test]
     fn translate_centroid() {
         if !reify_kernel_occt::OCCT_AVAILABLE {
             eprintln!("skipping: OCCT not available");

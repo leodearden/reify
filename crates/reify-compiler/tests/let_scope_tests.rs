@@ -226,6 +226,15 @@ fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
     reify_compiler::compile(&parsed)
 }
 
+/// Helper: collect all error-severity diagnostics from a compiled module.
+fn error_diagnostics(compiled: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
+    compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
 
 // ─── step-1: geometry let should be in scope for subsequent let ───
 
@@ -1145,5 +1154,451 @@ fn geometry_let_not_a_value_cell() {
         template.realizations.len(),
         1,
         "geometry let 'hole' should produce exactly 1 realization"
+    );
+}
+
+// ─── task-1708: ident-alias geometry let support ──────────────────────────────
+
+#[test]
+fn ident_alias_geometry_let_produces_realization() {
+    // `alias` is a let-bound name whose init expression is an Ident that names
+    // a geometry let (`body`). The compiler should recognise `alias` as a
+    // geometry let too, producing 2 realizations.
+    // FAILS before fix: only body gets a realization; alias is compiled as a value cell.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        2,
+        "expected 2 realizations (body and alias), got {}",
+        template.realizations.len()
+    );
+}
+
+#[test]
+fn ident_alias_in_boolean_op() {
+    // alias is an ident alias of a geometry let; difference(alias, sphere(r))
+    // must resolve alias through geometry_lets HashMap.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+    let result = difference(alias, sphere(r))
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        3,
+        "expected 3 realizations (body, alias, result), got {}",
+        template.realizations.len()
+    );
+    let result_real = realization_named(template, &["body", "alias", "result"], "result");
+    assert_op_sequence(
+        &result_real.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sphere,
+            ExpectedOp::BoolDiff(0, 1),
+        ],
+    );
+}
+
+#[test]
+fn chained_ident_alias_transitive() {
+    // Multi-level chain: let a = cyl; let b = a; let c = b.
+    // The incremental set must capture all three as geometry lets so that
+    // difference(c, sphere(r)) resolves c → b → a → cylinder.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let a = cylinder(r, h)
+    let b = a
+    let c = b
+    let result = difference(c, sphere(r))
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        4,
+        "expected 4 realizations (a, b, c, result), got {}",
+        template.realizations.len()
+    );
+    let result_real =
+        realization_named(template, &["a", "b", "c", "result"], "result");
+    assert_op_sequence(
+        &result_real.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sphere,
+            ExpectedOp::BoolDiff(0, 1),
+        ],
+    );
+}
+
+#[test]
+fn ident_alias_not_a_value_cell() {
+    // An ident alias to a geometry let must NOT appear as a value cell.
+    // (Verifies the second-pass skip for ident aliases.)
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert!(
+        !template.value_cells.iter().any(|vc| vc.id.member == "alias"),
+        "geometry-let ident alias 'alias' should NOT be a value cell, but found one"
+    );
+    assert!(
+        !template.value_cells.iter().any(|vc| vc.id.member == "body"),
+        "geometry let 'body' should NOT be a value cell, but found one"
+    );
+}
+
+#[test]
+fn ident_alias_realization_op_sequence() {
+    // The alias realization's ops must equal those of the aliased geometry let.
+    // compile_geometry_call resolves the Ident through geometry_lets → cylinder expr.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let alias_real = realization_named(template, &["body", "alias"], "alias");
+    assert_op_sequence(&alias_real.operations, &[ExpectedOp::Cylinder]);
+}
+
+#[test]
+fn ident_alias_with_transform() {
+    // Alias used as geometry arg in a non-boolean geometry function (translate).
+    // translate's geometry_arg_indices is [0], so the first arg is resolved as
+    // a geometry let Ident.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+    let result = translate(alias, 1, 0, 0)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        3,
+        "expected 3 realizations (body, alias, result), got {}",
+        template.realizations.len()
+    );
+    let result_real =
+        realization_named(template, &["body", "alias", "result"], "result");
+    assert_op_sequence(
+        &result_real.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Transform(TransformKind::Translate, 0),
+        ],
+    );
+}
+
+#[test]
+fn ident_alias_scope_type_is_geometry() {
+    // After the fix, `alias` has Type::Geometry in scope. This means:
+    //   1. `alias` is skipped in the second pass → appears in realizations, NOT value_cells.
+    //   2. `let x = alias + 1` is NOT a geometry let → x IS compiled as a value cell.
+    // Together these prove the first-pass type registration correctly typed `alias` as
+    // Geometry. Without the fix, `alias` would be Type::Real and compiled as a value cell,
+    // so realizations.len() would be 1 (only body), failing assertion (1).
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let alias = body
+    let x = alias + 1
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    // (1) Both `body` and `alias` must be realizations (not value cells).
+    assert_eq!(
+        template.realizations.len(),
+        2,
+        "expected 2 realizations (body, alias), got {} — alias must have Type::Geometry",
+        template.realizations.len()
+    );
+    // (2) `alias` itself must NOT appear as a value cell.
+    assert!(
+        !template.value_cells.iter().any(|vc| vc.id.member == "alias"),
+        "alias should NOT be a value cell (it has Type::Geometry)"
+    );
+    // (3) `x = alias + 1` is NOT a geometry let, so x must be a value cell.
+    assert!(
+        template.value_cells.iter().any(|vc| vc.id.member == "x"),
+        "expected value cell 'x' for let x = alias + 1"
+    );
+}
+
+// ─── task-1708 amendment: guarded-group and negative-case tests ──────────────
+
+#[test]
+fn ident_alias_in_guarded_group_documents_current_behavior() {
+    // Documents pre-existing limitation: geometry lets (including ident aliases)
+    // inside `where {}` blocks are recognized in pass 1 (Type::Geometry, added to
+    // known_geometry_lets) and skipped in pass 2 (not a value cell), but pass 3
+    // only iterates top-level `structure.members` — so they are NOT compiled into
+    // realizations. The alias therefore silently disappears from the output.
+    //
+    // This test pins the current behavior so that future changes to guarded-group
+    // realization compilation have a regression signal.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    param active: Bool = true
+    let body = cylinder(r, h)
+    where active {
+        let alias = body
+    }
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    // Only the top-level `body` produces a realization; `alias` inside the
+    // guarded block does not (known limitation — pass 3 skips guarded members).
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected 1 realization (body only — alias inside guarded block is not compiled), got {}",
+        template.realizations.len()
+    );
+    // `alias` must NOT appear as a value cell (the pass-2 geometry-let skip applies).
+    assert!(
+        !template.value_cells.iter().any(|vc| vc.id.member == "alias"),
+        "alias inside guarded block should NOT be a value cell"
+    );
+}
+
+#[test]
+fn non_geometry_ident_alias_is_a_value_cell() {
+    // `let x = 5; let y = x` — `x` is not a geometry let, so `y` must NOT be
+    // recognised as a geometry ident alias. Both should appear as value cells.
+    let source = r#"structure S {
+    let x = 5
+    let y = x
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        0,
+        "expected 0 realizations — neither x nor y is a geometry let"
+    );
+    assert!(
+        template.value_cells.iter().any(|vc| vc.id.member == "x"),
+        "expected value cell 'x'"
+    );
+    assert!(
+        template.value_cells.iter().any(|vc| vc.id.member == "y"),
+        "expected value cell 'y' — non-geometry ident alias must stay a value cell"
+    );
+}
+
+#[test]
+fn undefined_ident_alias_produces_error() {
+    // `let alias = nonexistent` — `nonexistent` is not defined anywhere. The
+    // compiler should emit at least one error diagnostic (name not found).
+    let source = r#"structure S {
+    let alias = nonexistent
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for undefined name 'nonexistent', got none"
+    );
+}
+
+#[test]
+fn cyclic_ident_alias_does_not_crash() {
+    // `let a = b; let b = a` — neither name is declared before the other, so
+    // the forward-pass incremental set never adds either to known_geometry_lets.
+    // Both are treated as value cells referencing each other (a solver cycle).
+    // The compiler must not panic or ICE; it may or may not emit an error.
+    let source = r#"structure S {
+    let a = b
+    let b = a
+}"#;
+    // Must not panic.
+    let compiled = compile_with_diagnostics(source);
+    let template = &compiled.templates[0];
+    // Neither is a geometry let — no realizations expected.
+    assert_eq!(
+        template.realizations.len(),
+        0,
+        "cyclic ident aliases must not produce realizations"
+    );
+}
+
+// ─── task-1733 step-1: loft with 3+ profiles ────────────────────────────────
+
+#[test]
+fn loft_three_profiles_ops() {
+    // loft(p1, p2, p3) with three let-bound geometry lets.
+    // Expected: [Cylinder(p1), Cylinder(p2), Cylinder(p3), Sweep(Loft, [0, 1, 2])]
+    let source = r#"structure S {
+    param r1: Scalar = 5mm
+    param r2: Scalar = 3mm
+    param r3: Scalar = 1mm
+    param h: Scalar = 10mm
+    let p1 = cylinder(r1, h)
+    let p2 = cylinder(r2, h)
+    let p3 = cylinder(r3, h)
+    let result = loft(p1, p2, p3)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["p1", "p2", "p3", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Cylinder,
+            ExpectedOp::Cylinder,
+            ExpectedOp::Sweep(SweepKind::Loft, vec![0, 1, 2]),
+        ],
+    );
+}
+
+// ─── task-1733 step-2: error-path tests for non-geometry args ───────────────
+
+#[test]
+fn sweep_non_geometry_profile_emits_error() {
+    // sweep(42, helix(5, 2, 10)): arg 0 is a literal, not a geometry expression.
+    // sweep() should emit a "profile … must be a geometry expression" diagnostic.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    param pitch: Scalar = 2mm
+    let path = helix(r, pitch, h)
+    let result = sweep(42, path)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("sweep()") && d.message.contains("profile")),
+        "expected sweep() profile error diagnostic, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn sweep_non_geometry_path_emits_error() {
+    // sweep(cylinder(r, h), 42): arg 1 is a literal, not a geometry expression.
+    // sweep() should emit a "path … must be a geometry expression" diagnostic.
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let profile = cylinder(r, h)
+    let result = sweep(profile, 42)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("sweep()") && d.message.contains("path")),
+        "expected sweep() path error diagnostic, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn translate_non_geometry_target_uses_fallback() {
+    // translate(42, 1, 0, 0): arg 0 is a literal number, not a geometry expression.
+    // The geom_ref fallback silently uses GeomRef::Step(step_offset). This should
+    // compile without errors (the fallback is intentional for single-geom-arg functions).
+    let source = r#"structure S {
+    let result = translate(42, 1, 0, 0)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    // No error expected — the geom_ref closure falls back silently.
+    assert!(
+        errors.is_empty(),
+        "translate() with non-geometry target should not produce errors (silent fallback), got: {:?}",
+        errors
+    );
+    // Should still produce a realization with a Transform op.
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    assert_op_sequence(
+        &template.realizations[0].operations,
+        &[ExpectedOp::Transform(TransformKind::Translate, 0)],
+    );
+}
+
+#[test]
+fn loft_non_geometry_profiles_uses_fallback() {
+    // loft(42, 43): both args are literal numbers, not geometry expressions.
+    // loft silently falls back with GeomRef::Step offsets (matching geom_ref convention).
+    // This should compile without errors.
+    let source = r#"structure S {
+    let result = loft(42, 43)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    // No error expected — loft silently falls back (consistent with extrude/revolve_full).
+    assert!(
+        errors.is_empty(),
+        "loft() with non-geometry profiles should not produce errors (silent fallback), got: {:?}",
+        errors
+    );
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    assert_op_sequence(
+        &template.realizations[0].operations,
+        &[ExpectedOp::Sweep(SweepKind::Loft, vec![0, 1])],
+    );
+}
+
+#[test]
+fn extrude_non_geometry_target_uses_fallback() {
+    // extrude(42, 10): arg 0 is a literal number, not a geometry expression.
+    // extrude() uses the same geom_ref fallback path as translate() and other
+    // single-geom-arg functions — it silently falls back to GeomRef::Step(step_offset).
+    // This verifies the silent-fallback behavior is consistent across the category,
+    // not just for transform functions.
+    let source = r#"structure S {
+    let result = extrude(42, 10)
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors = error_diagnostics(&compiled);
+    // No error expected — the geom_ref closure falls back silently.
+    assert!(
+        errors.is_empty(),
+        "extrude() with non-geometry target should not produce errors (silent fallback), got: {:?}",
+        errors
+    );
+    // Should still produce a realization with an Extrude (Sweep) op.
+    let template = &compiled.templates[0];
+    assert_eq!(template.realizations.len(), 1);
+    assert_op_sequence(
+        &template.realizations[0].operations,
+        &[ExpectedOp::Sweep(SweepKind::Extrude, vec![0])],
     );
 }

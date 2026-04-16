@@ -115,13 +115,14 @@ pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueC
 
 /// Register names from guarded group members in the compilation scope (pass 1).
 /// Recursively handles nested guarded groups.
-pub(crate) fn register_guarded_names(
-    members: &[reify_syntax::MemberDecl],
+pub(crate) fn register_guarded_names<'a>(
+    members: &'a [reify_syntax::MemberDecl],
     scope: &mut CompilationScope,
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    known_geometry_lets: &mut HashSet<&'a str>,
 ) {
     for member in members {
         match member {
@@ -143,15 +144,23 @@ pub(crate) fn register_guarded_names(
                 scope.register(&param.name, ty);
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
-                if is_geometry_let(&let_decl.value, functions) {
+                if is_geometry_let(&let_decl.value, functions, known_geometry_lets) {
                     scope.register(&let_decl.name, Type::Geometry);
+                    known_geometry_lets.insert(let_decl.name.as_str());
                 } else {
                     scope.register(&let_decl.name, Type::Real);
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                register_guarded_names(&g.members, scope, functions, diagnostics, type_param_names, alias_registry);
-                register_guarded_names(&g.else_members, scope, functions, diagnostics, type_param_names, alias_registry);
+                // `known_geometry_lets` is intentionally shared across both branches,
+                // consistent with how `scope` is shared: names registered in the
+                // if-branch are visible when processing the else-branch. As a result,
+                // an Ident alias in the else-branch may be classified as a geometry let
+                // if the aliased name appeared in the if-branch. Fixing this would
+                // require snapshotting both `scope` and `known_geometry_lets` atomically
+                // for each branch — a larger change that is deferred until needed.
+                register_guarded_names(&g.members, scope, functions, diagnostics, type_param_names, alias_registry, known_geometry_lets);
+                register_guarded_names(&g.else_members, scope, functions, diagnostics, type_param_names, alias_registry, known_geometry_lets);
             }
             _ => {}
         }
@@ -177,6 +186,7 @@ pub(crate) fn compile_block_guard(
     constraint_index: &mut u32,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    known_geometry_lets: &HashSet<&str>,
 ) {
     let inner_condition = compile_expr(&g.condition, scope, enum_defs, functions, diagnostics);
 
@@ -212,6 +222,7 @@ pub(crate) fn compile_block_guard(
         constraint_index,
         type_param_names,
         alias_registry,
+        known_geometry_lets,
     );
 
     let mut else_members = Vec::new();
@@ -235,6 +246,7 @@ pub(crate) fn compile_block_guard(
             constraint_index,
             type_param_names,
             alias_registry,
+            known_geometry_lets,
         );
     }
 
@@ -276,6 +288,7 @@ pub(crate) fn compile_guarded_members(
     constraint_index: &mut u32,
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
+    known_geometry_lets: &HashSet<&str>,
 ) {
     let guard_ctx = Some(current_guard);
     for member in ast_members {
@@ -346,7 +359,7 @@ pub(crate) fn compile_guarded_members(
                 members.push(decl);
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
-                if is_geometry_let(&let_decl.value, functions) {
+                if is_geometry_let(&let_decl.value, functions, known_geometry_lets) {
                     continue;
                 }
                 let mut compiled_expr = {
@@ -443,6 +456,7 @@ pub(crate) fn compile_guarded_members(
                     constraint_index,
                     type_param_names,
                     alias_registry,
+                    known_geometry_lets,
                 );
             }
             reify_syntax::MemberDecl::Sub(s) => {

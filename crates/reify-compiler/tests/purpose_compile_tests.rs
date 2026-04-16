@@ -378,3 +378,41 @@ purpose hot_enough(subject : Structure) {
         right_si
     );
 }
+
+// ── Step 1 (task-1717): self is not valid in purpose scope ───────────────────
+
+/// `is_entity_scope` is false for purpose scopes — only compile_entity sets it
+/// true for structures and occurrences.  Using `self.param` in a purpose
+/// constraint must produce an error diagnostic ("unresolved name: self"), not
+/// silently resolve as if self were in scope.
+#[test]
+fn self_in_purpose_body_rejected() {
+    let source = r#"
+structure Widget {
+    param width : Length = 80mm
+}
+
+purpose check(subject : Widget) {
+    constraint self.width > 0mm
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an error for `self` used in purpose scope, but got none"
+    );
+    let has_self_error = errors.iter().any(|d| {
+        let lower = d.message.to_lowercase();
+        lower.contains("self") || lower.contains("unresolved")
+    });
+    assert!(
+        has_self_error,
+        "expected an error mentioning 'self' or 'unresolved', got: {:?}",
+        errors
+    );
+}

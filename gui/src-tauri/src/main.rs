@@ -232,14 +232,14 @@ fn get_source_location(
 #[tauri::command]
 fn get_entity_tree(
     state: tauri::State<'_, AppState>,
-) -> Vec<reify_gui::types::EntityTreeNode> {
+) -> Result<Vec<reify_gui::types::EntityTreeNode>, String> {
     reify_gui::commands::get_entity_tree_impl(&state.engine)
 }
 
 #[tauri::command]
 fn get_entity_identity_map(
     state: tauri::State<'_, AppState>,
-) -> std::collections::HashMap<String, reify_gui::types::EntityIdentity> {
+) -> Result<std::collections::HashMap<String, reify_gui::types::EntityIdentity>, String> {
     reify_gui::commands::get_entity_identity_map_impl(&state.engine)
 }
 
@@ -256,7 +256,7 @@ fn get_containing_definition(
     state: tauri::State<'_, AppState>,
     line: u32,
     col: u32,
-) -> Option<reify_gui::types::DefInfo> {
+) -> Result<Option<reify_gui::types::DefInfo>, String> {
     reify_gui::commands::get_containing_definition_impl(&state.engine, line, col)
 }
 

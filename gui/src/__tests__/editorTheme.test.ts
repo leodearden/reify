@@ -63,6 +63,8 @@ describe('reifyHighlightStyle syntax tag coverage', () => {
     { tag: t.operator, name: 'operator' },
     { tag: t.lineComment, name: 'lineComment' },
     { tag: t.blockComment, name: 'blockComment' },
+    { tag: t.paren, name: 'paren' },
+    { tag: t.brace, name: 'brace' },
   ];
 
   for (const { tag, name } of cases) {

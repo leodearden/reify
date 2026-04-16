@@ -172,6 +172,64 @@ impl OptimizedImpl for MockOptimizedImpl {
     }
 }
 
+/// Mock optimized-constraint implementation that returns a fixed, possibly
+/// wrong, number of results — used to exercise the contract-violation fallback
+/// path in reify-eval (Task 1657).
+///
+/// Unlike [`MockOptimizedImpl`], which correctly returns one result per input
+/// constraint, `BrokenCountOptimizedImpl` returns a caller-supplied result set
+/// verbatim regardless of how many constraints are in the input. This triggers
+/// the result-count mismatch that `dispatch_constraints` must detect and
+/// recover from gracefully by emitting a `Diagnostic::error` and falling back
+/// to the language-level `ConstraintChecker`.
+///
+/// The `calls` field records every `ConstraintNodeId` the impl was invoked
+/// with (across all calls), so tests can assert the broken impl was actually
+/// invoked before the fallback kicked in.
+pub struct BrokenCountOptimizedImpl {
+    fixed_results: Vec<ConstraintResult>,
+    calls: Arc<Mutex<Vec<ConstraintNodeId>>>,
+}
+
+impl BrokenCountOptimizedImpl {
+    /// Create an impl that always returns `fixed_results` verbatim, regardless
+    /// of how many constraints are in the input.
+    pub fn new(fixed_results: Vec<ConstraintResult>) -> Self {
+        Self {
+            fixed_results,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// A clone of the shared call-tracking handle.
+    ///
+    /// Grab this before boxing so the test can inspect calls after the engine
+    /// run:
+    ///
+    /// ```ignore
+    /// let mock = BrokenCountOptimizedImpl::new(vec![]);
+    /// let calls = mock.calls_handle();
+    /// engine.register_optimized_impl("target_a", Box::new(mock));
+    /// engine.check(&compiled);
+    /// assert!(!calls.lock().unwrap().is_empty());
+    /// ```
+    pub fn calls_handle(&self) -> Arc<Mutex<Vec<ConstraintNodeId>>> {
+        Arc::clone(&self.calls)
+    }
+}
+
+impl OptimizedImpl for BrokenCountOptimizedImpl {
+    fn check(&self, input: &OptimizedImplInput) -> OptimizedImplOutput {
+        let mut calls = self.calls.lock().unwrap();
+        for (id, _) in &input.constraints {
+            calls.push(id.clone());
+        }
+        OptimizedImplOutput {
+            results: self.fixed_results.clone(),
+        }
+    }
+}
+
 /// Mock constraint solver that returns predetermined results.
 pub struct MockConstraintSolver {
     result: SolveResult,

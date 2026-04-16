@@ -29,8 +29,8 @@ pub(crate) struct CompilationScope<'u> {
     /// Reference to the active unit registry.
     /// Set by compile_entity/compile_purpose. None for scopes that don't need it (functions, fields).
     pub(crate) unit_registry: Option<&'u UnitRegistry>,
-    /// Whether this scope is an entity (structure/purpose) scope where `self` is valid.
-    /// False for function scopes, where `self` must produce an "unresolved name" error.
+    /// Whether this scope is an entity (structure or occurrence) scope where `self` is valid.
+    /// False for function and purpose scopes, where `self` must produce an "unresolved name" error.
     pub(crate) is_entity_scope: bool,
     /// Member types for all sub-components: sub_name → { member_name → Type }.
     /// Populated for both collection and non-collection subs to resolve self.sub.member
@@ -38,8 +38,8 @@ pub(crate) struct CompilationScope<'u> {
     /// Inner map is BTreeMap so iteration order is lexicographic — this makes bare
     /// collection-sub identifier resolution (expr.rs: members.iter().next()) deterministic.
     pub(crate) sub_member_types: HashMap<String, BTreeMap<String, Type>>,
-    /// Whether the current structure has at least one geometry declaration (realize block).
-    /// Used to gate @face/@edge selectors at compile time.
+    /// Whether the current structure has at least one geometry-producing let binding
+    /// (e.g., `let shape = box(...)`). Used to gate @face/@edge selectors at compile time.
     pub(crate) has_geometry: bool,
 }
 
@@ -92,7 +92,47 @@ impl<'u> CompilationScope<'u> {
         self.names.insert(name.to_string(), (id, ty, Some(guard)));
     }
 
+    /// Insert `name → (id, ty, None)` only if `name` is not already registered.
+    ///
+    /// Returns `true` if the entry was inserted (vacant), `false` if it already
+    /// existed (occupied) and was left unchanged. Unlike `register`, this method
+    /// is guaranteed never to overwrite an existing registration.
+    pub(crate) fn register_if_absent(&mut self, name: &str, ty: Type) -> bool {
+        use std::collections::hash_map::Entry;
+        match self.names.entry(name.to_string()) {
+            Entry::Vacant(e) => {
+                let id = ValueCellId::new(&self.entity_name, name);
+                e.insert((id, ty, None));
+                true
+            }
+            Entry::Occupied(_) => false,
+        }
+    }
+
     pub(crate) fn resolve(&self, name: &str) -> Option<(&ValueCellId, &Type)> {
         self.names.get(name).map(|(id, ty, _)| (id, ty))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_if_absent_does_not_overwrite() {
+        let mut scope = CompilationScope::new("TestEntity");
+
+        // Vacant case: register_if_absent should insert and return true.
+        let inserted = scope.register_if_absent("y", Type::Bool);
+        assert!(inserted, "register_if_absent should return true for a fresh name");
+        let (_, ty, _) = scope.names["y"].clone();
+        assert_eq!(ty, Type::Bool, "fresh insert should store the given type");
+
+        // Occupied case: register_if_absent must NOT overwrite and must return false.
+        scope.register("x", Type::Real);
+        let overwritten = scope.register_if_absent("x", Type::length());
+        assert!(!overwritten, "register_if_absent should return false for an existing name");
+        let (_, ty, _) = scope.names["x"].clone();
+        assert_eq!(ty, Type::Real, "existing type must not be overwritten");
     }
 }

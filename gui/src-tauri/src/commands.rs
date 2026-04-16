@@ -103,11 +103,11 @@ pub fn open_file_engine_impl(
 /// Return the hierarchical entity tree for the currently loaded module.
 ///
 /// Returns an empty vec when no module is loaded.
-pub fn get_entity_tree_impl(engine: &Mutex<EngineSession>) -> Vec<EntityTreeNode> {
-    engine
-        .lock()
-        .map(|s| s.get_entity_tree())
-        .unwrap_or_default()
+pub fn get_entity_tree_impl(
+    engine: &Mutex<EngineSession>,
+) -> Result<Vec<EntityTreeNode>, String> {
+    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(s.get_entity_tree())
 }
 
 /// Return the entity identity map (entity_path → EntityIdentity) for the loaded module.
@@ -115,11 +115,9 @@ pub fn get_entity_tree_impl(engine: &Mutex<EngineSession>) -> Vec<EntityTreeNode
 /// Returns an empty map when no module is loaded.
 pub fn get_entity_identity_map_impl(
     engine: &Mutex<EngineSession>,
-) -> HashMap<String, EntityIdentity> {
-    engine
-        .lock()
-        .map(|s| s.get_entity_identity_map())
-        .unwrap_or_default()
+) -> Result<HashMap<String, EntityIdentity>, String> {
+    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(s.get_entity_identity_map())
 }
 
 /// Return a preview GuiState for a single named definition evaluated with its defaults.
@@ -136,14 +134,13 @@ pub fn get_def_preview_impl(
 /// Return the innermost definition (structure/occurrence) containing the given
 /// 1-based (line, col) source position.
 ///
-/// Returns `None` when no module is loaded or the position is outside any definition.
+/// Returns `Ok(None)` when no module is loaded or the position is outside any definition.
+/// Returns `Err` when the engine mutex is poisoned.
 pub fn get_containing_definition_impl(
     engine: &Mutex<EngineSession>,
     line: u32,
     col: u32,
-) -> Option<DefInfo> {
-    engine
-        .lock()
-        .ok()
-        .and_then(|s| s.get_containing_definition(line, col))
+) -> Result<Option<DefInfo>, String> {
+    let s = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
+    Ok(s.get_containing_definition(line, col))
 }

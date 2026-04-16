@@ -19,6 +19,24 @@ fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
+/// Assert that `expr` is a `ValueRef` with the given member name.
+///
+/// Panics with a descriptive message if the expression is not a `ValueRef` or
+/// if the member name does not match `expected_member`.
+fn assert_value_ref(expr: &CompiledExpr, expected_member: &str) {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => assert_eq!(
+            id.member, expected_member,
+            "expected ValueRef with member '{}', got '{}'",
+            expected_member, id.member
+        ),
+        other => panic!(
+            "expected ValueRef({}) but got {:?}",
+            expected_member, other
+        ),
+    }
+}
+
 // ── Step 7: basic single-arg instantiation ───────────────────────────────────
 
 /// Constraint def with single param, structure with one instantiation.
@@ -392,4 +410,186 @@ structure S {
         "expected second constraint label Some(\"Bounded[1]\"), got: {:?}",
         tmpl.constraints[1].label
     );
+}
+
+// ── Step 3 (task-1717): substitute_expr recurses into Conditional branches ───
+
+/// substitute_expr must recurse into all three branches of a Conditional
+/// (condition, then-branch, else-branch).  This test verifies the behavior
+/// by instantiating a constraint def whose predicate is an `if/then/else`
+/// expression and asserting that ValueRefs (not bare idents) appear in every
+/// branch after substitution + compilation.
+#[test]
+fn constraint_inst_conditional_substitution() {
+    let source = r#"
+constraint def Gated {
+    param x: Length
+    param threshold: Length
+    if x > threshold then x < 100mm else x > 0mm
+}
+structure S {
+    param width: Length
+    param limit: Length
+    constraint Gated(x: width, threshold: limit)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(tmpl.constraints.len(), 1, "expected exactly 1 constraint");
+
+    let cc = &tmpl.constraints[0];
+    // The compiled constraint should be a Conditional expression.
+    match &cc.expr.kind {
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            // condition: x > threshold  →  BinOp(Gt, ValueRef(S.width), ValueRef(S.limit))
+            match &condition.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Gt, "condition op should be Gt");
+                    assert!(
+                        matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "width"),
+                        "condition left should be ValueRef(S.width), got {:?}",
+                        left.kind
+                    );
+                    assert!(
+                        matches!(&right.kind, CompiledExprKind::ValueRef(id) if id.member == "limit"),
+                        "condition right should be ValueRef(S.limit), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp for condition, got {:?}", other),
+            }
+            // then_branch: x < 100mm  →  BinOp(Lt, ValueRef(S.width), Literal)
+            match &then_branch.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Lt, "then_branch op should be Lt");
+                    assert_value_ref(left, "width");
+                    assert!(
+                        matches!(&right.kind, CompiledExprKind::Literal(_)),
+                        "then_branch right should be Literal (100mm), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp for then_branch, got {:?}", other),
+            }
+            // else_branch: x > 0mm  →  BinOp(Gt, ValueRef(S.width), Literal)
+            match &else_branch.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Gt, "else_branch op should be Gt");
+                    assert_value_ref(left, "width");
+                    assert!(
+                        matches!(&right.kind, CompiledExprKind::Literal(_)),
+                        "else_branch right should be Literal (0mm), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp for else_branch, got {:?}", other),
+            }
+        }
+        other => panic!(
+            "expected Conditional constraint expr, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── Step 4 (task-1717): substitute_expr handles Match arms (no shadowing) ────
+
+/// substitute_expr must substitute param references in both the match
+/// discriminant and each arm body.  Match arm patterns are structural
+/// (enum variants) — they do NOT introduce binders, so no shadowing
+/// suppression applies.  This test verifies that behaviour.
+#[test]
+fn constraint_inst_match_substitution() {
+    let source = r#"
+enum Quality { Standard, Premium }
+
+constraint def QualityBound {
+    param grade: Quality
+    param x: Length
+    match grade { Standard => x < 100mm, Premium => x < 10mm }
+}
+structure S {
+    param quality: Quality
+    param size: Length
+    constraint QualityBound(grade: quality, x: size)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(tmpl.constraints.len(), 1, "expected exactly 1 constraint");
+
+    let cc = &tmpl.constraints[0];
+    // The compiled constraint should be a Match expression.
+    match &cc.expr.kind {
+        CompiledExprKind::Match { discriminant, arms } => {
+            // Discriminant: grade → ValueRef(S.quality)
+            assert!(
+                matches!(&discriminant.kind, CompiledExprKind::ValueRef(id) if id.member == "quality"),
+                "discriminant should be ValueRef(S.quality), got {:?}",
+                discriminant.kind
+            );
+            // Two arms: Standard (x < 100mm) and Premium (x < 10mm).
+            // Index explicitly so a swap or duplication of arm bodies is caught.
+            assert_eq!(arms.len(), 2, "expected 2 match arms");
+
+            // arms[0]: Standard => x < 100mm
+            assert_eq!(
+                arms[0].patterns,
+                vec!["Standard".to_string()],
+                "first arm should be Standard"
+            );
+            match &arms[0].body.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Lt, "Standard arm op should be Lt");
+                    assert_value_ref(left, "size");
+                    // Right should be Literal(100mm); 100mm = 0.1 m in SI.
+                    assert!(
+                        matches!(
+                            &right.kind,
+                            CompiledExprKind::Literal(Value::Scalar { si_value, .. })
+                            if (si_value - 0.1_f64).abs() < 1e-9
+                        ),
+                        "Standard arm right should be Literal(100mm = 0.1 SI), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp in Standard arm body, got {:?}", other),
+            }
+
+            // arms[1]: Premium => x < 10mm
+            assert_eq!(
+                arms[1].patterns,
+                vec!["Premium".to_string()],
+                "second arm should be Premium"
+            );
+            match &arms[1].body.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Lt, "Premium arm op should be Lt");
+                    assert_value_ref(left, "size");
+                    // Right should be Literal(10mm); 10mm = 0.01 m in SI.
+                    assert!(
+                        matches!(
+                            &right.kind,
+                            CompiledExprKind::Literal(Value::Scalar { si_value, .. })
+                            if (si_value - 0.01_f64).abs() < 1e-9
+                        ),
+                        "Premium arm right should be Literal(10mm = 0.01 SI), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp in Premium arm body, got {:?}", other),
+            }
+        }
+        other => panic!("expected Match constraint expr, got {:?}", other),
+    }
 }

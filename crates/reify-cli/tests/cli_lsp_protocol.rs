@@ -56,85 +56,6 @@ fn wait_for_exit(child: &mut Child, timeout_secs: u64) -> ExitStatus {
     }
 }
 
-#[test]
-fn lsp_initialize_returns_capabilities() {
-    let _lock = acquire_lsp_test_lock();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args(["lsp"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn reify lsp");
-
-    let mut stdin = child.stdin.take().expect("stdin");
-    let stdout = child.stdout.take().expect("stdout");
-
-    // Use spawn_reader + wait_for_response to handle notifications and timeouts
-    let rx = spawn_reader(stdout);
-
-    // Send initialize request
-    let init_request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "processId": null,
-            "capabilities": {},
-            "rootUri": null
-        }
-    });
-    send_jsonrpc(&mut stdin, &init_request.to_string());
-
-    // Read initialize response (filters by id, skips notifications, has timeout)
-    let response = wait_for_response(&rx, 1);
-
-    // Verify capabilities include textDocumentSync
-    let capabilities = &response["result"]["capabilities"];
-    assert!(
-        !capabilities["textDocumentSync"].is_null(),
-        "initialize response should include textDocumentSync capability, got: {}",
-        serde_json::to_string_pretty(&response).unwrap()
-    );
-
-    // Send initialized notification
-    let initialized = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "initialized",
-        "params": {}
-    });
-    send_jsonrpc(&mut stdin, &initialized.to_string());
-
-    // Send shutdown request
-    let shutdown = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "shutdown",
-        "params": null
-    });
-    send_jsonrpc(&mut stdin, &shutdown.to_string());
-
-    // Read shutdown response (filters by id=2, skips notifications, has timeout)
-    let _shutdown_response = wait_for_response(&rx, 2);
-
-    // Send exit notification
-    let exit = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "exit",
-        "params": null
-    });
-    send_jsonrpc(&mut stdin, &exit.to_string());
-
-    // Drop stdin to signal EOF, then wait for exit with timeout
-    drop(stdin);
-
-    let status = wait_for_exit(&mut child, 10);
-    assert!(
-        status.success(),
-        "reify lsp should exit cleanly after shutdown+exit"
-    );
-}
-
 /// Read all JSON-RPC messages from stdout in a background thread.
 /// Returns a receiver that collects all messages.
 /// This prevents the server from blocking on stdout when it sends notifications.
@@ -240,8 +161,14 @@ fn acquire_lsp_test_lock_recovers_from_poisoned_mutex() {
 }
 
 /// Wait until we receive a response with the given id from the message stream.
+///
+/// Uses a 30-second timeout to accommodate CPU saturation when many test
+/// binaries run in parallel (e.g., during `cargo test --workspace`).  Under
+/// heavy load the spawned tokio runtime may not be scheduled for several
+/// seconds before it can process the `initialize` request; 30 s gives ample
+/// headroom without making genuinely failing tests unreasonably slow.
 fn wait_for_response(rx: &mpsc::Receiver<serde_json::Value>, id: u64) -> serde_json::Value {
-    let timeout = std::time::Duration::from_secs(10);
+    let timeout = std::time::Duration::from_secs(30);
     loop {
         match rx.recv_timeout(timeout) {
             Ok(msg) => {
@@ -250,7 +177,15 @@ fn wait_for_response(rx: &mpsc::Receiver<serde_json::Value>, id: u64) -> serde_j
                 }
                 // Otherwise it's a notification (e.g. publishDiagnostics), skip it
             }
-            Err(_) => panic!("timed out waiting for response with id={id}"),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("timed out after 30s waiting for response with id={id}")
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!(
+                    "reader thread disconnected (LSP process may have crashed) \
+                     while waiting for response with id={id}"
+                )
+            }
         }
     }
 }
@@ -288,6 +223,16 @@ fn lsp_full_interactive_loop_through_binary() {
     assert!(
         init_response.get("result").is_some(),
         "initialize should return a result"
+    );
+    // Verify textDocumentSync capability is present (canonical assertion migrated
+    // from lsp_initialize_returns_capabilities, which was removed because it ran as
+    // a second subprocess test and was intermittently flaky under CPU load; all
+    // protocol coverage now lives in this single reliable test).
+    let capabilities = &init_response["result"]["capabilities"];
+    assert!(
+        !capabilities["textDocumentSync"].is_null(),
+        "initialize response should include textDocumentSync capability, got: {}",
+        serde_json::to_string_pretty(&init_response).unwrap()
     );
 
     // Send initialized notification

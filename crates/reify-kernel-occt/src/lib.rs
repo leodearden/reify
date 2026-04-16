@@ -227,12 +227,15 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Chamfer { target, distance } => {
-                // Chamfer not yet implemented via OCCT wrapper
-                let _ = self.get_shape(*target)?;
-                let _ = extract_f64(distance)?;
-                return Err(GeometryError::OperationFailed(
-                    "Chamfer not yet implemented".into(),
-                ));
+                let shape = self.get_shape(*target)?;
+                let d = extract_f64(distance)?;
+                if !(d.is_finite() && d > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "chamfer distance must be a finite positive value".into(),
+                    ));
+                }
+                ffi::ffi::chamfer_all_edges(shape, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
             GeometryOp::Translate { target, dx, dy, dz } => {
                 let shape = self.get_shape(*target)?;
@@ -1730,6 +1733,92 @@ mod tests {
             Err(GeometryError::OperationFailed(_)) => {}
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
             Ok(_) => panic!("expected error for infinity-radius fillet"),
+        }
+    }
+
+    // --- Chamfer distance validation tests ---
+
+    #[test]
+    fn execute_chamfer_zero_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(0.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for zero-distance chamfer"),
+        }
+    }
+
+    #[test]
+    fn execute_chamfer_negative_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(-1.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for negative-distance chamfer"),
+        }
+    }
+
+    #[test]
+    fn execute_chamfer_nan_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(f64::NAN),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for NaN-distance chamfer"),
+        }
+    }
+
+    #[test]
+    fn execute_chamfer_infinity_distance_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        let result = kernel.execute(&GeometryOp::Chamfer {
+            target: box_h.id,
+            distance: Value::Real(f64::INFINITY),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for infinity-distance chamfer"),
         }
     }
 

@@ -92,7 +92,7 @@ impl TraitDefBuilder {
             let default_hashes = self.defaults.iter().map(|d| {
                 let kind_tag = match &d.kind {
                     DefaultKind::Param { .. } => "Param",
-                    DefaultKind::Let(_) => "Let",
+                    DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
@@ -219,7 +219,7 @@ impl CompiledTraitBuilder {
             let default_hashes = self.defaults.iter().map(|d| {
                 let kind_tag = match &d.kind {
                     DefaultKind::Param { .. } => "Param",
-                    DefaultKind::Let(_) => "Let",
+                    DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
