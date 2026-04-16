@@ -38801,7 +38801,7 @@
         "description": "Two improvements from task 1780 review:\n\n1. geometry_error_handling.rs:1874 — Extract shared helper `build_module_with_ops(path, ops: Option<Vec<CompiledGeometryOp>>)` to DRY up `build_zero_ops_result` and `module_with_box_realization` (which share the mm_literal closure and module-building pattern, differing only in whether template has realizations).\n\n2. geometry_error_handling.rs:1962 — Add regression test covering the compile-failure path (compile_geometry_op returns None for every op). Current `build_all_ops_fail_diagnostic_emitted_after_refactor` only tests kernel-execute failure via FailingMockGeometryKernel; the compile-None path at lines 2880-2886 (had_failure=true + truncated handles) is untested.\n\nFiles: crates/reify-eval/tests/geometry_error_handling.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -38812,12 +38812,13 @@
           "modules": [
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-16T06:34:22.559Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T06:34:22.153Z",
+      "lastModified": "2026-04-16T06:34:22.559Z",
       "taskCount": 1855,
       "completedCount": 1591,
       "tags": [
