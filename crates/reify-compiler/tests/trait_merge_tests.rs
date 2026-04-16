@@ -28,6 +28,12 @@ structure def S : HasArea + AlsoHasArea {
 }
 "#;
 
+    // ASSUMPTION: Identical source text ("width * height") produces identical
+    // ContentHash values. The dedup in seen_let_hashes relies on this property —
+    // same expression text → same hash → treated as duplicate → only 1 cell injected.
+    // If the hashing strategy changes (e.g., hashes become source-position-sensitive),
+    // this test will catch the regression: it will either produce 2 cells (no dedup)
+    // or an unexpected conflict diagnostic (hash mismatch despite same semantics).
     let (template, diagnostics) = compile_first_template(source);
 
     // No error-severity diagnostics expected.
