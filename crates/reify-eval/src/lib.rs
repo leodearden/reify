@@ -50,6 +50,13 @@ pub enum EngineError {
         expected: reify_types::DimensionVector,
         got: reify_types::DimensionVector,
     },
+    /// The supplied value's type variant does not match the cell's declared type kind.
+    /// (e.g., passing Value::Bool to a Type::Scalar cell.)
+    TypeKindMismatch {
+        cell: reify_types::ValueCellId,
+        expected: reify_types::Type,
+        got: reify_types::Value,
+    },
 }
 
 impl std::fmt::Display for EngineError {
@@ -74,11 +81,55 @@ impl std::fmt::Display for EngineError {
                     expected, got
                 )
             }
+            EngineError::TypeKindMismatch { cell, expected, got } => {
+                write!(
+                    f,
+                    "type-kind mismatch for {cell}: expected {expected}, got {got:?}"
+                )
+            }
         }
     }
 }
 
 impl std::error::Error for EngineError {}
+
+/// Returns `true` when the outer variant of `value` is compatible with `ty`.
+///
+/// This is a shallow kind-level check — it does NOT validate dimension, inner
+/// element types, or structural fields.  `Value::Undef` is accepted for any
+/// type because it is the universal "no value / Auto" sentinel.
+fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -> bool {
+    use reify_types::{Type, Value};
+    match value {
+        // Undef is the Auto/no-value sentinel — always accepted.
+        Value::Undef => true,
+        // Exact outer-variant correspondences.
+        Value::Bool(_) => matches!(ty, Type::Bool),
+        Value::Int(_) => matches!(ty, Type::Int),
+        Value::Real(_) => matches!(ty, Type::Real),
+        Value::String(_) => matches!(ty, Type::String),
+        Value::Scalar { .. } => matches!(ty, Type::Scalar { .. }),
+        Value::Enum { .. } => matches!(ty, Type::Enum(_)),
+        Value::List(_) => matches!(ty, Type::List(_)),
+        Value::Set(_) => matches!(ty, Type::Set(_)),
+        Value::Map(_) => matches!(ty, Type::Map(_, _)),
+        Value::Option(_) => matches!(ty, Type::Option(_)),
+        Value::Field { .. } => matches!(ty, Type::Field { .. }),
+        Value::Lambda { .. } => matches!(ty, Type::Function { .. }),
+        Value::Tensor(_) => matches!(ty, Type::Tensor { .. } | Type::Matrix { .. }),
+        Value::Matrix(_) => matches!(ty, Type::Tensor { .. } | Type::Matrix { .. }),
+        Value::Point(_) => matches!(ty, Type::Point { .. }),
+        Value::Vector(_) => matches!(ty, Type::Vector { .. }),
+        Value::Complex { .. } => matches!(ty, Type::Complex(_)),
+        Value::Orientation { .. } => matches!(ty, Type::Orientation(_)),
+        Value::Frame { .. } => matches!(ty, Type::Frame(_)),
+        Value::Transform { .. } => matches!(ty, Type::Transform(_)),
+        Value::Plane { .. } => matches!(ty, Type::Plane),
+        Value::Axis { .. } => matches!(ty, Type::Axis),
+        Value::BoundingBox { .. } => matches!(ty, Type::BoundingBox),
+        Value::Range { .. } => matches!(ty, Type::Range(_)),
+    }
+}
 
 /// Consolidated evaluation state produced by eval().
 ///
@@ -1409,6 +1460,18 @@ impl Engine {
             Some(node) => node,
             None => return Err(EngineError::CellNotFound { cell }),
         };
+
+        // Validate type-kind compatibility: reject cross-variant mismatches before
+        // the narrower dimension check below.  Value::Undef is always accepted
+        // (it is the Auto/no-value sentinel used extensively by the solver and
+        // compiler for unresolved params).
+        if !value_type_kind_matches(&new_value, &cell_node.cell_type) {
+            return Err(EngineError::TypeKindMismatch {
+                cell,
+                expected: cell_node.cell_type.clone(),
+                got: new_value,
+            });
+        }
 
         // Validate dimension compatibility for Scalar cells.
         // If the cell is Type::Scalar { dimension: expected } and the supplied
