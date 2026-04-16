@@ -153,6 +153,66 @@ structure def S : A + B {
     }
 }
 
+// ── step-16 ──────────────────────────────────────────────────────────────────
+
+/// Full pipeline eval test: multi-trait constraints with partial violation.
+///
+/// trait A { param x : Length, constraint x > 0mm }
+/// trait B { param x : Length, constraint x < 100mm }
+/// structure S : A + B { param x : Length = 150mm }
+///
+/// 150mm satisfies x > 0mm (Satisfied) but violates x < 100mm (Violated).
+/// Expect ≥2 constraint results, at least one Satisfied and at least one Violated.
+#[test]
+fn multi_trait_constraints_partial_violation() {
+    let source = r#"
+trait A {
+    param x : Length
+    constraint x > 0mm
+}
+
+trait B {
+    param x : Length
+    constraint x < 100mm
+}
+
+structure def S : A + B {
+    param x : Length = 150mm
+}
+"#;
+    let compiled = parse_and_compile(source);
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.check(&compiled);
+
+    assert!(
+        result.constraint_results.len() >= 2,
+        "expected at least 2 constraint results (one from each trait), got {}",
+        result.constraint_results.len()
+    );
+
+    let any_satisfied = result
+        .constraint_results
+        .iter()
+        .any(|e| e.satisfaction == Satisfaction::Satisfied);
+    assert!(
+        any_satisfied,
+        "expected at least one Satisfied constraint (150mm > 0mm), got: {:?}",
+        result.constraint_results.iter().map(|e| (&e.id, &e.satisfaction)).collect::<Vec<_>>()
+    );
+
+    let any_violated = result
+        .constraint_results
+        .iter()
+        .any(|e| e.satisfaction == Satisfaction::Violated);
+    assert!(
+        any_violated,
+        "expected at least one Violated constraint (150mm is not < 100mm), got: {:?}",
+        result.constraint_results.iter().map(|e| (&e.id, &e.satisfaction)).collect::<Vec<_>>()
+    );
+}
+
 // ── step-15 ──────────────────────────────────────────────────────────────────
 
 /// Full pipeline eval test: let binding from trait is evaluated.
