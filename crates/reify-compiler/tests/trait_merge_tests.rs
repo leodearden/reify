@@ -1326,7 +1326,7 @@ structure def S : TraitA + TraitB {
 "#;
 
     let (subscriber, counters) = CountingSubscriberBuilder::new()
-        .target_prefix("reify_compiler")
+        .target_prefix("reify_compiler::conformance")
         .count_level(tracing::Level::DEBUG)
         .build();
 
