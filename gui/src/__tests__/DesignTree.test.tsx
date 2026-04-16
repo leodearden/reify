@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@solidjs/testing-library';
+import { render, screen, fireEvent, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
 import { DesignTree } from '../panels/DesignTree';
 import { createViewStateStore } from '../stores/viewStateStore';
@@ -39,8 +39,9 @@ describe('DesignTree — baseline rendering', () => {
     ];
     const store = makeStore(nodes);
     render(() => <DesignTree tree={nodes} viewStateStore={store} />);
-    expect(screen.getByText('A')).toBeTruthy();
-    expect(screen.getByText('B')).toBeTruthy();
+    // Scope to the specific row so a regression to full entity_path doesn't silently pass.
+    expect(within(screen.getByTestId('tree-row-Root.A')).getByText('A')).toBeTruthy();
+    expect(within(screen.getByTestId('tree-row-Root.B')).getByText('B')).toBeTruthy();
   });
 
   it('rows show the last path segment as name', () => {
@@ -157,10 +158,7 @@ describe('DesignTree — context menu', () => {
     const store = makeStore(nodes);
     render(() => <DesignTree tree={nodes} viewStateStore={store} />);
     fireEvent.contextMenu(screen.getByTestId('tree-row-Root.A'));
-    const menu = screen.getByTestId('design-tree-context-menu');
-    const buttons = menu.querySelectorAll('button');
-    // hide-cascade is button index 2
-    fireEvent.click(buttons[2]);
+    fireEvent.click(screen.getByTestId('ctx-hide-cascade'));
     expect(store.state.explicit['Root.A']).toBe('hidden');
   });
 
@@ -170,10 +168,7 @@ describe('DesignTree — context menu', () => {
     store.setVisibility('Root.A', 'hidden', false);
     render(() => <DesignTree tree={nodes} viewStateStore={store} />);
     fireEvent.contextMenu(screen.getByTestId('tree-row-Root.A'));
-    const menu = screen.getByTestId('design-tree-context-menu');
-    const buttons = menu.querySelectorAll('button');
-    // reset is button index 4
-    fireEvent.click(buttons[4]);
+    fireEvent.click(screen.getByTestId('ctx-reset'));
     expect(store.state.explicit['Root.A']).toBeNull();
   });
 
@@ -185,9 +180,7 @@ describe('DesignTree — context menu', () => {
     const store = makeStore(nodes);
     render(() => <DesignTree tree={nodes} viewStateStore={store} />);
     fireEvent.contextMenu(screen.getByTestId('tree-row-A'));
-    const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
-    // show-only is button index 3
-    fireEvent.click(buttons[3]);
+    fireEvent.click(screen.getByTestId('ctx-show-only'));
     expect(store.state.explicit['A']).toBe('show');
     expect(store.state.explicit['B']).toBe('hidden');
   });
@@ -248,6 +241,33 @@ describe('DesignTree — keyboard shortcuts', () => {
     render(() => <DesignTree tree={nodes} viewStateStore={store} />);
     const treeRoot = screen.getByTestId('design-tree');
     fireEvent.keyDown(treeRoot, { key: 'h' });
+    expect(store.state.explicit['Root.A']).toBeUndefined();
+  });
+
+  it('uppercase H (caps-lock) also sets hidden', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} selectedEntity="Root.A" />);
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 'H' });
+    expect(store.state.explicit['Root.A']).toBe('hidden');
+  });
+
+  it('Ctrl+H is a no-op (does not override browser shortcut)', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} selectedEntity="Root.A" />);
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 'h', ctrlKey: true });
+    expect(store.state.explicit['Root.A']).toBeUndefined();
+  });
+
+  it('Meta+H is a no-op', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} selectedEntity="Root.A" />);
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 'h', metaKey: true });
     expect(store.state.explicit['Root.A']).toBeUndefined();
   });
 });

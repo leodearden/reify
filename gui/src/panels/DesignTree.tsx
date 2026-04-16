@@ -68,56 +68,61 @@ const DesignTree: Component<Props> = (props) => {
   function handleKeyDown(e: KeyboardEvent) {
     const selected = props.selectedEntity;
     if (!selected) return;
+    // Don't steal browser/OS shortcuts (Ctrl+S = save, etc.)
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const vs = props.viewStateStore;
-    switch (e.key) {
+    switch (e.key.toLowerCase()) {
       case 'h': e.preventDefault(); vs.setVisibility(selected, 'hidden', true); break;
       case 'g': e.preventDefault(); vs.setVisibility(selected, 'ghost', true); break;
       case 's':
-      case 'Enter': e.preventDefault(); vs.setVisibility(selected, 'show', true); break;
+      case 'enter': e.preventDefault(); vs.setVisibility(selected, 'show', true); break;
     }
   }
 
   onCleanup(() => setMenu(null));
 
-  const renderNode = (node: EntityTreeNode, depth = 0) => (
-    <div class={styles.nodeWrapper} style={{ 'padding-left': `${depth * 16}px` }}>
-      <div
-        class={styles.row}
-        data-testid={`tree-row-${node.entity_path}`}
-        onContextMenu={(e) => openMenu(node.entity_path, e)}
-        onClick={() => props.onSelect?.(node.entity_path)}
-      >
-        <Show when={node.children.length > 0} fallback={<span class={styles.chevronPlaceholder} />}>
-          <button
-            class={styles.chevron}
-            data-testid={`chevron-${node.entity_path}`}
-            onClick={(e) => { e.stopPropagation(); toggleExpand(node.entity_path); }}
-            aria-expanded={expanded().has(node.entity_path)}
-          >
-            {expanded().has(node.entity_path) ? '▾' : '▸'}
-          </button>
-        </Show>
-        <span class={styles.name}>{nodeName(node.entity_path)}</span>
-        <Show when={node.type_name}>
-          <span class={styles.typeName}>{node.type_name}</span>
-        </Show>
-        <button
-          class={styles.eyeIcon}
-          data-testid={`eye-icon-${node.entity_path}`}
-          aria-label={props.viewStateStore.getEffectiveVisibility(node.entity_path)}
-          onClick={(e) => { e.stopPropagation(); props.viewStateStore.cycleCascading(node.entity_path); }}
+  const renderNode = (node: EntityTreeNode, depth = 0) => {
+    // Compute once per row to avoid redundant parent-chain walks.
+    const eff = props.viewStateStore.getEffectiveVisibility(node.entity_path);
+    return (
+      <div class={styles.nodeWrapper} style={{ 'padding-left': `${depth * 16}px` }}>
+        <div
+          class={styles.row}
+          data-testid={`tree-row-${node.entity_path}`}
+          onContextMenu={(e) => openMenu(node.entity_path, e)}
+          onClick={() => props.onSelect?.(node.entity_path)}
         >
-          {props.viewStateStore.getEffectiveVisibility(node.entity_path) === 'show' ? '👁' :
-           props.viewStateStore.getEffectiveVisibility(node.entity_path) === 'ghost' ? '◑' : '○'}
-        </button>
+          <Show when={node.children.length > 0} fallback={<span class={styles.chevronPlaceholder} />}>
+            <button
+              class={styles.chevron}
+              data-testid={`chevron-${node.entity_path}`}
+              onClick={(e) => { e.stopPropagation(); toggleExpand(node.entity_path); }}
+              aria-expanded={expanded().has(node.entity_path)}
+            >
+              {expanded().has(node.entity_path) ? '▾' : '▸'}
+            </button>
+          </Show>
+          <span class={styles.name}>{nodeName(node.entity_path)}</span>
+          <Show when={node.type_name}>
+            <span class={styles.typeName}>{node.type_name}</span>
+          </Show>
+          <button
+            class={styles.eyeIcon}
+            data-testid={`eye-icon-${node.entity_path}`}
+            aria-label={eff}
+            onClick={(e) => { e.stopPropagation(); props.viewStateStore.cycleCascading(node.entity_path); }}
+          >
+            {eff === 'show' ? '👁' : eff === 'ghost' ? '◑' : '○'}
+          </button>
+        </div>
+        <Show when={expanded().has(node.entity_path)}>
+          <For each={node.children}>
+            {(child) => renderNode(child, depth + 1)}
+          </For>
+        </Show>
       </div>
-      <Show when={expanded().has(node.entity_path)}>
-        <For each={node.children}>
-          {(child) => renderNode(child, depth + 1)}
-        </For>
-      </Show>
-    </div>
-  );
+    );
+  };
 
   return (
     <div
