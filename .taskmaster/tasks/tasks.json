@@ -37446,11 +37446,11 @@
         "description": "In gui/src-tauri/src/engine.rs, cache the parsed syntax tree (reify_syntax::parse result) and the line-offset table alongside the loaded source in EngineSession. Invalidate both caches in commit_state alongside def_preview_cache. This eliminates the O(M) source re-scan and full re-parse on every call to get_containing_definition (line 637). At minimum, add a caller-debounce note to the doc comment.\n\n### memory_hints\n- search: \"EngineSession commit_state def_preview_cache\"\n- search: \"get_containing_definition line_col_to_byte_offset build_line_offsets\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T21:14:59.621Z",
+        "updatedAt": "2026-04-16T23:00:42.976Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/engine.rs",
@@ -39542,9 +39542,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T23:00:36.767Z",
+      "lastModified": "2026-04-16T23:00:42.976Z",
       "taskCount": 1887,
-      "completedCount": 1616,
+      "completedCount": 1617,
       "tags": [
         "master"
       ]
