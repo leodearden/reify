@@ -36723,11 +36723,11 @@
         "description": "Update examples/m5_geometry_flange.ri so that BoltFlange implements the Rigid trait, declares a material param, and assigns the CSG result to `param geometry : Solid`. This makes the example correctly distinguish construction intermediates from the designated result geometry, and serves as the reference pattern for the Design Tree panel's default visibility rules.",
         "details": "## Scope\n\nUpdate the BoltFlange example from:\n```\nstructure def BoltFlange {\n    let body = cylinder(outer_radius, height)\n    let hole = translate(...)\n    let holes = circular_pattern(...)\n    let flange = difference(body, holes)\n}\n```\n\nTo:\n```\nstructure def BoltFlange : Rigid {\n    param outer_radius : Length = 60mm\n    param height : Length = 12mm\n    param hole_count : Int = 8\n    param bolt_circle_radius : Length = 45mm\n    param hole_radius : Length = 4mm\n    param material : Material  // from Physical trait\n\n    constraint outer_radius > bolt_circle_radius\n    constraint hole_count > 0\n\n    let body = cylinder(outer_radius, height)\n    let hole = translate(cylinder(hole_radius, height), bolt_circle_radius, 0mm, 0mm)\n    let holes = circular_pattern(hole, point3(0mm, 0mm, 0mm), vec3(0, 0, 1), hole_count, 360deg)\n    param geometry : Solid = difference(body, holes)\n}\n```\n\nKey changes:\n1. `: Rigid` trait implementation\n2. `param material : Material` (required by Physical)\n3. `param geometry : Solid = difference(body, holes)` (designated result)\n4. Fix param types from `Scalar` to `Length` (dimensionally correct)\n5. Fix `circular_pattern` args to use proper types (Point3, Vec3, Angle)\n\nAlso verify that the example compiles and renders correctly in the GUI.\n\n### memory_hints\n- search: \"Physical trait geometry Solid\"\n- search: \"Rigid Physical trait\"\n- search: \"circular_pattern signature\"\n- search: \"m5_geometry example\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-16T06:34:19.885Z",
+        "updatedAt": "2026-04-16T20:26:59.793Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -38829,7 +38829,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T20:26:59.706Z",
+      "lastModified": "2026-04-16T20:26:59.793Z",
       "taskCount": 1855,
       "completedCount": 1591,
       "tags": [
