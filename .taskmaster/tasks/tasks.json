@@ -38518,7 +38518,15 @@
             "crates/reify-compiler/src/geometry_curve.rs",
             "crates/reify-compiler/src/geometry_modify.rs",
             "crates/reify-compiler/src/geometry_transform.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "arg-count validation helper geometry modules reify shared helper",
+              "argument count validation geometry helper extraction"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         }
       },
       {
