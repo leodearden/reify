@@ -874,4 +874,52 @@ mod tests {
         let diags = vec![Diagnostic::info("informational note")];
         super::assert_no_diagnostics(&diags, "guard compile");
     }
+
+    // ── run_modify_pipeline smoke ─────────────────────────────────────────
+
+    /// Smoke test for `run_modify_pipeline`: verifies the helper produces 2 ops
+    /// and that ops[1].op matches the expected GeometryOp variant for both
+    /// Chamfer and Fillet kinds.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_run_modify_pipeline_smoke() {
+        use reify_compiler::ModifyKind;
+        use reify_types::{GeometryOp, Type};
+        let mm_literal =
+            |v: f64| reify_types::CompiledExpr::literal(crate::values::mm(v), Type::length());
+
+        // Chamfer: expect 2 ops, ops[1] is GeometryOp::Chamfer
+        let (_result, ops) = super::run_modify_pipeline(
+            ModifyKind::Chamfer,
+            vec![("distance".into(), mm_literal(3.0))],
+        );
+        assert_eq!(
+            ops.len(),
+            2,
+            "expected 2 ops for Chamfer pipeline, got {}",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[1].op, GeometryOp::Chamfer { .. }),
+            "expected ops[1].op to be GeometryOp::Chamfer, got {:?}",
+            ops[1].op
+        );
+
+        // Fillet: expect 2 ops, ops[1] is GeometryOp::Fillet
+        let (_result, ops) = super::run_modify_pipeline(
+            ModifyKind::Fillet,
+            vec![("radius".into(), mm_literal(3.0))],
+        );
+        assert_eq!(
+            ops.len(),
+            2,
+            "expected 2 ops for Fillet pipeline, got {}",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[1].op, GeometryOp::Fillet { .. }),
+            "expected ops[1].op to be GeometryOp::Fillet, got {:?}",
+            ops[1].op
+        );
+    }
 }
