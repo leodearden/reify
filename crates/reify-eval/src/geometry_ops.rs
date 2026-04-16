@@ -2617,14 +2617,15 @@ mod tests {
             "Shell should return Some even when face_0 is non-numeric, got {:?}",
             result
         );
-        // The bad face should produce a diagnostic
+        // The bad face should produce a diagnostic mentioning 'non-numeric' only (not 'non-finite')
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("face_0")
-                    && (d.message.contains("non-numeric") || d.message.contains("non-finite"))
+                    && d.message.contains("non-numeric")
+                    && !d.message.contains("non-finite")
             }),
-            "expected a Warning mentioning 'face_0' and 'non-numeric'/'non-finite', got: {:?}",
+            "expected a Warning mentioning 'face_0' and 'non-numeric' (not 'non-finite'), got: {:?}",
             diagnostics
         );
         // The resulting faces_to_remove should be empty (bad face skipped)
@@ -2680,9 +2681,10 @@ mod tests {
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("face_1")
-                    && (d.message.contains("non-numeric") || d.message.contains("non-finite"))
+                    && d.message.contains("non-numeric")
+                    && !d.message.contains("non-finite")
             }),
-            "expected a Warning mentioning 'face_1', got: {:?}",
+            "expected a Warning mentioning 'face_1' and 'non-numeric' (not 'non-finite'), got: {:?}",
             diagnostics
         );
     }
@@ -2721,9 +2723,10 @@ mod tests {
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("face_0")
-                    && (d.message.contains("negative") || d.message.contains("non-finite"))
+                    && d.message.contains("negative")
+                    && !d.message.contains("non-finite")
             }),
-            "expected a Warning mentioning 'face_0' and 'negative'/'non-finite', got: {:?}",
+            "expected a Warning mentioning 'face_0' and 'negative' (not 'non-finite'), got: {:?}",
             diagnostics
         );
         match result.unwrap() {
@@ -2768,9 +2771,10 @@ mod tests {
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("face_0")
-                    && (d.message.contains("negative") || d.message.contains("non-finite"))
+                    && d.message.contains("non-finite")
+                    && !d.message.contains("negative")
             }),
-            "expected a Warning for NaN face_0, got: {:?}",
+            "expected a Warning mentioning 'non-finite' (not 'negative') for NaN face_0, got: {:?}",
             diagnostics
         );
         match result.unwrap() {
@@ -2815,9 +2819,10 @@ mod tests {
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("face_0")
-                    && (d.message.contains("negative") || d.message.contains("non-finite"))
+                    && d.message.contains("non-finite")
+                    && !d.message.contains("negative")
             }),
-            "expected a Warning for INFINITY face_0, got: {:?}",
+            "expected a Warning mentioning 'non-finite' (not 'negative') for INFINITY face_0, got: {:?}",
             diagnostics
         );
     }
