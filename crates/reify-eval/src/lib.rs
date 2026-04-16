@@ -84,7 +84,7 @@ impl std::fmt::Display for EngineError {
             EngineError::TypeKindMismatch { cell, expected, got } => {
                 write!(
                     f,
-                    "type-kind mismatch for {cell}: expected {expected}, got {got:?}"
+                    "type-kind mismatch for {cell}: expected {expected}, got {got}"
                 )
             }
         }
@@ -133,6 +133,13 @@ fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -
         Value::Axis { .. } => matches!(ty, Type::Axis),
         Value::BoundingBox { .. } => matches!(ty, Type::BoundingBox),
         Value::Range { .. } => matches!(ty, Type::Range(_)),
+        // Note: `Type::Geometry`, `Type::StructureRef`, and `Type::TypeParam` have
+        // no corresponding `Value` variant today, so any non-Undef value supplied
+        // to a cell of those types will return `false` here and trigger
+        // `TypeKindMismatch`.  That is the desired behaviour — only `Value::Undef`
+        // (the Auto sentinel, handled unconditionally above) is accepted.
+        // If a future `Value::GeometryHandle` variant is added, add a matching arm
+        // here so the compiler enforces completeness.
     }
 }
 

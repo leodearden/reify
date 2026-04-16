@@ -857,12 +857,18 @@ fn edit_param_wrong_value_kind() {
     let height_id = ValueCellId::new("Assembly", "height");
     // Value::Bool is the wrong variant for a Type::Scalar cell.
     let err = engine
-        .edit_param(height_id, Value::Bool(true))
+        .edit_param(height_id.clone(), Value::Bool(true))
         .expect_err("edit_param with wrong value kind should return Err");
-    assert!(
-        matches!(err, reify_eval::EngineError::TypeKindMismatch { .. }),
-        "expected EngineError::TypeKindMismatch, got {err:?}"
+    let reify_eval::EngineError::TypeKindMismatch { cell, expected, got } = err else {
+        panic!("expected EngineError::TypeKindMismatch, got {err:?}");
+    };
+    assert_eq!(cell, height_id, "cell should be the height cell id");
+    assert_eq!(
+        *expected,
+        reify_types::Type::Scalar { dimension: reify_types::DimensionVector::LENGTH },
+        "expected should be Type::Scalar[LENGTH] (the cell's declared type)"
     );
+    assert_eq!(*got, Value::Bool(true), "got should be the supplied Value::Bool(true)");
 }
 
 /// edit_check Assembly.height (Type::Scalar[LENGTH]) with Value::Bool(true)
@@ -874,10 +880,53 @@ fn edit_check_wrong_value_kind() {
     let height_id = ValueCellId::new("Assembly", "height");
     // Value::Bool is the wrong variant for a Type::Scalar cell.
     let err = engine
-        .edit_check(height_id, Value::Bool(true))
+        .edit_check(height_id.clone(), Value::Bool(true))
         .expect_err("edit_check with wrong value kind should return Err");
-    assert!(
-        matches!(err, reify_eval::EngineError::TypeKindMismatch { .. }),
-        "expected EngineError::TypeKindMismatch, got {err:?}"
+    let reify_eval::EngineError::TypeKindMismatch { cell, expected, got } = err else {
+        panic!("expected EngineError::TypeKindMismatch, got {err:?}");
+    };
+    assert_eq!(cell, height_id, "cell should be the height cell id");
+    assert_eq!(
+        *expected,
+        reify_types::Type::Scalar { dimension: reify_types::DimensionVector::LENGTH },
+        "expected should be Type::Scalar[LENGTH] (the cell's declared type)"
     );
+    assert_eq!(*got, Value::Bool(true), "got should be the supplied Value::Bool(true)");
+}
+
+// ── Regression tests: Undef acceptance + numeric coercion ────────────────────
+
+/// edit_param Assembly.height (Type::Scalar[LENGTH]) with Value::Undef should return Ok.
+/// Value::Undef is the Auto/no-value sentinel that must be accepted by any typed cell
+/// regardless of the cell's declared type — the kind check must never reject it.
+#[test]
+fn edit_param_undef_is_always_accepted() {
+    let (mut engine, _initial) = make_eval_engine();
+    let height_id = ValueCellId::new("Assembly", "height");
+    // Undef is the solver/compiler sentinel for unresolved Auto params.
+    // edit_param with Undef must NOT return Err(TypeKindMismatch).
+    engine
+        .edit_param(height_id, Value::Undef)
+        .expect("edit_param with Value::Undef should return Ok for any typed cell");
+}
+
+/// Value::Int to a Type::Real cell and Value::Real to a Type::Int cell must both
+/// pass the kind check.  Numeric coercion between Int and Real is intentional:
+/// the engine emits Warning diagnostics for runtime mismatches rather than hard errors.
+/// Both directions are documented in `value_type_kind_matches`; this test regression-locks them.
+#[test]
+fn edit_param_int_real_numeric_coercion_allowed() {
+    let (mut engine, _initial) = make_eval_engine();
+
+    // Int → Real: Assembly.load_auto is declared as `param load_auto : Real = auto`.
+    let load_auto_id = ValueCellId::new("Assembly", "load_auto");
+    engine
+        .edit_param(load_auto_id, Value::Int(5))
+        .expect("edit_param with Value::Int to a Type::Real cell should return Ok (numeric coercion)");
+
+    // Real → Int: RecursiveBeam.depth is declared as `param depth : Int = 2`.
+    let depth_id = ValueCellId::new("RecursiveBeam", "depth");
+    engine
+        .edit_param(depth_id, Value::Real(5.0))
+        .expect("edit_param with Value::Real to a Type::Int cell should return Ok (numeric coercion)");
 }
