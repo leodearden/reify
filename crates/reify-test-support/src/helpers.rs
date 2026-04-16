@@ -989,4 +989,52 @@ mod tests {
             other => panic!("ops[1] should be GeometryOp::Chamfer, got {:?}", other),
         }
     }
+
+    /// run_modify_pipeline with Fillet kind returns 2 ops:
+    ///   ops[0].op is GeometryOp::Box
+    ///   ops[1].op is GeometryOp::Fillet with target=ops[0].result_handle and
+    ///   radius≈0.003 m (3 mm in SI).
+    ///
+    /// Verifies the helper is generic over ModifyKind. Passes immediately
+    /// because the step-2 implementation is kind-agnostic.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_run_modify_pipeline_fillet_returns_two_ops() {
+        use crate::mocks::GeometryOpRecord;
+        use crate::values::mm;
+        use reify_compiler::ModifyKind;
+        use reify_types::{GeometryOp, Type};
+
+        let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+        let args = vec![("radius".to_string(), mm_literal(3.0))];
+        let ops: Vec<GeometryOpRecord> = super::run_modify_pipeline(ModifyKind::Fillet, args);
+
+        assert_eq!(ops.len(), 2, "expected 2 ops, got {}", ops.len());
+
+        // op[0] must be a Box primitive
+        assert!(
+            matches!(ops[0].op, GeometryOp::Box { .. }),
+            "ops[0] should be GeometryOp::Box, got {:?}",
+            ops[0].op
+        );
+
+        // op[1] must be Fillet with the correct target handle and ~0.003 m radius
+        let target_handle = ops[0].result_handle;
+        match &ops[1].op {
+            GeometryOp::Fillet { target, radius } => {
+                assert_eq!(
+                    *target, target_handle,
+                    "Fillet target should be handle from op 0 ({:?}), got {:?}",
+                    target_handle, target
+                );
+                let radius_si = radius.as_f64().expect("radius should be numeric");
+                assert!(
+                    (radius_si - 0.003).abs() < 1e-9,
+                    "Fillet radius should be 0.003 m (3 mm SI), got {}",
+                    radius_si
+                );
+            }
+            other => panic!("ops[1] should be GeometryOp::Fillet, got {:?}", other),
+        }
+    }
 }
