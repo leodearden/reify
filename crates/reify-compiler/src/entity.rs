@@ -1326,43 +1326,14 @@ pub(crate) fn compile_entity(
                     realization_index += 1;
                 }
             }
-            // Recurse into guarded groups to emit realizations for guarded geometry
-            // lets and Solid-typed params (registered in known_geometry_lets by
-            // register_guarded_names after step-8).
+            // Recurse into guarded groups to emit realizations for guarded
+            // Solid-typed params (registered in known_geometry_lets by
+            // register_guarded_names). Guarded geometry lets do NOT emit
+            // realizations here — that is a separate, unimplemented feature.
             reify_syntax::MemberDecl::GuardedGroup(g) => {
                 for gm in g.members.iter().chain(g.else_members.iter()) {
-                    match gm {
-                        reify_syntax::MemberDecl::Let(let_decl)
-                            if is_geometry_let(
-                                &let_decl.value,
-                                functions,
-                                &known_geometry_lets,
-                            ) =>
-                        {
-                            if let Some(ops) = compile_geometry_call(
-                                &let_decl.value,
-                                &scope,
-                                enum_defs,
-                                functions,
-                                diagnostics,
-                                0,
-                                &geometry_lets,
-                                &mut HashSet::new(),
-                            ) {
-                                realizations.push(RealizationDecl {
-                                    id: RealizationNodeId::new(
-                                        entity_name,
-                                        realization_index,
-                                    ),
-                                    operations: ops,
-                                    span: SourceSpan::new(0, 0),
-                                });
-                                realization_index += 1;
-                            }
-                        }
-                        reify_syntax::MemberDecl::Param(param)
-                            if known_geometry_lets.contains(param.name.as_str()) =>
-                        {
+                    if let reify_syntax::MemberDecl::Param(param) = gm {
+                        if known_geometry_lets.contains(param.name.as_str()) {
                             if let Some(default_expr) = &param.default
                                 && let Some(ops) = compile_geometry_call(
                                     default_expr,
@@ -1386,7 +1357,6 @@ pub(crate) fn compile_entity(
                                 realization_index += 1;
                             }
                         }
-                        _ => {}
                     }
                 }
             }
