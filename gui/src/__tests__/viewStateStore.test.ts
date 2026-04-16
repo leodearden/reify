@@ -631,3 +631,76 @@ describe('viewStateStore — skeleton', () => {
     });
   });
 });
+
+describe('viewStateStore — full PRD integration scenario', () => {
+  // Tree: Root { A { a1, a2 }, B { b1, b2 } }
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+              makeNode({ entity_path: 'Root.A.a2', kind: 'param' }),
+            ],
+          }),
+          makeNode({
+            entity_path: 'Root.B',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.B.b1', kind: 'param' }),
+              makeNode({ entity_path: 'Root.B.b2', kind: 'param' }),
+            ],
+          }),
+        ],
+      }),
+    ];
+  }
+
+  it('simulates the full 4-step PRD scenario', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+
+      // Step 1: setVisibility('Root.A', 'ghost', true)
+      // → A, a1, a2 all effective 'ghost'; B, b1, b2 still 'show'
+      store.setVisibility('Root.A', 'ghost', true);
+      expect(store.getEffectiveVisibility('Root.A')).toBe('ghost');
+      expect(store.getEffectiveVisibility('Root.A.a1')).toBe('ghost');
+      expect(store.getEffectiveVisibility('Root.A.a2')).toBe('ghost');
+      expect(store.getEffectiveVisibility('Root.B')).toBe('show');
+      expect(store.getEffectiveVisibility('Root.B.b1')).toBe('show');
+      expect(store.getEffectiveVisibility('Root.B.b2')).toBe('show');
+
+      // Step 2: setVisibilityWithoutCascade('Root.A.a1', 'show')
+      // → a1 effective 'show', a2 still 'ghost'
+      store.setVisibilityWithoutCascade('Root.A.a1', 'show');
+      expect(store.getEffectiveVisibility('Root.A.a1')).toBe('show');
+      expect(store.getEffectiveVisibility('Root.A.a2')).toBe('ghost');
+
+      // Step 3: setVisibility('Root', 'hidden', true)
+      // → cascade clears a1's override; everything hidden including a1
+      store.setVisibility('Root', 'hidden', true);
+      expect(store.getEffectiveVisibility('Root')).toBe('hidden');
+      expect(store.state.explicit['Root.A.a1']).toBeNull();
+      expect(store.getEffectiveVisibility('Root.A.a1')).toBe('hidden');
+      expect(store.getEffectiveVisibility('Root.B.b2')).toBe('hidden');
+
+      // Step 4: resetToInherit('Root')
+      // → root cleared; everything reverts to default rule ('show' for param nodes)
+      store.resetToInherit('Root');
+      expect(store.state.explicit['Root']).toBeNull();
+      expect(store.state.explicit['Root.A']).toBeNull();
+      expect(store.state.explicit['Root.A.a1']).toBeNull();
+      expect(store.getEffectiveVisibility('Root')).toBe('show');
+      expect(store.getEffectiveVisibility('Root.A.a1')).toBe('show');
+      expect(store.getEffectiveVisibility('Root.B.b2')).toBe('show');
+
+      dispose();
+    });
+  });
+});

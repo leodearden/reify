@@ -8,3 +8,6 @@ export { ExportDialog } from './ExportDialog';
 export { ReloadPrompt } from './ReloadPrompt';
 export { ChatPanel } from './ChatPanel';
 export { MenuBar } from './MenuBar';
+export { DesignTree } from './DesignTree';
+export { DesignTreeContextMenu } from './DesignTreeContextMenu';
+export type { MenuAction } from './DesignTreeContextMenu';
