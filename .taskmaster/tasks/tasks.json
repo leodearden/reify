@@ -38363,11 +38363,11 @@
         "description": "Two improvements to connect_compile_tests.rs test structure:\n\n1. **Split `hoisted_lookup_matches_original_behavior`** (lines 1693-1876): This single test packs 4 independent sub-cases (a-d) into one function using nested blocks. If case (a) panics, cases (b)-(d) never run, hiding regressions. Split into 4 separate `#[test]` functions:\n   - `hoisted_lookup_bare_found_auto_match` — case (a): bare port found, direction compatible, auto-match runs\n   - `hoisted_lookup_bare_not_found_undefined` — case (b): bare port not found → undefined-port error\n   - `hoisted_lookup_dotted_no_check` — case (c): dotted port → no undefined check, no auto-match\n   - `hoisted_lookup_mixed_bare_dotted` — case (d): mixed bare+dotted → no auto-match\n\n2. **Add missing edge case test**: Both ports are bare, one exists and one doesn't. Verify that (a) the undefined-port error is emitted AND (b) `auto_match_port_members` returns empty mappings (no unmatched-members warning). Case (b) above partially covers this but doesn't explicitly assert auto-match returns empty.\n\nMemory hints: search \"hoisted_lookup_matches_original_behavior auto_match_port_members connect_compile_tests\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T02:06:00.981Z"
+        "updatedAt": "2026-04-16T02:24:35.242Z"
       },
       {
         "id": "1839",
@@ -38473,9 +38473,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:23:58.692Z",
+      "lastModified": "2026-04-16T02:24:35.248Z",
       "taskCount": 1840,
-      "completedCount": 1572,
+      "completedCount": 1573,
       "tags": [
         "master"
       ]
