@@ -654,11 +654,16 @@ impl EngineSession {
     /// - The position falls outside every declaration's span.
     /// - `line` or `col` are zero.
     ///
-    /// # Parsing
-    /// The source text is re-parsed on every call (single-file, fast).  The
-    /// parse result is used only for span lookups; compile errors do not affect
-    /// the result — declarations are matched on `SourceSpan` from the *syntax*
-    /// tree, not the compiled IR.
+    /// # Caching
+    /// The parsed syntax tree and line-offset table are cached on the session
+    /// (populated in `commit_state`, invalidated on every `load_from_source` or
+    /// `update_source`).  The implementation is therefore O(D) where D is the
+    /// number of top-level declarations — no re-parse and no O(M) source scan.
+    ///
+    /// # Caller note
+    /// Although each call is now cheap, callers dispatching on mouse-move or
+    /// cursor events should debounce (~16–50 ms) to avoid unnecessary Mutex lock
+    /// traffic on the `EngineSession` in `commands.rs`.
     pub fn get_containing_definition(&self, line: u32, col: u32) -> Option<DefInfo> {
         // Documented contract: zero line or column is out-of-range → None.
         // Without this guard, line_col_to_byte_offset returns 0 for zero inputs,
@@ -666,12 +671,16 @@ impl EngineSession {
         if line == 0 || col == 0 {
             return None;
         }
-        let (key, source) = self.resolve_source()?;
-        let module_name = key.trim_end_matches(".ri");
-        let parsed =
-            reify_syntax::parse(source, ModulePath::single(module_name));
+        let (_key, source) = self.resolve_source()?;
 
-        let offset = line_col_to_byte_offset(source, line, col) as u32;
+        // Read the cached parse result and line-offset table.  Both are populated
+        // eagerly in commit_state, so they are Some whenever compiled is Some (i.e.
+        // whenever resolve_source() succeeds).  Guard defensively against None to
+        // avoid panicking if the invariant is somehow broken.
+        let parsed = self.parsed_cache.as_ref()?;
+        let line_offsets = self.line_offsets_cache.as_deref()?;
+
+        let offset = line_col_to_byte_offset_with_offsets(source, line, col, line_offsets) as u32;
 
         // Walk top-level declarations and find the innermost (smallest span) that
         // contains the given byte offset.
@@ -1023,6 +1032,16 @@ impl EngineSession {
     pub(crate) fn line_offsets_cache_for_test(&self) -> Option<&[usize]> {
         self.line_offsets_cache.as_deref()
     }
+
+    /// Replace the cached `ParsedModule` with `parsed`, for testing purposes.
+    ///
+    /// Used by `get_containing_definition_reads_from_parsed_cache` to inject a
+    /// stripped `ParsedModule` (with `declarations: Vec::new()`) and verify that
+    /// `get_containing_definition` reads from the cache rather than re-parsing
+    /// the source text.
+    pub(crate) fn override_parsed_cache_for_test(&mut self, parsed: reify_syntax::ParsedModule) {
+        self.parsed_cache = Some(parsed);
+    }
 }
 
 /// Parse a "Entity.member" string into a ValueCellId.
@@ -1348,21 +1367,29 @@ pub(crate) fn offset_to_line_col_fast(
     (line, col)
 }
 
-/// Convert a 1-based `(line, col)` pair to a byte offset into `source`.
+/// Convert a 1-based `(line, col)` pair to a byte offset using a pre-built
+/// newline table.
 ///
-/// Both `line` and `col` are 1-based and count **Unicode codepoints** (matching
-/// the semantics of [`offset_to_line_col_fast`], the inverse operation).
+/// `line_offsets` must be the result of [`build_line_offsets`] for the same
+/// `source`.  Both `line` and `col` are 1-based and count **Unicode codepoints**.
+///
+/// This is the primitive; [`line_col_to_byte_offset`] is a thin wrapper that
+/// builds the offset table internally.
 ///
 /// - If `line` or `col` is 0, returns 0 as a safe fallback.
 /// - If `line` exceeds the number of lines, returns `source.len()`.
 /// - If `col` exceeds the line length, clamps to the end of the line.
-pub(crate) fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> usize {
+pub(crate) fn line_col_to_byte_offset_with_offsets(
+    source: &str,
+    line: u32,
+    col: u32,
+    line_offsets: &[usize],
+) -> usize {
     if line == 0 || col == 0 {
         return 0;
     }
     let line = line as usize;
     let col = col as usize;
-    let line_offsets = build_line_offsets(source);
 
     // Byte index of the first character on the target line.
     let line_start = if line <= 1 {
@@ -1388,5 +1415,22 @@ pub(crate) fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> usiz
             .nth(col - 1)
             .map(|(i, _)| i)
             .unwrap_or(line_text.len())
+}
+
+/// Convert a 1-based `(line, col)` pair to a byte offset into `source`.
+///
+/// Both `line` and `col` are 1-based and count **Unicode codepoints** (matching
+/// the semantics of [`offset_to_line_col_fast`], the inverse operation).
+///
+/// This is a convenience wrapper around [`line_col_to_byte_offset_with_offsets`]
+/// that builds the newline table internally.  Prefer the `_with_offsets` variant
+/// when the table is already cached (e.g., inside `get_containing_definition`).
+///
+/// - If `line` or `col` is 0, returns 0 as a safe fallback.
+/// - If `line` exceeds the number of lines, returns `source.len()`.
+/// - If `col` exceeds the line length, clamps to the end of the line.
+pub(crate) fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> usize {
+    let line_offsets = build_line_offsets(source);
+    line_col_to_byte_offset_with_offsets(source, line, col, &line_offsets)
 }
 
