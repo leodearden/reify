@@ -292,8 +292,18 @@ mod tests {
         let loc = compute_goto_definition(source, &test_uri(), position)
             .expect("goto-def for diameter ref in occurrence should return location");
         assert_eq!(loc.uri, test_uri());
-        // Should point to param declaration on line 1
+        // Should point to param declaration on line 1:
+        // "    param diameter: Scalar = 10mm"
         assert_eq!(loc.range.start.line, 1);
+        assert_eq!(
+            loc.range.start.character, 4,
+            "param keyword starts after 4-space indent"
+        );
+        assert_eq!(loc.range.end.line, 1, "declaration should be single-line");
+        assert_eq!(
+            loc.range.end.character, 33,
+            "end should cover full 'param diameter: Scalar = 10mm' (29 chars after indent)"
+        );
     }
 
     #[test]
@@ -304,11 +314,17 @@ mod tests {
         let loc = compute_goto_definition(source, &test_uri(), position)
             .expect("goto-def for let member in occurrence should return location");
         assert_eq!(loc.uri, test_uri());
-        // Should point to let declaration on line 2
+        // Should point to let declaration on line 2:
+        // "    let radius = diameter / 2"
         assert_eq!(loc.range.start.line, 2);
         assert_eq!(
             loc.range.start.character, 4,
             "let keyword starts after 4-space indent"
+        );
+        assert_eq!(loc.range.end.line, 2, "declaration should be single-line");
+        assert_eq!(
+            loc.range.end.character, 29,
+            "end should cover full 'let radius = diameter / 2' (25 chars after indent)"
         );
     }
 
