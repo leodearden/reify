@@ -428,8 +428,13 @@ pub(crate) fn check_trait_conformance(
                         member: name.to_string(),
                     };
 
-                    let compiled_expr =
-                        compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
+                    // Reuse the compiled_expr cached by the pre-register/inference
+                    // pass (task 1834 step-9) to avoid a second compilation of the
+                    // same expression.  Unannotated lets populate the cache there;
+                    // annotated lets are not cached and fall through to fresh compile.
+                    let compiled_expr = inferred_let_exprs.remove(name).unwrap_or_else(|| {
+                        compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics)
+                    });
 
                     // Cross-check the expression type against the let's annotation.
                     // The annotation captures user intent; any drift here is an error,
