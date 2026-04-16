@@ -250,6 +250,9 @@ pub(crate) fn compile_geometry_op(
                             expr,
                             &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
                         );
+                        // Arm ordering matters: -Infinity satisfies both !is_finite() AND < 0.0;
+                        // the non-finite arm must come first so -Infinity is classified as
+                        // non-finite rather than negative.
                         match val.as_f64() {
                             None => {
                                 diagnostics.push(Diagnostic::warning(format!(
@@ -2617,15 +2620,16 @@ mod tests {
             "Shell should return Some even when face_0 is non-numeric, got {:?}",
             result
         );
-        // The bad face should produce a diagnostic mentioning 'non-numeric' only (not 'non-finite')
+        // The bad face should produce a diagnostic mentioning 'non-numeric'
+        // (precision assertion — that it does NOT say 'non-finite' — lives in the dedicated
+        // compile_geometry_op_shell_string_face_diagnostic_excludes_non_finite test)
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("face_0")
                     && d.message.contains("non-numeric")
-                    && !d.message.contains("non-finite")
             }),
-            "expected a Warning mentioning 'face_0' and 'non-numeric' (not 'non-finite'), got: {:?}",
+            "expected a Warning mentioning 'face_0' and 'non-numeric', got: {:?}",
             diagnostics
         );
         // The resulting faces_to_remove should be empty (bad face skipped)
@@ -3000,10 +3004,17 @@ mod tests {
         );
 
         assert!(result.is_some(), "Shell should return Some even when face_0 is String, got {:?}", result);
-        let diag = diagnostics
+        let face_0_warnings: Vec<_> = diagnostics
             .iter()
-            .find(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
-            .expect("expected a Warning mentioning 'face_0'");
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
+            .collect();
+        assert_eq!(
+            face_0_warnings.len(),
+            1,
+            "expected exactly one Warning mentioning 'face_0', got: {:?}",
+            face_0_warnings
+        );
+        let diag = face_0_warnings[0];
         assert!(
             diag.message.contains("non-numeric"),
             "diagnostic should mention 'non-numeric', got: {:?}",
@@ -3042,10 +3053,17 @@ mod tests {
         );
 
         assert!(result.is_some(), "Shell with NaN face_0 should return Some, got {:?}", result);
-        let diag = diagnostics
+        let face_0_warnings: Vec<_> = diagnostics
             .iter()
-            .find(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
-            .expect("expected a Warning mentioning 'face_0'");
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
+            .collect();
+        assert_eq!(
+            face_0_warnings.len(),
+            1,
+            "expected exactly one Warning mentioning 'face_0', got: {:?}",
+            face_0_warnings
+        );
+        let diag = face_0_warnings[0];
         assert!(
             diag.message.contains("non-finite"),
             "NaN diagnostic should mention 'non-finite', got: {:?}",
@@ -3084,10 +3102,17 @@ mod tests {
         );
 
         assert!(result.is_some(), "Shell with -1.0 face_0 should return Some, got {:?}", result);
-        let diag = diagnostics
+        let face_0_warnings: Vec<_> = diagnostics
             .iter()
-            .find(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
-            .expect("expected a Warning mentioning 'face_0'");
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
+            .collect();
+        assert_eq!(
+            face_0_warnings.len(),
+            1,
+            "expected exactly one Warning mentioning 'face_0', got: {:?}",
+            face_0_warnings
+        );
+        let diag = face_0_warnings[0];
         assert!(
             diag.message.contains("negative"),
             "negative face diagnostic should mention 'negative', got: {:?}",
@@ -3127,10 +3152,17 @@ mod tests {
         );
 
         assert!(result.is_some(), "Shell with -Infinity face_0 should return Some, got {:?}", result);
-        let diag = diagnostics
+        let face_0_warnings: Vec<_> = diagnostics
             .iter()
-            .find(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
-            .expect("expected a Warning mentioning 'face_0'");
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
+            .collect();
+        assert_eq!(
+            face_0_warnings.len(),
+            1,
+            "expected exactly one Warning mentioning 'face_0', got: {:?}",
+            face_0_warnings
+        );
+        let diag = face_0_warnings[0];
         assert!(
             diag.message.contains("non-finite"),
             "-Infinity diagnostic should mention 'non-finite', got: {:?}",
