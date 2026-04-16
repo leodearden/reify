@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import type { Component } from 'solid-js';
 import { DesignTreeContextMenu } from './DesignTreeContextMenu';
 import type { MenuAction } from './DesignTreeContextMenu';
@@ -82,8 +82,9 @@ const DesignTree: Component<Props> = (props) => {
   onCleanup(() => setMenu(null));
 
   const renderNode = (node: EntityTreeNode, depth = 0) => {
-    // Compute once per row to avoid redundant parent-chain walks.
-    const eff = props.viewStateStore.getEffectiveVisibility(node.entity_path);
+    // Memoized accessor — tracks reactive reads inside getEffectiveVisibility
+    // so aria-label and glyph update whenever explicit/inherited state changes.
+    const eff = createMemo(() => props.viewStateStore.getEffectiveVisibility(node.entity_path));
     return (
       <div class={styles.nodeWrapper} style={{ 'padding-left': `${depth * 16}px` }}>
         <div
@@ -109,10 +110,10 @@ const DesignTree: Component<Props> = (props) => {
           <button
             class={styles.eyeIcon}
             data-testid={`eye-icon-${node.entity_path}`}
-            aria-label={eff}
+            aria-label={eff()}
             onClick={(e) => { e.stopPropagation(); props.viewStateStore.cycleCascading(node.entity_path); }}
           >
-            {eff === 'show' ? '👁' : eff === 'ghost' ? '◑' : '○'}
+            {eff() === 'show' ? '👁' : eff() === 'ghost' ? '◑' : '○'}
           </button>
         </div>
         <Show when={expanded().has(node.entity_path)}>
