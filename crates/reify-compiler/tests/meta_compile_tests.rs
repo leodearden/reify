@@ -200,6 +200,13 @@ fn duplicate_meta_key_error() {
         errors[0].labels
     );
 
+    // The label should name the specific key for better IDE hover UX.
+    assert!(
+        errors[0].labels.iter().any(|l| l.message.contains("'a'")),
+        "expected label to contain the key name \"'a'\", got labels: {:?}",
+        errors[0].labels
+    );
+
     // First occurrence should be kept; second (duplicate) should be discarded.
     assert_eq!(
         template.meta.get("a").map(|s| s.as_str()),
