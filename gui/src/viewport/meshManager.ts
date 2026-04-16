@@ -291,6 +291,16 @@ export function createMeshManager(scene: Scene): MeshManagerContext {
     // or arrived in a previous sync cycle but was then removed). meshMap is now
     // authoritative — orphan entries would otherwise leak and cause a future
     // arrival of the same entity to silently inherit the stale visibility state.
+    //
+    // COUPLED INVARIANT with Viewport.tsx: the `createEffect` that consumes
+    // `props.entityVisibility` (see Viewport.tsx) re-applies setVisibility for
+    // every key on each reactive render cycle. So pruning here is safe —
+    // legitimate, still-visible entries are immediately re-set by the Viewport
+    // effect on the next tick. Together these two pieces guarantee:
+    //   (a) orphan pre-sets for never-arrived or already-removed entities cannot
+    //       leak into future arrivals, and
+    //   (b) current authoritative visibility is re-applied after each sync.
+    // Changing either side requires revisiting the other.
     for (const key of [...visibilityMap.keys()]) {
       if (!meshMap.has(key)) {
         visibilityMap.delete(key);
