@@ -565,4 +565,45 @@ mod tests {
         assert_eq!(snap_val, &new_width, "snapshot_values should match");
         assert_eq!(snap_det, &DeterminacyState::Determined);
     }
+
+    /// step-7: ConcurrentNodeResult has an eval_duration field that carries
+    /// the actual evaluation time from the concurrent adapter.
+    ///
+    /// Tests both Some(duration) and None for backward compatibility.
+    #[test]
+    fn concurrent_node_result_eval_duration_field() {
+        use std::time::Duration;
+
+        let node_id = NodeId::Value(ValueCellId::new("E", "z"));
+
+        // With a measured duration
+        let result_with_duration = ConcurrentNodeResult {
+            node: node_id.clone(),
+            value: Value::Real(1.0),
+            determinacy: DeterminacyState::Determined,
+            trace: DependencyTrace::default(),
+            outcome: EvalOutcome::Changed,
+            eval_duration: Some(Duration::from_millis(42)),
+        };
+        assert_eq!(
+            result_with_duration.eval_duration,
+            Some(Duration::from_millis(42)),
+            "eval_duration should round-trip Some(42ms)"
+        );
+
+        // With no duration (backward compat / skipped timing)
+        let result_no_duration = ConcurrentNodeResult {
+            node: node_id.clone(),
+            value: Value::Real(1.0),
+            determinacy: DeterminacyState::Determined,
+            trace: DependencyTrace::default(),
+            outcome: EvalOutcome::Unchanged,
+            eval_duration: None,
+        };
+        assert_eq!(
+            result_no_duration.eval_duration,
+            None,
+            "eval_duration should support None for backward compatibility"
+        );
+    }
 }
