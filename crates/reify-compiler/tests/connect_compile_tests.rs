@@ -1682,18 +1682,13 @@ structure def S {
     assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
 
-// ── task-1832/step-1: hoisted_lookup_matches_original_behavior ───────────────
+// ── task-1838: hoisted_lookup split tests ────────────────────────────────────
 
-/// Characterization test that pins behavior for all three port-lookup paths before
-/// the hoisting refactor in compile_connection:
-///   (a) bare port found, direction compatible → auto-match runs, identity mappings produced
-///   (b) bare port not found → undefined-port error emitted
-///   (c) dotted port (sub-component ref) → no undefined check, no auto-match, empty mappings
+/// Case (a): bare port found, direction compatible (Out→In) → auto-match runs
+/// and produces identity mapping for param 'd'.
 #[test]
-fn hoisted_lookup_matches_original_behavior() {
-    // ── Case (a): bare port found, direction compatible, auto-match runs ──────
-    {
-        let source = r#"
+fn hoisted_lookup_bare_found_auto_match() {
+    let source = r#"
 trait T { param d : Length }
 structure def S {
     port a : out T { param d : Length = 5mm }
@@ -1701,62 +1696,57 @@ structure def S {
     connect a -> b
 }
 "#;
-        let (template, diagnostics) = compile_first_template(source);
-        let errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "case (a): unexpected errors: {:?}",
-            errors
-        );
-        assert_eq!(
-            template.connections.len(),
-            1,
-            "case (a): expected 1 connection"
-        );
-        // Auto-match ran and produced identity mapping for param 'd'
-        assert_eq!(
-            template.connections[0].port_mappings,
-            vec![("d".to_string(), "d".to_string())],
-            "case (a): expected auto-generated identity mapping for param 'd'"
-        );
-    }
+    let (template, diagnostics) = compile_first_template(source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.connections.len(), 1, "expected 1 connection");
+    // Auto-match ran and produced identity mapping for param 'd'
+    assert_eq!(
+        template.connections[0].port_mappings,
+        vec![("d".to_string(), "d".to_string())],
+        "expected auto-generated identity mapping for param 'd'"
+    );
+}
 
-    // ── Case (b): bare port not found → undefined-port error ─────────────────
-    {
-        let source = r#"
+/// Case (b): bare port not found → undefined-port error is emitted and names the port.
+#[test]
+fn hoisted_lookup_bare_not_found_undefined() {
+    let source = r#"
 trait T { param d : Length }
 structure def S {
     port a : out T { param d : Length = 5mm }
     connect a -> nonexistent
 }
 "#;
-        let (_template, diagnostics) = compile_first_template(source);
-        let undef_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
-            .collect();
-        assert!(
-            !undef_errors.is_empty(),
-            "case (b): expected undefined-port error, got: {:?}",
-            diagnostics
-        );
-        // The undefined port name is included in the error message
-        let names_nonexistent = undef_errors
-            .iter()
-            .any(|d| d.message.contains("nonexistent"));
-        assert!(
-            names_nonexistent,
-            "case (b): error message should name the undefined port, got: {:?}",
-            undef_errors
-        );
-    }
+    let (_template, diagnostics) = compile_first_template(source);
+    let undef_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+        .collect();
+    assert!(
+        !undef_errors.is_empty(),
+        "expected undefined-port error, got: {:?}",
+        diagnostics
+    );
+    // The undefined port name is included in the error message
+    let names_nonexistent = undef_errors
+        .iter()
+        .any(|d| d.message.contains("nonexistent"));
+    assert!(
+        names_nonexistent,
+        "error message should name the undefined port, got: {:?}",
+        undef_errors
+    );
+}
 
-    // ── Case (c): dotted port → no undefined check, no auto-match ────────────
-    {
-        let source = r#"
+/// Case (c): dotted ports (motor.shaft → gear.input) → no undefined-port check,
+/// no auto-match, empty port_mappings.
+#[test]
+fn hoisted_lookup_dotted_no_check() {
+    let source = r#"
 trait RotaryPort { param d : Length }
 structure def Motor {
     port shaft : out RotaryPort { param d : Length = 10mm }
@@ -1770,61 +1760,54 @@ structure def Assembly {
     connect motor.shaft -> gear.input
 }
 "#;
-        let module = compile_source(source);
-        let asm = module
-            .templates
-            .iter()
-            .find(|t| t.name == "Assembly")
-            .expect("Assembly template");
-        let errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "case (c): unexpected errors: {:?}",
-            errors
-        );
-        assert_eq!(
-            asm.connections.len(),
-            1,
-            "case (c): expected 1 connection"
-        );
-        assert_eq!(
-            asm.connections[0].left_port,
-            "motor.shaft",
-            "case (c): expected dotted left_port"
-        );
-        assert_eq!(
-            asm.connections[0].right_port,
-            "gear.input",
-            "case (c): expected dotted right_port"
-        );
-        // Dotted ports: no undefined-port error, no auto-match, empty port_mappings
-        let undef_errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
-            .collect();
-        assert!(
-            undef_errors.is_empty(),
-            "case (c): expected NO undefined-port errors for dotted ports, got: {:?}",
-            undef_errors
-        );
-        assert_eq!(
-            asm.connections[0].port_mappings,
-            Vec::<(String, String)>::new(),
-            "case (c): expected empty port_mappings for dotted port references"
-        );
-    }
+    let module = compile_source(source);
+    let asm = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly template");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(asm.connections.len(), 1, "expected 1 connection");
+    assert_eq!(
+        asm.connections[0].left_port,
+        "motor.shaft",
+        "expected dotted left_port"
+    );
+    assert_eq!(
+        asm.connections[0].right_port,
+        "gear.input",
+        "expected dotted right_port"
+    );
+    // Dotted ports: no undefined-port error, no auto-match, empty port_mappings
+    let undef_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+        .collect();
+    assert!(
+        undef_errors.is_empty(),
+        "expected NO undefined-port errors for dotted ports, got: {:?}",
+        undef_errors
+    );
+    assert_eq!(
+        asm.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings for dotted port references"
+    );
+}
 
-    // ── Case (d): mixed — one bare+found, one dotted → no undefined error, no auto-match ──
-    // When only one side is dotted, is_bare(&l) && is_bare(&r) is false, so auto-match
-    // never runs even though the bare side resolved successfully.  The dotted side is
-    // also exempt from the undefined-port check because is_bare returns false for it.
-    {
-        let source = r#"
+/// Case (d): mixed — one bare+found ('a'), one dotted ('motor.shaft') → no auto-match.
+/// When only one side is dotted, is_bare(&l) && is_bare(&r) is false, so auto-match
+/// never runs even though the bare side resolved successfully. The dotted side is
+/// also exempt from the undefined-port check because is_bare returns false for it.
+#[test]
+fn hoisted_lookup_mixed_bare_dotted() {
+    let source = r#"
 trait T { param d : Length }
 structure def Motor {
     port shaft : in T { param d : Length = 5mm }
@@ -1835,44 +1818,74 @@ structure def Coupler {
     connect a -> motor.shaft
 }
 "#;
-        let module = compile_source(source);
-        let coupler = module
-            .templates
-            .iter()
-            .find(|t| t.name == "Coupler")
-            .expect("Coupler template");
-        let errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "case (d): unexpected errors: {:?}",
-            errors
-        );
-        assert_eq!(
-            coupler.connections.len(),
-            1,
-            "case (d): expected 1 connection"
-        );
-        assert_eq!(
-            coupler.connections[0].left_port,
-            "a",
-            "case (d): expected bare left_port"
-        );
-        assert_eq!(
-            coupler.connections[0].right_port,
-            "motor.shaft",
-            "case (d): expected dotted right_port"
-        );
-        // Mixed bare+dotted: no auto-match runs, so port_mappings is empty
-        assert_eq!(
-            coupler.connections[0].port_mappings,
-            Vec::<(String, String)>::new(),
-            "case (d): expected empty port_mappings for mixed bare+dotted connect"
-        );
-    }
+    let module = compile_source(source);
+    let coupler = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Coupler")
+        .expect("Coupler template");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(coupler.connections.len(), 1, "expected 1 connection");
+    assert_eq!(
+        coupler.connections[0].left_port,
+        "a",
+        "expected bare left_port"
+    );
+    assert_eq!(
+        coupler.connections[0].right_port,
+        "motor.shaft",
+        "expected dotted right_port"
+    );
+    // Mixed bare+dotted: no auto-match runs, so port_mappings is empty
+    assert_eq!(
+        coupler.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings for mixed bare+dotted connect"
+    );
+}
+
+/// Edge case: both ports are bare; left ('a') exists, right ('missing') does not.
+/// Verifies: (1) undefined-port error is emitted for 'missing', (2) the connection
+/// still appears (compile_connection does not early-return on undefined ports),
+/// (3) port_mappings is empty because auto_match_port_members returns Vec::new()
+/// when right_compiled is None, and (4) no "do not match" warning is emitted
+/// (the unmatched-members path is never reached when one port is None).
+#[test]
+fn hoisted_lookup_bare_one_undefined_no_auto_match() {
+    let source = r#"
+trait T { param d : Length }
+structure def S {
+    port a : out T { param d : Length = 5mm }
+    connect a -> missing
+}
+"#;
+    let (template, diagnostics) = compile_first_template(source);
+    // (1) undefined-port error emitted for 'missing'
+    assert_has_diagnostic(&diagnostics, Severity::Error, "missing");
+    let undef_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
+        .collect();
+    assert!(
+        !undef_errors.is_empty(),
+        "expected undefined-port error for 'missing', got: {:?}",
+        diagnostics
+    );
+    // (2) connection still appears in template.connections
+    assert_eq!(template.connections.len(), 1, "expected 1 connection");
+    // (3) port_mappings is empty — auto_match short-circuits on None
+    assert_eq!(
+        template.connections[0].port_mappings,
+        Vec::<(String, String)>::new(),
+        "expected empty port_mappings when right port is undefined"
+    );
+    // (4) no "do not match" warning — unmatched-members path not reached
+    assert_no_diagnostic(&diagnostics, Severity::Warning, "do not match");
 }
 
 // ── task-393/step-5: compatible_directions_still_emits_unmatched_warning ──
