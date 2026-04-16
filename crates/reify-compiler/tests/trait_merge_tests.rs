@@ -4,8 +4,10 @@
 //! let default deduplication, expression conflict detection, and
 //! cross-trait requirement satisfaction by defaults.
 
+use std::sync::atomic::Ordering;
+
 use reify_compiler::*;
-use reify_test_support::compile_first_template;
+use reify_test_support::{compile_first_template, CountingSubscriberBuilder};
 use reify_types::*;
 
 /// Step 1a: Two traits each providing `let area : Real = width * height`.
@@ -1285,5 +1287,47 @@ structure def S : TraitX + TraitY + TraitZ {
         "error should report only the first collision pair (TraitX/TraitY) and suppress TraitZ; \
          got: {}",
         errors[0].message
+    );
+}
+
+/// Verifies that a DEBUG-level tracing event is emitted from the `reify_compiler` target
+/// when two traits supply the same-named default and the second registration is silently
+/// dropped (first-seen type wins in `register_if_absent`).
+///
+/// This is an observability regression guard: the `tracing::debug!` emission in
+/// `conformance.rs` must fire when `register_if_absent` returns `false` (the Occupied
+/// branch). Any future removal of that emission will be caught here.
+#[test]
+fn trait_merge_name_conflict_emits_debug_event() {
+    let source = r#"
+trait TraitA {
+    let x : Real = 1.0
+}
+
+trait TraitB {
+    let x : Real = 2.0
+}
+
+structure def S : TraitA + TraitB {
+}
+"#;
+
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .target_prefix("reify_compiler")
+        .count_level(tracing::Level::DEBUG)
+        .build();
+
+    let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
+
+    // Run the compilation under the scoped subscriber so we capture any DEBUG
+    // events from reify_compiler::* targets.
+    let _ = tracing::subscriber::with_default(subscriber, || compile_first_template(source));
+
+    let debug = debug_count.load(Ordering::Relaxed);
+    assert!(
+        debug >= 1,
+        "expected at least 1 DEBUG event from reify_compiler target when two traits \
+         supply the same-named default (second register_if_absent returns false), got {}",
+        debug
     );
 }
