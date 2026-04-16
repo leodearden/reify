@@ -456,6 +456,7 @@ pub(crate) fn compile_entity(
                     );
                 } else {
                     first_meta_span = Some(meta.span);
+                    scope.has_meta_block = true;
                     let mut seen_meta_keys: HashSet<&str> = HashSet::new();
                     for (key, value) in &meta.entries {
                         if !seen_meta_keys.insert(key.as_str()) {
