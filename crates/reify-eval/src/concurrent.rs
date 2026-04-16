@@ -132,8 +132,8 @@ impl Engine {
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
         // Build the full ValueMap from snapshot values.
-        // new_snapshot_values already contains the updated cell (inserted above),
-        // so copying all entries here is sufficient — no separate insert needed.
+        // new_snapshot_values already contains the updated cell (inserted at line ~123),
+        // so copying all entries here covers it — no duplicate insert needed.
         let mut values = ValueMap::new();
         for (id, (val, _det)) in new_snapshot_values.iter() {
             values.insert(id.clone(), val.clone());
