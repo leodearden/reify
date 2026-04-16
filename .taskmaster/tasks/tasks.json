@@ -38677,15 +38677,16 @@
         "description": "Four small cleanup items from review of task 1848 (concurrent.rs cleanup):\n\n1. **Stale test comment** (crates/reify-eval/tests/concurrent.rs:389-390): Comment says \"Currently fails because apply_concurrent_edit uses start.elapsed()\" but the implementation now uses eval_duration. Remove or update the stale comment.\n\n2. **Stale docstring** (crates/reify-eval/tests/resolution.rs:2103-2104): Docstring says \"designed to fail until step-4 changes the method to assign onto result instead of returning a tuple\" — step-4 is already implemented. Update to describe current behavior.\n\n3. **debug_assert before clear** (crates/reify-eval/src/concurrent.rs:309-310): Add `debug_assert!(result.resolved_params.is_empty())` and `debug_assert!(result.diagnostics.is_empty())` before the `.clear()` calls in `resolve_concurrent_edit` to catch accidental double-calls during development.\n\n4. **Comment forward-reference** (crates/reify-eval/src/concurrent.rs:134-136): Adjust comment to include a forward reference to where the cell was inserted (line ~123): \"new_snapshot_values already contains the updated cell (inserted at line ~123), so copying all entries here covers it — no duplicate insert needed.\"\n\nmemory_hints:\n- search: \"resolve_concurrent_edit API\" \"concurrent edit journal\"\n- entity: Engine, ConcurrentEditResult",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T03:14:38.148Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T03:14:37.874Z",
+      "lastModified": "2026-04-16T03:14:38.148Z",
       "taskCount": 1850,
       "completedCount": 1587,
       "tags": [
