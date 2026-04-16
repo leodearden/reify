@@ -158,6 +158,23 @@ describe('matchesEvent', () => {
     const bind: KeyBinding = { key: '?', ctrl: false };
     expect(matchesEvent(bind, makeEvent({ key: '?', ctrlKey: true }))).toBe(false);
   });
+
+  // meta field (suggestion 3 — cross-platform Cmd key support)
+  it('matches with meta:true when metaKey is held', () => {
+    const bind: KeyBinding = { key: 's', meta: true };
+    expect(matchesEvent(bind, makeEvent({ key: 's', metaKey: true }))).toBe(true);
+  });
+
+  it('does not match with meta:true when metaKey is not held', () => {
+    const bind: KeyBinding = { key: 's', meta: true };
+    expect(matchesEvent(bind, makeEvent({ key: 's', metaKey: false }))).toBe(false);
+  });
+
+  it('meta and ctrl are independent: meta:true does not fire when only ctrlKey is held', () => {
+    // ctrlKey is held but metaKey is not — meta:true requires event.metaKey, not event.ctrlKey
+    const bind: KeyBinding = { key: 's', meta: true };
+    expect(matchesEvent(bind, makeEvent({ key: 's', ctrlKey: true }))).toBe(false);
+  });
 });
 
 describe('SHORTCUTS bind fields', () => {
@@ -173,8 +190,10 @@ describe('SHORTCUTS bind fields', () => {
     const entry = getShortcut('open');
     expect(entry?.bind).toBeDefined();
     expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'o', ctrlKey: true }))).toBe(true);
-    // wrong key must not match
+    // wrong modifier must not match
     expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'o', ctrlKey: false }))).toBe(false);
+    // Ctrl+Shift+O must not match (shift:false prevents the case-insensitive 'O' from firing)
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'O', ctrlKey: true, shiftKey: true }))).toBe(false);
   });
 
   it('save bind matches Ctrl+S keydown event', () => {
@@ -182,18 +201,24 @@ describe('SHORTCUTS bind fields', () => {
     expect(entry?.bind).toBeDefined();
     expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 's', ctrlKey: true }))).toBe(true);
     expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 's', ctrlKey: false }))).toBe(false);
+    // Ctrl+Shift+S must not match
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'S', ctrlKey: true, shiftKey: true }))).toBe(false);
   });
 
   it('export bind matches Ctrl+E keydown event', () => {
     const entry = getShortcut('export');
     expect(entry?.bind).toBeDefined();
     expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'e', ctrlKey: true }))).toBe(true);
+    // Ctrl+Shift+E must not match
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'E', ctrlKey: true, shiftKey: true }))).toBe(false);
   });
 
-  it('undo bind matches Ctrl+Z keydown event', () => {
+  it('undo bind matches Ctrl+Z keydown event but NOT Ctrl+Shift+Z', () => {
     const entry = getShortcut('undo');
     expect(entry?.bind).toBeDefined();
     expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'z', ctrlKey: true }))).toBe(true);
+    // shift:false makes the non-overlap with redo explicit
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, shiftKey: true }))).toBe(false);
   });
 
   it('redo bind matches Ctrl+Shift+Z keydown event', () => {
@@ -214,6 +239,8 @@ describe('SHORTCUTS bind fields', () => {
     const entry = getShortcut('toggleChat');
     expect(entry?.bind).toBeDefined();
     expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'j', ctrlKey: true }))).toBe(true);
+    // Ctrl+Shift+J must not match
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'J', ctrlKey: true, shiftKey: true }))).toBe(false);
   });
 
   it('reload bind matches Ctrl+Shift+R keydown event (case-insensitive)', () => {

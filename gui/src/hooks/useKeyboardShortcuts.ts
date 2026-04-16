@@ -1,5 +1,5 @@
 import { onMount, onCleanup } from 'solid-js';
-import { SHORTCUTS, matchesEvent } from '../shortcuts';
+import { SHORTCUTS, matchesEvent, type ShortcutId } from '../shortcuts';
 
 export interface KeyboardShortcutCallbacks {
   onOpen?: () => void;
@@ -16,8 +16,11 @@ export interface KeyboardShortcutCallbacks {
  * Internal map from shortcut id to the corresponding callback key.
  * Shortcuts without a callback (undo, redo, fitToView) are omitted —
  * the registry loop skips them when no entry is found here.
+ *
+ * Keyed by ShortcutId so typos in shortcut IDs (e.g. 'toogleChat') are
+ * caught at compile time rather than silently failing at runtime.
  */
-const ID_TO_CALLBACK: Partial<Record<string, keyof KeyboardShortcutCallbacks>> = {
+const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCallbacks>> = {
   open:        'onOpen',
   save:        'onSave',
   export:      'onExportDialog',
@@ -44,11 +47,14 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       return;
     }
 
-    // Registry-driven matching
+    // Registry-driven matching.
+    // Array order in SHORTCUTS determines priority: if two bindings could
+    // match the same event, the earlier entry fires and the loop returns.
     for (const shortcut of SHORTCUTS) {
       if (!shortcut.bind) continue;
       if (!matchesEvent(shortcut.bind, e)) continue;
-      const callbackKey = ID_TO_CALLBACK[shortcut.id];
+      // ShortcutId cast is safe: unknown IDs return undefined (handled below)
+      const callbackKey = ID_TO_CALLBACK[shortcut.id as ShortcutId];
       if (!callbackKey) continue;
       e.preventDefault();
       callbacks[callbackKey]?.();
