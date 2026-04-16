@@ -2805,6 +2805,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compile_geometry_op_shell_valid_faces_no_false_positive() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // All three faces are valid non-negative integers — no diagnostics should be emitted
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                ("face_0".into(), literal_f64(0.0)),
+                ("face_1".into(), literal_f64(2.0)),
+                ("face_2".into(), literal_f64(5.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Some(reify_types::GeometryOp::Shell { faces_to_remove, .. }) => {
+                assert_eq!(
+                    faces_to_remove,
+                    vec![0usize, 2, 5],
+                    "valid faces should all be collected correctly"
+                );
+            }
+            other => panic!("expected Some(Shell), got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "valid faces should produce no diagnostics, got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── validate_pattern_count upper-bound tests ──────────────────────────────
 
     #[test]
