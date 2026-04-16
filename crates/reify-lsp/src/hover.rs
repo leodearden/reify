@@ -78,12 +78,12 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
                 let params_str: Vec<String> = f
                     .params
                     .iter()
-                    .map(|p| format!("{}: {}", p.name, p.type_expr.name))
+                    .map(|p| format!("{}: {}", p.name, p.type_expr))
                     .collect();
                 let ret = f
                     .return_type
                     .as_ref()
-                    .map(|t| format!(" -> {}", t.name))
+                    .map(|t| format!(" -> {}", t))
                     .unwrap_or_default();
                 let mut md = format!(
                     "```reify\nfn {}({}){}\n```",

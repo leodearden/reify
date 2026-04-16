@@ -20,7 +20,7 @@ pub(crate) fn compile_function(
             Some(t) => t,
             None => {
                 diagnostics.push(
-                    Diagnostic::error(format!("unresolved type: {}", p.type_expr.name))
+                    Diagnostic::error(format!("unresolved type: {}", p.type_expr))
                         .with_label(DiagnosticLabel::new(p.type_expr.span, "unknown type name")),
                 );
                 Type::Real // fallback
@@ -36,7 +36,7 @@ pub(crate) fn compile_function(
                 Some(t) => t,
                 None => {
                     diagnostics.push(
-                        Diagnostic::error(format!("unresolved return type: {}", te.name))
+                        Diagnostic::error(format!("unresolved return type: {}", te))
                             .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
                     );
                     Type::Real
@@ -137,14 +137,35 @@ pub(crate) fn compile_field(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledField {
+    // Extract names from Named variant; DimensionalOp cannot appear as a field type.
+    let domain_name = match &field_def.domain_type.kind {
+        reify_syntax::TypeExprKind::Named { name, .. } => name.as_str(),
+        reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
+                    .with_label(DiagnosticLabel::new(field_def.domain_type.span, "unexpected dimensional expression")),
+            );
+            "<unknown>"
+        }
+    };
+    let codomain_name = match &field_def.codomain_type.kind {
+        reify_syntax::TypeExprKind::Named { name, .. } => name.as_str(),
+        reify_syntax::TypeExprKind::DimensionalOp { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!("unresolved field type: {}", field_def.codomain_type))
+                    .with_label(DiagnosticLabel::new(field_def.codomain_type.span, "unexpected dimensional expression")),
+            );
+            "<unknown>"
+        }
+    };
     let domain_type = resolve_field_type_name(
-        &field_def.domain_type.name,
+        domain_name,
         field_def.domain_type.span,
         alias_registry,
         diagnostics,
     );
     let codomain_type = resolve_field_type_name(
-        &field_def.codomain_type.name,
+        codomain_name,
         field_def.codomain_type.span,
         alias_registry,
         diagnostics,

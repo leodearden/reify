@@ -1001,16 +1001,16 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
 }
 
 /// Collect all leaf type names referenced in a TypeExpr tree.
-/// For binary ops (`*`, `/`), recurses into operands. Otherwise returns the name.
+/// For `DimensionalOp`, recurses into both operands. For `Named`, returns the name
+/// followed by recursed type_args.
 pub(crate) fn collect_type_expr_names(type_expr: &reify_syntax::TypeExpr) -> Vec<String> {
-    match type_expr.name.as_str() {
-        "*" | "/" => type_expr
-            .type_args
-            .iter()
-            .flat_map(collect_type_expr_names)
+    match &type_expr.kind {
+        reify_syntax::TypeExprKind::DimensionalOp { left, right, .. } => collect_type_expr_names(left)
+            .into_iter()
+            .chain(collect_type_expr_names(right))
             .collect(),
-        name => std::iter::once(name.to_string())
-            .chain(type_expr.type_args.iter().flat_map(collect_type_expr_names))
+        reify_syntax::TypeExprKind::Named { name, type_args } => std::iter::once(name.clone())
+            .chain(type_args.iter().flat_map(collect_type_expr_names))
             .collect(),
     }
 }
@@ -1099,8 +1099,14 @@ pub(crate) fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<
                 .collect();
             // Resolve defaults: try builtin types first, then preserve
             // structure names as StructureRef (concrete names, not type variables).
-            let default = d.default.as_ref().map(|te| {
-                resolve_type_name(&te.name).unwrap_or_else(|| Type::StructureRef(te.name.clone()))
+            // DimensionalOp cannot appear as a type-parameter default — treat as None.
+            let default = d.default.as_ref().and_then(|te| {
+                match &te.kind {
+                    reify_syntax::TypeExprKind::Named { name, .. } => {
+                        Some(resolve_type_name(name).unwrap_or_else(|| Type::StructureRef(name.clone())))
+                    }
+                    reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
+                }
             });
             reify_types::TypeParam {
                 name: d.name.clone(),

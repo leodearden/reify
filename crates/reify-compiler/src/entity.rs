@@ -316,13 +316,15 @@ pub(crate) fn compile_entity(
                         Some(t) => t,
                         None => {
                             // Check if it's an enum type defined in the same module or prelude
-                            if enum_defs.iter().any(|e| e.name == type_expr.name) {
-                                Type::Enum(type_expr.name.clone())
+                            if let reify_syntax::TypeExprKind::Named { name, .. } = &type_expr.kind
+                                && enum_defs.iter().any(|e| e.name == *name)
+                            {
+                                Type::Enum(name.clone())
                             } else {
                                 diagnostics.push(
                                     Diagnostic::error(format!(
                                         "unresolved type: {}",
-                                        type_expr.name
+                                        type_expr
                                     ))
                                     .with_label(
                                         DiagnosticLabel::new(type_expr.span, "unknown type name"),
@@ -396,7 +398,7 @@ pub(crate) fn compile_entity(
                                     diagnostics.push(
                                         Diagnostic::error(format!(
                                             "unresolved type name '{}' in port parameter",
-                                            type_expr.name
+                                            type_expr
                                         ))
                                         .with_label(DiagnosticLabel::new(
                                             type_expr.span,
@@ -529,13 +531,17 @@ pub(crate) fn compile_entity(
                     .type_args
                     .iter()
                     .map(|ta| {
-                        resolve_type_name(&ta.name).unwrap_or_else(|| {
-                            if type_param_names.contains(&ta.name) {
-                                Type::TypeParam(ta.name.clone())
-                            } else {
-                                Type::StructureRef(ta.name.clone())
-                            }
-                        })
+                        if let reify_syntax::TypeExprKind::Named { name, .. } = &ta.kind {
+                            resolve_type_name(name).unwrap_or_else(|| {
+                                if type_param_names.contains(name) {
+                                    Type::TypeParam(name.clone())
+                                } else {
+                                    Type::StructureRef(name.clone())
+                                }
+                            })
+                        } else {
+                            Type::Real // DimensionalOp shouldn't appear as a trait bound type arg
+                        }
                     })
                     .collect();
                 // TraitConformance: type_params are known now from the compiled
@@ -789,13 +795,17 @@ pub(crate) fn compile_entity(
                     .type_args
                     .iter()
                     .map(|ta| {
-                        resolve_type_name(&ta.name).unwrap_or_else(|| {
-                            if type_param_names.contains(&ta.name) {
-                                Type::TypeParam(ta.name.clone())
-                            } else {
-                                Type::StructureRef(ta.name.clone())
-                            }
-                        })
+                        if let reify_syntax::TypeExprKind::Named { name, .. } = &ta.kind {
+                            resolve_type_name(name).unwrap_or_else(|| {
+                                if type_param_names.contains(name) {
+                                    Type::TypeParam(name.clone())
+                                } else {
+                                    Type::StructureRef(name.clone())
+                                }
+                            })
+                        } else {
+                            Type::Real // DimensionalOp shouldn't appear as a subcomponent type arg
+                        }
                     })
                     .collect();
 

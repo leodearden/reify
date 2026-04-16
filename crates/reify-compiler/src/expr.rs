@@ -1327,15 +1327,28 @@ pub(crate) fn compile_expr_guarded(
 
             for param in params {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    match resolve_type_name(&type_expr.name) {
-                        Some(t) => t,
-                        None => {
-                            diagnostics.push(Diagnostic::error(format!(
-                                "unresolved type in lambda param '{}': {}",
-                                param.name, type_expr.name
-                            )));
-                            Type::Real // fallback
+                    // Extract name from Named; DimensionalOp can't appear as a lambda param type.
+                    let name_opt = match &type_expr.kind {
+                        reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
+                        reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
+                    };
+                    if let Some(name) = name_opt {
+                        match resolve_type_name(name) {
+                            Some(t) => t,
+                            None => {
+                                diagnostics.push(Diagnostic::error(format!(
+                                    "unresolved type in lambda param '{}': {}",
+                                    param.name, name
+                                )));
+                                Type::Real // fallback
+                            }
                         }
+                    } else {
+                        diagnostics.push(Diagnostic::error(format!(
+                            "unresolved type in lambda param '{}': {}",
+                            param.name, type_expr
+                        )));
+                        Type::Real
                     }
                 } else {
                     Type::Real // default untyped params to Real

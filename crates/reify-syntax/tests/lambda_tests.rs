@@ -73,9 +73,9 @@ structure S {
         ExprKind::Lambda { params, body } => {
             assert_eq!(params.len(), 2);
             assert_eq!(params[0].name, "x");
-            assert_eq!(params[0].type_expr.as_ref().unwrap().name, "Real");
+            assert_eq!(params[0].type_expr.as_ref().unwrap().to_string(), "Real");
             assert_eq!(params[1].name, "y");
-            assert_eq!(params[1].type_expr.as_ref().unwrap().name, "Real");
+            assert_eq!(params[1].type_expr.as_ref().unwrap().to_string(), "Real");
             // Body: x + y
             match &body.kind {
                 ExprKind::BinOp { op, left, right } => {

@@ -130,7 +130,7 @@ pub(crate) fn register_guarded_names<'a>(
                 let ty = if let Some(type_expr) = &param.type_expr {
                     resolve_type_expr_with_aliases(type_expr, type_param_names, alias_registry, diagnostics).unwrap_or_else(|| {
                         diagnostics.push(
-                            Diagnostic::error(format!("unresolved type: {}", type_expr.name))
+                            Diagnostic::error(format!("unresolved type: {}", type_expr))
                                 .with_label(DiagnosticLabel::new(
                                     type_expr.span,
                                     "unknown type name",

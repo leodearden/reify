@@ -90,8 +90,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "width".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
-                    name: "Scalar".into(),
-                    type_args: vec![],
+                    kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
                     span: SourceSpan::new(29, 35),
                 }),
                 default: Some(Expr {
@@ -110,8 +109,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "height".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
-                    name: "Scalar".into(),
-                    type_args: vec![],
+                    kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
                     span: SourceSpan::new(60, 66),
                 }),
                 default: Some(Expr {
@@ -130,8 +128,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "thickness".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
-                    name: "Scalar".into(),
-                    type_args: vec![],
+                    kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
                     span: SourceSpan::new(95, 101),
                 }),
                 default: Some(Expr {
@@ -150,8 +147,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "fillet_radius".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
-                    name: "Scalar".into(),
-                    type_args: vec![],
+                    kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
                     span: SourceSpan::new(132, 138),
                 }),
                 default: Some(Expr {
@@ -170,8 +166,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 name: "hole_diameter".into(),
                 doc: None,
                 type_expr: Some(TypeExpr {
-                    name: "Scalar".into(),
-                    type_args: vec![],
+                    kind: TypeExprKind::Named { name: "Scalar".into(), type_args: vec![] },
                     span: SourceSpan::new(169, 175),
                 }),
                 default: Some(Expr {

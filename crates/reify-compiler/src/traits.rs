@@ -14,22 +14,38 @@ pub(crate) fn compile_trait(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    if let Some(t) =
-                        resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry)
-                    {
-                        t
-                    } else if enum_defs.iter().any(|e| e.name == type_expr.name) {
-                        // Enum type defined in the same module
-                        Type::Enum(type_expr.name.clone())
+                    // Extract the name from the Named variant; DimensionalOp can't appear
+                    // as a trait param type annotation.
+                    let name_opt = match &type_expr.kind {
+                        reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
+                        reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
+                    };
+                    if let Some(name) = name_opt {
+                        if let Some(t) = resolve_type_with_aliases(name, &empty_params, alias_registry) {
+                            t
+                        } else if enum_defs.iter().any(|e| e.name == name) {
+                            // Enum type defined in the same module
+                            Type::Enum(name.to_string())
+                        } else {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unresolved type in trait '{}': {}",
+                                    trait_decl.name, name
+                                ))
+                                .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
+                            );
+                            Type::Real // fallback
+                        }
                     } else {
+                        // DimensionalOp can't appear as a trait param type annotation
                         diagnostics.push(
                             Diagnostic::error(format!(
                                 "unresolved type in trait '{}': {}",
-                                trait_decl.name, type_expr.name
+                                trait_decl.name, type_expr
                             ))
-                            .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
+                            .with_label(DiagnosticLabel::new(type_expr.span, "unexpected dimensional expression")),
                         );
-                        Type::Real // fallback
+                        Type::Real
                     }
                 } else {
                     Type::Real
@@ -58,22 +74,39 @@ pub(crate) fn compile_trait(
                 // Let bindings always have a value expression → default.
                 // Resolve the annotation type when present; None when absent.
                 let cell_type = if let Some(type_expr) = &let_decl.type_expr {
-                    match resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry)
-                    {
-                        Some(t) => Some(t),
-                        None => {
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unresolved type in trait '{}': {}",
-                                    trait_decl.name, type_expr.name
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    type_expr.span,
-                                    "unknown type name",
-                                )),
-                            );
-                            Some(Type::Real) // error-recovery fallback
+                    // Extract name from Named variant; DimensionalOp can't be a let type annotation.
+                    let name_opt = match &type_expr.kind {
+                        reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
+                        reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
+                    };
+                    if let Some(name) = name_opt {
+                        match resolve_type_with_aliases(name, &empty_params, alias_registry)
+                        {
+                            Some(t) => Some(t),
+                            None => {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "unresolved type in trait '{}': {}",
+                                        trait_decl.name, name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        type_expr.span,
+                                        "unknown type name",
+                                    )),
+                                );
+                                Some(Type::Real) // error-recovery fallback
+                            }
                         }
+                    } else {
+                        // DimensionalOp can't appear as a let type annotation in a trait
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unresolved type in trait '{}': {}",
+                                trait_decl.name, type_expr
+                            ))
+                            .with_label(DiagnosticLabel::new(type_expr.span, "unexpected dimensional expression")),
+                        );
+                        Some(Type::Real)
                     }
                 } else {
                     None // no annotation → no cell_type

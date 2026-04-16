@@ -22,7 +22,7 @@ fn parse_simple_unit() {
     match &decls[0] {
         Declaration::Unit(u) => {
             assert_eq!(u.name, "meter");
-            assert_eq!(u.dimension_type.name, "Length");
+            assert_eq!(u.dimension_type.to_string(), "Length");
             assert!(
                 u.conversion.is_none(),
                 "expected no conversion, got {:?}",
@@ -49,7 +49,7 @@ fn parse_derived_unit() {
     };
 
     assert_eq!(u.name, "mm");
-    assert_eq!(u.dimension_type.name, "Length");
+    assert_eq!(u.dimension_type.to_string(), "Length");
     assert!(u.offset.is_none(), "expected no offset");
 
     match &u.conversion {
@@ -78,7 +78,7 @@ fn parse_offset_unit() {
     };
 
     assert_eq!(u.name, "degC");
-    assert_eq!(u.dimension_type.name, "Temperature");
+    assert_eq!(u.dimension_type.to_string(), "Temperature");
 
     match &u.conversion {
         Some(expr) => match &expr.kind {
@@ -237,9 +237,13 @@ fn parse_unit_parameterized_dimension_type() {
     };
 
     assert_eq!(u.name, "newton");
-    assert_eq!(u.dimension_type.name, "Derived");
-    assert_eq!(u.dimension_type.type_args.len(), 1, "expected 1 type arg");
-    assert_eq!(u.dimension_type.type_args[0].name, "Force");
+    let (dim_name, dim_args) = match &u.dimension_type.kind {
+        TypeExprKind::Named { name, type_args } => (name.as_str(), type_args.as_slice()),
+        other => panic!("expected Named dimension type, got {:?}", other),
+    };
+    assert_eq!(dim_name, "Derived");
+    assert_eq!(dim_args.len(), 1, "expected 1 type arg");
+    assert_eq!(dim_args[0].to_string(), "Force");
 }
 
 // ── Step 17: multiple unit declarations ───────────────────────────

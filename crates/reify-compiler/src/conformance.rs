@@ -24,24 +24,40 @@ pub(crate) fn check_trait_conformance(
                     .type_expr
                     .as_ref()
                     .map(|te| {
-                        resolve_type_with_aliases(&te.name, &empty_params, alias_registry)
-                            .or_else(|| {
-                                if enum_defs.iter().any(|e| e.name == te.name) {
-                                    Some(Type::Enum(te.name.clone()))
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or_else(|| {
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "unresolved type in conformance check: {}",
-                                        te.name
-                                    ))
-                                    .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
-                                );
-                                Type::Real
-                            })
+                        // Extract name from Named variant; DimensionalOp can't be a param type.
+                        let name_opt = match &te.kind {
+                            reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
+                            reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
+                        };
+                        if let Some(name) = name_opt {
+                            resolve_type_with_aliases(name, &empty_params, alias_registry)
+                                .or_else(|| {
+                                    if enum_defs.iter().any(|e| e.name == name) {
+                                        Some(Type::Enum(name.to_string()))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_else(|| {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "unresolved type in conformance check: {}",
+                                            name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                                    );
+                                    Type::Real
+                                })
+                        } else {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unresolved type in conformance check: {}",
+                                    te
+                                ))
+                                .with_label(DiagnosticLabel::new(te.span, "unexpected dimensional expression")),
+                            );
+                            Type::Real
+                        }
                     })
                     .unwrap_or_else(|| {
                         diagnostics.push(
@@ -62,25 +78,41 @@ pub(crate) fn check_trait_conformance(
                 // check will report "missing required member" rather than a spurious
                 // "no type annotation" error.
                 let te = l.type_expr.as_ref()?;
-                let ty = resolve_type_with_aliases(&te.name, &empty_params, alias_registry)
-                    .or_else(|| {
-                        if enum_defs.iter().any(|e| e.name == te.name) {
-                            Some(Type::Enum(te.name.clone()))
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_else(|| {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "unresolved type in conformance check: {}",
-                                te.name
-                            ))
-                            .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
-                        );
-                        Type::Real
-                    });
-                Some((l.name.clone(), ty))
+                // Extract name from Named variant; DimensionalOp can't be a let type annotation.
+                let name_opt = match &te.kind {
+                    reify_syntax::TypeExprKind::Named { name, .. } => Some(name.as_str()),
+                    reify_syntax::TypeExprKind::DimensionalOp { .. } => None,
+                };
+                if let Some(name) = name_opt {
+                    let ty = resolve_type_with_aliases(name, &empty_params, alias_registry)
+                        .or_else(|| {
+                            if enum_defs.iter().any(|e| e.name == name) {
+                                Some(Type::Enum(name.to_string()))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unresolved type in conformance check: {}",
+                                    name
+                                ))
+                                .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                            );
+                            Type::Real
+                        });
+                    Some((l.name.clone(), ty))
+                } else {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unresolved type in conformance check: {}",
+                            te
+                        ))
+                        .with_label(DiagnosticLabel::new(te.span, "unexpected dimensional expression")),
+                    );
+                    Some((l.name.clone(), Type::Real))
+                }
             }
             _ => None,
         })

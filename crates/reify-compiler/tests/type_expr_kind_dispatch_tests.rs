@@ -179,7 +179,7 @@ fn named_with_type_args_unresolved_diagnostic_mentions_type_names() {
     let err_messages: Vec<&str> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == DiagnosticSeverity::Error)
+        .filter(|d| d.severity == Severity::Error)
         .map(|d| d.message.as_str())
         .collect();
 

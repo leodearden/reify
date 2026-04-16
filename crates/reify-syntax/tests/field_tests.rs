@@ -26,8 +26,8 @@ fn parse_analytical_field() {
 
     assert_eq!(field.name, "temp");
     assert!(!field.is_pub);
-    assert_eq!(field.domain_type.name, "Point3");
-    assert_eq!(field.codomain_type.name, "Scalar");
+    assert_eq!(field.domain_type.to_string(), "Point3");
+    assert_eq!(field.codomain_type.to_string(), "Scalar");
 
     match &field.source {
         FieldSource::Analytical { expr } => {
@@ -60,8 +60,8 @@ fn parse_sampled_field() {
     };
 
     assert_eq!(field.name, "pressure");
-    assert_eq!(field.domain_type.name, "Point3");
-    assert_eq!(field.codomain_type.name, "Scalar");
+    assert_eq!(field.domain_type.to_string(), "Point3");
+    assert_eq!(field.codomain_type.to_string(), "Scalar");
 
     match &field.source {
         FieldSource::Sampled { config } => {
@@ -89,8 +89,8 @@ fn parse_composed_field() {
     };
 
     assert_eq!(field.name, "combined");
-    assert_eq!(field.domain_type.name, "Point3");
-    assert_eq!(field.codomain_type.name, "Vector3");
+    assert_eq!(field.domain_type.to_string(), "Point3");
+    assert_eq!(field.codomain_type.to_string(), "Vector3");
 
     match &field.source {
         FieldSource::Composed { expr } => {

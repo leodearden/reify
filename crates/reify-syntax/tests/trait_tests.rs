@@ -33,7 +33,7 @@ fn parse_basic_trait() {
     match &trait_decl.members[0] {
         MemberDecl::Param(p) => {
             assert_eq!(p.name, "mass");
-            assert_eq!(p.type_expr.as_ref().unwrap().name, "Mass");
+            assert_eq!(p.type_expr.as_ref().unwrap().to_string(), "Mass");
         }
         other => panic!("expected Param, got {:?}", other),
     }
@@ -127,7 +127,7 @@ fn parse_trait_associated_type() {
         MemberDecl::AssociatedType(a) => {
             assert_eq!(a.name, "Material");
             assert!(a.default_type.is_some());
-            assert_eq!(a.default_type.as_ref().unwrap().name, "Steel");
+            assert_eq!(a.default_type.as_ref().unwrap().to_string(), "Steel");
         }
         other => panic!("expected AssociatedType, got {:?}", other),
     }
