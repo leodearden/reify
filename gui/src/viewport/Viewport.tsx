@@ -106,6 +106,13 @@ export function Viewport(props: ViewportProps) {
     // the effect is re-triggered by props.entityVisibility changes, and prevVisKeys is updated
     // synchronously as a side effect. No other code path touches prevVisKeys.
     let prevVisKeys = new Set<string>();
+    // COUPLED INVARIANT with meshManager.ts: the `sync()` function in meshManager
+    // prunes any visibilityMap entry whose key is absent from the incoming mesh set
+    // (orphan-prune block at the end of sync). That prune is safe precisely because
+    // this effect re-applies the authoritative `props.entityVisibility` on every
+    // reactive tick, so legitimate state is re-set after a prune. The two pieces
+    // form a pair: changing orphan-pruning in meshManager requires revisiting this
+    // re-application, and vice versa.
     createEffect(() => {
       const visibility = props.entityVisibility ?? {};
       const currentKeys = new Set(Object.keys(visibility));
