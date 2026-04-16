@@ -139,6 +139,7 @@ mod tests {
             "gravity",
             "infinity",
             "nan",
+            // If you add a constant outside this list, add its name here too.
         ];
 
         for &name in PROBE {
