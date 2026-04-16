@@ -713,9 +713,14 @@ mod tests {
         // The per-function tests above (`geometry_arg_indices_covers_all_geom_arg_functions`
         // and `geometry_arg_indices_empty_for_no_geom_arg_functions`) are the primary
         // correctness guardrail — they verify each function is in the right list.
-        // This literal is a canary pin: if you add a new function to `compile_geometry_call`
-        // you MUST also add it to one of the four lists above AND bump this literal.
-        // That forced bump makes you audit whether the dispatch arm and list are both updated.
+        // This literal is a canary pin for the four lists above. If any of
+        // GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft changes,
+        // bump this literal and verify that `compile_geometry_call` contains a matching
+        // dispatch arm for the new entry.
+        // NOTE: this test does NOT detect the reverse — an arm added to
+        // `compile_geometry_call` without a corresponding entry in one of the four lists.
+        // That gap is an acknowledged limitation; true coverage would require a
+        // source-text scan of the match arms, which is beyond this test's scope.
         assert_eq!(
             all.len(),
             33,
