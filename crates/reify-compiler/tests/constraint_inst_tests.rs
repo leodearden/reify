@@ -587,7 +587,8 @@ structure S {
                 discriminant.kind
             );
             // Two arms: Standard (x < 100mm) and Premium (x < 10mm).
-            // Index explicitly so a swap or duplication of arm bodies is caught.
+            // Arms are emitted in source order by the compiler; tests index
+            // by position to detect body swaps or duplication.
             assert_eq!(arms.len(), 2, "expected 2 match arms");
 
             // arms[0]: Standard => x < 100mm
