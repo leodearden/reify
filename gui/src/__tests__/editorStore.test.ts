@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createRoot, batch } from 'solid-js';
+import { createRoot, createEffect, batch } from 'solid-js';
 import { createEditorStore } from '../stores/editorStore';
 import type { FileData } from '../types';
 
@@ -213,5 +213,54 @@ describe('editorStore', () => {
       expect(state.activeFile).toBe('b.ri');
       dispose();
     });
+  });
+
+  // Step 7: markDirty idempotency at the reactive level
+  // Proves that the includes-guard in markDirty elides setState when the path is
+  // already in dirtyFiles, so the SolidJS reactive graph does NOT re-emit for
+  // 1000 no-op markDirty calls.
+  it('markDirty is idempotent on already-dirty path (no reactive re-emission)', async () => {
+    let counter = 0;
+    let storeRef!: ReturnType<typeof createEditorStore>;
+    let disposeRef!: () => void;
+
+    createRoot((dispose) => {
+      disposeRef = dispose;
+      storeRef = createEditorStore();
+      storeRef.openFile(file1);
+
+      // Track reactive emissions of dirtyFiles.length.
+      // createEffect defers its first run to the next microtask, so counter
+      // remains 0 until we await Promise.resolve() below.
+      createEffect(() => {
+        void storeRef.state.dirtyFiles.length; // establish reactive dependency
+        counter++;
+      });
+    });
+
+    // Flush the initial effect subscription (microtask scheduled by createEffect)
+    await Promise.resolve();
+    expect(counter).toBe(1); // effect ran once: initial subscribe (sees length=0)
+
+    // First markDirty: clean → dirty — causes a real setState, re-queues the effect
+    storeRef.markDirty(file1.path);
+    await Promise.resolve();
+    expect(counter).toBe(2); // effect fired once more (sees length=1)
+
+    // 1000 more markDirty calls on the same already-dirty path.
+    // The includes-guard in markDirty prevents setState, so the reactive graph
+    // does NOT emit and the effect does NOT re-run.
+    for (let i = 0; i < 1000; i++) {
+      storeRef.markDirty(file1.path);
+    }
+
+    // Flush any pending effects (there should be none from the 1000 no-op calls)
+    await Promise.resolve();
+
+    // Counter must still be 2 — exactly one reactive emission per state transition,
+    // zero emissions for idempotent markDirty calls
+    expect(counter).toBe(2);
+
+    disposeRef();
   });
 });
