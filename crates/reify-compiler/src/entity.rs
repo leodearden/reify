@@ -464,7 +464,7 @@ pub(crate) fn compile_entity(
                                 Diagnostic::error(format!("duplicate meta key '{}'", key))
                                     .with_label(DiagnosticLabel::new(
                                         meta.span,
-                                        "in this meta block",
+                                        format!("duplicate key '{}' in this meta block", key),
                                     )),
                             );
                         } else {
