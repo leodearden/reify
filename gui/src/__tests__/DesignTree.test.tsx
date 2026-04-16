@@ -214,6 +214,25 @@ describe('DesignTree — context menu', () => {
     fireEvent.click(document.body);
     expect(screen.queryByTestId('design-tree-context-menu')).toBeNull();
   });
+
+  it('contextmenu on successive rows does not accumulate document click listeners', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    try {
+      render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+      fireEvent.contextMenu(screen.getByTestId('tree-row-Root.A'));
+      fireEvent.contextMenu(screen.getByTestId('tree-row-Root.B'));
+      expect(addSpy.mock.calls.filter((c) => c[0] === 'click').length).toBeLessThanOrEqual(1);
+      fireEvent.click(document.body);
+      expect(screen.queryByTestId('design-tree-context-menu')).toBeNull();
+    } finally {
+      addSpy.mockRestore();
+    }
+  });
 });
 
 describe('DesignTree — keyboard shortcuts', () => {
