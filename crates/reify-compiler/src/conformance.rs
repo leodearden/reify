@@ -365,17 +365,19 @@ pub(crate) fn check_trait_conformance(
 
 /// Kind tag for the `seen_defaults` composite key `(name, DefaultKindTag)`.
 ///
-/// Keeping Param, Let, and Constraint in separate slots means:
-/// - A Param default and a Let default for the same member name do not interfere.
-/// - Cross-kind type comparisons never produce false conflict diagnostics.
-/// - Same-kind dedup and conflict detection continue to work as before.
+/// Keeping `Param` and `Constraint` in separate slots means a Param default
+/// and a Constraint default for the same member name do not interfere, and
+/// cross-kind type comparisons never produce false conflict diagnostics.
+///
+/// `Let` defaults are **not** tracked here — they use the separate
+/// `seen_let_hashes` path (content-hash dedup) and always `continue` before
+/// this composite key is ever reached.
 ///
 /// `AvailableDefaultKind` (used for requirement matching) intentionally has no
 /// `Constraint` variant — constraints are never candidates for satisfying requirements.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum DefaultKindTag {
     Param,
-    Let,
     Constraint,
 }
 
