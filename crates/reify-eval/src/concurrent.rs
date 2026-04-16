@@ -132,8 +132,8 @@ impl Engine {
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
         // Build the full ValueMap from snapshot values.
-        // new_snapshot_values already contains the updated cell (inserted above),
-        // so copying all entries here is sufficient — no separate insert needed.
+        // new_snapshot_values already contains the updated cell (inserted at line ~123),
+        // so copying all entries here covers it — no duplicate insert needed.
         let mut values = ValueMap::new();
         for (id, (val, _det)) in new_snapshot_values.iter() {
             values.insert(id.clone(), val.clone());
@@ -305,7 +305,23 @@ impl Engine {
         setup: &ConcurrentEditSetup,
         result: &mut ConcurrentEditResult,
     ) {
-        // Clear any stale data from a previous call — makes the overwrite semantics explicit.
+        // Chosen approach (belt-and-suspenders): callers MUST pass a fresh
+        // ConcurrentEditResult with empty resolved_params and diagnostics —
+        // these are output buckets, not input/accumulator fields.
+        // In debug/test builds the debug_assert guards enforce this contract
+        // loudly (double-call or reuse is immediately visible). In release
+        // builds the .clear() calls keep behaviour defined: a buggy caller
+        // gets clean outputs rather than stale data leaking into the result.
+        // The asymmetry is intentional — strict signalling in dev, graceful
+        // degradation in production.
+        debug_assert!(
+            result.resolved_params.is_empty(),
+            "resolve_concurrent_edit: resolved_params must be empty on entry (double-call?)"
+        );
+        debug_assert!(
+            result.diagnostics.is_empty(),
+            "resolve_concurrent_edit: diagnostics must be empty on entry (double-call?)"
+        );
         result.resolved_params.clear();
         result.diagnostics.clear();
 

@@ -2095,13 +2095,12 @@ fn strict_auto_non_unique_emits_error_diagnostic() {
     );
 }
 
-/// step-3: resolve_concurrent_edit populates result.resolved_params and
-/// result.diagnostics directly on the ConcurrentEditResult, without the
-/// caller needing to capture a return value and manually re-assign.
+/// Verifies that `resolve_concurrent_edit` mutates `result.resolved_params` and
+/// `result.diagnostics` in place (returning `()`), so callers do not need to
+/// capture a return value and re-assign.
 ///
-/// This test calls resolve_concurrent_edit and then checks the fields on
-/// `result` directly. It is designed to fail until step-4 changes the
-/// method to assign onto `result` instead of returning a tuple.
+/// Passing a fresh `ConcurrentEditResult` whose buckets are initially empty,
+/// we expect `resolved_params` to contain the solver's value after the call.
 #[test]
 fn resolve_concurrent_edit_populates_result_in_place() {
     use std::collections::HashSet;
