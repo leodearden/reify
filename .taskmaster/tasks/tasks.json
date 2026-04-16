@@ -38876,7 +38876,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T21:06:29.079Z"
+        "updatedAt": "2026-04-16T21:06:29.079Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Design Tree UI polish: redundant type_name, ambiguous inherit glyph, applyDefaults churn"
+            ]
+          }
+        }
       },
       {
         "id": "1863",
@@ -38884,11 +38892,11 @@
         "description": "Test defines a local empty `trait Physical {}` so the bound parses. This shim doesn't reflect product behavior — `Physical` is expected to be a well-known stdlib/prelude geometry trait, so if the compiler ever lowers the canonical trait differently (e.g. stores a fully-qualified name) the test will still pass with the fake local trait and miss the regression.",
         "details": "Location: gui/src-tauri/src/tests/engine_tests.rs:2325-2346.\n\nIf a real `Physical` trait is available in the test environment, import/reference it directly so the test exercises the actual lowering path. Otherwise, leave a comment explaining why the local-trait shim is sufficient for now, and add a second assertion that covers how the compiler stores `trait_bounds` for the canonical `Physical` trait (e.g. fully-qualified name) so future lowering changes are detected.\n\n### memory_hints\n- search: \"build_entity_tree_trait_geometry_true_for_physical_bound\"\n- search: \"Physical trait stdlib prelude\"\n<info added on 2026-04-16T21:05:35.571Z>\nNOTE (2026-04-16): Task 1741 was resolved by accepting origin/main's parallel Design Tree implementation. The specific test `build_entity_tree_trait_geometry_true_for_physical_bound` at engine_tests.rs:2325-2346 was a task/1741 branch artifact that did not merge. On main, the equivalent test (if it exists) will be at a different location with a potentially different shim pattern. Before proceeding with this task, grep main for tests that reference a local `trait Physical {}` shim in gui/src-tauri/src/tests/engine_tests.rs; if none exists, this task can be cancelled.\n</info added on 2026-04-16T21:05:35.571Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T21:02:24.232Z"
+        "updatedAt": "2026-04-16T21:08:05.249Z"
       },
       {
         "id": "1864",
@@ -38905,7 +38913,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T21:06:29.079Z",
+      "lastModified": "2026-04-16T21:08:05.249Z",
       "taskCount": 1859,
       "completedCount": 1597,
       "tags": [
