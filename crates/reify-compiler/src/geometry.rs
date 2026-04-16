@@ -592,12 +592,9 @@ pub(crate) fn compile_geometry_call(
                 );
                 return None;
             }
-            // Note: sweep() emits an error diagnostic when profile or path are not
-            // geometry expressions. This is intentionally asymmetric with loft(), which
-            // silently falls back to GeomRef::Step(step_offset) for any non-geometry
-            // profile (matching the geom_ref() helper convention used by extrude/revolve_full).
-            // sweep() is stricter because its two arguments have specific, named roles
-            // (profile and path) that are clearly communicated to the user.
+            // Both sweep() and loft() emit per-argument diagnostics when an arg is
+            // not a geometry expression, then fall back to GeomRef::Step so the op
+            // is still produced for downstream analysis.
             let profile = if let Some(r) = geom_refs.get(&0).cloned() {
                 r
             } else {
