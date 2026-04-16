@@ -4,16 +4,17 @@
 //! for concurrent evaluation and Engine::apply_concurrent_edit() correctly
 //! merges results back.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use reify_eval::cache::{EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::journal::{EventKind, EventPayload};
 use reify_eval::{ConcurrentEditResult, ConcurrentNodeResult, Engine};
-use reify_test_support::bracket_compiled_module;
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_test_support::mocks::{MockConstraintChecker, MultiCallSpyConstraintSolver, SequencedMockConstraintSolver};
+use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, binop, bracket_compiled_module, gt, literal, mm, value_ref};
 use reify_types::{
-    ConstraintNodeId, DeterminacyState, Freshness, SnapshotProvenance, Value, ValueCellId,
+    BinOp, ConstraintNodeId, DeterminacyState, Freshness, ModulePath, SnapshotProvenance,
+    SolveResult, Type, Value, ValueCellId,
 };
 
 /// Test that prepare_concurrent_edit returns ConcurrentEditSetup with correct state.
@@ -312,6 +313,141 @@ fn rollback_concurrent_edit_restores_pending_to_final() {
         volume_val.is_some(),
         "volume should have a value after sequential edit"
     );
+}
+
+/// Helper: build the canonical auto-param module used by pipeline tests.
+///
+/// Template S:
+///   param a (default mm(3.0))
+///   auto x (length)
+///   let y = x * 2.0 (length)
+///   constraint 0: x > a
+fn build_auto_param_module() -> reify_compiler::CompiledModule {
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "x", Type::length())
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(BinOp::Mul, value_ref("S", "x"), literal(Value::Real(2.0))),
+        )
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build()
+}
+
+/// Helper: build a SequencedMockConstraintSolver with two Solved results for x.
+fn make_two_call_solver(
+    x_id: &ValueCellId,
+    first: Value,
+    second: Value,
+) -> SequencedMockConstraintSolver {
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), first);
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), second);
+    SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1, unique: true },
+        SolveResult::Solved { values: solved2, unique: true },
+    ])
+}
+
+/// step-1: Full prepare → resolve → apply pipeline re-resolves auto param.
+///
+/// Module: param a (mm(3.0)), auto x, let y = x*2, constraint x > a.
+/// Solver call 1: x=mm(5.0). Solver call 2: x=mm(20.0).
+/// After cold eval (call 1), change a → mm(8.0), resolve_concurrent_edit should
+/// call the solver again (call 2) and update result.resolved_params and result.values[x].
+/// apply_concurrent_edit should persist the new snapshot.
+#[test]
+fn pipeline_prepare_resolve_apply_re_resolves_auto_param() {
+    let x_id = ValueCellId::new("S", "x");
+    let a_id = ValueCellId::new("S", "a");
+
+    let solver = make_two_call_solver(&x_id, mm(5.0), mm(20.0));
+    let module = build_auto_param_module();
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    // Cold eval: solver call 1 → x = mm(5.0) = 0.005 SI
+    let cold = engine.eval(&module);
+    let cold_x = cold.values.get(&x_id).expect("x should be in cold eval values");
+    assert!(
+        matches!(cold_x, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+        "expected cold x = mm(5.0) = 0.005 SI, got {:?}",
+        cold_x
+    );
+
+    // prepare_concurrent_edit: change a from mm(3.0) to mm(8.0)
+    let setup = engine
+        .prepare_concurrent_edit(a_id.clone(), mm(8.0))
+        .expect("prepare_concurrent_edit should succeed");
+
+    // Build a minimal ConcurrentEditResult: cloned values from setup, no node_results.
+    // The scheduler would have evaluated constraint nodes, but we pass an empty result
+    // since only the solver path (resolve) is under test here.
+    let mut result = ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: vec![],
+        actual_eval_set: setup.eval_set.clone(),
+        skipped: HashSet::new(),
+        resolved_params: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+
+    // resolve_concurrent_edit: solver call 2 → x = mm(20.0) = 0.02 SI
+    engine.resolve_concurrent_edit(&setup, &mut result);
+
+    // resolved_params must contain x → mm(20.0)
+    let resolved_x = result
+        .resolved_params
+        .get(&x_id)
+        .expect("resolved_params should contain x after resolve");
+    assert!(
+        matches!(resolved_x, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected resolved x = mm(20.0) = 0.02 SI, got {:?}",
+        resolved_x
+    );
+
+    // values map must also be updated
+    let val_x = result.values.get(&x_id).expect("values should contain x");
+    assert!(
+        matches!(val_x, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected result.values[x] = mm(20.0) = 0.02 SI, got {:?}",
+        val_x
+    );
+
+    // No diagnostics for a successful solve
+    assert!(result.diagnostics.is_empty(), "expected empty diagnostics, got {:?}", result.diagnostics);
+
+    // Apply the result
+    engine.apply_concurrent_edit(&setup, result);
+
+    // Snapshot should carry x = mm(20.0)
+    let snap = engine.snapshot().expect("snapshot should exist after apply");
+    let (snap_x, snap_det) = snap.values.get(&x_id).expect("x should be in snapshot");
+    assert!(
+        matches!(snap_x, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected snapshot x = mm(20.0) = 0.02 SI, got {:?}",
+        snap_x
+    );
+    assert_eq!(*snap_det, DeterminacyState::Determined);
+
+    // Snapshot version should match setup.version
+    assert_eq!(snap.version, setup.version, "snapshot version should match setup");
+
+    // Provenance should be Edit with changed = {a}
+    match &snap.provenance {
+        SnapshotProvenance::Edit { changed, parent } => {
+            assert!(changed.contains(&a_id), "changed set should contain a");
+            assert_eq!(*parent, setup.parent_snapshot_id);
+        }
+        other => panic!("expected Edit provenance, got {:?}", other),
+    }
 }
 
 /// step-9: apply_concurrent_edit uses eval_duration from ConcurrentNodeResult
