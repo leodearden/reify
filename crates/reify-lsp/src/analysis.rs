@@ -907,11 +907,20 @@ mod tests {
             Type::Int,
             "fallback (literal 2) should have Int type"
         );
-        let decl_text = &source[info.span.start as usize..info.span.end as usize];
-        assert!(
-            decl_text.contains("fallback"),
-            "span should cover the let declaration, got: {decl_text:?}"
+        // Exact byte-position assertions: span must start at the 'l' in
+        // 'let fallback' and end immediately after the RHS literal '2'.
+        let expected_start = source.find("let fallback").unwrap() as u32;
+        let two_pos = source.find("= 2").unwrap() + "= ".len();
+        let expected_end = (two_pos + 1) as u32; // end is just after the '2'
+        assert_eq!(
+            info.span.start, expected_start,
+            "span.start should point at 'let fallback'"
         );
+        assert_eq!(
+            info.span.end, expected_end,
+            "span.end should end after the '2' literal"
+        );
+        assert_eq!(info.decl_name, "S");
     }
 
     // --- decl_name field tests ---
