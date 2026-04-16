@@ -7,7 +7,7 @@ afterEach(() => cleanup());
 describe('MenuBar — basic rendering', () => {
   it('renders with data-testid="menu-bar"', () => {
     render(() => <MenuBar />);
-    expect(screen.getByTestId('menu-bar')).toBeDefined();
+    expect(screen.getByTestId('menu-bar')).not.toBeNull();
   });
 
   it('renders with role="menubar"', () => {
@@ -18,10 +18,10 @@ describe('MenuBar — basic rendering', () => {
 
   it('renders four top-level menu triggers: File, Edit, View, Help', () => {
     render(() => <MenuBar />);
-    expect(screen.getByText('File')).toBeDefined();
-    expect(screen.getByText('Edit')).toBeDefined();
-    expect(screen.getByText('View')).toBeDefined();
-    expect(screen.getByText('Help')).toBeDefined();
+    expect(screen.getByText('File')).not.toBeNull();
+    expect(screen.getByText('Edit')).not.toBeNull();
+    expect(screen.getByText('View')).not.toBeNull();
+    expect(screen.getByText('Help')).not.toBeNull();
   });
 });
 
@@ -30,7 +30,7 @@ describe('MenuBar — File dropdown', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
     const menu = screen.getByRole('menu');
-    expect(menu).toBeDefined();
+    expect(menu).not.toBeNull();
   });
 
   it('File dropdown contains Open, Save, Export items', () => {
@@ -70,7 +70,7 @@ describe('MenuBar — File dropdown', () => {
   it('clicking File trigger again closes the dropdown', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
-    expect(screen.getByRole('menu')).toBeDefined();
+    expect(screen.getByRole('menu')).not.toBeNull();
     fireEvent.click(screen.getByText('File'));
     expect(screen.queryByRole('menu')).toBeNull();
   });
@@ -221,7 +221,7 @@ describe('MenuBar — interaction behaviors', () => {
   it('pressing Escape while a menu is open closes it', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
-    expect(screen.getByRole('menu')).toBeDefined();
+    expect(screen.getByRole('menu')).not.toBeNull();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('menu')).toBeNull();
   });
@@ -230,7 +230,7 @@ describe('MenuBar — interaction behaviors', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
     // File dropdown should be open
-    expect(screen.getByRole('menu')).toBeDefined();
+    expect(screen.getByRole('menu')).not.toBeNull();
     // Hover Edit trigger
     fireEvent.mouseEnter(screen.getByText('Edit'));
     // Edit dropdown should now be open instead
@@ -244,12 +244,12 @@ describe('MenuBar — interaction behaviors', () => {
   it('does not close the menu when mousedown target is not a Node', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
-    expect(screen.getByRole('menu')).toBeDefined();
+    expect(screen.getByRole('menu')).not.toBeNull();
     // Dispatch a mousedown where target is a non-Node (e.g. null via Object.create)
     const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
     Object.defineProperty(event, 'target', { value: null, writable: false });
     document.dispatchEvent(event);
     // Menu should remain open (guard skips when target is not a Node)
-    expect(screen.getByRole('menu')).toBeDefined();
+    expect(screen.getByRole('menu')).not.toBeNull();
   });
 });
