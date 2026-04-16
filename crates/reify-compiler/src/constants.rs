@@ -57,6 +57,19 @@ pub(crate) fn resolve_builtin_constant(name: &str) -> Option<CompiledExpr> {
 mod tests {
     use super::*;
 
+    /// The number of constants recognised by `resolve_builtin_constant`.
+    ///
+    /// **Keep this in sync with the match arms in `resolve_builtin_constant`.**
+    /// When you add a new match arm, bump this constant AND add the name to
+    /// `BUILTIN_NAMES`. The two guard tests below enforce both directions:
+    ///
+    /// - `builtin_names_covers_all_constants` — every name in `BUILTIN_NAMES`
+    ///   resolves (forward direction).
+    /// - `builtin_names_is_exhaustive` — `BUILTIN_NAMES` contains exactly
+    ///   `BUILTIN_NAMES_COUNT` entries, equal to the number of match arms
+    ///   (reverse direction).
+    const BUILTIN_NAMES_COUNT: usize = 2;
+
     /// Guard: every name in `BUILTIN_NAMES` must resolve via
     /// `resolve_builtin_constant`. If this test fails, a name was added to
     /// `BUILTIN_NAMES` (the hint source-of-truth) without a corresponding
@@ -73,5 +86,26 @@ mod tests {
                 name,
             );
         }
+    }
+
+    /// Guard: `BUILTIN_NAMES` must be exhaustive relative to the match arms in
+    /// `resolve_builtin_constant`. If this test fails after adding a new
+    /// constant, you must both bump `BUILTIN_NAMES_COUNT` and add the name to
+    /// `BUILTIN_NAMES`.
+    ///
+    /// Together with `builtin_names_covers_all_constants` this enforces the
+    /// bidirectional contract: every name in the list resolves, and the list
+    /// contains exactly as many names as there are match arms.
+    #[test]
+    fn builtin_names_is_exhaustive() {
+        assert_eq!(
+            BUILTIN_NAMES.len(),
+            BUILTIN_NAMES_COUNT,
+            "BUILTIN_NAMES.len() ({}) != BUILTIN_NAMES_COUNT ({}) — \
+             if you added a match arm in resolve_builtin_constant, \
+             bump BUILTIN_NAMES_COUNT AND add the name to BUILTIN_NAMES",
+            BUILTIN_NAMES.len(),
+            BUILTIN_NAMES_COUNT,
+        );
     }
 }
