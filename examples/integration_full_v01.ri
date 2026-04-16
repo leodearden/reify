@@ -128,6 +128,7 @@ structure def Assembly : Physical + Locatable {
     param height    : Length = 300mm
     param width     : Length = 150mm
     param clearance : Length = 500mil
+    param enabled   : Bool   = true
 
     // ── Auto params ───────────────────────────────────────────────────────
     param load_auto : Real   = auto
