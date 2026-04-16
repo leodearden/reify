@@ -39395,11 +39395,11 @@
         "description": "All action-click tests in `gui/src/__tests__/DesignTreeContextMenu.test.tsx:20-93` locate buttons by `menu.querySelectorAll('button')` and index. Reordering or inserting a button silently shifts every assertion onto a different action and the suite still passes. The component already exposes stable testids (ctx-show-cascade, ctx-ghost-cascade, ctx-hide-cascade, ctx-show-only, ctx-reset, ctx-show-only-no-cascade).",
         "details": "Switch each action-click test to `screen.getByTestId('ctx-…')`. Keep one index-based test to pin the rendered label order (existing label-order test is fine for that).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:22:08.473Z"
+        "updatedAt": "2026-04-16T23:08:14.025Z"
       },
       {
         "id": "1883",
@@ -39554,9 +39554,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T23:02:58.589Z",
+      "lastModified": "2026-04-16T23:08:14.025Z",
       "taskCount": 1887,
-      "completedCount": 1617,
+      "completedCount": 1618,
       "tags": [
         "master"
       ]
