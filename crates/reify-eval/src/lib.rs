@@ -2893,15 +2893,20 @@ impl Engine {
                 }
             }
 
-            if step_handles.is_empty() && total_ops > 0 {
-                // All geometry operations failed — skip export entirely
-                diagnostics.push(Diagnostic::error(
-                    "all geometry operations failed; no geometry output produced",
-                ));
+            if step_handles.is_empty() {
+                // No geometry handles available — nothing to export.
+                // Only emit the summary diagnostic when ops were actually attempted
+                // but all failed; when total_ops==0 there is simply no geometry.
+                if total_ops > 0 {
+                    diagnostics.push(Diagnostic::error(
+                        "all geometry operations failed; no geometry output produced",
+                    ));
+                }
                 None
             } else {
-                // Export the result
-                let export_handle = step_handles.last().copied().unwrap_or(GeometryHandleId(0));
+                // Safety: step_handles is non-empty (guarded by the is_empty() check above),
+                // so last() is always Some and unwrap() cannot panic.
+                let export_handle = *step_handles.last().unwrap();
                 let mut output = Vec::new();
                 match kernel.export(export_handle, format, &mut output) {
                     Ok(()) => Some(output),
