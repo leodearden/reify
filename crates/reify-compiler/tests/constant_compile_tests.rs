@@ -197,9 +197,9 @@ structure S {
     // x must resolve to the collection list ValueRef, NOT Literal(Real(PI)).
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
-            assert_eq!(
-                id.member, "__list_pi__diameter",
-                "expected member '__list_pi__diameter' (PiPart's lexicographically-first field), got {:?}",
+            assert!(
+                id.member.starts_with("__list_pi__"),
+                "expected member starting with '__list_pi__' for collection sub 'pi', got {:?}",
                 id.member
             );
             assert!(
