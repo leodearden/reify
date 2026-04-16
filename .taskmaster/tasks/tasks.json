@@ -39025,7 +39025,9 @@
         "details": "Preferred approach: add a debug_assert in the Engine compilation path (or a dedicated test over the stdlib + existing test fixtures) that iterates all value cells and asserts their declared Type is not TypeParam/StructureRef/Geometry. If this assertion ever fires, the documented \"unreachable\" claim in value_type_kind_matches needs updating. Keep within crates/reify-eval scope.\n<info added on 2026-04-16T21:53:08.841Z>\nEnsure the debug_assert is placed within the Engine module's compilation path to verify that value cells do not carry Type::TypeParam, Type::StructureRef, or Type::Geometry after compilation. This will help confirm the default-reject branch in value_type_kind_matches is indeed unreachable. Additionally, consider adding a dedicated test in crates/reify-eval/tests/value_cell_type_invariants.rs to iterate over all value cells and assert their declared Type is not one of these variants.\n</info added on 2026-04-16T21:53:08.841Z>",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "1869"
+        ],
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-16T21:26:18.888Z",
