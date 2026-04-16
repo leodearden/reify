@@ -1869,16 +1869,9 @@ fn build_snapshot_sentinel_placeholder_continues_independent_ops() {
 // Tests: zero-ops module (no realizations) — task-1780
 // ---------------------------------------------------------------------------
 
-/// When a module has no geometry operations at all (template has no realizations,
-/// so total_ops=0), build() should return geometry_output=None.
-///
-/// Bug: the current `else` branch evaluates
-/// `step_handles.last().copied().unwrap_or(GeometryHandleId(0))`, producing
-/// handle 0 — which MockGeometryKernel happily exports — so build() incorrectly
-/// returns Some. After the fix, `step_handles.is_empty()` alone gates the None
-/// path, so zero-ops modules cleanly return None without attempting any export.
-#[test]
-fn build_no_geometry_returns_none_when_zero_ops() {
+/// Helper: build a zero-ops module (no realizations, total_ops=0) at the
+/// given module path and return the BuildResult.
+fn build_zero_ops_result(path: &str) -> reify_eval::BuildResult {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
@@ -1887,14 +1880,27 @@ fn build_no_geometry_returns_none_when_zero_ops() {
         .param(e, "width", Type::length(), Some(mm_literal(80.0)))
         .build();
 
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_zero_ops"))
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(path))
         .template(template)
         .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&module, ExportFormat::Step);
+    engine.build(&module, ExportFormat::Step)
+}
+
+/// When a module has no geometry operations at all (template has no realizations,
+/// so total_ops=0), build() should return geometry_output=None.
+///
+/// Bug: the previous `else` branch evaluated
+/// `step_handles.last().copied().unwrap_or(GeometryHandleId(0))`, producing
+/// handle 0 — which MockGeometryKernel happily exported — so build() incorrectly
+/// returned Some. After the fix, `step_handles.is_empty()` alone gates the None
+/// path, so zero-ops modules cleanly return None without attempting any export.
+#[test]
+fn build_no_geometry_returns_none_when_zero_ops() {
+    let result = build_zero_ops_result("test_zero_ops");
 
     // No geometry ops → no geometry output (not even a spurious GeometryHandleId(0) export)
     assert!(
@@ -1910,22 +1916,7 @@ fn build_no_geometry_returns_none_when_zero_ops() {
 /// so the absence of geometry is not an error condition.
 #[test]
 fn build_no_geometry_no_spurious_diagnostic_when_zero_ops() {
-    let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-
-    // Template with a parameter but NO realizations — total_ops stays 0
-    let template = TopologyTemplateBuilder::new(e)
-        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
-        .build();
-
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_zero_ops_diag"))
-        .template(template)
-        .build();
-
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&module, ExportFormat::Step);
+    let result = build_zero_ops_result("test_zero_ops_diag");
 
     // Must NOT emit the 'all geometry operations failed' diagnostic — no ops were attempted
     let has_all_failed = result
@@ -1955,6 +1946,43 @@ fn build_no_geometry_no_spurious_diagnostic_when_zero_ops() {
             .diagnostics
             .iter()
             .filter(|d| d.message.contains("export error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Regression guard: when total_ops > 0 but all kernel ops fail (step_handles
+/// ends up empty because every execute() call returned Err), build() should
+/// return geometry_output=None AND emit 'all geometry operations failed'.
+///
+/// This verifies the diagnostic is still emitted after the refactor that
+/// nested the `if total_ops > 0` guard inside the `step_handles.is_empty()`
+/// branch — ensuring the diagnostic path was not accidentally removed.
+#[test]
+fn build_all_ops_fail_diagnostic_emitted_after_refactor() {
+    let module = module_with_box_realization(); // total_ops=1
+    let checker = MockConstraintChecker::new();
+    let kernel = FailingMockGeometryKernel; // all execute() calls return Err
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output=None when all ops fail, got Some({} bytes)",
+        result.geometry_output.as_ref().map_or(0, |v| v.len())
+    );
+
+    let has_summary = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("all geometry operations failed"));
+    assert!(
+        has_summary,
+        "expected 'all geometry operations failed' diagnostic when total_ops>0 \
+         and all kernel ops fail, got: {:?}",
+        result
+            .diagnostics
+            .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
     );
