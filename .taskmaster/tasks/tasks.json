@@ -37986,11 +37986,11 @@
         "description": "Two improvements to the MenuBar component from task 1794 review:\n\n1. ShortcutId union type (gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx): Add `as const` to the SHORTCUTS array, derive `type ShortcutId = typeof SHORTCUTS[number]['id']`, export it, and use it as the type for MenuItemDef.shortcutId. Also update getShortcut() and shortcutKey() parameter types. This catches typos at compile time instead of silently falling back to empty string via the `?? ''` fallback.\n2. Test assertion specificity (gui/src/__tests__/MenuBar.test.tsx): Replace ~12 instances of expect(element).toBeTruthy() with expect(element).toBeDefined() for DOM query results. Focus on lines 10, 21-24, 33, 73, 213-214, 224, 233, 247, 253.\n\nSkipped: adding a comment to the non-Node mousedown target test — existing inline comments already document the scenario adequately.\n\nFiles: gui/src/shortcuts.ts, gui/src/panels/MenuBar.tsx, gui/src/__tests__/MenuBar.test.tsx",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T20:27:02.795Z",
+        "updatedAt": "2026-04-16T21:10:04.460Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/MenuBar.test.tsx",
@@ -38945,9 +38945,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T21:10:00.971Z",
+      "lastModified": "2026-04-16T21:10:04.460Z",
       "taskCount": 1861,
-      "completedCount": 1597,
+      "completedCount": 1598,
       "tags": [
         "master"
       ]
