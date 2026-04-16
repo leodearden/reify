@@ -39498,11 +39498,11 @@
         "description": "Follow-up to task 1878. Four reviewer_comprehensive suggestions against `crates/reify-compiler/tests/solid_param_tests.rs` identifying loose assertions and confusing helpers.",
         "details": "From reviewer_comprehensive pass on task 1878 (esc-1878-39). Four items in `crates/reify-compiler/tests/solid_param_tests.rs`:\n\n1. **Misleading helper `realization_named` (lines 50-63).** The name implies name-based lookup, but the implementation is parallel-list indexing: `RealizationNodeId` has no `name` field (only `entity: String`, `index: u32`), so `names[idx]` is never validated against `realizations[idx]`. If realization emission order changes for `g`/`other`/`out`, the helper silently returns the wrong realization. Doc comment claims \"resilient to minor ordering changes\" — it is strictly *more* fragile than direct indexing with a comment, while hiding that fragility behind a name-lookup-looking API. Also, the `names.len() == realizations.len()` assertion duplicates the existing `realizations.len() == 3` check at the call site.\n   - Fix: either drop the helper and use direct indexing with a comment naming the expected order (matches how the other tests in this file already work), or match against `RealizationNodeId::entity` if a name association exists/is added.\n\n2. **Loose assertion `out_realization.operations.len() >= 3` (lines 228-233).** The lowering is deterministic: cylinder + sphere + Difference = exactly 3 ops. Using `>=` allows a future regression that duplicates ops (e.g. inlining `g` twice or emitting both the alias lookup and the original op) to pass silently.\n   - Fix: assert `operations.len() == 3`.\n\n3. **Weak test `solid_param_default_aliasing_geometry_let_is_realization` (lines 305-312).** Only checks `operations.is_empty()` is false per realization. Passes even if `g`'s realization contains an unrelated placeholder op rather than the inlined cylinder. The whole point is to prove the Ident branch of `is_geometry_let` resolves `a`'s cylinder ops into `g`.\n   - Fix: assert that at least one realization contains a `CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }`, mirroring the kind-level assertions in `solid_param_referenced_by_downstream_boolean_op`.\n\n4. **Redundant helper `compile_allowing_errors` (lines 41-43).** One-line alias of `parse_and_compile`, used once. Semantically motivated in the doc block but duplicative at the code level.\n   - Fix: inline `parse_and_compile(source)` at the single pin-down call site with an inline comment, OR remove `parse_and_compile` and let `compile_allowing_errors` be the unaliased primitive that `compile_no_errors` wraps.\n\nmemory_hints:\n- search: \"solid_param_tests realization_named\"\n- search: \"is_geometry_let alias chain\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:51:02.239Z"
+        "updatedAt": "2026-04-16T23:26:44.331Z"
       },
       {
         "id": "1890",
@@ -39566,9 +39566,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T23:25:06.981Z",
+      "lastModified": "2026-04-16T23:26:44.331Z",
       "taskCount": 1888,
-      "completedCount": 1624,
+      "completedCount": 1625,
       "tags": [
         "master"
       ]
