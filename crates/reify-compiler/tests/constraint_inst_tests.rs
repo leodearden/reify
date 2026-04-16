@@ -507,6 +507,38 @@ structure S {
                 }
                 other => panic!("expected BinOp for else_branch, got {:?}", other),
             }
+
+            // Cross-branch ValueCellId consistency: all three references to
+            // parameter `x` (substituted to `width`) must resolve to the
+            // *same* ValueCellId (entity + member).  A bug that produces
+            // different entity prefixes across branches (e.g. 'S' vs 'S2')
+            // would be invisible to the per-branch member-name checks above.
+            let condition_width_id = match &condition.kind {
+                CompiledExprKind::BinOp { left, .. } => {
+                    extract_value_ref_id(left, "condition.left")
+                }
+                _ => unreachable!("already validated condition is BinOp"),
+            };
+            let then_width_id = match &then_branch.kind {
+                CompiledExprKind::BinOp { left, .. } => {
+                    extract_value_ref_id(left, "then_branch.left")
+                }
+                _ => unreachable!("already validated then_branch is BinOp"),
+            };
+            let else_width_id = match &else_branch.kind {
+                CompiledExprKind::BinOp { left, .. } => {
+                    extract_value_ref_id(left, "else_branch.left")
+                }
+                _ => unreachable!("already validated else_branch is BinOp"),
+            };
+            assert_eq!(
+                condition_width_id, then_width_id,
+                "condition and then_branch must reference the same ValueCellId for param x"
+            );
+            assert_eq!(
+                condition_width_id, else_width_id,
+                "condition and else_branch must reference the same ValueCellId for param x"
+            );
         }
         other => panic!(
             "expected Conditional constraint expr, got {:?}",
