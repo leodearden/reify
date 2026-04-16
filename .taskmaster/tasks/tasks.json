@@ -38723,11 +38723,11 @@
         "description": "The existing `chamfer_full_pipeline_creates_correct_geometryop` test in `chamfer_e2e.rs` (and the similar test in `fillet_e2e.rs`) contains boilerplate that `run_modify_pipeline` now encapsulates. Refactor these e2e tests to use the new helper for setup while retaining their detailed op-value assertions on the returned `ops`.\n\nThis should reduce ~30-50 lines of duplicated setup per test without losing any assertion depth.\n\n## memory_hints\n- search: \"run_modify_pipeline test helper reify-test-support\"\n- get_entity: \"helpers.rs\"\n- get_entity: \"chamfer_e2e.rs\"\n- get_entity: \"fillet_e2e.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T20:27:04.626Z",
+        "updatedAt": "2026-04-16T20:35:58.816Z",
         "metadata": {
           "files": [
             "crates/reify-eval/tests/chamfer_e2e.rs",
@@ -38829,9 +38829,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T20:34:50.712Z",
+      "lastModified": "2026-04-16T20:35:58.817Z",
       "taskCount": 1855,
-      "completedCount": 1592,
+      "completedCount": 1593,
       "tags": [
         "master"
       ]
