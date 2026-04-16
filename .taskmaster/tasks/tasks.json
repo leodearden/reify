@@ -38948,11 +38948,11 @@
         "description": "Five review suggestions for crates/reify-eval/tests/concurrent.rs from task 1850 review (reviewer_comprehensive):\n\n1. **Strengthen `apply_concurrent_edit_persists_resolved_params_to_param_overrides` (~line 763).** Current part (b) asserts only `matches!(second_x, Value::Scalar { .. })`, which passes even if `param_overrides` was never written because the second `eval()` calls the solver (solved3) which independently yields a Scalar. Replace with one of:\n   - Expose a test accessor for `engine.param_overrides` and assert it contains `(x, mm(20.0))` after apply; OR\n   - Construct a scenario where `param_overrides` is the only x source on the next eval (e.g. SolveResult::Infeasible on call 3, or a module where the solver isn't invoked) and assert x still equals mm(20.0).\n\n2. **DRY ConcurrentEditResult construction boilerplate.** The same `setup.values.clone() / setup.snapshot_values.clone() / empty node_results / setup.eval_set.clone() / empty skipped / empty resolved_params / empty diagnostics` pattern appears in at least 5 tests (pipeline_prepare_resolve_apply, resolve_concurrent_edit_second_wave_updates_dependent_let_binding, resolve_concurrent_edit_without_solver_is_noop, apply_concurrent_edit_persists_resolved_params_to_param_overrides, resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty). Extract a file-local helper `fn empty_result_from_setup(setup: &ConcurrentEditSetup) -> ConcurrentEditResult`.\n\n3. **Remove unused-variable drop() tricks.** Line ~521: `drop(a_id)` — `a_id` is already used via `.clone()` upstream, so this is a no-op with confusing intent; delete it. Line ~586: `drop((b_id, bogus_id))` — `b_id` is genuinely unused; rename to `_b_id` or remove the binding entirely.\n\n4. **Remove hardcoded source line numbers from test messages/docstrings.** `resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty` (~line 911) asserts with \"the constraints_dirty guard at concurrent.rs:369-371 is not firing\"; its docstring (~line 827) similarly references \"concurrent.rs:261-263, concurrent.rs:369-371\". Rewrite to refer to the guard/symbol by name (e.g. \"constraints_dirty guard in resolve_concurrent_edit\") without line numbers.\n\n5. **Strengthen `rollback_restores_every_pending_node_to_final` (~line 596).** The `for node_id in &setup.eval_set { if let Some(entry) = ... }` iteration silently skips nodes with no cache entry, so the test would vacuously pass if the cache were empty. The `volume_node` sanity check only asserts eval_set contains volume, not that any cache entries were actually examined. Track a count of examined cache entries and assert it is >= a known-stable lower bound for the bracket module (e.g. includes volume, C1, R0).\n\nmemory_hints:\n- search: \"concurrent edit test\" \"ConcurrentEditResult helper\"\n- entity: Engine, ConcurrentEditSetup, ConcurrentEditResult\n\nspawned_from: 1850",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T21:11:38.409Z",
+        "updatedAt": "2026-04-16T21:34:29.095Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/concurrent.rs"
@@ -39099,7 +39099,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T21:34:22.852Z",
+      "lastModified": "2026-04-16T21:34:29.095Z",
       "taskCount": 1866,
       "completedCount": 1602,
       "tags": [
