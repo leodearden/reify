@@ -3253,3 +3253,42 @@ fn commit_state_refreshes_caches_on_update_source() {
     // source2 has exactly one '\n'.
     assert_eq!(offsets_len_2, 1, "source2 has exactly 1 newline");
 }
+
+/// Proves that get_containing_definition reads from parsed_cache rather than
+/// re-parsing the source text.  If the old re-parse path were still active,
+/// replacing the cache with an empty ParsedModule would have no effect and the
+/// method would still find the Bracket definition.
+#[test]
+fn get_containing_definition_reads_from_parsed_cache() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    // Baseline: position (1,1) is inside the Bracket def.
+    let before = session.get_containing_definition(1, 1);
+    assert!(
+        before.is_some(),
+        "baseline: get_containing_definition(1,1) should return Some for bracket source"
+    );
+
+    // Replace parsed_cache with a stripped ParsedModule that has no declarations.
+    let stripped = {
+        let mut p = session
+            .parsed_cache_for_test()
+            .expect("parsed_cache should be Some after load")
+            .clone();
+        p.declarations = Vec::new();
+        p
+    };
+    session.override_parsed_cache_for_test(stripped);
+
+    // Now the cache has no declarations → must return None.
+    let after = session.get_containing_definition(1, 1);
+    assert!(
+        after.is_none(),
+        "after stripping parsed_cache, get_containing_definition should return None \
+         (proves the method reads from cache, not re-parsing source)"
+    );
+}
