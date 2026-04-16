@@ -4,13 +4,14 @@ use super::*;
 ///
 /// Takes pre-resolved target GeomRef, expr_span for diagnostics, and pre-accumulated sub_ops.
 ///
-/// Shell/thicken/draft use the passed `target`, push to sub_ops, and return Some(sub_ops).
+/// All arms use the passed `target`, push to sub_ops, and return Some(sub_ops).
 ///
-/// Chamfer/fillet use hardcoded GeomRef::Step(0) and return Some(vec![op]).
-/// NOTE: This preserves a known bug where chamfer/fillet are NOT registered in
-/// geometry_arg_indices(), so sub_ops is always empty for them and geom_ref(0)
-/// resolves to GeomRef::Step(step_offset). The caller passes GeomRef::Step(0)
-/// explicitly to maintain bug-for-bug compatibility.
+/// NOTE: chamfer/fillet are NOT registered in geometry_arg_indices(), so their
+/// sub_ops is always empty and geom_ref(0) in the caller would fall back to
+/// GeomRef::Step(step_offset) rather than a true geometry ref. The caller
+/// (geometry.rs) passes GeomRef::Step(0) explicitly for chamfer/fillet to
+/// preserve bug-for-bug compatibility with existing behaviour. This function
+/// simply honours whatever target it receives.
 pub(crate) fn compile_modify_op(
     name: &str,
     compiled_args: Vec<CompiledExpr>,
@@ -99,11 +100,6 @@ pub(crate) fn compile_modify_op(
             Some(sub_ops)
         }
         // chamfer(target, distance)
-        // NOTE: Preserves known bug — uses hardcoded GeomRef::Step(0) regardless of passed target.
-        // Chamfer is not registered in geometry_arg_indices(), so sub_ops is always empty
-        // and geom_ref(0) in the caller resolves to GeomRef::Step(step_offset), not the
-        // geometry argument. The caller passes GeomRef::Step(0) explicitly for chamfer/fillet
-        // to make the bug preservation explicit and testable.
         "chamfer" => {
             if compiled_args.len() != 2 {
                 diagnostics.push(
@@ -116,17 +112,18 @@ pub(crate) fn compile_modify_op(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Modify {
+            let op = CompiledGeometryOp::Modify {
                 kind: ModifyKind::Chamfer,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("distance".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // fillet(target, radius)
-        // NOTE: Same bug preservation as chamfer above.
         "fillet" => {
             if compiled_args.len() != 2 {
                 diagnostics.push(
@@ -139,14 +136,16 @@ pub(crate) fn compile_modify_op(
                 return None;
             }
             let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Modify {
+            let op = CompiledGeometryOp::Modify {
                 kind: ModifyKind::Fillet,
-                target: GeomRef::Step(0),
+                target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
                     ("radius".to_string(), it.next().unwrap()),
                 ],
-            }])
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         _ => unreachable!("compile_modify_op called with non-modify name: {}", name),
     }

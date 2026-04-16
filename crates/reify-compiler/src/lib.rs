@@ -2281,20 +2281,29 @@ structure S {
 
     #[test]
     fn compile_modify_op_chamfer_preserves_step0() {
-        // chamfer(target, distance) — known bug: always uses GeomRef::Step(0), not the passed target
-        let args: Vec<CompiledExpr> = (1..=2).map(|i| scalar_literal(i as f64)).collect();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let target = GeomRef::Step(99); // pass a non-zero target
-        let span = SourceSpan::new(0, 0);
-        let result = compile_modify_op("chamfer", args, target, span, &mut diagnostics, vec![]);
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
-        let ops = result.expect("compile_modify_op chamfer should return Some");
+        // The bug-preservation lives in the *caller* (geometry.rs), not in compile_modify_op.
+        // geometry.rs passes GeomRef::Step(0) explicitly for chamfer/fillet because they are
+        // not registered in geometry_arg_indices() — so geom_ref(0) would fall back to
+        // GeomRef::Step(step_offset) rather than a resolved geometry ref.
+        //
+        // This integration test verifies the full compile pipeline produces GeomRef::Step(0)
+        // for chamfer, confirming the caller upholds bug-for-bug compatibility.
+        let source = r#"structure S {
+    param target: Scalar = 5mm
+    param dist: Scalar = 2mm
+    let result = chamfer(target, dist)
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_chamfer_step0"));
+        assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+        let compiled = compile(&parsed);
+        assert!(compiled.diagnostics.is_empty(), "unexpected diagnostics: {:?}", compiled.diagnostics);
+        let ops = &compiled.templates[0].realizations[0].operations;
         assert_eq!(ops.len(), 1);
         match &ops[0] {
             CompiledGeometryOp::Modify { kind: ModifyKind::Chamfer, target: op_target, .. } => {
-                // Preserves the known bug: chamfer always uses GeomRef::Step(0)
+                // Caller passes GeomRef::Step(0) for chamfer — bug preserved in dispatch
                 assert_eq!(*op_target, GeomRef::Step(0),
-                    "chamfer must use GeomRef::Step(0) to preserve bug compatibility, got {:?}", op_target);
+                    "chamfer caller must pass GeomRef::Step(0) for bug-compat, got {:?}", op_target);
             }
             other => panic!("expected Modify(Chamfer), got {:?}", other),
         }
