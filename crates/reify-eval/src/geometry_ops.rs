@@ -257,9 +257,15 @@ pub(crate) fn compile_geometry_op(
                                     name
                                 )));
                             }
-                            Some(f) if !f.is_finite() || f < 0.0 => {
+                            Some(f) if !f.is_finite() => {
                                 diagnostics.push(Diagnostic::warning(format!(
-                                    "Shell face index '{}' is negative or non-finite ({}) — skipped",
+                                    "Shell face index '{}' is non-finite ({}) — skipped",
+                                    name, f
+                                )));
+                            }
+                            Some(f) if f < 0.0 => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "Shell face index '{}' is negative ({}) — skipped",
                                     name, f
                                 )));
                             }
