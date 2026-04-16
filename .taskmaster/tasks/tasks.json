@@ -39016,11 +39016,11 @@
         "description": "Follow-up from Task 1815 review. The explanatory comment block at gui/src/shortcuts.ts:60-73 is 14 lines, largely repeats itself (two paragraphs both describe the TS2339 narrowing problem), and references specific file/line numbers (`KeyboardHelp.tsx:33`, `useKeyboardShortcuts.ts:54-55`, `shortcuts.test.ts:99`) that will rot as those files change.\n\nReduce to ~3 lines: explain the `as const satisfies` pattern and why SHORTCUTS is widened for consumption (or narrowed if the companion task \"tighten SHORTCUTS element type\" lands first — in which case the TS2339 rationale disappears entirely and this comment should be rewritten to describe the `& { id: ShortcutId }` approach). Omit specific file/line references.\n\nScope: gui/src/shortcuts.ts only.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T21:53:29.019Z",
+        "updatedAt": "2026-04-16T22:49:11.454Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/shortcuts.test.ts",
@@ -39482,9 +39482,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T22:49:04.960Z",
+      "lastModified": "2026-04-16T22:49:11.454Z",
       "taskCount": 1883,
-      "completedCount": 1611,
+      "completedCount": 1612,
       "tags": [
         "master"
       ]
