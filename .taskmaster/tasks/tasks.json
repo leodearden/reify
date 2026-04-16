@@ -38289,11 +38289,11 @@
         "description": "The `edit_param` validation in `Engine` (lib.rs ~line 1842) only catches dimension mismatches when both the cell type is `Type::Scalar` and the supplied value is `Value::Scalar`. If a caller passes a wrong Value variant (e.g., `Value::Bool(true)` to a `Type::Scalar` cell, or `Value::Scalar` to a `Type::Bool` cell), the check silently passes and the type-mismatched value propagates into the eval graph.\n\nTwo fixes needed:\n1. **Validation**: Add a broader type-kind check in `edit_param` that rejects mismatched Value variants (e.g., Value::Bool for Type::Scalar). Consider a new `EngineError::TypeKindMismatch` variant or extend the existing validation logic.\n2. **Tests**: Add `edit_param_wrong_value_kind` and `edit_check_wrong_value_kind` tests in `incremental_integration.rs` that pass wrong Value variants (e.g., `Value::Bool(true)` to the height Scalar cell) and assert the expected error behavior.\n\nmemory_hints: search \"EngineError edit_param validation\" for the validation code context; get_entity \"edit_param\" for related patterns.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-16T20:38:12.830Z",
+        "updatedAt": "2026-04-16T21:19:23.512Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -39023,9 +39023,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T21:19:17.449Z",
+      "lastModified": "2026-04-16T21:19:23.512Z",
       "taskCount": 1864,
-      "completedCount": 1599,
+      "completedCount": 1600,
       "tags": [
         "master"
       ]
