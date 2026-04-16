@@ -16,16 +16,16 @@ use reify_types::{
 // ---------------------------------------------------------------------------
 
 /// Builds a `CompiledModule` at `path` with fixed width=80 / height=100 /
-/// depth=5 mm parameters.  When `ops` is `Some(vec)`, attaches one
-/// realization containing those ops; when `None`, the template has no
-/// realizations (total_ops=0).
+/// depth=5 mm parameters.  When `ops` is non-empty, attaches one realization
+/// containing those ops; when empty, the template has no realizations
+/// (total_ops=0).
 ///
 /// Callers that need kernel/checker flexibility receive the raw `CompiledModule`
 /// and wire up their own `Engine` — this helper is intentionally narrow so it
 /// does not need to accept kernel or format parameters.
 fn build_module_with_ops(
     path: &str,
-    ops: Option<Vec<CompiledGeometryOp>>,
+    ops: &[CompiledGeometryOp],
 ) -> reify_compiler::CompiledModule {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
@@ -35,8 +35,8 @@ fn build_module_with_ops(
         .param(e, "height", Type::length(), Some(mm_literal(100.0)))
         .param(e, "depth", Type::length(), Some(mm_literal(5.0)));
 
-    if let Some(v) = ops {
-        builder = builder.realization(e, 0, v);
+    if !ops.is_empty() {
+        builder = builder.realization(e, 0, ops.to_vec());
     }
 
     let template = builder.build();
@@ -60,7 +60,7 @@ fn module_with_box_realization() -> reify_compiler::CompiledModule {
         ],
     };
 
-    build_module_with_ops("test_shape", Some(vec![box_op]))
+    build_module_with_ops("test_shape", &[box_op])
 }
 
 // ---------------------------------------------------------------------------
@@ -1893,9 +1893,9 @@ fn build_snapshot_sentinel_placeholder_continues_independent_ops() {
 /// Helper: build a zero-ops module (no realizations, total_ops=0) at the
 /// given module path and return the BuildResult.
 fn build_zero_ops_result(path: &str) -> reify_eval::BuildResult {
-    // `build_module_with_ops(path, None)` produces a template with no
+    // `build_module_with_ops(path, &[])` produces a template with no
     // realizations — total_ops stays 0.
-    let module = build_module_with_ops(path, None);
+    let module = build_module_with_ops(path, &[]);
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
@@ -2006,10 +2006,11 @@ fn build_all_ops_fail_diagnostic_emitted_after_refactor() {
 /// kernel.execute is ever called), build() should still return
 /// geometry_output=None AND emit 'all geometry operations failed'.
 ///
-/// Covers lib.rs lines 2880-2886: compile_geometry_op returns None →
-/// GeometryHandleId::INVALID is pushed as sentinel, had_failure=true, and
-/// realization handles are truncated (lines 2890-2891). The `if total_ops > 0`
-/// diagnostic emission guard at lines 2896-2904 must be reached via this path
+/// Covers the `None` arm of `compile_geometry_op` in `Engine::build`: the op
+/// returns None → GeometryHandleId::INVALID is pushed as sentinel,
+/// had_failure=true, and realization handles are truncated. The
+/// `if total_ops > 0` summary-diagnostic guard inside the
+/// `step_handles.is_empty()` branch must be reached via this compile-None path
 /// too — not only via the kernel-execute-failure path exercised by
 /// `build_all_ops_fail_diagnostic_emitted_after_refactor`.
 ///
@@ -2027,8 +2028,7 @@ fn build_all_ops_fail_compile_path_diagnostic_emitted_after_refactor() {
         right: GeomRef::Step(1),
     };
 
-    let module =
-        build_module_with_ops("test_compile_fail_regression", Some(vec![union_op]));
+    let module = build_module_with_ops("test_compile_fail_regression", &[union_op]);
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new(); // execute() must NOT be called
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
