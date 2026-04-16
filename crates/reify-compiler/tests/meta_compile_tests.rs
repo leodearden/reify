@@ -268,6 +268,18 @@ fn duplicate_meta_key_multiple_duplicates() {
         errors
     );
 
+    // Regression guard: each error message must name the specific duplicated key.
+    assert!(
+        errors.iter().any(|d| d.message.contains("'x'")),
+        "expected an error mentioning key \"'x'\", got: {:?}",
+        errors
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("'y'")),
+        "expected an error mentioning key \"'y'\", got: {:?}",
+        errors
+    );
+
     // First values should be kept.
     assert_eq!(template.meta.get("x").map(|s| s.as_str()), Some("1"));
     assert_eq!(template.meta.get("y").map(|s| s.as_str()), Some("2"));
