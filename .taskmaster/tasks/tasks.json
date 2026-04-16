@@ -38380,7 +38380,15 @@
           "modules": [
             "crates/reify-compiler/src/constants.rs",
             "crates/reify-compiler/tests/constant_compile_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "BUILTIN_NAMES sync test constant compile redundant assertion reify",
+              "builtin names synchronization compiler constant tests"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         }
       },
       {
