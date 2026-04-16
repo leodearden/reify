@@ -300,30 +300,31 @@ impl Engine {
     /// and propagated let bindings. Does NOT write to `self.param_overrides` —
     /// that happens in `apply_concurrent_edit()`. Assigns resolved values and
     /// diagnostics directly onto `result.resolved_params` / `result.diagnostics`.
+    ///
+    /// # Panics
+    ///
+    /// Panics (in both debug and release builds) if `result.resolved_params` or
+    /// `result.diagnostics` is non-empty on entry. Both fields are output buckets,
+    /// not accumulators. A non-empty bucket indicates a double-call or result reuse;
+    /// callers must always supply a freshly constructed `ConcurrentEditResult`.
     pub fn resolve_concurrent_edit(
         &mut self,
         setup: &ConcurrentEditSetup,
         result: &mut ConcurrentEditResult,
     ) {
-        // Chosen approach (belt-and-suspenders): callers MUST pass a fresh
-        // ConcurrentEditResult with empty resolved_params and diagnostics —
-        // these are output buckets, not input/accumulator fields.
-        // In debug/test builds the debug_assert guards enforce this contract
-        // loudly (double-call or reuse is immediately visible). In release
-        // builds the .clear() calls keep behaviour defined: a buggy caller
-        // gets clean outputs rather than stale data leaking into the result.
-        // The asymmetry is intentional — strict signalling in dev, graceful
-        // degradation in production.
-        debug_assert!(
+        // Load-bearing contract: callers MUST pass a fresh ConcurrentEditResult
+        // with empty resolved_params and diagnostics — these are output buckets,
+        // not input or accumulator fields. The assert! enforces this uniformly
+        // in both debug and release builds. A non-empty bucket on entry means the
+        // caller has a bug (double-call, result reuse) that must be fixed there.
+        assert!(
             result.resolved_params.is_empty(),
             "resolve_concurrent_edit: resolved_params must be empty on entry (double-call?)"
         );
-        debug_assert!(
+        assert!(
             result.diagnostics.is_empty(),
             "resolve_concurrent_edit: diagnostics must be empty on entry (double-call?)"
         );
-        result.resolved_params.clear();
-        result.diagnostics.clear();
 
         if let Some(ref solver) = self.solver {
             let state = self
