@@ -857,7 +857,14 @@ impl Engine {
             .filter(|t| !t.meta.is_empty())
             .map(|t| (t.name.clone(), t.meta.clone()))
             .collect();
-        let functions = &module.functions;
+        // Use the merged function table (user functions prepended before prelude functions) so
+        // that EvalContext has the full dispatch set — both user-defined overloads AND
+        // non-shadowed prelude functions. This matches the SHADOWING INVARIANT: first-match-wins
+        // linear scan means user functions take precedence when signatures collide, while
+        // prelude functions with distinct (name, arity, param types) triples remain callable.
+        // Clone here to satisfy the borrow checker: `evaluate_let_bindings` borrows `self`
+        // mutably, which would conflict with an immutable borrow of `self.functions`.
+        let functions: Vec<CompiledFunction> = self.functions.clone();
 
         let mut values = ValueMap::new();
         let mut diagnostics = Vec::new();
