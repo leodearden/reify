@@ -280,6 +280,14 @@ fn duplicate_meta_key_multiple_duplicates() {
         errors
     );
 
+    // Each error's label should also name the specific key (IDE hover UX).
+    for key in ["'x'", "'y'"] {
+        assert!(
+            errors.iter().any(|d| d.labels.iter().any(|l| l.message.contains(key))),
+            "expected a label mentioning key {key}, got: {errors:?}",
+        );
+    }
+
     // First values should be kept.
     assert_eq!(template.meta.get("x").map(|s| s.as_str()), Some("1"));
     assert_eq!(template.meta.get("y").map(|s| s.as_str()), Some("2"));
