@@ -1,6 +1,7 @@
 mod ts_parser;
 
 use reify_types::{ContentHash, PortDirection, SourceSpan};
+use std::fmt;
 
 /// A parsed module — the output of the parser.
 #[derive(Debug, Clone)]
@@ -670,12 +671,65 @@ pub enum QuantifierKind {
     Exists,
 }
 
-/// A type expression in the AST (e.g., `Scalar`, `Bool`, `Box<T>`).
+/// A dimensional operator: multiplication or division between type-level dimensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DimOp {
+    Mul,
+    Div,
+}
+
+impl DimOp {
+    /// The source-text spelling of this operator.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DimOp::Mul => "*",
+            DimOp::Div => "/",
+        }
+    }
+}
+
+/// What a [`TypeExpr`] actually is — a named type or a binary dimensional operation.
+#[derive(Debug, Clone)]
+pub enum TypeExprKind {
+    /// A named type with optional type arguments (e.g., `Scalar`, `Box<T>`, `Map<K, V>`).
+    Named { name: String, type_args: Vec<TypeExpr> },
+    /// A binary dimensional operator applied to two type expressions (e.g., `Force / Area`).
+    DimensionalOp {
+        op: DimOp,
+        left: Box<TypeExpr>,
+        right: Box<TypeExpr>,
+    },
+}
+
+/// A type expression in the AST (e.g., `Scalar`, `Bool`, `Box<T>`, `Force / Area`).
 #[derive(Debug, Clone)]
 pub struct TypeExpr {
-    pub name: String,
-    pub type_args: Vec<TypeExpr>,
+    pub kind: TypeExprKind,
     pub span: SourceSpan,
+}
+
+impl fmt::Display for TypeExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            TypeExprKind::Named { name, type_args } => {
+                write!(f, "{}", name)?;
+                if !type_args.is_empty() {
+                    write!(f, "<")?;
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", arg)?;
+                    }
+                    write!(f, ">")?;
+                }
+                Ok(())
+            }
+            TypeExprKind::DimensionalOp { op, left, right } => {
+                write!(f, "{} {} {}", left, op.as_str(), right)
+            }
+        }
+    }
 }
 
 /// A pragma directive: `#name` or `#name(args)`.

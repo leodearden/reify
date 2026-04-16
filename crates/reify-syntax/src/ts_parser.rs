@@ -483,8 +483,10 @@ impl<'a> Lowering<'a> {
             }
             // bare identifier
             TypeExpr {
-                name: self.node_text(child).to_string(),
-                type_args: vec![],
+                kind: TypeExprKind::Named {
+                    name: self.node_text(child).to_string(),
+                    type_args: vec![],
+                },
                 span: self.span(child),
             }
         } else if node.kind() == "parameterized_type" {
@@ -492,8 +494,10 @@ impl<'a> Lowering<'a> {
         } else {
             // treat as bare identifier
             TypeExpr {
-                name: self.node_text(node).to_string(),
-                type_args: vec![],
+                kind: TypeExprKind::Named {
+                    name: self.node_text(node).to_string(),
+                    type_args: vec![],
+                },
                 span: self.span(node),
             }
         }
@@ -507,8 +511,7 @@ impl<'a> Lowering<'a> {
             .unwrap_or_default();
         let type_args = self.lower_type_args_from_node(node);
         TypeExpr {
-            name,
-            type_args,
+            kind: TypeExprKind::Named { name, type_args },
             span: self.span(node),
         }
     }
@@ -869,9 +872,13 @@ impl<'a> Lowering<'a> {
                 };
                 let left = self.lower_dimensional_type_expr(left_node);
                 let right = self.lower_dimensional_type_expr(right_node);
+                let dim_op = if op == "*" { DimOp::Mul } else { DimOp::Div };
                 return TypeExpr {
-                    name: op,
-                    type_args: vec![left, right],
+                    kind: TypeExprKind::DimensionalOp {
+                        op: dim_op,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
                     span: self.span(node),
                 };
             }
@@ -2080,8 +2087,10 @@ impl<'a> Lowering<'a> {
                 t
             };
             TypeExpr {
-                name: self.node_text(ident).to_string(),
-                type_args: vec![],
+                kind: TypeExprKind::Named {
+                    name: self.node_text(ident).to_string(),
+                    type_args: vec![],
+                },
                 span: self.span(ident),
             }
         });
@@ -3510,11 +3519,11 @@ mod tests {
         assert!(!f.is_pub);
         assert_eq!(f.params.len(), 2);
         assert_eq!(f.params[0].name, "w");
-        assert_eq!(f.params[0].type_expr.name, "Scalar");
+        assert!(matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Scalar"));
         assert_eq!(f.params[1].name, "h");
-        assert_eq!(f.params[1].type_expr.name, "Scalar");
+        assert!(matches!(&f.params[1].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Scalar"));
         assert!(f.return_type.is_some());
-        assert_eq!(f.return_type.as_ref().unwrap().name, "Scalar");
+        assert!(matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Scalar"));
         assert!(f.body.let_bindings.is_empty());
         assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
     }
@@ -3538,11 +3547,11 @@ mod tests {
         assert_eq!(f.name, "clamp");
         assert_eq!(f.params.len(), 3);
         assert_eq!(f.params[0].name, "x");
-        assert_eq!(f.params[0].type_expr.name, "Real");
+        assert!(matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Real"));
         assert_eq!(f.params[1].name, "lo");
         assert_eq!(f.params[2].name, "hi");
         assert!(f.return_type.is_some());
-        assert_eq!(f.return_type.as_ref().unwrap().name, "Real");
+        assert!(matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Real"));
         assert!(matches!(
             &f.body.result_expr.kind,
             ExprKind::Conditional { .. }
