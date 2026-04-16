@@ -214,7 +214,11 @@ mod tests {
         Url::parse("file:///test.ri").unwrap()
     }
 
-    /// Test helper: return the character count of the Nth line of `source`.
+    /// Test helper: return the UTF-16 code unit count of the Nth line of `source`.
+    ///
+    /// LSP `Position.character` is defined in UTF-16 code units
+    /// (`PositionEncodingKind::UTF16`), matching the convention already used in
+    /// `convert.rs` (`offset_to_position` / `position_to_offset`).
     ///
     /// Every declaration in these tests is single-line with `range.end`
     /// pinned to the end of that line. Computing the expected end from
@@ -226,7 +230,7 @@ mod tests {
             .lines()
             .nth(line as usize)
             .expect("line index out of range in test source")
-            .chars()
+            .encode_utf16()
             .count() as u32
     }
 
