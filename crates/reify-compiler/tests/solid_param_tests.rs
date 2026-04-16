@@ -201,13 +201,15 @@ fn solid_param_referenced_by_downstream_boolean_op() {
         template.realizations.len()
     );
 
-    // (c) The `out` realization must have >= 3 ops, proving that
-    //     difference(g, other) inlined the resolved primitives via the
+    // (c) The `out` realization must have exactly 3 ops (cylinder + sphere + Difference),
+    //     proving that difference(g, other) inlined the resolved primitives via the
     //     geometry_lets map rather than emitting a degenerate single-op realization.
+    //     Lowering is deterministic; == 3 catches silent regressions that duplicate ops.
     let out_realization = &template.realizations[2]; // realizations emitted in source order: [0]=g, [1]=other, [2]=out
-    assert!(
-        out_realization.operations.len() >= 3,
-        "expected `out` realization to have >= 3 ops (cylinder + sphere + difference); \
+    assert_eq!(
+        out_realization.operations.len(),
+        3,
+        "expected `out` realization to have exactly 3 ops (cylinder + sphere + Difference); \
          got {} — likely geometry_lets map plumbing regressed",
         out_realization.operations.len()
     );
