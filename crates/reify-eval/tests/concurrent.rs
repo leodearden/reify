@@ -521,6 +521,71 @@ fn resolve_concurrent_edit_second_wave_updates_dependent_let_binding() {
     drop(a_id); // suppress unused-variable lint
 }
 
+/// step-5: resolve_concurrent_edit clears stale fields even when no solver is present.
+///
+/// The method always calls `result.resolved_params.clear()` and
+/// `result.diagnostics.clear()` before the `if let Some(solver)` guard, so
+/// pre-populated bogus data must be wiped even on the no-solver short-circuit path.
+#[test]
+fn resolve_concurrent_edit_without_solver_is_noop() {
+    // Simple module: param a, let b = a * 2 (no autos, no constraints)
+    let a_id = ValueCellId::new("N", "a");
+    let b_id = ValueCellId::new("N", "b");
+    let template = TopologyTemplateBuilder::new("N")
+        .param("N", "a", Type::length(), Some(literal(mm(3.0))))
+        .let_binding(
+            "N",
+            "b",
+            Type::length(),
+            binop(BinOp::Mul, value_ref("N", "a"), literal(Value::Real(2.0))),
+        )
+        .build();
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Engine WITHOUT solver — the if let Some(solver) branch is never entered.
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+    let _cold = engine.eval(&module);
+
+    let setup = engine
+        .prepare_concurrent_edit(a_id.clone(), mm(5.0))
+        .expect("prepare_concurrent_edit should succeed");
+
+    // Pre-populate result with bogus data to prove they get cleared.
+    let bogus_id = ValueCellId::new("N", "bogus");
+    let mut stale_resolved: HashMap<ValueCellId, Value> = HashMap::new();
+    stale_resolved.insert(bogus_id.clone(), mm(99.0));
+
+    let stale_diag = reify_types::Diagnostic::warning("stale diagnostic".to_string());
+
+    let mut result = ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: vec![],
+        actual_eval_set: setup.eval_set.clone(),
+        skipped: HashSet::new(),
+        resolved_params: stale_resolved,
+        diagnostics: vec![stale_diag],
+    };
+
+    // resolve_concurrent_edit must clear the stale data (and not call a solver).
+    engine.resolve_concurrent_edit(&setup, &mut result);
+
+    assert!(
+        result.resolved_params.is_empty(),
+        "resolved_params must be cleared even without a solver (got {:?})",
+        result.resolved_params
+    );
+    assert!(
+        result.diagnostics.is_empty(),
+        "diagnostics must be cleared even without a solver (got {:?})",
+        result.diagnostics
+    );
+    drop((b_id, bogus_id)); // suppress unused-variable lint
+}
+
 /// step-9: apply_concurrent_edit uses eval_duration from ConcurrentNodeResult
 /// in the journal Completed event payload, rather than measuring apply-loop time.
 ///
