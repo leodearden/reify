@@ -927,7 +927,7 @@ structure def S : A {
 }
 "#;
 
-    let (_, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
     let errors: Vec<_> = diagnostics
         .iter()
@@ -962,6 +962,9 @@ structure def S : A {
         !errors[0].labels[0].span.is_empty(),
         "expected non-empty span on conflict diagnostic label"
     );
+
+    // Even with a type conflict error, dedup must still produce exactly one cell for 'x'.
+    assert_single_value_cell(&template, "x", "diamond_type_conflict");
 }
 
 /// Step 21b: Trait with constraint and param — both injected correctly.
