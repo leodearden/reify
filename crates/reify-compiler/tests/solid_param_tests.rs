@@ -3,8 +3,8 @@
 //! A `Solid`-typed param with a geometry-call default should be lowered as a
 //! realization (like a geometry let) rather than a scalar ValueCellDecl.
 
-use reify_compiler::TopologyTemplate;
-use reify_types::Severity;
+use reify_compiler::{TopologyTemplate, ValueCellKind};
+use reify_types::{Severity, Type};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -265,4 +265,84 @@ fn solid_param_default_aliasing_geometry_let_is_realization() {
             i
         );
     }
+}
+
+// ─── coverage: Solid param with non-geometry default (pin-down) ───────────────
+
+/// PIN-DOWN REGRESSION LOCK (task 1878).
+///
+/// Documents and locks the currently-observed *silent-accept* behavior when a
+/// `Solid`-typed param is given a non-geometry default (`42`).
+///
+/// Currently-observed behavior (verified via probe harness before planning):
+///   - The compiler emits **no Error-severity diagnostics** — the mismatch is
+///     silently accepted.
+///   - `is_geometry_let(42, ...)` returns `false`, so the param is NOT inserted
+///     into `known_geometry_lets` and NOT added to the `geometry_lets` map.
+///   - As a result **no RealizationDecl** is emitted for `g`.
+///   - The param falls through to the `ValueCellDecl` path with
+///     `cell_type = Type::Geometry` and `kind = ValueCellKind::Param`.
+///
+/// KNOWN QUIRKY: this is not necessarily correct behavior — a future change
+/// (e.g. diagnosing `Solid = <non-geometry>` as an error) would be desirable.
+/// Any such change MUST update this test intentionally so that the regression
+/// guard remains accurate rather than becoming stale.
+#[test]
+fn solid_param_with_non_geometry_default_silently_accepts() {
+    let source = r#"structure def W3 {
+    param g : Solid = 42
+}"#;
+    let compiled = compile_allowing_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "W3")
+        .expect("W3 template not found");
+
+    // (a) Currently no Error-severity diagnostics are emitted — the compiler
+    //     silently accepts the type mismatch.  If this changes (e.g. a Warning
+    //     or Error is added), update this assertion intentionally.
+    let error_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        error_diags.is_empty(),
+        "pin-down: expected no Error-severity diagnostics for `param g : Solid = 42`, \
+         got: {:#?}\n\
+         If the compiler now diagnoses this mismatch, update this test to reflect the new behavior.",
+        error_diags
+    );
+
+    // (b) No realization is emitted — `g` is not inserted into geometry_lets
+    //     because is_geometry_let returns false for a literal integer.
+    assert!(
+        template.realizations.is_empty(),
+        "pin-down: expected no RealizationDecls for `param g : Solid = 42`, got: {:#?}\n\
+         If the compiler now lowers this as a realization, update this test.",
+        template.realizations
+    );
+
+    // (c) Exactly one ValueCellDecl named `g` with cell_type=Geometry and kind=Param.
+    let g_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "g")
+        .expect(
+            "pin-down: expected a ValueCellDecl named 'g' for `param g : Solid = 42`; \
+             none found — update this test if the lowering strategy changed"
+        );
+    assert_eq!(
+        g_cell.cell_type,
+        Type::Geometry,
+        "pin-down: expected cell_type=Type::Geometry for `param g : Solid = 42`, got {:?}",
+        g_cell.cell_type
+    );
+    assert_eq!(
+        g_cell.kind,
+        ValueCellKind::Param,
+        "pin-down: expected kind=ValueCellKind::Param for `param g : Solid = 42`, got {:?}",
+        g_cell.kind
+    );
 }
