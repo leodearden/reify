@@ -419,11 +419,21 @@ mod tests {
         let loc = compute_goto_definition(source, &test_uri(), position)
             .expect("goto-def for x in B should return location");
         assert_eq!(loc.uri, test_uri());
-        // Should point to B's param x on line 4, NOT A's on line 1
+        // Should point to B's param x on line 4, NOT A's on line 1:
+        // "    param x: Bool = true"
         assert_eq!(
             loc.range.start.line, 4,
             "expected B's param x (line 4), got line {}",
             loc.range.start.line
+        );
+        assert_eq!(
+            loc.range.start.character, 4,
+            "param keyword starts after 4-space indent"
+        );
+        assert_eq!(loc.range.end.line, 4, "declaration should be single-line");
+        assert_eq!(
+            loc.range.end.character, 24,
+            "end should cover full 'param x: Bool = true' (20 chars after indent)"
         );
     }
 
@@ -438,11 +448,21 @@ mod tests {
         let loc = compute_goto_definition(source, &test_uri(), position)
             .expect("goto-def for diameter in B should return location");
         assert_eq!(loc.uri, test_uri());
-        // Should point to B's param diameter on line 4, NOT A's on line 1
+        // Should point to B's param diameter on line 4, NOT A's on line 1:
+        // "    param diameter: Scalar = 20mm"
         assert_eq!(
             loc.range.start.line, 4,
             "expected B's param diameter (line 4), got line {}",
             loc.range.start.line
+        );
+        assert_eq!(
+            loc.range.start.character, 4,
+            "param keyword starts after 4-space indent"
+        );
+        assert_eq!(loc.range.end.line, 4, "declaration should be single-line");
+        assert_eq!(
+            loc.range.end.character, 33,
+            "end should cover full 'param diameter: Scalar = 20mm' (29 chars after indent)"
         );
     }
 
@@ -495,11 +515,21 @@ mod tests {
         let loc = compute_goto_definition(source, &test_uri(), position)
             .expect("goto-def for y inside A should fall back and find y in B");
         assert_eq!(loc.uri, test_uri());
-        // Should point to B's param y on line 5, proving the Phase 2 fallback was reached
+        // Should point to B's param y on line 5, proving Phase 2 fallback fired:
+        // "    param y: Scalar = 20mm"
         assert_eq!(
             loc.range.start.line, 5,
             "expected B's param y (line 5), got line {}",
             loc.range.start.line
+        );
+        assert_eq!(
+            loc.range.start.character, 4,
+            "param keyword starts after 4-space indent"
+        );
+        assert_eq!(loc.range.end.line, 5, "declaration should be single-line");
+        assert_eq!(
+            loc.range.end.character, 26,
+            "end should cover full 'param y: Scalar = 20mm' (22 chars after indent)"
         );
     }
 
@@ -588,11 +618,21 @@ mod tests {
         let loc = compute_goto_definition(source, &test_uri(), position)
             .expect("goto-def for x in trait T should return location");
         assert_eq!(loc.uri, test_uri());
-        // Should point to T's param x on line 4, NOT A's on line 1
+        // Should point to T's param x on line 4, NOT A's on line 1:
+        // "    param x: Scalar = 10mm"
         assert_eq!(
             loc.range.start.line, 4,
             "expected T's param x (line 4), got line {}",
             loc.range.start.line
+        );
+        assert_eq!(
+            loc.range.start.character, 4,
+            "param keyword starts after 4-space indent"
+        );
+        assert_eq!(loc.range.end.line, 4, "declaration should be single-line");
+        assert_eq!(
+            loc.range.end.character, 26,
+            "end should cover full 'param x: Scalar = 10mm' (22 chars after indent)"
         );
     }
 
