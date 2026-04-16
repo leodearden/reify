@@ -38688,7 +38688,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T03:07:27.616Z"
+        "updatedAt": "2026-04-16T03:07:27.616Z",
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/geometry_ops.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": 1855,
@@ -38719,7 +38727,16 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T03:16:20.447Z"
+        "updatedAt": "2026-04-16T03:16:20.447Z",
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/chamfer_e2e.rs",
+            "crates/reify-eval/tests/fillet_e2e.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 1857,
