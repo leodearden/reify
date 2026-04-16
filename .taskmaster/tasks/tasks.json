@@ -38975,7 +38975,19 @@
             "gui/src/__tests__/shortcuts.test.ts",
             "gui/src/hooks/useKeyboardShortcuts.ts",
             "gui/src/shortcuts.ts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "shortcuts.ts",
+              "ShortcutDef",
+              "ShortcutId"
+            ],
+            "queries": [
+              "shortcuts SHORTCUTS element type narrowing ShortcutId literal",
+              "SHORTCUT_IDS export redundant as const satisfies",
+              "useKeyboardShortcuts ShortcutId cast removal"
+            ]
+          }
         }
       },
       {
@@ -38993,7 +39005,17 @@
           "modules": [
             "gui/src/__tests__/shortcuts.test.ts",
             "gui/src/shortcuts.ts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "shortcuts.ts",
+              "ShortcutDef"
+            ],
+            "queries": [
+              "shortcuts.ts TS2339 comment block as const satisfies pattern explanation",
+              "shortcuts SHORTCUT_IDS comment rot line number references cleanup"
+            ]
+          }
         }
       },
       {
