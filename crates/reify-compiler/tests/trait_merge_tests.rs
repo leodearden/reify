@@ -1248,4 +1248,9 @@ structure def S : TraitX + TraitY + TraitZ {
         "error should mention 'conflicting', got: {}",
         errors[0].message
     );
+    assert!(
+        errors[0].message.contains("TraitX") && errors[0].message.contains("TraitY"),
+        "error should name both conflicting traits TraitX and TraitY, got: {}",
+        errors[0].message
+    );
 }
