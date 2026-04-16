@@ -1058,13 +1058,13 @@ describe('meshManager', () => {
       expect((manager as any).getGhostMeshes().has('hidden-orphan')).toBe(false);
     });
 
-    it('(r) getGhostMeshes returns a copy — external mutation does not affect internal state', () => {
+    it('(r) getGhostMeshes returns a copy — external .delete/.set/.clear do not affect internal state', () => {
       // S2: getGhostMeshes must return a defensive copy so callers cannot accidentally
-      // mutate the internal ghostMeshMap.
+      // mutate the internal ghostMeshMap via .delete(), .set(), or .clear().
       const { manager } = setupWithMesh();
       (manager as any).setVisibility('A', 'ghost');
 
-      // Get the returned map and delete from it
+      // --- .delete() does not affect internal state ---
       const ghostMap1: Map<string, any> = (manager as any).getGhostMeshes();
       expect(ghostMap1.has('A')).toBe(true);
       ghostMap1.delete('A');
@@ -1073,6 +1073,24 @@ describe('meshManager', () => {
       const ghostMap2: Map<string, any> = (manager as any).getGhostMeshes();
       expect(ghostMap2.has('A')).toBe(true);
       expect(ghostMap2.size).toBe(1);
+
+      // --- .set() does not affect internal state ---
+      ghostMap2.set('injected', {} as any);
+
+      // A fresh call must not contain 'injected' and must still have only 'A'
+      const ghostMap3: Map<string, any> = (manager as any).getGhostMeshes();
+      expect(ghostMap3.has('injected')).toBe(false);
+      expect(ghostMap3.has('A')).toBe(true);
+      expect(ghostMap3.size).toBe(1);
+
+      // --- .clear() does not affect internal state ---
+      const ghostMap4: Map<string, any> = (manager as any).getGhostMeshes();
+      ghostMap4.clear();
+
+      // A fresh call must still contain 'A'
+      const ghostMap5: Map<string, any> = (manager as any).getGhostMeshes();
+      expect(ghostMap5.has('A')).toBe(true);
+      expect(ghostMap5.size).toBe(1);
     });
   });
 });
