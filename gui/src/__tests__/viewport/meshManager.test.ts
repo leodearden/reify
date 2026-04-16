@@ -1025,15 +1025,17 @@ describe('meshManager', () => {
       expect((manager as any).getGhostMeshes().has('orphan')).toBe(false);
     });
 
-    it('(s) hidden visibilityMap entry is pruned on removal so entity re-arrives as show', () => {
-      // Analogous to test (q) but for the 'hidden' state.
+    it('(s) hidden visibilityMap entry does not survive removal so re-arrival defaults to show', () => {
+      // Covers the arrival → removal → re-arrival path for the 'hidden' state.
       // Phase 1: pre-set hidden, entity arrives hidden (no scene.add or ghostGroup.add).
-      // Phase 2: sync({}) removes the mesh — removeMesh() deletes the visibilityMap entry,
-      //          and the orphan-prune pass handles any residual pre-sets.
-      // Phase 3: entity re-arrives — because the hidden entry was pruned, it should arrive
-      //          as 'show' (added to scene, not ghost group).
+      // Phase 2: sync({}) removes the mesh — removeMesh() deletes the visibilityMap entry.
+      // Phase 3: entity re-arrives — because the hidden entry was deleted by removeMesh,
+      //          no pre-set remains and it should arrive as 'show' (added to scene).
+      // Note: the visibilityMap deletion is done by removeMesh(), not the orphan-prune loop.
+      // See test (t) for the path where sync({}) prunes a hidden pre-set before any arrival.
       const scene = new Scene();
       const manager = createMeshManager(scene);
+      vi.clearAllMocks();
 
       // Pre-set hidden before the entity has ever arrived
       (manager as any).setVisibility('hidden-orphan', 'hidden');
@@ -1043,15 +1045,40 @@ describe('meshManager', () => {
       expect(mockSceneAdd).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'hidden-orphan' }));
       expect(mockGroupAdd).not.toHaveBeenCalled();
 
-      // Sync with empty set — mesh is removed (removeMesh deletes visibilityMap entry),
-      // and the orphan-prune loop confirms no stale pre-set remains.
+      // Sync with empty set — mesh is removed; removeMesh() deletes the visibilityMap entry
       manager.sync({});
 
       vi.clearAllMocks();
 
-      // Re-arrive: because the hidden entry was pruned, entity must be added to scene as 'show'
+      // Re-arrive: because the hidden entry was deleted by removeMesh, entity arrives as 'show'
       manager.sync({ 'hidden-orphan': makeMeshData('hidden-orphan') });
 
+      expect(mockSceneAdd).toHaveBeenCalledTimes(1);
+      expect(mockGroupAdd).not.toHaveBeenCalled();
+      expect(manager.getSceneMeshes().has('hidden-orphan')).toBe(true);
+      expect((manager as any).getGhostMeshes().has('hidden-orphan')).toBe(false);
+    });
+
+    it('(t) hidden orphan visibilityMap pre-set is pruned by sync({}) before mesh arrives', () => {
+      // Symmetric counterpart to test (q) for the 'hidden' state.
+      // If setVisibility('hidden') is called before the mesh exists and the entity never
+      // arrives in a sync, the pre-set should be pruned when sync() is called with a set
+      // that does not include the entity (the orphan-prune block at the end of sync()).
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+      vi.clearAllMocks();
+
+      // Pre-set hidden for an entity that hasn't arrived yet
+      (manager as any).setVisibility('hidden-orphan', 'hidden');
+
+      // Sync with empty set — 'hidden-orphan' is absent, so the pre-set is now an orphan
+      manager.sync({});
+
+      vi.clearAllMocks();
+      // Now sync with the entity — because the orphan pre-set was pruned, it should arrive as 'show'
+      manager.sync({ 'hidden-orphan': makeMeshData('hidden-orphan') });
+
+      // Mesh should be added to scene (show), not hidden or ghost
       expect(mockSceneAdd).toHaveBeenCalledTimes(1);
       expect(mockGroupAdd).not.toHaveBeenCalled();
       expect(manager.getSceneMeshes().has('hidden-orphan')).toBe(true);
