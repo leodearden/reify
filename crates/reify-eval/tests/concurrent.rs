@@ -926,11 +926,13 @@ fn resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty(
     );
 }
 
-/// step-9: apply_concurrent_edit uses eval_duration from ConcurrentNodeResult
-/// in the journal Completed event payload, rather than measuring apply-loop time.
+/// Verifies that `apply_concurrent_edit` records the `eval_duration` from
+/// `ConcurrentNodeResult` into the journal Completed event's `Duration` payload
+/// (not apply-loop wall time).
 ///
-/// This test is designed to fail until step-10 changes apply_concurrent_edit
-/// to use node_result.eval_duration in the EventPayload::Duration.
+/// The implementation uses `node_result.eval_duration.unwrap_or_else(|| start.elapsed())`,
+/// so when `eval_duration` is `Some`, the journal entry reflects the value supplied by
+/// the node evaluator. The fallback path is covered by a separate test.
 #[test]
 fn apply_concurrent_edit_journal_uses_eval_duration() {
     use std::time::Duration;
@@ -997,9 +999,9 @@ fn apply_concurrent_edit_journal_uses_eval_duration() {
         .find(|ev| matches!(ev.kind, EventKind::Completed { .. }))
         .expect("should have a Completed event for volume");
 
-    // The Duration payload must equal the eval_duration we provided.
-    // Currently fails because apply_concurrent_edit uses start.elapsed()
-    // (apply-loop time, nanoseconds) instead of node_result.eval_duration.
+    // The Duration payload must equal the eval_duration we supplied via node_result.
+    // The `unwrap_or_else(|| start.elapsed())` fallback only fires when eval_duration
+    // is None, which is covered by a separate test.
     match &completed_event.payload {
         Some(EventPayload::Duration(d)) => {
             assert_eq!(
