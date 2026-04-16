@@ -39293,6 +39293,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-16T22:02:03.917Z"
+      },
+      {
+        "id": 1879,
+        "title": "Fix DesignTree eye icon reactivity + add UI regression tests",
+        "description": "The eye icon's aria-label and glyph do not reactively update when visibility changes, because `const eff = props.viewStateStore.getEffectiveVisibility(node.entity_path)` is a plain const (not a Solid accessor) in the row render. UI does not refresh after click/keyboard/context-menu changes. Tests miss this because state is set before render.",
+        "details": "Scope (from review of task 1743):\n1. gui/src/panels/DesignTree.tsx:95-121 — either inline `props.viewStateStore.getEffectiveVisibility(node.entity_path)` in JSX so Solid tracks it, or wrap with `createMemo` and call the accessor for aria-label, glyph, and the override-dot decision.\n2. gui/src/__tests__/DesignTree.test.tsx:82-103 — add a live-update test: render with default state, click `eye-icon-Root.A`, assert aria-label becomes 'ghost'; click again, assert 'hidden'.\n3. gui/src/__tests__/DesignTree.test.tsx:101-105 — rename the existing \"eye icon aria-label updates when explicit visibility changes\" test to reflect that it only verifies initial-render, OR rewrite it to mutate AFTER render (preferred; subsumed by the live-update test above).\n\nmemory_hints:\n- search: \"DesignTree eye icon reactivity\"\n- search: \"Solid createMemo\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -39304,7 +39315,8 @@
         "master"
       ],
       "created": "2026-04-16T22:18:39.728Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-16T22:19:57.568Z"
     }
   }
 }
