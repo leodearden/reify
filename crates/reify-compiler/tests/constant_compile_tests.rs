@@ -197,9 +197,11 @@ structure S {
     // x must resolve to the collection list ValueRef, NOT Literal(Real(PI)).
     match &expr.kind {
         CompiledExprKind::ValueRef(id) => {
-            assert_eq!(
-                id.member, "__list_pi__diameter",
-                "expected member '__list_pi__diameter' (PiPart's lexicographically-first field), got {:?}",
+            // Exact __list_*__<field> naming is tested in collection_sub_tests.rs;
+            // here we only check the prefix to focus on shadowing.
+            assert!(
+                id.member.starts_with("__list_pi__"),
+                "expected member starting with '__list_pi__' for collection sub 'pi', got {:?}",
                 id.member
             );
             assert!(
@@ -216,6 +218,111 @@ structure S {
             other
         ),
     }
+}
+
+// ─── task-1806 step-1: case-variant builtin names produce 'did you mean' hints
+
+/// Assert that compiling `structure S { let x = <input> }` produces an
+/// "unresolved name" error that suggests `<expected_hint>` as the correct spelling.
+///
+/// Extracted from the four structurally-identical hint tests to eliminate
+/// boilerplate and make adding new case variants (e.g. "pI", "tAu") trivial.
+fn assert_suggests_hint(input: &str, expected_hint: &str) {
+    let src = format!("structure S {{ let x = {} }}", input);
+    let compiled = compile_source(&src);
+    let errors = errors_only(&compiled);
+    assert!(
+        !errors.is_empty(),
+        "expected a compile error for '{}', got no diagnostics",
+        input
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("unresolved name") && d.message.contains("did you mean")),
+        "expected 'unresolved name' with 'did you mean' hint for '{}', got: {:?}",
+        input,
+        errors
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains(&format!("`{}`", expected_hint))),
+        "expected hint to suggest `{}` for '{}', got: {:?}",
+        expected_hint,
+        input,
+        errors
+    );
+}
+
+#[test]
+fn pi_uppercase_suggests_pi() {
+    assert_suggests_hint("Pi", "pi");
+}
+
+#[test]
+fn pi_all_caps_suggests_pi() {
+    assert_suggests_hint("PI", "pi");
+}
+
+#[test]
+fn tau_titlecase_suggests_tau() {
+    assert_suggests_hint("Tau", "tau");
+}
+
+#[test]
+fn tau_all_caps_suggests_tau() {
+    assert_suggests_hint("TAU", "tau");
+}
+
+// ─── task-1806 step-4: unrelated names do NOT produce 'did you mean' hints ───
+
+#[test]
+fn unrelated_name_no_did_you_mean_hint() {
+    let compiled = compile_source("structure S { let x = Foo }");
+    let errors = errors_only(&compiled);
+    assert!(!errors.is_empty(), "expected a compile error for 'Foo'");
+    assert!(
+        errors.iter().any(|d| d.message.contains("unresolved name")),
+        "expected 'unresolved name' error, got: {:?}",
+        errors
+    );
+    assert!(
+        !errors.iter().any(|d| d.message.contains("did you mean")),
+        "expected NO 'did you mean' hint for unrelated name 'Foo', got: {:?}",
+        errors
+    );
+}
+
+// ─── task-1806 step-5: lowercase pi and tau still compile without hint ────────
+
+#[test]
+fn lowercase_pi_no_hint() {
+    // Verifies that the exact spelling resolves successfully — no hint emitted.
+    // (A non-empty errors Vec after this assert would be a false pass, so the
+    // redundant "did you mean" iteration guard has been removed.)
+    let compiled = compile_source("structure S { let x = pi }");
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors for lowercase 'pi', got: {:?}", errors);
+}
+
+#[test]
+fn lowercase_tau_no_hint() {
+    // Same as above for tau.
+    let compiled = compile_source("structure S { let x = tau }");
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors for lowercase 'tau', got: {:?}", errors);
+}
+
+// ─── task-1806 step-6: user-defined Pi in scope does NOT produce a hint ───────
+
+#[test]
+fn user_defined_pi_caps_in_scope_no_hint() {
+    let src = "structure S {\n  let Pi = 42\n  let x = Pi\n}";
+    let compiled = compile_source(src);
+    let errors = errors_only(&compiled);
+    assert!(errors.is_empty(), "expected no errors when user defines 'Pi' and uses it, got: {:?}", errors);
+    assert!(
+        !errors.iter().any(|d| d.message.contains("did you mean")),
+        "expected NO 'did you mean' hint when 'Pi' is in scope, got: {:?}",
+        errors
+    );
 }
 
 // ─── step-7: pi works under #no_prelude ─────────────────────────────────────

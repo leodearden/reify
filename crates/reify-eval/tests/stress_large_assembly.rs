@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use reify_compiler::CompiledModule;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
+use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 
 /// Absolute path to the fixture file.
 const FIXTURE_PATH: &str = concat!(
@@ -36,7 +36,7 @@ fn source() -> String {
     .clone()
 }
 
-/// Parse, compile with stdlib, and cache the result. Asserts no compile errors.
+/// Parse, compile with stdlib, and cache the result.
 fn compiled() -> CompiledModule {
     static C: OnceLock<CompiledModule> = OnceLock::new();
     C.get_or_init(|| {
@@ -89,6 +89,18 @@ fn eval_canonical_is_cached() {
     assert!(
         std::ptr::eq(a, b),
         "eval_canonical() must return the same static reference on every call"
+    );
+}
+
+/// check_canonical() must return the same static reference on every call.
+/// This verifies the OnceLock caching is in place: two calls produce pointer-equal results.
+#[test]
+fn check_canonical_is_cached() {
+    let a: &'static reify_eval::CheckResult = check_canonical();
+    let b: &'static reify_eval::CheckResult = check_canonical();
+    assert!(
+        std::ptr::eq(a, b),
+        "check_canonical() must return the same static reference on every call"
     );
 }
 

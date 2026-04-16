@@ -80,4 +80,25 @@ describe('shortcuts', () => {
   it('shortcutKey for unknown id returns empty string', () => {
     expect(shortcutKey('nonexistent-id')).toBe('');
   });
+
+  it('getShortcut("undo") has disabled === true', () => {
+    const entry = getShortcut('undo');
+    expect(entry).toBeDefined();
+    expect(entry?.disabled).toBe(true);
+  });
+
+  it('getShortcut("redo") has disabled === true', () => {
+    const entry = getShortcut('redo');
+    expect(entry).toBeDefined();
+    expect(entry?.disabled).toBe(true);
+  });
+
+  it('all non-disabled shortcuts with keys do NOT have disabled set to true', () => {
+    const activeIds = SHORTCUTS.filter((s) => !s.disabled && s.key).map((s) => s.id);
+    for (const id of activeIds) {
+      const entry = getShortcut(id);
+      expect(entry).toBeDefined();
+      expect(entry?.disabled).not.toBe(true);
+    }
+  });
 });
