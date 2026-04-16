@@ -37755,11 +37755,11 @@
         "description": "Two small polish items from task-1776 review:\n\n(1) trait_merge_tests.rs ~line 1195: Change `template.constraints.len() >= 1` to `== 1` and, if the Constraint type exposes the expression string, assert it references `x > 0`. The current `>= 1` assertion is too weak and could mask regressions.\n\n(2) conformance.rs ~line 280: The `_was_new` return from `scope.register_if_absent(name, ty)` is captured but unused (underscore-prefixed). Add a `tracing::debug!` when `_was_new` is false to surface trait-merge type conflicts during development, or add a `// TODO(#NNN)` referencing a tracking issue for future observability.\n\nmemory_hints:\n- search: \"register_if_absent scope trait merge\"\n- entity: \"Scope\", \"register_if_absent\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:03:13.487Z",
+        "updatedAt": "2026-04-16T22:56:28.350Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/Cargo.toml",
@@ -39530,9 +39530,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T22:56:26.761Z",
+      "lastModified": "2026-04-16T22:56:28.350Z",
       "taskCount": 1887,
-      "completedCount": 1614,
+      "completedCount": 1615,
       "tags": [
         "master"
       ]
