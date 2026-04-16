@@ -266,11 +266,19 @@ pub(crate) fn check_trait_conformance(
                 DefaultKind::Let { cell_type, .. } => cell_type.clone().unwrap_or(Type::Real),
                 DefaultKind::Constraint(_) => continue,
             };
-            let _was_new = scope.register_if_absent(name, ty);
-            // If _was_new is false, a prior default already registered this name
-            // (first-seen type wins). Useful hook for future debug-level logging
-            // to surface trait-merge conflicts where two traits supply the same
-            // default name with different types.
+            let was_new = scope.register_if_absent(name, ty.clone());
+            // First-seen type wins. When was_new is false a prior default already
+            // owns this name — the incoming type is silently dropped. Emit a debug
+            // event so trait-merge conflicts are observable at runtime.
+            if !was_new {
+                tracing::debug!(
+                    target: "reify_compiler::conformance",
+                    name = %name,
+                    entity = %structure.name,
+                    ignored_ty = ?ty,
+                    "trait-merge conflict: second default with same name ignored; first-seen type wins"
+                );
+            }
         }
     }
 
