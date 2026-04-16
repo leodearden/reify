@@ -224,9 +224,18 @@ mod tests {
         let loc = compute_goto_definition(source, &test_uri(), position)
             .expect("goto-def for thickness ref should return location");
         assert_eq!(loc.uri, test_uri());
-        // Should point to the param declaration: "param thickness: Scalar = 5mm"
-        // which starts at byte 79 (line 3, char 4)
+        // Should point to the param declaration:
+        // "    param thickness: Scalar = 5mm" (line 3)
         assert_eq!(loc.range.start.line, 3);
+        assert_eq!(
+            loc.range.start.character, 4,
+            "param keyword starts after 4-space indent"
+        );
+        assert_eq!(loc.range.end.line, 3, "declaration should be single-line");
+        assert_eq!(
+            loc.range.end.character, 33,
+            "end should cover full 'param thickness: Scalar = 5mm' (29 chars after indent)"
+        );
     }
 
     #[test]
@@ -239,8 +248,18 @@ mod tests {
         let loc = compute_goto_definition(source, &test_uri(), position)
             .expect("goto-def for width ref should return location");
         assert_eq!(loc.uri, test_uri());
-        // Should point to param width on line 1
+        // Should point to param width on line 1:
+        // "    param width: Scalar = 80mm"
         assert_eq!(loc.range.start.line, 1);
+        assert_eq!(
+            loc.range.start.character, 4,
+            "param keyword starts after 4-space indent"
+        );
+        assert_eq!(loc.range.end.line, 1, "declaration should be single-line");
+        assert_eq!(
+            loc.range.end.character, 30,
+            "end should cover full 'param width: Scalar = 80mm' (26 chars after indent)"
+        );
     }
 
     #[test]
@@ -251,8 +270,18 @@ mod tests {
         let loc = compute_goto_definition(source, &test_uri(), position)
             .expect("goto-def for volume should return location");
         assert_eq!(loc.uri, test_uri());
-        // Should point to itself (the let declaration) on line 7
+        // Should point to itself (the let declaration) on line 7:
+        // "    let volume = width * height * thickness"
         assert_eq!(loc.range.start.line, 7);
+        assert_eq!(
+            loc.range.start.character, 4,
+            "let keyword starts after 4-space indent"
+        );
+        assert_eq!(loc.range.end.line, 7, "declaration should be single-line");
+        assert_eq!(
+            loc.range.end.character, 43,
+            "end should cover full 'let volume = width * height * thickness' (39 chars after indent)"
+        );
     }
 
     #[test]
