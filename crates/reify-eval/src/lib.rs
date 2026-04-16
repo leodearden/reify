@@ -3432,5 +3432,38 @@ mod tests {
             "cell ordering must affect the fingerprint (cell identity contributes to the hash)"
         );
     }
+
+    // ── value_type_kind_matches: Tensor↔Matrix cross-variant unit tests ───────
+
+    /// Value::Matrix supplied to Type::Tensor must return true.
+    /// Regression-locks the `Value::Matrix(_) => matches!(ty, Type::Tensor { .. } | Type::Matrix { .. })`
+    /// arm (lib.rs:125): a Matrix value is accepted by both Tensor and Matrix typed cells.
+    #[test]
+    fn value_type_kind_matches_matrix_value_into_tensor_type_returns_true() {
+        use reify_types::{Type, Value};
+        let v = Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(1.0)],
+        ]);
+        let t = Type::Tensor { rank: 2, n: 3, quantity: Box::new(Type::Real) };
+        assert!(
+            value_type_kind_matches(&v, &t),
+            "Value::Matrix should be accepted by Type::Tensor (cross-variant Ok-path)"
+        );
+    }
+
+    /// Value::Tensor supplied to Type::Matrix must return true.
+    /// Regression-locks the `Value::Tensor(_) => matches!(ty, Type::Tensor { .. } | Type::Matrix { .. })`
+    /// arm (lib.rs:124): a Tensor value is accepted by both Tensor and Matrix typed cells.
+    #[test]
+    fn value_type_kind_matches_tensor_value_into_matrix_type_returns_true() {
+        use reify_types::{Type, Value};
+        let v = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let t = Type::Matrix { m: 3, n: 3, quantity: Box::new(Type::Real) };
+        assert!(
+            value_type_kind_matches(&v, &t),
+            "Value::Tensor should be accepted by Type::Matrix (cross-variant Ok-path)"
+        );
+    }
 }
 
