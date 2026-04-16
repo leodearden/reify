@@ -262,6 +262,18 @@ pub(crate) fn compile_geometry_op(
                                     name, f
                                 )));
                             }
+                            Some(f) if f != f.floor() => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "Shell face index '{}' is not an integer ({}) — skipped",
+                                    name, f
+                                )));
+                            }
+                            Some(f) if f > 1_000_000.0 => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "Shell face index '{}' exceeds upper bound of 1000000 ({}) — skipped",
+                                    name, f
+                                )));
+                            }
                             Some(f) => {
                                 faces_to_remove.push(f as usize);
                             }
@@ -2559,8 +2571,6 @@ mod tests {
         );
     }
 
-    // ── validate_pattern_count upper-bound tests ──────────────────────────────
-
     // ── Shell face index validation tests ────────────────────────────────────
 
     #[test]
@@ -2847,6 +2857,100 @@ mod tests {
             "valid faces should produce no diagnostics, got: {:?}",
             diagnostics
         );
+    }
+
+    #[test]
+    fn compile_geometry_op_shell_fractional_face_index_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_0 = 2.7 — non-integer, should emit diagnostic and be skipped (not truncated to 2)
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                ("face_0".into(), literal_f64(2.7)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_some(), "Shell with fractional face_0 should return Some, got {:?}", result);
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("face_0")
+                    && (d.message.contains("integer") || d.message.contains("fractional"))
+            }),
+            "expected a Warning about non-integer face_0, got: {:?}",
+            diagnostics
+        );
+        match result.unwrap() {
+            reify_types::GeometryOp::Shell { faces_to_remove, .. } => {
+                assert!(
+                    faces_to_remove.is_empty(),
+                    "fractional face index should be skipped (not truncated), got {:?}",
+                    faces_to_remove
+                );
+            }
+            other => panic!("expected GeometryOp::Shell, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_shell_huge_face_index_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_0 = 2e18 — far exceeds upper bound; Rust saturates f64→usize to usize::MAX
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                ("face_0".into(), literal_f64(2e18)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_some(), "Shell with huge face_0 should return Some, got {:?}", result);
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("face_0")
+                    && (d.message.contains("upper bound") || d.message.contains("exceeds"))
+            }),
+            "expected a Warning about face_0 exceeding upper bound, got: {:?}",
+            diagnostics
+        );
+        match result.unwrap() {
+            reify_types::GeometryOp::Shell { faces_to_remove, .. } => {
+                assert!(
+                    faces_to_remove.is_empty(),
+                    "huge face index should be skipped, got {:?}",
+                    faces_to_remove
+                );
+            }
+            other => panic!("expected GeometryOp::Shell, got {:?}", other),
+        }
     }
 
     // ── validate_pattern_count upper-bound tests ──────────────────────────────
