@@ -250,3 +250,53 @@ fn find_named_member_span_hand_constructed_depth_2_match() {
     );
     assert_eq!(info.doc, None, "helper builds param with no doc");
 }
+
+#[test]
+fn find_named_member_span_hand_constructed_else_only_found() {
+    // Exercises the `find_named_member_span_depth` else-branch recursion:
+    // GuardedGroup with empty `members` and a single ParamDecl named
+    // "target" in `else_members`. Complements the existing parsed-source
+    // `guarded_group_else_members_found` test by isolating the else
+    // recursion on a hand-constructed slice.
+    use reify_syntax::{
+        Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl,
+    };
+    use reify_types::{ContentHash, SourceSpan};
+
+    let param_span = SourceSpan::new(42, 77);
+    let dummy_hash = ContentHash(0);
+    let dummy_expr = Expr {
+        kind: ExprKind::BoolLiteral(true),
+        span: SourceSpan::new(0, 1),
+    };
+
+    let members = [MemberDecl::GuardedGroup(GuardedGroupDecl {
+        condition: dummy_expr,
+        members: vec![],
+        else_members: vec![MemberDecl::Param(ParamDecl {
+            name: "target".to_string(),
+            doc: None,
+            type_expr: None,
+            default: None,
+            where_clause: None,
+            annotations: Vec::new(),
+            span: param_span,
+            content_hash: dummy_hash,
+        })],
+        span: SourceSpan::new(0, 100),
+        content_hash: dummy_hash,
+    })];
+
+    let result = find_named_member_span(&members, "target");
+    assert!(
+        result.is_some(),
+        "param found only in else_members should be returned"
+    );
+    let info = result.unwrap();
+    assert_eq!(
+        info.span, param_span,
+        "span should match the else-branch param's span"
+    );
+    assert_eq!(info.doc, None);
+}
+
