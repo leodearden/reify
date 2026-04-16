@@ -2138,10 +2138,15 @@ structure S {
 
     #[test]
     fn loft_non_geom_args_fallback_uses_step_offset() {
-        // loft() with literal-number args (not geometry expressions).
-        // When step_offset=5, the fallback GeomRef for profile i should be
-        // GeomRef::Step(5 + i) — each profile gets a unique step, matching
-        // sweep()'s convention (profile=step_offset, path=step_offset+1).
+        // loft() with 3 literal-number args (not geometry expressions).
+        // When step_offset=5:
+        //   - The fallback GeomRef for profile i is GeomRef::Step(5 + i) — unique per
+        //     profile, preserving loft's "distinct cross-sections" semantics in the
+        //     fallback (consistent with sweep()'s profile=step_offset, path=step_offset+1
+        //     convention applied per profile).
+        //   - The fallback is silent: no per-argument diagnostic is emitted, matching
+        //     the geom_ref convention used by extrude/revolve/translate/etc.
+        //   - Ops are still produced (fallback refs allow compilation to continue).
         let expr = reify_syntax::Expr {
             kind: reify_syntax::ExprKind::FunctionCall {
                 name: "loft".to_string(),
@@ -2152,6 +2157,10 @@ structure S {
                     },
                     reify_syntax::Expr {
                         kind: reify_syntax::ExprKind::NumberLiteral(2.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(3.0),
                         span: reify_types::SourceSpan::new(0, 1),
                     },
                 ],
@@ -2184,7 +2193,7 @@ structure S {
                 profiles,
                 ..
             } => {
-                assert_eq!(profiles.len(), 2, "loft should have 2 profiles");
+                assert_eq!(profiles.len(), 3, "loft should have 3 profiles");
                 for (i, profile) in profiles.iter().enumerate() {
                     assert_eq!(
                         *profile,
@@ -2198,6 +2207,21 @@ structure S {
             }
             other => panic!("expected Sweep(Loft), got {:?}", other),
         }
+
+        // No per-argument geometry-expression diagnostics should be emitted by the
+        // loft fallback path — silent fallback matches the geom_ref convention.
+        let geom_expr_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("must be a geometry expression"))
+            .collect();
+        assert!(
+            geom_expr_diags.is_empty(),
+            "expected silent fallback (no per-arg diagnostics), got: {:?}",
+            geom_expr_diags
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

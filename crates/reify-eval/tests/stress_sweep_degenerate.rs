@@ -382,6 +382,50 @@ fn loft_one_profile_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// task-1752: loft_non_geometry_profiles_silent_fallback
+// ---------------------------------------------------------------------------
+
+#[test]
+fn loft_non_geometry_profiles_silent_fallback() {
+    // Compiling loft(x, y) where x and y are scalar params (not geometry)
+    // should silently fall back per profile (no diagnostic emitted), matching
+    // the geom_ref convention used by extrude/revolve/translate/etc.
+    // The op is still produced (with distinct GeomRef::Step indices per
+    // profile, so loft's "distinct cross-sections" semantics are preserved
+    // for downstream analysis), and no per-argument geometry-expression
+    // error is added.
+    let source = r#"structure S {
+    param x: Scalar = 5
+    param y: Scalar = 10
+    let result = loft(x, y)
+}"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_loft_diag"));
+    let compiled = reify_compiler::compile(&parsed);
+
+    // No per-argument geometry-expression diagnostics should be emitted by
+    // the loft fallback path. Filter by message content so the assertion is
+    // robust to unrelated diagnostics elsewhere in the pipeline.
+    let geom_expr_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("must be a geometry expression")
+                && d.message.contains("loft()")
+        })
+        .collect();
+    assert!(
+        geom_expr_diags.is_empty(),
+        "expected loft() to silently fall back for non-geometry args (no per-arg \
+         diagnostics), got: {:?}",
+        geom_expr_diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // step-21/22: self_intersecting_path_sweep — kernel failure diagnostic
 // ---------------------------------------------------------------------------
 

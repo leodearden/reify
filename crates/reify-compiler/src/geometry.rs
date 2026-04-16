@@ -156,8 +156,15 @@ pub(crate) fn compile_geometry_call(
         .collect();
 
     // Helper: look up resolved geometry ref or fall back to step_offset.
-    // Used by single-geometry-arg functions (translate, rotate, etc.).
-    // For loft and sweep the fallback is handled with explicit diagnostics below.
+    // Used by single-geometry-arg functions (extrude, revolve, revolve_full,
+    // translate, rotate, etc.) and by loft (which calls the equivalent
+    // step_offset+i form inline to preserve per-profile index uniqueness).
+    // These functions intentionally emit no diagnostic when the geometry arg
+    // is non-geometry: their callers are responsible for providing a geometry
+    // expression, and the silent fallback keeps compilation from
+    // short-circuiting while still producing an op for downstream analysis.
+    // sweep() is the exception — it emits per-argument diagnostics with span
+    // labels so users get a precise numbered error for each bad argument.
     let geom_ref = |idx: usize| -> GeomRef {
         geom_refs.get(&idx).cloned().unwrap_or(GeomRef::Step(step_offset))
     };
@@ -361,8 +368,12 @@ pub(crate) fn compile_geometry_call(
             }
             let mut profiles = Vec::with_capacity(args.len());
             for i in 0..args.len() {
-                // Silent fallback — consistent with extrude/revolve_full which use
-                // geom_ref() and never emit an error for non-geometry profiles.
+                // Silently fall back to GeomRef::Step(step_offset + i) per profile
+                // when an arg is not a geometry expression. This matches the
+                // single-geom-arg geom_ref() convention while preserving per-profile
+                // index uniqueness (loft requires distinct cross-sections, so each
+                // fallback profile needs a distinct step index for downstream
+                // analysis).
                 let r = geom_refs
                     .get(&i)
                     .cloned()
@@ -494,26 +505,37 @@ pub(crate) fn compile_geometry_call(
                 );
                 return None;
             }
-            // Note: sweep() emits an error diagnostic when profile or path are not
-            // geometry expressions. This is intentionally asymmetric with loft(), which
-            // silently falls back to GeomRef::Step(step_offset) for any non-geometry
-            // profile (matching the geom_ref() helper convention used by extrude/revolve_full).
-            // sweep() is stricter because its two arguments have specific, named roles
-            // (profile and path) that are clearly communicated to the user.
+            // sweep() emits per-argument diagnostics when an arg is not a geometry
+            // expression, then falls back to GeomRef::Step so the op is still
+            // produced for downstream analysis.  (loft() differs: it falls back
+            // silently per profile to preserve index uniqueness without
+            // duplicating the type-check error category at each profile slot.)
             let profile = if let Some(r) = geom_refs.get(&0).cloned() {
                 r
             } else {
-                diagnostics.push(Diagnostic::error(
-                    "sweep() profile (argument 1) must be a geometry expression".to_string(),
-                ));
+                diagnostics.push(
+                    Diagnostic::error(
+                        "sweep() profile (argument 1) must be a geometry expression".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        args[0].span,
+                        "not a geometry expression",
+                    )),
+                );
                 GeomRef::Step(step_offset)
             };
             let path = if let Some(r) = geom_refs.get(&1).cloned() {
                 r
             } else {
-                diagnostics.push(Diagnostic::error(
-                    "sweep() path (argument 2) must be a geometry expression".to_string(),
-                ));
+                diagnostics.push(
+                    Diagnostic::error(
+                        "sweep() path (argument 2) must be a geometry expression".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        args[1].span,
+                        "not a geometry expression",
+                    )),
+                );
                 GeomRef::Step(step_offset + 1)
             };
             let mut it = compiled_args.into_iter();
