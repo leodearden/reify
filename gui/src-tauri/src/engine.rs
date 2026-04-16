@@ -1429,6 +1429,7 @@ pub(crate) fn line_col_to_byte_offset_with_offsets(
 /// - If `line` or `col` is 0, returns 0 as a safe fallback.
 /// - If `line` exceeds the number of lines, returns `source.len()`.
 /// - If `col` exceeds the line length, clamps to the end of the line.
+#[allow(dead_code)]
 pub(crate) fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> usize {
     let line_offsets = build_line_offsets(source);
     line_col_to_byte_offset_with_offsets(source, line, col, &line_offsets)
