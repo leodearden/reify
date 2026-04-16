@@ -393,7 +393,8 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
 /// follow the same 2-op pattern.
 ///
 /// # Panics
-/// Panics if the engine panics or if no ops are captured.
+/// Panics if `Engine::build` panics, if the internal mutex is poisoned, or if
+/// the build produces any `Severity::Error` diagnostics.
 #[cfg(feature = "eval-helpers")]
 pub fn run_modify_pipeline(
     kind: reify_compiler::ModifyKind,
@@ -436,7 +437,12 @@ pub fn run_modify_pipeline(
 
     let mut engine =
         reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
-    let _result = engine.build(&module, ExportFormat::Step);
+    let result = engine.build(&module, ExportFormat::Step);
+    assert!(
+        result.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "engine build failed: {:?}",
+        result.diagnostics
+    );
 
     ops_ref.lock().unwrap().clone()
 }
