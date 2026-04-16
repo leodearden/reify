@@ -8305,7 +8305,7 @@
         "testStrategy": "",
         "priority": "medium",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/entity.rs",
@@ -8328,7 +8328,7 @@
           "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-16T02:20:30.567Z"
+        "updatedAt": "2026-04-16T02:41:00.942Z"
       },
       {
         "id": "389",
@@ -38615,9 +38615,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:38:49.907Z",
+      "lastModified": "2026-04-16T02:41:00.942Z",
       "taskCount": 1845,
-      "completedCount": 1575,
+      "completedCount": 1576,
       "tags": [
         "master"
       ]
