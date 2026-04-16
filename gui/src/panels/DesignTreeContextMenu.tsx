@@ -23,6 +23,7 @@ export const DesignTreeContextMenu: Component<Props> = (props) => {
     <div
       class={styles.contextMenu}
       data-testid="design-tree-context-menu"
+      data-design-tree-menu="true"
       style={{ position: 'fixed', left: `${props.x}px`, top: `${props.y}px` }}
     >
       <button class={styles.contextMenuItem} data-testid="ctx-show-cascade" onClick={() => act('show-cascade')}>

@@ -225,6 +225,24 @@ describe('DesignTree — context menu', () => {
     expect(screen.queryByTestId('design-tree-context-menu')).toBeNull();
   });
 
+  it('clicking eye-icon on another row while menu is open both cycles visibility and dismisses menu', () => {
+    // Pins the capture-phase dismiss contract: dismiss must happen even when the
+    // target's own handler calls e.stopPropagation() (eye-icon does), and the
+    // target's action must still fire.
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    fireEvent.contextMenu(screen.getByTestId('tree-row-Root.A'));
+    expect(screen.getByTestId('design-tree-context-menu')).toBeTruthy();
+    const before = store.state.explicit['Root.B'];
+    fireEvent.click(screen.getByTestId('eye-icon-Root.B'));
+    expect(store.state.explicit['Root.B']).not.toBe(before);
+    expect(screen.queryByTestId('design-tree-context-menu')).toBeNull();
+  });
+
   it('contextmenu on successive rows does not accumulate document click listeners', () => {
     const nodes = [
       makeNode({ entity_path: 'Root.A' }),
@@ -254,22 +272,33 @@ describe('DesignTree — context menu', () => {
     const addSpy = vi.spyOn(document, 'addEventListener');
     const removeSpy = vi.spyOn(document, 'removeEventListener');
     try {
+      const addsBefore = {
+        click: addSpy.mock.calls.filter((c) => c[0] === 'click').length,
+        keydown: addSpy.mock.calls.filter((c) => c[0] === 'keydown').length,
+      };
+      const removesBefore = {
+        click: removeSpy.mock.calls.filter((c) => c[0] === 'click').length,
+        keydown: removeSpy.mock.calls.filter((c) => c[0] === 'keydown').length,
+      };
       const { unmount } = render(() => <DesignTree tree={nodes} viewStateStore={store} />);
-      // Capture (event, handler) pairs registered during render — function-reference
-      // comparison is stricter than count matching and immune to coincidental
-      // add/remove pairs from the testing harness or solid-js runtime.
-      const addedPairs = addSpy.mock.calls
-        .filter((c) => c[0] === 'click' || c[0] === 'keydown')
-        .map((c) => [c[0], c[1]] as [string, EventListener]);
+      const addsAfterRender = {
+        click: addSpy.mock.calls.filter((c) => c[0] === 'click').length,
+        keydown: addSpy.mock.calls.filter((c) => c[0] === 'keydown').length,
+      };
       unmount();
-      const removedPairs = removeSpy.mock.calls
-        .filter((c) => c[0] === 'click' || c[0] === 'keydown')
-        .map((c) => [c[0], c[1]] as [string, EventListener]);
-      // Every handler that was added must appear in removeEventListener with the
-      // same event type and the exact same function reference.
-      for (const [event, handler] of addedPairs) {
-        expect(removedPairs.some(([re, rh]) => re === event && rh === handler)).toBe(true);
-      }
+      const removesAfterUnmount = {
+        click: removeSpy.mock.calls.filter((c) => c[0] === 'click').length,
+        keydown: removeSpy.mock.calls.filter((c) => c[0] === 'keydown').length,
+      };
+      // Net added by DesignTree across mount→unmount must equal net removed for each
+      // event type. This scopes the assertion to DesignTree's own delta and is immune
+      // to unrelated listeners from solid-js / testing harness / jsdom.
+      expect(addsAfterRender.click - addsBefore.click).toBe(removesAfterUnmount.click - removesBefore.click);
+      expect(addsAfterRender.keydown - addsBefore.keydown).toBe(removesAfterUnmount.keydown - removesBefore.keydown);
+      // And DesignTree must have registered at least one listener of each type —
+      // otherwise dismiss/Escape are silently broken.
+      expect(addsAfterRender.click - addsBefore.click).toBeGreaterThan(0);
+      expect(addsAfterRender.keydown - addsBefore.keydown).toBeGreaterThan(0);
     } finally {
       addSpy.mockRestore();
       removeSpy.mockRestore();

@@ -79,7 +79,9 @@ const DesignTree: Component<Props> = (props) => {
       if (!menu()) return;
       // If the click lands inside the open context menu, let the item's own
       // click handler call setMenu(null) via handleAction — don't dismiss early.
-      if ((e.target as Element).closest?.('[data-testid="design-tree-context-menu"]')) return;
+      // Uses a stable non-test data attribute so the dismiss selector isn't
+      // coupled to a test-only marker.
+      if ((e.target as Element).closest?.('[data-design-tree-menu]')) return;
       setMenu(null);
     }
     function handleDocumentKeyDown(e: KeyboardEvent) {
