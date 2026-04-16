@@ -154,6 +154,94 @@ structure S {
     );
 }
 
+// ─── step-515-1: Arity-mismatch coexistence regression ───────────────
+
+/// Regression guard: a user-defined function does NOT shadow a prelude function
+/// when they share a name but differ in arity (or param types). Both must remain
+/// independently callable — the dispatch rule is (name, arity, param types).
+///
+/// Setup:
+///   - User defines `symmetric_tolerance(x: Length) -> Length` (1-arg, returns x).
+///   - Prelude defines `symmetric_tolerance(nominal, deviation)` (2-arg, returns sum).
+///
+/// Expected:
+///   - `symmetric_tolerance(5mm)` → user impl → 5mm = 0.005 m
+///   - `symmetric_tolerance(5mm, 2mm)` → prelude impl → 7mm = 0.007 m
+///
+/// If the arity-mismatch were incorrectly treated as shadowing, the prelude's
+/// 2-arg form would be inaccessible and `b` would fail to resolve.
+#[test]
+fn prelude_function_not_shadowed_by_arity_mismatch() {
+    let source = r#"
+fn symmetric_tolerance(x: Length) -> Length {
+    x
+}
+
+structure S {
+    let a : Length = symmetric_tolerance(5mm)
+    let b : Length = symmetric_tolerance(5mm, 2mm)
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    let eval_errors = collect_errors(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "eval should produce no error diagnostics, got: {:?}",
+        eval_errors
+    );
+
+    // a = symmetric_tolerance(5mm) → user impl (1-arg, returns x) → 5mm = 0.005 m
+    let cell_a = ValueCellId::new("S", "a");
+    let a = result
+        .values
+        .get(&cell_a)
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| {
+            panic!(
+                "S.a should be numeric. Available values: {:?}",
+                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        (a - 0.005).abs() < 1e-9,
+        "S.a: user 1-arg symmetric_tolerance(5mm) should return 5mm=0.005, got {}",
+        a
+    );
+
+    // b = symmetric_tolerance(5mm, 2mm) → prelude impl (2-arg, returns sum) → 7mm = 0.007 m
+    let cell_b = ValueCellId::new("S", "b");
+    let b = result
+        .values
+        .get(&cell_b)
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| {
+            panic!(
+                "S.b should be numeric. Available values: {:?}",
+                result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        (b - 0.007).abs() < 1e-9,
+        "S.b: prelude 2-arg symmetric_tolerance(5mm, 2mm) should return 7mm=0.007, got {}",
+        b
+    );
+}
+
 // ─── step-3: Eval idempotency (caching regression) ───────────────────
 
 /// Regression guard: calling `eval()` twice on the same engine with the
