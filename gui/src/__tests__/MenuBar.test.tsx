@@ -230,6 +230,27 @@ describe('MenuBar — Edit dropdown', () => {
   });
 });
 
+describe('MenuBar — disabled derivation', () => {
+  it('Non-disabled shortcut items (File menu) render as enabled per registry', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByText('File'));
+    const items = screen.getAllByRole('menuitem');
+    const openItem = items.find((el) => el.textContent?.includes('Open')) as HTMLButtonElement;
+    const saveItem = items.find((el) => el.textContent?.includes('Save')) as HTMLButtonElement;
+    const exportItem = items.find((el) => el.textContent?.includes('Export')) as HTMLButtonElement;
+    expect(openItem).toBeDefined();
+    expect(saveItem).toBeDefined();
+    expect(exportItem).toBeDefined();
+    expect(openItem.disabled).toBe(getShortcut('open')?.disabled ?? false);
+    expect(saveItem.disabled).toBe(getShortcut('save')?.disabled ?? false);
+    expect(exportItem.disabled).toBe(getShortcut('export')?.disabled ?? false);
+    // Confirm these evaluate to false (registry has no disabled flag for these)
+    expect(openItem.disabled).toBe(false);
+    expect(saveItem.disabled).toBe(false);
+    expect(exportItem.disabled).toBe(false);
+  });
+});
+
 describe('MenuBar — interaction behaviors', () => {
   it('pressing Escape while a menu is open closes it', () => {
     render(() => <MenuBar />);
