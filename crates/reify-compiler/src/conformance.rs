@@ -437,11 +437,21 @@ pub(crate) fn check_trait_conformance(
                     });
 
                     // Cross-check the expression type against the let's annotation.
-                    // The annotation captures user intent; any drift here is an error,
-                    // mirroring the requirement-vs-member check at ~line 173 (same
-                    // `implicitly_converts_to` relation, same `Diagnostic::error` shape).
+                    // The annotation captures user intent; any drift here is an error.
+                    //
+                    // Use `type_compatible` (not `implicitly_converts_to`) so the check
+                    // honors Int→Real widening — `let x : Real = 42.0` parses the
+                    // expression as `Int` (parser quirk on whole-number `.0` literals,
+                    // expr.rs:102-109) and the annotation captures the user's `Real`
+                    // intent.  `type_compatible` is the same widening relation applied
+                    // throughout type checking (type_compat.rs:81), so accepting it here
+                    // matches the rest of the compiler instead of being stricter at this
+                    // one site.  See task 1834 esc-1834-58 for the trade-off; the
+                    // requirement-vs-member sites at lines 268/293 keep the stricter
+                    // `implicitly_converts_to` because they compare two annotated types
+                    // (no Int-literal source).
                     if let Some(annotation_ty) = cell_type
-                        && !implicitly_converts_to(&compiled_expr.result_type, annotation_ty)
+                        && !type_compatible(annotation_ty, &compiled_expr.result_type)
                     {
                         diagnostics.push(
                             Diagnostic::error(format!(

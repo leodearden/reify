@@ -445,13 +445,13 @@ fn mixed_merging_params_lets_constraints() {
     let source = r#"
 trait GeomA {
     param x : Length
-    let area : Real = x * x
+    let area = x * x
     constraint x > 0mm
 }
 
 trait GeomB {
     param x : Length
-    let area : Real = x * x
+    let area = x * x
     constraint x < 1000mm
 }
 
