@@ -2007,4 +2007,47 @@ structure S {
             diagnostics
         );
     }
+
+    #[test]
+    fn loft_nested_in_union_correct_step_refs() {
+        // End-to-end regression: loft nested inside union gets step_offset=1
+        // (after the box op at index 0).  After the fix, loft profiles reference
+        // Step(1) not Step(0).  p is a scalar param — not a geometry ref — so the
+        // error-path fallback fires and we can observe the corrected step index.
+        let source = r#"structure S {
+    param p: Scalar = 5mm
+    let result = union(box(10mm, 10mm, 10mm), loft(p, p))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_loft_union"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1, "expected 1 realization");
+        // ops layout: [0]=box, [1]=loft, [2]=Boolean(Union, Step(0), Step(1))
+        let ops = &template.realizations[0].operations;
+        assert!(
+            ops.len() >= 2,
+            "expected at least 2 ops (box + loft), got {}",
+            ops.len()
+        );
+        // The loft op is at index 1.
+        if let CompiledGeometryOp::Sweep { kind, profiles, .. } = &ops[1] {
+            assert_eq!(*kind, SweepKind::Loft, "expected Loft kind at ops[1]");
+            for (i, profile) in profiles.iter().enumerate() {
+                assert_eq!(
+                    *profile,
+                    GeomRef::Step(1),
+                    "loft profile[{}] inside union should be Step(1) not Step(0), got {:?}",
+                    i,
+                    profile
+                );
+            }
+        } else {
+            panic!("expected Sweep(Loft) at ops[1], got {:?}", ops[1]);
+        }
+    }
 }
