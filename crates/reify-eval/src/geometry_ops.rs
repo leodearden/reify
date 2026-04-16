@@ -242,19 +242,31 @@ pub(crate) fn compile_geometry_op(
                 reify_compiler::ModifyKind::Shell => {
                     let thickness = eval_arg("thickness")?;
                     // Collect face indices from face_0, face_1, ...
-                    let faces_to_remove: Vec<usize> = args
-                        .iter()
-                        .filter(|(n, _)| n.starts_with("face_"))
-                        .filter_map(|(_, expr)| {
-                            reify_expr::eval_expr(
-                                expr,
-                                &reify_expr::EvalContext::new(values, functions)
-                                    .with_meta(meta_map),
-                            )
-                            .as_f64()
-                            .map(|v| v as usize)
-                        })
-                        .collect();
+                    // Non-numeric, negative, or non-finite values are skipped with a diagnostic.
+                    let mut faces_to_remove: Vec<usize> = Vec::new();
+                    for (name, expr) in args.iter().filter(|(n, _)| n.starts_with("face_")) {
+                        let val = reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                        );
+                        match val.as_f64() {
+                            None => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "Shell face index '{}' is non-numeric/non-finite — skipped",
+                                    name
+                                )));
+                            }
+                            Some(f) if !f.is_finite() || f < 0.0 => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "Shell face index '{}' is negative or non-finite ({}) — skipped",
+                                    name, f
+                                )));
+                            }
+                            Some(f) => {
+                                faces_to_remove.push(f as usize);
+                            }
+                        }
+                    }
                     Some(reify_types::GeometryOp::Shell {
                         target: target_id,
                         thickness,
