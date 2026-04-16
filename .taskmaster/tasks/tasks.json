@@ -37633,11 +37633,11 @@
         "description": "Two test quality improvements from task 1766 review:\n\n1. The handleSave test in App.test.tsx covers the happy path but not the error path where bridgeSaveFile rejects. A failed save should show a toast and NOT call markClean. Add a test that mocks bridge.saveFile to reject, triggers Ctrl+S, and asserts that dirtyFiles still contains the path and that a toast with 'Save failed' is shown.\n\n2. Several callback tests in MenuBar.test.tsx use non-null assertion `!` on `.find()` results. If the find fails (e.g., due to a label text change), the test throws a confusing TypeError instead of a clear assertion failure. Add explicit expect(item).toBeTruthy() assertions before clicks.\n\nmemory_hints: search \"handleSave bridgeSaveFile error toast test\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:07:02.059Z",
+        "updatedAt": "2026-04-16T23:23:32.381Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx",
@@ -39166,13 +39166,13 @@
         "description": "Two small follow-ups from the task 1855 review (reviewer_comprehensive):\n\n1. **Fragile hardcoded line number in comment** (crates/reify-eval/src/concurrent.rs:134-136). The comment currently reads \"new_snapshot_values already contains the updated cell (inserted at line ~123), so copying all entries here covers it — no duplicate insert needed.\" The `~123` pointer will silently drift as the file changes and the compiler will not catch it. Restore landmark-style phrasing: \"new_snapshot_values already contains the updated cell (inserted above via new_snapshot_values.insert), so copying all entries here covers it — no duplicate insert needed.\" Describe the landmark, not the line.\n\n2. **Tighten `resolve_concurrent_edit_without_solver_is_noop_fresh_input`** (crates/reify-eval/tests/concurrent.rs:555-580). The \"no-op\" claim in the test name is verified only by empty output buckets, which would also hold for a trivially-returning solver. Since the point of the test is to exercise the short-circuit path where the solver branch is skipped, either:\n   - wire in a spy solver and assert `solver.recorded_calls().is_empty()` (stronger), or\n   - add a comment explaining the Engine is deliberately constructed with `None` so the `if let Some(ref solver)` branch cannot be entered (cheapest option, clarifies intent without new infra).\n\nBoth are low-cost hygiene fixes — bundle them in a single commit.\n\nmemory_hints:\n- search: \"resolve_concurrent_edit noop test\" \"prepare_concurrent_edit comment\"\n- entity: Engine, ConcurrentEditSetup\n\nspawned_from: 1855",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1870"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:56:38.630Z",
+        "updatedAt": "2026-04-16T23:23:33.001Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/concurrent.rs",
@@ -39554,9 +39554,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T23:17:59.471Z",
+      "lastModified": "2026-04-16T23:23:33.001Z",
       "taskCount": 1887,
-      "completedCount": 1621,
+      "completedCount": 1623,
       "tags": [
         "master"
       ]
