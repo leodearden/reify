@@ -3465,5 +3465,34 @@ mod tests {
             "Value::Tensor should be accepted by Type::Matrix (cross-variant Ok-path)"
         );
     }
+
+    /// Value::Tensor supplied to Type::Real must return false.
+    /// Regression-locks the *negative* path: Tensor values are rejected by
+    /// non-Tensor/non-Matrix types, confirming the `matches!` guard cannot be
+    /// trivially widened to `_ => true` without breaking this assertion.
+    #[test]
+    fn value_type_kind_matches_tensor_value_into_real_type_returns_false() {
+        use reify_types::{Type, Value};
+        let v = Value::Tensor(vec![]);
+        let t = Type::Real;
+        assert!(
+            !value_type_kind_matches(&v, &t),
+            "Value::Tensor should be rejected by Type::Real (negative kind-check path)"
+        );
+    }
+
+    /// Value::Matrix supplied to Type::Real must return false.
+    /// Regression-locks the *negative* path for Matrix, symmetric to the
+    /// Tensor case above — confirms the `matches!` guard is not trivially dropped.
+    #[test]
+    fn value_type_kind_matches_matrix_value_into_real_type_returns_false() {
+        use reify_types::{Type, Value};
+        let v = Value::Matrix(vec![]);
+        let t = Type::Real;
+        assert!(
+            !value_type_kind_matches(&v, &t),
+            "Value::Matrix should be rejected by Type::Real (negative kind-check path)"
+        );
+    }
 }
 
