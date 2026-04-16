@@ -916,7 +916,9 @@ mod tests {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
 
-        // Each iteration omits exactly one named arg; all other required args remain present so that f64_arg? short-circuits on (and diagnoses) only the omitted arg under test.
+        // Each iteration omits exactly one named arg; all other required args
+        // remain present so that f64_arg? short-circuits on (and diagnoses)
+        // only the omitted arg under test.
         let full_args: Vec<(&'static str, reify_types::CompiledExpr)> = vec![
             ("ox", literal_f64(0.0)),
             ("oy", literal_f64(0.0)),
