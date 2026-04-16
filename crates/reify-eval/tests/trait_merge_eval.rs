@@ -3,6 +3,7 @@
 //! Full pipeline (parse → compile → eval/check) tests verifying that merged
 //! trait constraints are actually enforced and let defaults are evaluated.
 
+use reify_test_support::assert_no_eval_errors;
 use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 
 // ── Helper ───────────────────────────────────────────────────────────────────
@@ -236,6 +237,10 @@ structure def S : WithComputed {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
+
+    // Assert no eval-phase errors before accessing result.values — catches eval
+    // regressions with a precise failure rather than an opaque panic on missing values.
+    assert_no_eval_errors(&result);
 
     let y_id = ValueCellId::new("S", "y");
     let y_val = result
