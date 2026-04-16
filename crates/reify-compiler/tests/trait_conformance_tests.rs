@@ -966,7 +966,12 @@ structure def S : A {
     );
 
     // Even with a type conflict error, dedup must still produce exactly one cell for 'x'.
-    assert_single_value_cell(&template, "x", "diamond_type_conflict");
+    let x_cell = assert_single_value_cell(&template, "x", "diamond_type_conflict");
+    assert_eq!(
+        x_cell.cell_type,
+        Type::length(),
+        "diamond_type_conflict: x cell_type should be Length (structure's own declaration wins)"
+    );
 }
 
 /// Step 21b: Trait with constraint and param — both injected correctly.
