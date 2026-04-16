@@ -250,8 +250,8 @@ fn empty_meta_block_access_gives_no_key_error() {
         .collect();
     assert!(!errors.is_empty(), "expected at least one error");
     assert!(
-        errors.iter().any(|d| d.message.contains("no key")),
-        "expected 'no key' error for empty meta block access, got: {:?}",
+        errors.iter().any(|d| d.message.contains("meta block has no key")),
+        "expected 'meta block has no key' error for empty meta block access, got: {:?}",
         errors
     );
     assert!(
@@ -264,6 +264,36 @@ fn empty_meta_block_access_gives_no_key_error() {
 // ---------------------------------------------------------------------------
 // step-2 (task-388): empty meta block without access compiles cleanly
 // ---------------------------------------------------------------------------
+// Regression guard (task-388): entity with NO meta block at all — accessing
+// `meta.foo` must still produce "no meta block" (not "no key").  This guards
+// against the `has_meta_block` refactor accidentally merging the two error
+// paths.
+#[test]
+fn no_meta_block_access_still_gives_no_meta_block_error() {
+    let source = r#"
+        structure def Bracket {
+            param width : Length = 10mm
+            let x : String = meta.foo
+        }
+    "#;
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected at least one error");
+    assert!(
+        errors.iter().any(|d| d.message.contains("no meta block")),
+        "expected 'no meta block' error when no meta block is declared, got: {:?}",
+        errors
+    );
+    assert!(
+        !errors.iter().any(|d| d.message.contains("meta block has no key")),
+        "should NOT produce 'meta block has no key' when no meta block is declared, got: {:?}",
+        errors
+    );
+}
 
 #[test]
 fn empty_meta_block_stored_in_template() {
