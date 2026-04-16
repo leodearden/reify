@@ -1864,3 +1864,98 @@ fn build_snapshot_sentinel_placeholder_continues_independent_ops() {
         "expected geometry_output=None (build_snapshot rollback when any op fails)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tests: zero-ops module (no realizations) — task-1780
+// ---------------------------------------------------------------------------
+
+/// When a module has no geometry operations at all (template has no realizations,
+/// so total_ops=0), build() should return geometry_output=None.
+///
+/// Bug: the current `else` branch evaluates
+/// `step_handles.last().copied().unwrap_or(GeometryHandleId(0))`, producing
+/// handle 0 — which MockGeometryKernel happily exports — so build() incorrectly
+/// returns Some. After the fix, `step_handles.is_empty()` alone gates the None
+/// path, so zero-ops modules cleanly return None without attempting any export.
+#[test]
+fn build_no_geometry_returns_none_when_zero_ops() {
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Template with a parameter but NO realizations — total_ops stays 0
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_zero_ops"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // No geometry ops → no geometry output (not even a spurious GeometryHandleId(0) export)
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when no geometry ops exist (total_ops=0), \
+         got Some({} bytes) — engine incorrectly tried to export GeometryHandleId(0)",
+        result.geometry_output.as_ref().map_or(0, |v| v.len())
+    );
+}
+
+/// When a module has no geometry operations (total_ops=0), build() should NOT
+/// emit an 'all geometry operations failed' diagnostic — no ops were attempted,
+/// so the absence of geometry is not an error condition.
+#[test]
+fn build_no_geometry_no_spurious_diagnostic_when_zero_ops() {
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Template with a parameter but NO realizations — total_ops stays 0
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_zero_ops_diag"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // Must NOT emit the 'all geometry operations failed' diagnostic — no ops were attempted
+    let has_all_failed = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("all geometry operations failed"));
+    assert!(
+        !has_all_failed,
+        "must NOT emit 'all geometry operations failed' when total_ops=0 \
+         (no ops were attempted), but found the diagnostic: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // Must also NOT emit 'export error' — no export should be attempted
+    let has_export_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("export error"));
+    assert!(
+        !has_export_error,
+        "must NOT emit 'export error' when total_ops=0, but found: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("export error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
