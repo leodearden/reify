@@ -38043,11 +38043,11 @@
         "description": "In `crates/reify-compiler/tests/constant_compile_tests.rs`, the `collection_sub_named_pi_shadows_builtin` test (line ~201) asserts `id.member == \"__list_pi__diameter\"`. This couples the test to the internal naming scheme and the assumption that PiPart has exactly one param whose name is lexicographically first.\n\nReplace with a prefix check: `assert!(id.member.starts_with(\"__list_pi__\"), ...)` to validate shadowing while being resilient to member-set changes in the test fixture.\n\nmemory_hints: search \"resolve_builtin_constant collection sub-name\", get_entity \"constant_compile_tests\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T02:08:54.903Z",
+        "updatedAt": "2026-04-16T02:22:38.413Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/constant_compile_tests.rs"
@@ -38456,9 +38456,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:22:24.010Z",
+      "lastModified": "2026-04-16T02:22:38.414Z",
       "taskCount": 1840,
-      "completedCount": 1571,
+      "completedCount": 1572,
       "tags": [
         "master"
       ]
