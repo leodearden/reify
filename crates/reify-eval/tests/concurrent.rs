@@ -856,23 +856,30 @@ fn resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty(
         .template(template)
         .build();
 
-    // Spy solver: call 1 → x=mm(5.0); if a second call happens the spy records it.
+    // Spy solver:
+    //   call 1 (cold eval)       → x = mm(5.0)
+    //   call 2 (erroneous solve) → x = mm(999.0)  ← bogus; leaks into result if guard fails
     let mut cold_solved: HashMap<ValueCellId, Value> = HashMap::new();
     cold_solved.insert(x_id.clone(), mm(5.0));
 
+    let mut bogus_solved: HashMap<ValueCellId, Value> = HashMap::new();
+    bogus_solved.insert(x_id.clone(), mm(999.0));
+
     let spy = MultiCallSpyConstraintSolver::new(vec![
         SolveResult::Solved { values: cold_solved, unique: true },
-        // If the solver is incorrectly called a second time, this value would leak:
-        SolveResult::Solved { values: HashMap::new(), unique: true },
+        // If the solver is incorrectly called a second time, mm(999.0) would
+        // appear in result.resolved_params — any emptiness assertion would fail loudly.
+        SolveResult::Solved { values: bogus_solved, unique: true },
     ]);
+
+    // Capture the shared call-counter handle BEFORE moving spy into the engine.
+    let captured = spy.captured_problems();
 
     let mut engine =
         Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // Cold eval: solver call 1 → x = mm(5.0)
     let _cold = engine.eval(&module);
-    // We can't assert call_count here because spy was moved into the engine.
-    // We rely on the assertions after resolve instead.
 
     // prepare_concurrent_edit: change a → mm(5.0)
     // Dirty cone from a: b (let binding) — constraint 0 does NOT reference a.
@@ -894,19 +901,29 @@ fn resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty(
     // so the `if !constraints_dirty { continue; }` guard fires → solver NOT called.
     engine.resolve_concurrent_edit(&setup, &mut result);
 
-    // Solver must NOT have been called a second time.
-    // result.resolved_params is empty (no solver ran).
+    // (a) The solver must have been called exactly once (cold eval only).
+    //     If the constraints_dirty guard fails, a second call would push a second
+    //     entry into `captured` AND leak mm(999.0) into result.resolved_params.
+    assert_eq!(
+        captured.lock().unwrap().len(),
+        1,
+        "solver should have been called exactly once (cold eval), but was called {} times \
+         — the constraints_dirty guard at concurrent.rs:369-371 is not firing",
+        captured.lock().unwrap().len()
+    );
+
+    // (b) result.resolved_params is empty (no solver ran during resolve).
     assert!(
         result.resolved_params.is_empty(),
         "resolved_params should be empty when no constraint is dirty (got {:?})",
         result.resolved_params
     );
+    // (c) result.diagnostics is empty.
     assert!(
         result.diagnostics.is_empty(),
         "diagnostics should be empty when no constraint is dirty (got {:?})",
         result.diagnostics
     );
-    drop(x_id); // suppress unused-variable lint
 }
 
 /// step-9: apply_concurrent_edit uses eval_duration from ConcurrentNodeResult
