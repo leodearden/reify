@@ -7,7 +7,7 @@ afterEach(() => cleanup());
 describe('MenuBar — basic rendering', () => {
   it('renders with data-testid="menu-bar"', () => {
     render(() => <MenuBar />);
-    expect(screen.getByTestId('menu-bar')).toBeTruthy();
+    expect(screen.getByTestId('menu-bar')).toBeDefined();
   });
 
   it('renders with role="menubar"', () => {
@@ -18,10 +18,10 @@ describe('MenuBar — basic rendering', () => {
 
   it('renders four top-level menu triggers: File, Edit, View, Help', () => {
     render(() => <MenuBar />);
-    expect(screen.getByText('File')).toBeTruthy();
-    expect(screen.getByText('Edit')).toBeTruthy();
-    expect(screen.getByText('View')).toBeTruthy();
-    expect(screen.getByText('Help')).toBeTruthy();
+    expect(screen.getByText('File')).toBeDefined();
+    expect(screen.getByText('Edit')).toBeDefined();
+    expect(screen.getByText('View')).toBeDefined();
+    expect(screen.getByText('Help')).toBeDefined();
   });
 });
 
@@ -30,7 +30,7 @@ describe('MenuBar — File dropdown', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
     const menu = screen.getByRole('menu');
-    expect(menu).toBeTruthy();
+    expect(menu).toBeDefined();
   });
 
   it('File dropdown contains Open, Save, Export items', () => {
@@ -70,7 +70,7 @@ describe('MenuBar — File dropdown', () => {
   it('clicking File trigger again closes the dropdown', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
-    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(screen.getByRole('menu')).toBeDefined();
     fireEvent.click(screen.getByText('File'));
     expect(screen.queryByRole('menu')).toBeNull();
   });
@@ -210,8 +210,8 @@ describe('MenuBar — Edit dropdown', () => {
     const items = screen.getAllByRole('menuitem');
     const undoItem = items.find((el) => el.textContent?.includes('Undo'));
     const redoItem = items.find((el) => el.textContent?.includes('Redo'));
-    expect(undoItem).toBeTruthy();
-    expect(redoItem).toBeTruthy();
+    expect(undoItem).toBeDefined();
+    expect(redoItem).toBeDefined();
     expect((undoItem as HTMLButtonElement).disabled).toBe(true);
     expect((redoItem as HTMLButtonElement).disabled).toBe(true);
   });
@@ -221,7 +221,7 @@ describe('MenuBar — interaction behaviors', () => {
   it('pressing Escape while a menu is open closes it', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
-    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(screen.getByRole('menu')).toBeDefined();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('menu')).toBeNull();
   });
@@ -230,7 +230,7 @@ describe('MenuBar — interaction behaviors', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
     // File dropdown should be open
-    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(screen.getByRole('menu')).toBeDefined();
     // Hover Edit trigger
     fireEvent.mouseEnter(screen.getByText('Edit'));
     // Edit dropdown should now be open instead
@@ -244,12 +244,12 @@ describe('MenuBar — interaction behaviors', () => {
   it('does not close the menu when mousedown target is not a Node', () => {
     render(() => <MenuBar />);
     fireEvent.click(screen.getByText('File'));
-    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(screen.getByRole('menu')).toBeDefined();
     // Dispatch a mousedown where target is a non-Node (e.g. null via Object.create)
     const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
     Object.defineProperty(event, 'target', { value: null, writable: false });
     document.dispatchEvent(event);
     // Menu should remain open (guard skips when target is not a Node)
-    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(screen.getByRole('menu')).toBeDefined();
   });
 });
