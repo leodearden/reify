@@ -1,0 +1,113 @@
+use super::*;
+
+/// Compile a transform operation into CompiledGeometryOps.
+///
+/// Takes pre-resolved target GeomRef and pre-accumulated sub_ops.
+/// Each arm validates arg count, builds a CompiledGeometryOp::Transform,
+/// pushes it to sub_ops, and returns Some(sub_ops).
+pub(crate) fn compile_transform_op(
+    name: &str,
+    compiled_args: Vec<CompiledExpr>,
+    target: GeomRef,
+    diagnostics: &mut Vec<Diagnostic>,
+    mut sub_ops: Vec<CompiledGeometryOp>,
+) -> Option<Vec<CompiledGeometryOp>> {
+    match name {
+        // translate(target, dx, dy, dz)
+        "translate" => {
+            if compiled_args.len() != 4 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "translate() expects 4 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let op = CompiledGeometryOp::Transform {
+                kind: TransformKind::Translate,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("dx".to_string(), it.next().unwrap()),
+                    ("dy".to_string(), it.next().unwrap()),
+                    ("dz".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
+        // rotate(target, ax, ay, az, angle)
+        "rotate" => {
+            if compiled_args.len() != 5 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "rotate() expects 5 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let op = CompiledGeometryOp::Transform {
+                kind: TransformKind::Rotate,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("ax".to_string(), it.next().unwrap()),
+                    ("ay".to_string(), it.next().unwrap()),
+                    ("az".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
+        // scale(target, factor)
+        "scale" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "scale() expects 2 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let op = CompiledGeometryOp::Transform {
+                kind: TransformKind::Scale,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("factor".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
+        // rotate_around(target, px, py, pz, ax, ay, az, angle)
+        "rotate_around" => {
+            if compiled_args.len() != 8 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "rotate_around() expects 8 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let op = CompiledGeometryOp::Transform {
+                kind: TransformKind::RotateAround,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("px".to_string(), it.next().unwrap()),
+                    ("py".to_string(), it.next().unwrap()),
+                    ("pz".to_string(), it.next().unwrap()),
+                    ("ax".to_string(), it.next().unwrap()),
+                    ("ay".to_string(), it.next().unwrap()),
+                    ("az".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
+        _ => unreachable!("compile_transform_op called with non-transform name: {}", name),
+    }
+}
