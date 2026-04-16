@@ -39344,11 +39344,11 @@
         "description": "The eye icon's aria-label and glyph do not reactively update when visibility changes, because `const eff = props.viewStateStore.getEffectiveVisibility(node.entity_path)` is a plain const (not a Solid accessor) in the row render. UI does not refresh after click/keyboard/context-menu changes. Tests miss this because state is set before render.",
         "details": "Scope (from review of task 1743):\n1. gui/src/panels/DesignTree.tsx:95-121 — either inline `props.viewStateStore.getEffectiveVisibility(node.entity_path)` in JSX so Solid tracks it, or wrap with `createMemo` and call the accessor for aria-label, glyph, and the override-dot decision.\n2. gui/src/__tests__/DesignTree.test.tsx:82-103 — add a live-update test: render with default state, click `eye-icon-Root.A`, assert aria-label becomes 'ghost'; click again, assert 'hidden'.\n3. gui/src/__tests__/DesignTree.test.tsx:101-105 — rename the existing \"eye icon aria-label updates when explicit visibility changes\" test to reflect that it only verifies initial-render, OR rewrite it to mutate AFTER render (preferred; subsumed by the live-update test above).\n\nmemory_hints:\n- search: \"DesignTree eye icon reactivity\"\n- search: \"Solid createMemo\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:20:07.566Z"
+        "updatedAt": "2026-04-16T23:13:26.204Z"
       },
       {
         "id": "1880",
@@ -39554,9 +39554,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T23:08:14.025Z",
+      "lastModified": "2026-04-16T23:13:26.204Z",
       "taskCount": 1887,
-      "completedCount": 1618,
+      "completedCount": 1619,
       "tags": [
         "master"
       ]
