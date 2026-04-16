@@ -38220,7 +38220,7 @@
         "id": "1826",
         "title": "Fix misleading test comment and add defensive waitFor in editor tests",
         "description": "Two test accuracy/consistency fixes from task 1798 review: (1) Fix misleading comment in Editor.test.tsx:163. (2) Add defensive waitFor in App.test.tsx:~1340.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "details": "1. Update the comment in Editor.test.tsx:163 to correctly describe the mechanism preventing updateSource from firing. Change to: \"// When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call.\" 2. Add await waitFor(() => expect(capturedEditorStore).toBeTruthy()) in App.test.tsx:~1340 after the waitFor for app-layout and before accessing capturedEditorStore!.updateFileContent(...).",
@@ -38264,7 +38264,7 @@
           },
           "_causation_id": "d697ece9-21ea-47c9-bcd9-5f3cab6cd64c"
         },
-        "updatedAt": "2026-04-16T21:06:03.317Z"
+        "updatedAt": "2026-04-16T21:46:42.693Z"
       },
       {
         "id": "1827",
@@ -39123,9 +39123,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T21:43:40.882Z",
+      "lastModified": "2026-04-16T21:46:42.693Z",
       "taskCount": 1867,
-      "completedCount": 1603,
+      "completedCount": 1604,
       "tags": [
         "master"
       ]
