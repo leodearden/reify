@@ -998,7 +998,7 @@ mod tests {
             // must (a) return None and (b) emit exactly one warning
             // diagnostic naming the omitted arg and the 'Revolve' op.
             // This matches the per-arg contract exercised for `ox` in
-            // `compile_geometry_op_sweep_revolve_missing_ox_emits_diagnostic`.
+            // `compile_geometry_op_revolve_missing_arg_returns_none`.
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             let result = compile_geometry_op(
                 &op,
