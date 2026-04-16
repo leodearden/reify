@@ -91,7 +91,11 @@ pub(crate) fn resolve_dimension_type(
     type_expr: &reify_syntax::TypeExpr,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<DimensionVector> {
-    match type_expr.name.as_str() {
+    let name = match &type_expr.kind {
+        reify_syntax::TypeExprKind::Named { name, .. } => name.as_str(),
+        reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
+    };
+    match name {
         // SI base dimensions
         "Length" => Some(DimensionVector::LENGTH),
         "Mass" => Some(DimensionVector::MASS),
@@ -517,23 +521,12 @@ pub(crate) fn resolve_type_alias_expr(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Type> {
-    match type_expr.name.as_str() {
-        "*" | "/" => {
+    match &type_expr.kind {
+        reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
             // Dimensional binary operator: left OP right
-            if type_expr.type_args.len() != 2 {
-                return None;
-            }
-            let left_dim = resolve_type_alias_expr_to_dimension(
-                &type_expr.type_args[0],
-                alias_registry,
-                diagnostics,
-            )?;
-            let right_dim = resolve_type_alias_expr_to_dimension(
-                &type_expr.type_args[1],
-                alias_registry,
-                diagnostics,
-            )?;
-            let result_dim = if type_expr.name == "*" {
+            let left_dim = resolve_type_alias_expr_to_dimension(left, alias_registry, diagnostics)?;
+            let right_dim = resolve_type_alias_expr_to_dimension(right, alias_registry, diagnostics)?;
+            let result_dim = if matches!(op, reify_syntax::DimOp::Mul) {
                 left_dim.mul(&right_dim)
             } else {
                 left_dim.div(&right_dim)
@@ -542,12 +535,12 @@ pub(crate) fn resolve_type_alias_expr(
                 dimension: result_dim,
             })
         }
-        name => {
+        reify_syntax::TypeExprKind::Named { name, type_args } => {
             // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>)
-            if !type_expr.type_args.is_empty()
+            if !type_args.is_empty()
                 && let Some(ty) = resolve_parameterized_builtin_type(
                     name,
-                    &type_expr.type_args,
+                    type_args,
                     alias_registry,
                     diagnostics,
                 )
@@ -559,7 +552,7 @@ pub(crate) fn resolve_type_alias_expr(
             // contain unresolved type params (e.g. Container<T>) — we must not
             // emit errors for those; the alias body will be fully resolved at
             // instantiation time via resolve_type_alias_expr_with_subst.
-            if !type_expr.type_args.is_empty()
+            if !type_args.is_empty()
                 && let Some(alias_entry) = alias_registry.lookup(name)
                 && !alias_entry.type_params.is_empty()
             {
@@ -567,7 +560,7 @@ pub(crate) fn resolve_type_alias_expr(
                 let mut tmp_diags = Vec::new();
                 if let Some(ty) = resolve_parameterized_alias(
                     alias_entry,
-                    &type_expr.type_args,
+                    type_args,
                     &empty,
                     alias_registry,
                     &mut tmp_diags,
@@ -591,28 +584,17 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<DimensionVector> {
-    match type_expr.name.as_str() {
-        "*" | "/" => {
-            if type_expr.type_args.len() != 2 {
-                return None;
-            }
-            let left = resolve_type_alias_expr_to_dimension(
-                &type_expr.type_args[0],
-                alias_registry,
-                diagnostics,
-            )?;
-            let right = resolve_type_alias_expr_to_dimension(
-                &type_expr.type_args[1],
-                alias_registry,
-                diagnostics,
-            )?;
-            Some(if type_expr.name == "*" {
-                left.mul(&right)
+    match &type_expr.kind {
+        reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
+            let left_dim = resolve_type_alias_expr_to_dimension(left, alias_registry, diagnostics)?;
+            let right_dim = resolve_type_alias_expr_to_dimension(right, alias_registry, diagnostics)?;
+            Some(if matches!(op, reify_syntax::DimOp::Mul) {
+                left_dim.mul(&right_dim)
             } else {
-                left.div(&right)
+                left_dim.div(&right_dim)
             })
         }
-        _ => {
+        reify_syntax::TypeExprKind::Named { name, .. } => {
             // Try resolve_dimension_type for known dimension names
             // Use a temporary diagnostics vec to avoid polluting the main one
             let mut tmp_diags = Vec::new();
@@ -620,7 +602,7 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
                 return Some(dim);
             }
             // Check alias registry: if the alias resolves to Scalar{dim}, use that dimension
-            if let Some(entry) = alias_registry.lookup(&type_expr.name)
+            if let Some(entry) = alias_registry.lookup(name)
                 && let Some(Type::Scalar { dimension }) = &entry.resolved_type
             {
                 return Some(*dimension);
@@ -629,7 +611,7 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
             diagnostics.push(
                 Diagnostic::error(format!(
                     "cannot resolve '{}' to a dimension type in alias expression",
-                    type_expr.name
+                    name
                 ))
                 .with_label(DiagnosticLabel::new(type_expr.span, "not a dimension type")),
             );
@@ -648,11 +630,15 @@ pub(crate) fn resolve_type_expr_with_aliases(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Type> {
+    let (name, type_args) = match &type_expr.kind {
+        reify_syntax::TypeExprKind::Named { name, type_args } => (name.as_str(), type_args.as_slice()),
+        reify_syntax::TypeExprKind::DimensionalOp { .. } => return None,
+    };
     // Check parameterized builtins (List<T>, Set<T>, Map<K,V>, Option<T>)
-    if !type_expr.type_args.is_empty()
+    if !type_args.is_empty()
         && let Some(ty) = resolve_parameterized_builtin_type(
-            &type_expr.name,
-            &type_expr.type_args,
+            name,
+            type_args,
             alias_registry,
             diagnostics,
         )
@@ -661,17 +647,17 @@ pub(crate) fn resolve_type_expr_with_aliases(
     }
 
     // Simple name resolution (builtins, type params, non-parameterized aliases)
-    if let Some(ty) = resolve_type_with_aliases(&type_expr.name, type_param_names, alias_registry) {
+    if let Some(ty) = resolve_type_with_aliases(name, type_param_names, alias_registry) {
         return Some(ty);
     }
 
     // Check parameterized alias instantiation
-    if let Some(alias_entry) = alias_registry.lookup(&type_expr.name)
+    if let Some(alias_entry) = alias_registry.lookup(name)
         && !alias_entry.type_params.is_empty()
     {
         return resolve_parameterized_alias(
             alias_entry,
-            &type_expr.type_args,
+            type_args,
             type_param_names,
             alias_registry,
             diagnostics,
@@ -748,7 +734,7 @@ pub(crate) fn resolve_parameterized_alias(
             diagnostics.push(
                 Diagnostic::error(format!(
                     "unresolved type argument '{}' for alias '{}'",
-                    arg_expr.name, alias_entry.name
+                    arg_expr, alias_entry.name
                 ))
                 .with_label(DiagnosticLabel::new(arg_expr.span, "unknown type")),
             );
@@ -785,30 +771,17 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
         diagnostics.push(
             Diagnostic::error(format!(
                 "type alias '{}' exceeds maximum instantiation depth (recursive type alias)",
-                type_expr.name
+                type_expr
             ))
             .with_label(DiagnosticLabel::new(type_expr.span, "recursive expansion")),
         );
         return None;
     }
-    match type_expr.name.as_str() {
-        "*" | "/" => {
-            if type_expr.type_args.len() != 2 {
-                return None;
-            }
-            let left_dim = resolve_type_alias_expr_to_dim_with_subst(
-                &type_expr.type_args[0],
-                alias_registry,
-                subst,
-                diagnostics,
-            )?;
-            let right_dim = resolve_type_alias_expr_to_dim_with_subst(
-                &type_expr.type_args[1],
-                alias_registry,
-                subst,
-                diagnostics,
-            )?;
-            let result_dim = if type_expr.name == "*" {
+    match &type_expr.kind {
+        reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
+            let left_dim = resolve_type_alias_expr_to_dim_with_subst(left, alias_registry, subst, diagnostics)?;
+            let right_dim = resolve_type_alias_expr_to_dim_with_subst(right, alias_registry, subst, diagnostics)?;
+            let result_dim = if matches!(op, reify_syntax::DimOp::Mul) {
                 left_dim.mul(&right_dim)
             } else {
                 left_dim.div(&right_dim)
@@ -817,16 +790,16 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 dimension: result_dim,
             })
         }
-        name => {
+        reify_syntax::TypeExprKind::Named { name, type_args } => {
             // Check substitution map first (type parameters)
-            if let Some(ty) = subst.get(name) {
+            if let Some(ty) = subst.get(name.as_str()) {
                 return Some(ty.clone());
             }
             // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>)
-            if !type_expr.type_args.is_empty()
+            if !type_args.is_empty()
                 && let Some(ty) = resolve_parameterized_builtin_type_with_subst(
                     name,
-                    &type_expr.type_args,
+                    type_args,
                     alias_registry,
                     subst,
                     diagnostics,
@@ -836,14 +809,14 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 return Some(ty);
             }
             // Check for user-defined parameterized alias instantiation
-            if !type_expr.type_args.is_empty()
+            if !type_args.is_empty()
                 && let Some(alias_entry) = alias_registry.lookup(name)
                 && !alias_entry.type_params.is_empty()
             {
                 // Resolve type args with current substitutions applied,
                 // then build inner substitution for the target alias body
                 let total_params = alias_entry.type_params.len();
-                let got = type_expr.type_args.len();
+                let got = type_args.len();
                 let required_params = alias_entry
                     .type_params
                     .iter()
@@ -856,7 +829,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 for (param, arg_expr) in alias_entry
                     .type_params
                     .iter()
-                    .zip(type_expr.type_args.iter())
+                    .zip(type_args.iter())
                 {
                     let resolved = resolve_type_alias_expr_with_subst(
                         arg_expr,
@@ -989,32 +962,19 @@ pub(crate) fn resolve_type_alias_expr_to_dim_with_subst(
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<DimensionVector> {
-    match type_expr.name.as_str() {
-        "*" | "/" => {
-            if type_expr.type_args.len() != 2 {
-                return None;
-            }
-            let left = resolve_type_alias_expr_to_dim_with_subst(
-                &type_expr.type_args[0],
-                alias_registry,
-                subst,
-                diagnostics,
-            )?;
-            let right = resolve_type_alias_expr_to_dim_with_subst(
-                &type_expr.type_args[1],
-                alias_registry,
-                subst,
-                diagnostics,
-            )?;
-            Some(if type_expr.name == "*" {
-                left.mul(&right)
+    match &type_expr.kind {
+        reify_syntax::TypeExprKind::DimensionalOp { op, left, right } => {
+            let left_dim = resolve_type_alias_expr_to_dim_with_subst(left, alias_registry, subst, diagnostics)?;
+            let right_dim = resolve_type_alias_expr_to_dim_with_subst(right, alias_registry, subst, diagnostics)?;
+            Some(if matches!(op, reify_syntax::DimOp::Mul) {
+                left_dim.mul(&right_dim)
             } else {
-                left.div(&right)
+                left_dim.div(&right_dim)
             })
         }
-        name => {
+        reify_syntax::TypeExprKind::Named { name, .. } => {
             // Check substitution map (type param → concrete Type → extract dimension)
-            if let Some(Type::Scalar { dimension }) = subst.get(name) {
+            if let Some(Type::Scalar { dimension }) = subst.get(name.as_str()) {
                 return Some(*dimension);
             }
             // Try resolve_dimension_type for known dimension names
