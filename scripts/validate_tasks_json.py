@@ -58,15 +58,14 @@ def main() -> None:
     tasks = data.get("master", {}).get("tasks", [])
     errors: list[str] = []
 
-    _validate_tasks(tasks, errors, context="")
+    known_ids = _validate_tasks(tasks, errors, context="")
 
     if args.check_subtasks:
         for task in tasks:
             subtasks = task.get("subtasks", [])
             if subtasks:
                 parent_id = task.get("id", "?")
-                parent_ids = {task.get("id") for task in tasks if isinstance(task.get("id"), str)}
-                _validate_subtasks(subtasks, parent_ids, parent_id, errors)
+                _validate_subtasks(subtasks, known_ids, parent_id, errors)
 
     if errors:
         for err in errors:
@@ -82,7 +81,7 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
     prefix = f"{context}: " if context else ""
 
     # Invariant 3: no duplicate IDs.
-    id_counter = collections.Counter(t.get("id") for t in tasks)
+    id_counter = collections.Counter(t["id"] for t in tasks if "id" in t)
     for id_val, count in id_counter.items():
         if count > 1:
             errors.append(
@@ -93,7 +92,7 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
     known_ids: set[str] = set()
     for task in tasks:
         tid = task.get("id")
-        if type(tid) is not str:
+        if not isinstance(tid, str):
             errors.append(
                 f"invariant 1 [{prefix}task id={tid!r}]: id is {type(tid).__name__!r}, expected str"
             )
@@ -107,8 +106,14 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
     # Invariant 2: every dep is a string referencing a known id.
     for task in tasks:
         tid = task.get("id", "?")
-        for dep in task.get("dependencies", []):
-            if type(dep) is not str:
+        deps_raw = task.get("dependencies", [])
+        if not isinstance(deps_raw, list):
+            errors.append(
+                f"invariant 2 [{prefix}task id={tid!r}]: 'dependencies' is {type(deps_raw).__name__!r}, expected list"
+            )
+            continue
+        for dep in deps_raw:
+            if not isinstance(dep, str):
                 errors.append(
                     f"invariant 2 [{prefix}task id={tid!r}]: dep {dep!r} is {type(dep).__name__!r}, expected str"
                 )
@@ -133,7 +138,7 @@ def _validate_subtasks(
     context = f"subtasks of task {parent_id!r}"
 
     # Invariant 3 within subtasks.
-    id_counter = collections.Counter(s.get("id") for s in subtasks)
+    id_counter = collections.Counter(s["id"] for s in subtasks if "id" in s)
     for id_val, count in id_counter.items():
         if count > 1:
             errors.append(
@@ -144,7 +149,7 @@ def _validate_subtasks(
     known_subtask_ids: set[str] = set()
     for sub in subtasks:
         sid = sub.get("id")
-        if type(sid) is not str:
+        if not isinstance(sid, str):
             errors.append(
                 f"invariant 1 [{context} id={sid!r}]: id is {type(sid).__name__!r}, expected str"
             )
@@ -159,8 +164,14 @@ def _validate_subtasks(
     allowed_ids = known_subtask_ids | parent_task_ids
     for sub in subtasks:
         sid = sub.get("id", "?")
-        for dep in sub.get("dependencies", []):
-            if type(dep) is not str:
+        deps_raw = sub.get("dependencies", [])
+        if not isinstance(deps_raw, list):
+            errors.append(
+                f"invariant 2 [{context} id={sid!r}]: 'dependencies' is {type(deps_raw).__name__!r}, expected list"
+            )
+            continue
+        for dep in deps_raw:
+            if not isinstance(dep, str):
                 errors.append(
                     f"invariant 2 [{context} id={sid!r}]: dep {dep!r} is {type(dep).__name__!r}, expected str"
                 )

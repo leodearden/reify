@@ -46,6 +46,13 @@ cat >"$BAD_ID_TYPE" <<'EOF'
 {"master":{"tasks":[{"id":1,"dependencies":[]}]}}
 EOF
 
+# (c) Bad fixture: id is a non-numeric string slug (e.g. "task-1").
+#     Invariant 1 requires ^\d+$ so a slug must be rejected even though it's a str.
+BAD_ID_SLUG="$TMPDIR_FIXTURES/bad_id_slug.json"
+cat >"$BAD_ID_SLUG" <<'EOF'
+{"master":{"tasks":[{"id":"task-1","dependencies":[]}]}}
+EOF
+
 assert "valid id passes validator" \
     python3 "$VALIDATOR" "$VALID_ID"
 
@@ -54,6 +61,9 @@ assert "int id fails validator" \
 
 assert "int id error mentions 'id'" \
     bash -c "python3 '$VALIDATOR' '$BAD_ID_TYPE' 2>&1 | grep -q 'id'"
+
+assert "slug id fails validator (numeric-only regex enforced)" \
+    bash -c "! python3 '$VALIDATOR' '$BAD_ID_SLUG'"
 
 # -- Invariant 2: deps must be strings referencing existing ids ---------------
 echo ""
