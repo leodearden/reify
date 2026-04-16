@@ -44,19 +44,21 @@ export interface ShortcutDef {
   key: string;
   /** Human-readable description of the action */
   description: string;
+  /** Structured binding for event matching. Absent when there is no keyboard shortcut. */
+  bind?: KeyBinding;
 }
 
 export const SHORTCUTS: ShortcutDef[] = [
-  { id: 'open', key: 'Ctrl+O', description: 'Open file' },
-  { id: 'save', key: 'Ctrl+S', description: 'Save file' },
-  { id: 'export', key: 'Ctrl+E', description: 'Export' },
-  { id: 'undo', key: 'Ctrl+Z', description: 'Undo' },
-  { id: 'redo', key: 'Ctrl+Shift+Z', description: 'Redo' },
-  { id: 'reEvaluate', key: 'F5', description: 'Re-evaluate' },
-  { id: 'fitToView', key: '', description: 'Fit to view' },
-  { id: 'toggleChat', key: 'Ctrl+J', description: 'Toggle chat panel' },
-  { id: 'reload', key: 'Ctrl+Shift+R', description: 'Reload changed files' },
-  { id: 'help', key: '?', description: 'Toggle this help' },
+  { id: 'open',       key: 'Ctrl+O',       description: 'Open file',            bind: { key: 'o', ctrl: true } },
+  { id: 'save',       key: 'Ctrl+S',       description: 'Save file',            bind: { key: 's', ctrl: true } },
+  { id: 'export',     key: 'Ctrl+E',       description: 'Export',               bind: { key: 'e', ctrl: true } },
+  { id: 'undo',       key: 'Ctrl+Z',       description: 'Undo',                 bind: { key: 'z', ctrl: true } },
+  { id: 'redo',       key: 'Ctrl+Shift+Z', description: 'Redo',                 bind: { key: 'z', ctrl: true, shift: true } },
+  { id: 'reEvaluate', key: 'F5',           description: 'Re-evaluate',          bind: { key: 'F5' } },
+  { id: 'fitToView',  key: '',             description: 'Fit to view' },
+  { id: 'toggleChat', key: 'Ctrl+J',       description: 'Toggle chat panel',    bind: { key: 'j', ctrl: true } },
+  { id: 'reload',     key: 'Ctrl+Shift+R', description: 'Reload changed files', bind: { key: 'r', ctrl: true, shift: true } },
+  { id: 'help',       key: '?',            description: 'Toggle this help',     bind: { key: '?', ctrl: false, alt: false } },
 ];
 
 /**
