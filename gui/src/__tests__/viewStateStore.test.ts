@@ -192,6 +192,82 @@ describe('viewStateStore — setVisibilityWithoutCascade and walk-up', () => {
   });
 });
 
+describe('viewStateStore — resetToInherit', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+              makeNode({ entity_path: 'Root.A.a2', kind: 'param' }),
+            ],
+          }),
+          makeNode({ entity_path: 'Root.B', kind: 'structure' }),
+        ],
+      }),
+    ];
+  }
+
+  it('clears explicit[path] to null', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.setVisibility('Root.A', 'hidden', false);
+      store.resetToInherit('Root.A');
+      expect(store.state.explicit['Root.A']).toBeNull();
+      dispose();
+    });
+  });
+
+  it('clears explicit on all descendants too', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.setVisibility('Root.A', 'hidden', false);
+      store.setVisibility('Root.A.a1', 'show', false);
+      store.setVisibility('Root.A.a2', 'ghost', false);
+      store.resetToInherit('Root.A');
+      expect(store.state.explicit['Root.A']).toBeNull();
+      expect(store.state.explicit['Root.A.a1']).toBeNull();
+      expect(store.state.explicit['Root.A.a2']).toBeNull();
+      dispose();
+    });
+  });
+
+  it('effective visibility after reset returns ancestor effective or default rule', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.setVisibility('Root', 'ghost', false);
+      store.setVisibility('Root.A', 'hidden', false);
+      store.resetToInherit('Root.A');
+      // Root still has 'ghost', so A inherits ghost
+      expect(store.getEffectiveVisibility('Root.A')).toBe('ghost');
+      dispose();
+    });
+  });
+
+  it('does not touch siblings or ancestors', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.setVisibility('Root', 'ghost', false);
+      store.setVisibility('Root.B', 'hidden', false);
+      store.setVisibility('Root.A', 'show', false);
+      store.resetToInherit('Root.A');
+      // Root and B must be unchanged
+      expect(store.state.explicit['Root']).toBe('ghost');
+      expect(store.state.explicit['Root.B']).toBe('hidden');
+      dispose();
+    });
+  });
+});
+
 describe('viewStateStore — skeleton', () => {
   it('has empty explicit map on creation', () => {
     createRoot((dispose) => {
