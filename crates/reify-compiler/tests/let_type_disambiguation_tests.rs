@@ -404,3 +404,68 @@ structure S : A + B {
     );
 }
 
+// ── task 1834 step-6: unannotated let expression type flows into scope/cell ──
+
+/// Trait T has an unannotated `let x = 5mm` and a co-trait constraint
+/// `x + 1mm > 2mm` that references `x`.  The constraint expression compiles in
+/// the scope built during the pre-register pass: before task 1834 that scope
+/// registered `x : Real` for every unannotated let (the `.unwrap_or(Type::Real)`
+/// fallback), so the addition `x + 1mm` became `Real + Length` which trips the
+/// "dimensioned + dimensionless" dimension-mismatch check in expr.rs:290.
+///
+/// After the fix, the pre-register pass infers the let's expression type in the
+/// partial scope and registers `x : Length`; the addition becomes
+/// `Length + Length` and compiles cleanly.  We assert two things in one test:
+///
+/// 1. The compilation emits no error diagnostics (covers the scope path —
+///    specifically, that the `+` dimension check sees `x : Length`, not Real).
+/// 2. The injected `ValueCellDecl.cell_type` for `x` is
+///    `Type::Scalar{LENGTH}` (covers the injection-site path).
+///
+/// Addition — not comparison — is used because reify's comparison operators
+/// (`>`, `<`, ...) do not enforce dimensional compatibility between operands
+/// (see expr.rs:289–333 — only `BinOp::Add | BinOp::Sub` trigger the check),
+/// so a `x > 0mm` constraint would pass trivially even with `x : Real`.
+#[test]
+fn unannotated_let_scope_uses_inferred_type() {
+    let source = r#"
+trait T {
+    let x = 5mm
+    constraint x + 1mm > 2mm
+}
+structure S : T {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "structure S : T with unannotated `let x = 5mm` and constraint \
+         `x + 1mm > 2mm` should compile without dimension-mismatch errors — the \
+         pre-register pass must infer `x : Length`, not fall back to `Type::Real` \
+         (got: {:?})",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("expected value_cell 'x' to be injected from trait T");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "unannotated `let x = 5mm` must infer `cell_type = Type::length()` on \
+         the injected cell, not fall back to Type::Real"
+    );
+}
+
