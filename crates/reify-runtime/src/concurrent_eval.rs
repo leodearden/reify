@@ -401,12 +401,14 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             // Read current values (brief read lock)
             let current_values = { self.read_values().clone() };
 
-            // Evaluate expression (pure, no lock held)
+            // Evaluate expression (pure, no lock held) — capture wall-clock time.
+            let eval_start = std::time::Instant::now();
             let val = reify_expr::eval_expr(
                 expr,
                 &reify_expr::EvalContext::new(&current_values, &self.functions)
                     .with_meta(&self.meta_map),
             );
+            let eval_duration = eval_start.elapsed();
 
             // Compute dependency trace
             let trace = extract_dependency_trace(expr);
@@ -446,6 +448,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
                 determinacy: DeterminacyState::Determined,
                 trace,
                 outcome,
+                eval_duration: Some(eval_duration),
             });
 
             return outcome;

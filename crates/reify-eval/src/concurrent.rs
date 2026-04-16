@@ -69,6 +69,12 @@ pub struct ConcurrentNodeResult {
     pub trace: DependencyTrace,
     /// Whether the result changed vs the previous evaluation.
     pub outcome: EvalOutcome,
+    /// Actual wall-clock time spent evaluating the expression, measured by
+    /// the concurrent adapter around the `eval_expr` call. `None` if timing
+    /// was not captured (e.g. for non-expression nodes). Used by
+    /// `apply_concurrent_edit` to record accurate journal Duration payloads
+    /// instead of measuring apply-loop time.
+    pub eval_duration: Option<std::time::Duration>,
 }
 
 /// Aggregate result from concurrent evaluation, ready for Engine::apply_concurrent_edit().
@@ -474,6 +480,7 @@ mod tests {
             determinacy: DeterminacyState::Determined,
             trace: DependencyTrace::default(),
             outcome: EvalOutcome::Changed,
+            eval_duration: None,
         };
         assert_eq!(result.node, node_id);
         assert_eq!(result.value, Value::Real(42.0));
@@ -512,6 +519,7 @@ mod tests {
             determinacy: DeterminacyState::Determined,
             trace: DependencyTrace::default(),
             outcome: EvalOutcome::Unchanged,
+            eval_duration: None,
         };
         let result = ConcurrentEditResult {
             values: ValueMap::new(),

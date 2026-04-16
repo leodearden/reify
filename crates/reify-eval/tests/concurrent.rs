@@ -147,6 +147,7 @@ fn apply_concurrent_edit_updates_engine_state() {
             ],
         },
         outcome: EvalOutcome::Changed,
+        eval_duration: None,
     }];
 
     let mut values = setup.values.clone();
