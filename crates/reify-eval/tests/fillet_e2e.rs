@@ -3,9 +3,9 @@
 //! Tests span from the compiled IR through evaluation to the final GeometryOp
 //! using MockGeometryKernel to capture executed operations without OCCT.
 
-use reify_compiler::{CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind};
+use reify_compiler::ModifyKind;
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, Type};
+use reify_types::{GeometryOp, Type};
 
 // ---------------------------------------------------------------------------
 // step-1: Compiler rejects wrong arg counts, accepts correct count
@@ -136,51 +136,19 @@ fn fillet_compiler_accepts_two_args() {
 /// ModifyKind::Fillet correctly (reify-eval/src/lib.rs).
 #[test]
 fn fillet_through_full_eval_pipeline() {
-    let e = "TestFillet";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
-    // Op 0: Box (produces handle at step index 0)
-    let box_op = CompiledGeometryOp::Primitive {
-        kind: PrimitiveKind::Box,
-        args: vec![
-            ("width".into(), mm_literal(20.0)),
-            ("height".into(), mm_literal(20.0)),
-            ("depth".into(), mm_literal(20.0)),
-        ],
-    };
+    // Op 1 args: mirrors what the compiler emits (geometry.rs:900-907).
+    // The eval layer resolves the target from GeomRef::Step(0), not from 'target' in args.
+    let args = vec![
+        ("target".to_string(), mm_literal(0.0)),
+        ("radius".to_string(), mm_literal(3.0)),
+    ];
 
-    // Op 1: Fillet referencing Step(0) as target, radius = 3mm
-    let fillet_op = CompiledGeometryOp::Modify {
-        kind: ModifyKind::Fillet,
-        target: GeomRef::Step(0),
-        args: vec![
-            // Mirrors what the compiler emits (geometry.rs:900-907).
-            // The eval layer resolves the target from GeomRef::Step(0), not from this entry.
-            ("target".into(), mm_literal(0.0)),
-            ("radius".into(), mm_literal(3.0)),
-        ],
-    };
-
-    let template = TopologyTemplateBuilder::new(e)
-        .realization(e, 0, vec![box_op, fillet_op])
-        .build();
-
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_fillet"))
-        .template(template)
-        .build();
-
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let _result = engine.build(&module, ExportFormat::Step);
-
-    let ops = ops_ref.lock().unwrap();
+    let ops = run_modify_pipeline(ModifyKind::Fillet, args);
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
 
     let target_handle = ops[0].result_handle;
-
     match &ops[1].op {
         GeometryOp::Fillet { target, radius } => {
             assert_eq!(
@@ -211,47 +179,16 @@ fn fillet_through_full_eval_pipeline() {
 /// verifies that eval still produces the correct Fillet geometry op.
 #[test]
 fn fillet_modify_only_needs_radius_arg() {
-    let e = "TestFilletMinimal";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
-    // Op 0: Box (produces handle at step index 0)
-    let box_op = CompiledGeometryOp::Primitive {
-        kind: PrimitiveKind::Box,
-        args: vec![
-            ("width".into(), mm_literal(10.0)),
-            ("height".into(), mm_literal(10.0)),
-            ("depth".into(), mm_literal(10.0)),
-        ],
-    };
-
-    // Op 1: Fillet with ONLY 'radius' in args — no 'target' entry.
+    // Only 'radius' in args — no 'target' entry.
     // "target" handle is resolved from GeomRef::Step(0), not from args.
-    let fillet_op = CompiledGeometryOp::Modify {
-        kind: ModifyKind::Fillet,
-        target: GeomRef::Step(0),
-        args: vec![("radius".into(), mm_literal(3.0))],
-    };
+    let args = vec![("radius".to_string(), mm_literal(3.0))];
 
-    let template = TopologyTemplateBuilder::new(e)
-        .realization(e, 0, vec![box_op, fillet_op])
-        .build();
-
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_fillet_minimal"))
-        .template(template)
-        .build();
-
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let _result = engine.build(&module, ExportFormat::Step);
-
-    let ops = ops_ref.lock().unwrap();
+    let ops = run_modify_pipeline(ModifyKind::Fillet, args);
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
 
     let target_handle = ops[0].result_handle;
-
     match &ops[1].op {
         GeometryOp::Fillet { target, radius } => {
             assert_eq!(
