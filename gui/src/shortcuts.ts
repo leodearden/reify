@@ -59,9 +59,18 @@ export interface ShortcutDef {
 
 // Private const with literal id types preserved for ShortcutId derivation.
 // Using `as const satisfies` validates structural shape against ShortcutDef while
-// keeping narrowed literal types. The exported SHORTCUTS is widened back to
-// `readonly ShortcutDef[]` so callers can access optional fields (disabled, bind)
-// without hitting discriminated-union narrowing errors.
+// keeping narrowed literal types. SHORTCUTS is exported as `readonly ShortcutDef[]`
+// (widened) to prevent TS2339 "Property does not exist" errors at every call site
+// that reads optional fields such as `.disabled` or `.bind`.
+//
+// Narrowing confirmed: a single-export form (`export const SHORTCUTS = [...] as const
+// satisfies readonly ShortcutDef[]`) causes TS2339 at every call site that iterates
+// SHORTCUTS and accesses `.disabled` or `.bind` — because entries that omit those
+// fields (e.g., `fitToView` has no `bind`; most entries have no `disabled`) produce
+// a discriminated-union type where the property is absent on some members, and
+// TypeScript disallows direct access on the full union. Affected call sites confirmed
+// to be KeyboardHelp.tsx:33, useKeyboardShortcuts.ts:54-55, and shortcuts.test.ts:99.
+// Widening SHORTCUTS to `readonly ShortcutDef[]` resolves all three.
 const _SHORTCUTS_DEF = [
   // shift: false on Ctrl-only bindings prevents them from firing on Ctrl+Shift+<letter>,
   // which produces an uppercase key that the case-insensitive comparison would otherwise
@@ -88,6 +97,13 @@ const _SHORTCUTS_DEF = [
 export type ShortcutId = typeof _SHORTCUTS_DEF[number]['id'];
 
 export const SHORTCUTS: readonly ShortcutDef[] = _SHORTCUTS_DEF;
+
+/**
+ * All shortcut IDs as a literal-typed readonly array.
+ * Use this when you need to iterate over ShortcutId values without an `as ShortcutId`
+ * cast — SHORTCUTS is widened to `readonly ShortcutDef[]` so its `.id` field is `string`.
+ */
+export const SHORTCUT_IDS: readonly ShortcutId[] = _SHORTCUTS_DEF.map((s) => s.id);
 
 /**
  * Look up a shortcut definition by id.
