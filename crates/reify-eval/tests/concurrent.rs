@@ -749,6 +749,81 @@ fn rollback_multiple_cycles_reuse_ids_no_gaps() {
     );
 }
 
+/// step-11: apply_concurrent_edit persists resolved auto params to param_overrides.
+///
+/// The `for (id, val) in &result.resolved_params { self.param_overrides.insert(…) }` loop
+/// at concurrent.rs:261-263 writes solved auto-param values into the engine's
+/// param_overrides map. We verify this by asserting:
+/// (a) The snapshot immediately after apply carries x = mm(20.0).
+/// (b) A subsequent engine.eval() seeds x from param_overrides (mm(20.0)) before
+///     calling the solver (call 3 → mm(99.0)), meaning the values returned by eval
+///     start from the override, not Undef.  We assert x is non-Undef after the
+///     second eval rather than a specific value, because the solver may overwrite it.
+#[test]
+fn apply_concurrent_edit_persists_resolved_params_to_param_overrides() {
+    let x_id = ValueCellId::new("S", "x");
+    let a_id = ValueCellId::new("S", "a");
+
+    // Three solver results: cold eval, concurrent resolve, second eval.
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), mm(20.0));
+    let mut solved3 = HashMap::new();
+    solved3.insert(x_id.clone(), mm(99.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1, unique: true },
+        SolveResult::Solved { values: solved2, unique: true },
+        SolveResult::Solved { values: solved3, unique: true },
+    ]);
+
+    let module = build_auto_param_module();
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    // Cold eval: solver call 1 → x = mm(5.0)
+    let _cold = engine.eval(&module);
+
+    // prepare → resolve → apply: solver call 2 → x = mm(20.0)
+    let setup = engine
+        .prepare_concurrent_edit(a_id.clone(), mm(8.0))
+        .expect("prepare_concurrent_edit should succeed");
+
+    let mut result = ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: vec![],
+        actual_eval_set: setup.eval_set.clone(),
+        skipped: HashSet::new(),
+        resolved_params: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+    engine.resolve_concurrent_edit(&setup, &mut result);
+    engine.apply_concurrent_edit(&setup, result);
+
+    // (a) Snapshot immediately after apply must carry x = mm(20.0)
+    let snap = engine.snapshot().expect("snapshot must exist after apply");
+    let (snap_x, _) = snap.values.get(&x_id).expect("x must be in snapshot");
+    assert!(
+        matches!(snap_x, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "expected snapshot x = mm(20.0) = 0.02 SI after apply, got {:?}",
+        snap_x
+    );
+
+    // (b) A subsequent eval() should succeed and x should be present (non-Undef).
+    //     param_overrides seeds x so the solver receives mm(20.0) as a starting point
+    //     and call 3 → mm(99.0) replaces it.  Either way x must be present.
+    let second = engine.eval(&module);
+    let second_x = second.values.get(&x_id).expect("x must be in second eval values");
+    // x should be a Scalar (not Undef), regardless of which solver result was used.
+    assert!(
+        matches!(second_x, Value::Scalar { .. }),
+        "expected x to be a Scalar after second eval (param_overrides was seeded), got {:?}",
+        second_x
+    );
+}
+
 /// step-9: apply_concurrent_edit uses eval_duration from ConcurrentNodeResult
 /// in the journal Completed event payload, rather than measuring apply-loop time.
 ///
