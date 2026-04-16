@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SHORTCUTS, getShortcut, shortcutKey } from '../shortcuts';
+import { SHORTCUTS, getShortcut, shortcutKey, matchesEvent, type KeyBinding } from '../shortcuts';
 
 describe('shortcuts', () => {
   it('SHORTCUTS array contains entries for all expected shortcut ids', () => {
@@ -79,5 +79,83 @@ describe('shortcuts', () => {
 
   it('shortcutKey for unknown id returns empty string', () => {
     expect(shortcutKey('nonexistent-id')).toBe('');
+  });
+});
+
+describe('matchesEvent', () => {
+  function makeEvent(init: KeyboardEventInit): KeyboardEvent {
+    return new KeyboardEvent('keydown', init);
+  }
+
+  it('matches Ctrl+letter when ctrl:true and ctrlKey:true in event', () => {
+    const bind: KeyBinding = { key: 'o', ctrl: true };
+    expect(matchesEvent(bind, makeEvent({ key: 'o', ctrlKey: true }))).toBe(true);
+  });
+
+  it('does not match Ctrl+letter when ctrl:true but ctrlKey:false', () => {
+    const bind: KeyBinding = { key: 'o', ctrl: true };
+    expect(matchesEvent(bind, makeEvent({ key: 'o', ctrlKey: false }))).toBe(false);
+  });
+
+  it('does not match Ctrl+letter when ctrlKey is missing from event', () => {
+    const bind: KeyBinding = { key: 'o', ctrl: true };
+    expect(matchesEvent(bind, makeEvent({ key: 'o' }))).toBe(false);
+  });
+
+  it('matches Ctrl+Shift+letter combo', () => {
+    const bind: KeyBinding = { key: 'r', ctrl: true, shift: true };
+    expect(matchesEvent(bind, makeEvent({ key: 'r', ctrlKey: true, shiftKey: true }))).toBe(true);
+  });
+
+  it('does not match Ctrl+Shift+letter when shiftKey is not held', () => {
+    const bind: KeyBinding = { key: 'r', ctrl: true, shift: true };
+    expect(matchesEvent(bind, makeEvent({ key: 'r', ctrlKey: true, shiftKey: false }))).toBe(false);
+  });
+
+  it('matches function key F5 with no modifiers', () => {
+    const bind: KeyBinding = { key: 'F5' };
+    expect(matchesEvent(bind, makeEvent({ key: 'F5' }))).toBe(true);
+  });
+
+  it('matches ? with ctrl:false and alt:false against bare ? keydown', () => {
+    const bind: KeyBinding = { key: '?', ctrl: false, alt: false };
+    expect(matchesEvent(bind, makeEvent({ key: '?' }))).toBe(true);
+  });
+
+  it('rejects ? with ctrl:false when ctrlKey is held', () => {
+    const bind: KeyBinding = { key: '?', ctrl: false, alt: false };
+    expect(matchesEvent(bind, makeEvent({ key: '?', ctrlKey: true }))).toBe(false);
+  });
+
+  it('rejects ? with alt:false when altKey is held', () => {
+    const bind: KeyBinding = { key: '?', ctrl: false, alt: false };
+    expect(matchesEvent(bind, makeEvent({ key: '?', altKey: true }))).toBe(false);
+  });
+
+  it('matches single-char key case-insensitively (bind lowercase, event uppercase)', () => {
+    const bind: KeyBinding = { key: 'r', ctrl: true, shift: true };
+    expect(matchesEvent(bind, makeEvent({ key: 'R', ctrlKey: true, shiftKey: true }))).toBe(true);
+  });
+
+  it('matches single-char key case-insensitively (bind uppercase, event lowercase)', () => {
+    const bind: KeyBinding = { key: 'R', ctrl: true };
+    expect(matchesEvent(bind, makeEvent({ key: 'r', ctrlKey: true }))).toBe(true);
+  });
+
+  it('returns false for wrong key', () => {
+    const bind: KeyBinding = { key: 'o', ctrl: true };
+    expect(matchesEvent(bind, makeEvent({ key: 'p', ctrlKey: true }))).toBe(false);
+  });
+
+  it('unspecified modifiers are ignored (don\'t-care semantics)', () => {
+    // F5 with ctrl unspecified — matches whether ctrl is held or not
+    const bind: KeyBinding = { key: 'F5' };
+    expect(matchesEvent(bind, makeEvent({ key: 'F5', ctrlKey: true }))).toBe(true);
+  });
+
+  it('returns false for matching key but a required modifier is held when it must not be', () => {
+    // ctrl must be false, but ctrlKey is true in the event
+    const bind: KeyBinding = { key: '?', ctrl: false };
+    expect(matchesEvent(bind, makeEvent({ key: '?', ctrlKey: true }))).toBe(false);
   });
 });
