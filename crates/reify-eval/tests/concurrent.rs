@@ -405,15 +405,7 @@ fn pipeline_prepare_resolve_apply_re_resolves_auto_param() {
     // Build a minimal ConcurrentEditResult: cloned values from setup, no node_results.
     // The scheduler would have evaluated constraint nodes, but we pass an empty result
     // since only the solver path (resolve) is under test here.
-    let mut result = ConcurrentEditResult {
-        values: setup.values.clone(),
-        snapshot_values: setup.snapshot_values.clone(),
-        node_results: vec![],
-        actual_eval_set: setup.eval_set.clone(),
-        skipped: HashSet::new(),
-        resolved_params: HashMap::new(),
-        diagnostics: Vec::new(),
-    };
+    let mut result = empty_result_from_setup(&setup);
 
     // resolve_concurrent_edit: solver call 2 → x = mm(20.0) = 0.02 SI
     engine.resolve_concurrent_edit(&setup, &mut result);
@@ -493,15 +485,7 @@ fn resolve_concurrent_edit_second_wave_updates_dependent_let_binding() {
         .prepare_concurrent_edit(a_id.clone(), mm(8.0))
         .expect("prepare_concurrent_edit should succeed");
 
-    let mut result = ConcurrentEditResult {
-        values: setup.values.clone(),
-        snapshot_values: setup.snapshot_values.clone(),
-        node_results: vec![],
-        actual_eval_set: setup.eval_set.clone(),
-        skipped: HashSet::new(),
-        resolved_params: HashMap::new(),
-        diagnostics: Vec::new(),
-    };
+    let mut result = empty_result_from_setup(&setup);
 
     // resolve_concurrent_edit: wave-1 re-resolves x to mm(20.0); wave-2 re-evaluates y.
     engine.resolve_concurrent_edit(&setup, &mut result);
@@ -579,15 +563,7 @@ fn setup_minimal_concurrent_edit() -> (Engine, ConcurrentEditSetup) {
 fn resolve_concurrent_edit_without_solver_is_noop_fresh_input() {
     let (mut engine, setup) = setup_minimal_concurrent_edit();
 
-    let mut result = ConcurrentEditResult {
-        values: setup.values.clone(),
-        snapshot_values: setup.snapshot_values.clone(),
-        node_results: vec![],
-        actual_eval_set: setup.eval_set.clone(),
-        skipped: HashSet::new(),
-        resolved_params: HashMap::new(),
-        diagnostics: Vec::new(),
-    };
+    let mut result = empty_result_from_setup(&setup);
 
     // Should not panic and should not populate either output bucket.
     engine.resolve_concurrent_edit(&setup, &mut result);
@@ -612,15 +588,8 @@ fn resolve_concurrent_edit_panics_on_prepopulated_resolved_params() {
     let mut stale_resolved: HashMap<ValueCellId, Value> = HashMap::new();
     stale_resolved.insert(ValueCellId::new("N", "bogus"), mm(99.0));
 
-    let mut result = ConcurrentEditResult {
-        values: setup.values.clone(),
-        snapshot_values: setup.snapshot_values.clone(),
-        node_results: vec![],
-        actual_eval_set: setup.eval_set.clone(),
-        skipped: HashSet::new(),
-        resolved_params: stale_resolved,
-        diagnostics: Vec::new(),
-    };
+    let mut result = empty_result_from_setup(&setup);
+    result.resolved_params = stale_resolved;
 
     // Must panic on the first debug_assert (resolved_params not empty).
     engine.resolve_concurrent_edit(&setup, &mut result);
@@ -641,15 +610,8 @@ fn resolve_concurrent_edit_panics_on_prepopulated_diagnostics() {
     // diagnostics has one stale warning (second debug_assert fires).
     let stale_diag = reify_types::Diagnostic::warning("stale diagnostic".to_string());
 
-    let mut result = ConcurrentEditResult {
-        values: setup.values.clone(),
-        snapshot_values: setup.snapshot_values.clone(),
-        node_results: vec![],
-        actual_eval_set: setup.eval_set.clone(),
-        skipped: HashSet::new(),
-        resolved_params: HashMap::new(),
-        diagnostics: vec![stale_diag],
-    };
+    let mut result = empty_result_from_setup(&setup);
+    result.diagnostics = vec![stale_diag];
 
     // Must panic on the second debug_assert (diagnostics not empty).
     engine.resolve_concurrent_edit(&setup, &mut result);
@@ -859,15 +821,7 @@ fn apply_concurrent_edit_persists_resolved_params_to_param_overrides() {
         .prepare_concurrent_edit(a_id.clone(), mm(8.0))
         .expect("prepare_concurrent_edit should succeed");
 
-    let mut result = ConcurrentEditResult {
-        values: setup.values.clone(),
-        snapshot_values: setup.snapshot_values.clone(),
-        node_results: vec![],
-        actual_eval_set: setup.eval_set.clone(),
-        skipped: HashSet::new(),
-        resolved_params: HashMap::new(),
-        diagnostics: Vec::new(),
-    };
+    let mut result = empty_result_from_setup(&setup);
     engine.resolve_concurrent_edit(&setup, &mut result);
     engine.apply_concurrent_edit(&setup, result);
 
@@ -956,15 +910,7 @@ fn resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty(
         .prepare_concurrent_edit(a_id.clone(), mm(5.0))
         .expect("prepare_concurrent_edit should succeed");
 
-    let mut result = ConcurrentEditResult {
-        values: setup.values.clone(),
-        snapshot_values: setup.snapshot_values.clone(),
-        node_results: vec![],
-        actual_eval_set: setup.eval_set.clone(),
-        skipped: HashSet::new(),
-        resolved_params: HashMap::new(),
-        diagnostics: Vec::new(),
-    };
+    let mut result = empty_result_from_setup(&setup);
 
     // resolve_concurrent_edit: constraint 0 is NOT in the dirty cone from a,
     // so the `if !constraints_dirty { continue; }` guard fires → solver NOT called.
