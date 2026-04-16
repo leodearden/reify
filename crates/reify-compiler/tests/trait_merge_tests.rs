@@ -28,6 +28,12 @@ structure def S : HasArea + AlsoHasArea {
 }
 "#;
 
+    // ASSUMPTION: Identical source text ("width * height") produces identical
+    // ContentHash values. The dedup in seen_let_hashes relies on this property —
+    // same expression text → same hash → treated as duplicate → only 1 cell injected.
+    // If the hashing strategy changes (e.g., hashes become source-position-sensitive),
+    // this test will catch the regression: it will either produce 2 cells (no dedup)
+    // or an unexpected conflict diagnostic (hash mismatch despite same semantics).
     let (template, diagnostics) = compile_first_template(source);
 
     // No error-severity diagnostics expected.
@@ -77,16 +83,15 @@ structure def U : TraitAlpha + TraitBeta {
         .collect();
     assert!(!errors.is_empty(), "expected conflict diagnostic for same-name different-type let defaults");
 
-    let error_msg = format!("{:?}", errors);
     assert!(
-        error_msg.contains("conflicting"),
+        errors[0].message.contains("conflicting"),
         "error should mention 'conflicting', got: {}",
-        error_msg
+        errors[0].message
     );
     assert!(
-        error_msg.contains("TraitAlpha") && error_msg.contains("TraitBeta"),
+        errors[0].message.contains("TraitAlpha") && errors[0].message.contains("TraitBeta"),
         "error should name both conflicting traits TraitAlpha and TraitBeta, got: {}",
-        error_msg
+        errors[0].message
     );
 }
 
@@ -120,16 +125,15 @@ structure def V : TraitGamma + TraitDelta {
         "expected conflict diagnostic for same-name same-type different-expression let defaults"
     );
 
-    let error_msg = format!("{:?}", errors);
     assert!(
-        error_msg.contains("conflicting"),
+        errors[0].message.contains("conflicting"),
         "error should mention 'conflicting', got: {}",
-        error_msg
+        errors[0].message
     );
     assert!(
-        error_msg.contains("TraitGamma") && error_msg.contains("TraitDelta"),
+        errors[0].message.contains("TraitGamma") && errors[0].message.contains("TraitDelta"),
         "error should name both conflicting traits TraitGamma and TraitDelta, got: {}",
-        error_msg
+        errors[0].message
     );
 }
 
@@ -224,11 +228,10 @@ structure def X : NeedsX + ProvidesWrongX {
         "expected type-mismatch error for wrong-typed cross-trait default"
     );
 
-    let error_msg = format!("{:?}", errors);
     assert!(
-        error_msg.contains("type mismatch") && error_msg.contains("'x'"),
+        errors[0].message.contains("type mismatch") && errors[0].message.contains("'x'"),
         "error should mention 'type mismatch' and member 'x', got: {}",
-        error_msg
+        errors[0].message
     );
 }
 
@@ -265,11 +268,10 @@ structure def Y : NeedsParamX + ProvidesLetX {
         "expected error: let default should not satisfy param requirement"
     );
 
-    let error_msg = format!("{:?}", errors);
     assert!(
-        error_msg.contains("missing required member") && error_msg.contains("'x'"),
+        errors[0].message.contains("missing required member") && errors[0].message.contains("'x'"),
         "error should report missing required member 'x', got: {}",
-        error_msg
+        errors[0].message
     );
 }
 
@@ -306,16 +308,15 @@ structure def C : HasLengthX + HasMassX {
         .collect();
     assert!(!errors.is_empty(), "expected conflict diagnostic");
 
-    let error_msg = format!("{:?}", errors);
     assert!(
-        error_msg.contains("conflicting"),
+        errors[0].message.contains("conflicting"),
         "error should mention 'conflicting', got: {}",
-        error_msg
+        errors[0].message
     );
     assert!(
-        error_msg.contains("HasLengthX") && error_msg.contains("HasMassX"),
+        errors[0].message.contains("HasLengthX") && errors[0].message.contains("HasMassX"),
         "error should name both conflicting traits HasLengthX and HasMassX, got: {}",
-        error_msg
+        errors[0].message
     );
 }
 
@@ -344,11 +345,10 @@ structure def D : LengthDefault + MassDefault {
         .collect();
     assert!(!errors.is_empty(), "expected conflict diagnostic");
 
-    let error_msg = format!("{:?}", errors);
     assert!(
-        error_msg.contains("LengthDefault") && error_msg.contains("MassDefault"),
+        errors[0].message.contains("LengthDefault") && errors[0].message.contains("MassDefault"),
         "error should name both conflicting traits LengthDefault and MassDefault, got: {}",
-        error_msg
+        errors[0].message
     );
 }
 
@@ -793,10 +793,7 @@ structure def S : ProvidesLengthParam + ProvidesRealLet {
 
     let conflict_errors: Vec<_> = diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Error
-                && format!("{:?}", d).contains("conflicting")
-        })
+        .filter(|d| d.severity == Severity::Error && d.message.contains("conflicting"))
         .collect();
     assert!(
         conflict_errors.is_empty(),
@@ -1198,5 +1195,57 @@ structure def S : HasParamAndConstraint {
         template.constraints.len() >= 1,
         "expected at least 1 constraint injected from HasParamAndConstraint, got {}",
         template.constraints.len()
+    );
+}
+
+/// Three traits each define `let x : Real = <different_expr>`.
+/// Structure implements all three — three-way let conflict should produce
+/// exactly ONE error diagnostic (not N-1 = 2).
+///
+/// Currently (before step-2 fix) each subsequent trait collision emits a
+/// fresh diagnostic against the first-seen trait, producing 2 errors.
+/// After adding `seen_let_conflict_names`, only the first collision is emitted.
+#[test]
+fn three_way_let_conflict_emits_single_diagnostic() {
+    let source = r#"
+trait TraitX {
+    let x : Real = 1.0
+}
+
+trait TraitY {
+    let x : Real = 2.0
+}
+
+trait TraitZ {
+    let x : Real = 3.0
+}
+
+structure def S : TraitX + TraitY + TraitZ {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "expected at least 1 conflict diagnostic for three-way let conflict"
+    );
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 conflict diagnostic (not N-1=2) for three-way let conflict, \
+         got {}: {:?}",
+        errors.len(),
+        errors
+    );
+    assert!(
+        errors[0].message.contains("conflicting"),
+        "error should mention 'conflicting', got: {}",
+        errors[0].message
     );
 }
