@@ -39218,7 +39218,19 @@
             "crates/reify-compiler/tests/trait_typed_param_tests.rs",
             "crates/reify-types/src/ty.rs",
             "examples/m5_geometry_flange.ri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "Material",
+              "resolve_type_name",
+              "trait conformance"
+            ],
+            "queries": [
+              "resolve_type_name Material trait type_resolution.rs",
+              "trait conformance param type annotation reify compiler",
+              "Material trait stdlib reify compiler"
+            ]
+          }
         }
       },
       {
