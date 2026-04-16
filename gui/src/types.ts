@@ -133,3 +133,28 @@ export interface SerializationError {
   item_id: string;
   error: string;
 }
+
+/**
+ * Explicit visibility override for a single node in the Design Tree.
+ * `null` means "inherit from parent" (or apply default rule if at root).
+ */
+export type ExplicitVisibility = VisibilityState | null;
+
+/**
+ * A node in the entity tree emitted by the backend's `get_entity_tree` command.
+ * Mirrors the Rust `EntityTreeNode` struct in `gui/src-tauri/src/types.rs`.
+ */
+export interface EntityTreeNode {
+  /** Dot-separated path identifying this entity (e.g. `"Bracket"`, `"Bracket.width"`). */
+  entity_path: string;
+  /** Entity kind: `"structure"`, `"occurrence"`, `"param"`, `"let"`, `"auto"`, `"sub"`, `"port"`. */
+  kind: string;
+  /** Type name for value cells and sub-components; `null` for template root nodes. */
+  type_name: string | null;
+  /** Whether this entity has at least one realization (tessellatable geometry). */
+  has_mesh: boolean;
+  /** Heuristic: member is named `"geometry"` AND parent template has `"Physical"` in `trait_bounds`. */
+  trait_geometry: boolean;
+  /** Child nodes (value cells, sub-components, ports). */
+  children: EntityTreeNode[];
+}
