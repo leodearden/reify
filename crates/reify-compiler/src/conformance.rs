@@ -103,20 +103,10 @@ pub(crate) fn check_trait_conformance(
     // handling refinement chains and deduplication.
     let mut all_requirements: Vec<TraitRequirement> = Vec::new();
     let mut all_defaults: Vec<TraitDefault> = Vec::new();
-    let mut visited_traits: HashSet<String> = HashSet::new();
-    // Maps name → (type/hash, originating trait name) so conflict diagnostics can name
-    // both traits instead of just saying "conflicting traits".
-    let mut seen_requirement_names: HashMap<String, (Type, String)> = HashMap::new();
-    // Keyed by (name, DefaultKindTag): Param and Let defaults for the same member name
-    // occupy independent dedup/conflict-detection slots. This prevents a Param default
-    // from silently discarding a same-named Let default (or vice versa) and prevents
-    // cross-kind type comparisons from emitting false conflict diagnostics.
-    let mut seen_default_names: HashMap<(String, DefaultKindTag), (Type, String)> =
-        HashMap::new();
-    let mut seen_let_hashes: HashMap<String, (ContentHash, String)> = HashMap::new();
-    // Tracks let binding names that already have a conflict diagnostic.
-    // Ensures N conflicting traits emit exactly 1 error (not N-1).
-    let mut seen_let_conflict_names: HashSet<String> = HashSet::new();
+    // MergeContext bundles the 5 mutable tracking maps (visited, seen_names,
+    // seen_defaults, seen_let_hashes, seen_let_conflict_names) so the recursive
+    // collect_all_requirements signature stays manageable.
+    let mut ctx = MergeContext::new();
 
     for trait_bound in structure.trait_bounds {
         collect_all_requirements(
@@ -124,11 +114,7 @@ pub(crate) fn check_trait_conformance(
             trait_registry,
             &mut all_requirements,
             &mut all_defaults,
-            &mut visited_traits,
-            &mut seen_requirement_names,
-            &mut seen_default_names,
-            &mut seen_let_hashes,
-            &mut seen_let_conflict_names,
+            &mut ctx,
             &structure_members,
             structure.span,
             diagnostics,
@@ -396,26 +382,48 @@ pub(crate) enum DefaultKindTag {
     Constraint,
 }
 
+/// Mutable tracking state threaded through `collect_all_requirements`.
+///
+/// Bundles the 5 maps that accumulate across the trait traversal so the
+/// function signature stays manageable. `MergeContext::new()` initialises
+/// all maps to empty; callers create one instance per structure.
+pub(crate) struct MergeContext {
+    /// Trait names already visited — prevents double-processing diamond patterns.
+    pub visited: HashSet<String>,
+    /// Maps member name → (type, originating trait) for requirement conflict reporting.
+    pub seen_names: HashMap<String, (Type, String)>,
+    /// Composite-key dedup for Param/Constraint defaults: (name, DefaultKindTag) → (type, trait).
+    pub seen_defaults: HashMap<(String, DefaultKindTag), (Type, String)>,
+    /// Content-hash dedup for Let defaults: name → (hash, originating trait).
+    pub seen_let_hashes: HashMap<String, (ContentHash, String)>,
+    /// Let binding names that already have a conflict diagnostic (emit at most 1 per name).
+    pub seen_let_conflict_names: HashSet<String>,
+}
+
+impl MergeContext {
+    pub fn new() -> Self {
+        Self {
+            visited: HashSet::new(),
+            seen_names: HashMap::new(),
+            seen_defaults: HashMap::new(),
+            seen_let_hashes: HashMap::new(),
+            seen_let_conflict_names: HashSet::new(),
+        }
+    }
+}
+
 /// Recursively collect all requirements and defaults from a trait and its refinements.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_all_requirements(
     trait_name: &str,
     trait_registry: &HashMap<String, &CompiledTrait>,
     requirements: &mut Vec<TraitRequirement>,
     defaults: &mut Vec<TraitDefault>,
-    visited: &mut HashSet<String>,
-    // Maps member name → (type, originating trait name) for conflict reporting.
-    seen_names: &mut HashMap<String, (Type, String)>,
-    seen_defaults: &mut HashMap<(String, DefaultKindTag), (Type, String)>,
-    seen_let_hashes: &mut HashMap<String, (ContentHash, String)>,
-    // Tracks let binding names that already have a conflict diagnostic, so
-    // N traits with conflicting lets emit exactly 1 diagnostic (not N-1).
-    seen_let_conflict_names: &mut HashSet<String>,
+    ctx: &mut MergeContext,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if !visited.insert(trait_name.to_string()) {
+    if !ctx.visited.insert(trait_name.to_string()) {
         return; // Already visited (diamond pattern)
     }
 
@@ -434,11 +442,7 @@ pub(crate) fn collect_all_requirements(
             trait_registry,
             requirements,
             defaults,
-            visited,
-            seen_names,
-            seen_defaults,
-            seen_let_hashes,
-            seen_let_conflict_names,
+            ctx,
             structure_members,
             span,
             diagnostics,
@@ -453,7 +457,7 @@ pub(crate) fn collect_all_requirements(
         };
 
         if let Some(expected_type) = &expected_type {
-            if let Some((existing_type, existing_trait)) = seen_names.get(&req.name) {
+            if let Some((existing_type, existing_trait)) = ctx.seen_names.get(&req.name) {
                 if existing_type != expected_type {
                     diagnostics.push(
                         Diagnostic::error(format!(
@@ -469,7 +473,7 @@ pub(crate) fn collect_all_requirements(
                 }
                 continue; // Deduplicated
             }
-            seen_names.insert(
+            ctx.seen_names.insert(
                 req.name.clone(),
                 (expected_type.clone(), trait_name.to_string()),
             );
@@ -487,13 +491,15 @@ pub(crate) fn collect_all_requirements(
             // For let bindings: use content_hash comparison to distinguish same
             // expression (dedup) vs different expression (conflict).
             if let DefaultKind::Let(let_decl) = &default.kind {
-                if let Some((existing_hash, existing_trait)) = seen_let_hashes.get(name.as_str()) {
+                if let Some((existing_hash, existing_trait)) =
+                    ctx.seen_let_hashes.get(name.as_str())
+                {
                     if existing_hash != &let_decl.content_hash
                         && !structure_members.contains_key(name.as_str())
-                        && !seen_let_conflict_names.contains(name.as_str())
+                        && !ctx.seen_let_conflict_names.contains(name.as_str())
                     {
                         // Same name, different expression, not overridden, first conflict → emit.
-                        seen_let_conflict_names.insert(name.clone());
+                        ctx.seen_let_conflict_names.insert(name.clone());
                         diagnostics.push(
                             Diagnostic::error(format!(
                                 "conflicting trait let bindings for '{}': \
@@ -514,7 +520,7 @@ pub(crate) fn collect_all_requirements(
                 // is filtered at injection time (conformance.rs ~line 327), so
                 // hash-recording is unnecessary and would block dedup for other traits.
                 if !structure_members.contains_key(name.as_str()) {
-                    seen_let_hashes.insert(
+                    ctx.seen_let_hashes.insert(
                         name.clone(),
                         (let_decl.content_hash, trait_name.to_string()),
                     );
@@ -542,7 +548,7 @@ pub(crate) fn collect_all_requirements(
             // `HashMap<String, HashMap<DefaultKindTag, _>>` would allow a borrow-based outer
             // lookup, but the added complexity is not worth it at current scale.
             let key = (name.to_string(), kind_tag);
-            if let Some((existing_type, existing_trait)) = seen_defaults.get(&key) {
+            if let Some((existing_type, existing_trait)) = ctx.seen_defaults.get(&key) {
                 if existing_type != &default_type && !structure_members.contains_key(name.as_str())
                 {
                     // Same (name, kind) + different type + not overridden → conflict
@@ -561,7 +567,7 @@ pub(crate) fn collect_all_requirements(
                 // Same (name, kind) already seen → skip (deduplicate).
                 continue;
             }
-            seen_defaults.insert(key, (default_type, trait_name.to_string()));
+            ctx.seen_defaults.insert(key, (default_type, trait_name.to_string()));
             defaults.push(default.clone());
         }
     }
