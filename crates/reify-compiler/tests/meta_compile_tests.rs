@@ -194,6 +194,18 @@ fn duplicate_meta_key_error() {
         "expected 'duplicate meta key' error, got: {:?}",
         errors
     );
+    assert!(
+        errors[0].labels.iter().any(|l| l.message.contains("'a'")),
+        "label should name the duplicate key 'a', got labels: {:?}",
+        errors[0].labels
+    );
+
+    // The label should name the specific key for better IDE hover UX.
+    assert!(
+        errors[0].labels.iter().any(|l| l.message.contains("'a'")),
+        "expected label to contain the key name \"'a'\", got labels: {:?}",
+        errors[0].labels
+    );
 
     // First occurrence should be kept; second (duplicate) should be discarded.
     assert_eq!(
@@ -238,6 +250,43 @@ fn duplicate_meta_key_multiple_duplicates() {
         "all errors should be 'duplicate meta key' errors, got: {:?}",
         errors
     );
+    // Each duplicated key should have its own error message naming the key.
+    assert!(
+        errors.iter().any(|d| d.message.contains("'x'")),
+        "expected an error mentioning key 'x', got: {:?}",
+        errors
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("'y'")),
+        "expected an error mentioning key 'y', got: {:?}",
+        errors
+    );
+    // All label texts should mention "duplicate key" (not just the static fallback).
+    assert!(
+        errors.iter().all(|d| d.labels.iter().any(|l| l.message.contains("duplicate key"))),
+        "all error labels should contain 'duplicate key', got: {:?}",
+        errors
+    );
+
+    // Regression guard: each error message must name the specific duplicated key.
+    assert!(
+        errors.iter().any(|d| d.message.contains("'x'")),
+        "expected an error mentioning key \"'x'\", got: {:?}",
+        errors
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("'y'")),
+        "expected an error mentioning key \"'y'\", got: {:?}",
+        errors
+    );
+
+    // Each error's label should also name the specific key (IDE hover UX).
+    for key in ["'x'", "'y'"] {
+        assert!(
+            errors.iter().any(|d| d.labels.iter().any(|l| l.message.contains(key))),
+            "expected a label mentioning key {key}, got: {errors:?}",
+        );
+    }
 
     // First values should be kept.
     assert_eq!(template.meta.get("x").map(|s| s.as_str()), Some("1"));
@@ -338,6 +387,96 @@ fn meta_access_in_constraint_context() {
         }
         other => panic!("expected BinOp at top level of constraint, got {:?}", other),
     }
+}
+
+// ---------------------------------------------------------------------------
+// step-1 (task-388): empty meta block + access gives 'no key' (not 'no meta block')
+// ---------------------------------------------------------------------------
+
+#[test]
+fn empty_meta_block_access_gives_no_key_error() {
+    let source = r#"
+        structure def Bracket {
+            meta {}
+            let x : String = meta.foo
+        }
+    "#;
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected at least one error");
+    assert!(
+        errors.iter().any(|d| d.message.contains("meta block has no key")),
+        "expected 'meta block has no key' error for empty meta block access, got: {:?}",
+        errors
+    );
+    assert!(
+        !errors.iter().any(|d| d.message.contains("no meta block")),
+        "should NOT produce 'no meta block' error when meta {{}} is present, got: {:?}",
+        errors
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-2 (task-388): empty meta block without access compiles cleanly
+// ---------------------------------------------------------------------------
+// Regression guard (task-388): entity with NO meta block at all — accessing
+// `meta.foo` must still produce "no meta block" (not "no key").  This guards
+// against the `has_meta_block` refactor accidentally merging the two error
+// paths.
+#[test]
+fn no_meta_block_access_still_gives_no_meta_block_error() {
+    let source = r#"
+        structure def Bracket {
+            param width : Length = 10mm
+            let x : String = meta.foo
+        }
+    "#;
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected at least one error");
+    assert!(
+        errors.iter().any(|d| d.message.contains("no meta block")),
+        "expected 'no meta block' error when no meta block is declared, got: {:?}",
+        errors
+    );
+    assert!(
+        !errors.iter().any(|d| d.message.contains("meta block has no key")),
+        "should NOT produce 'meta block has no key' when no meta block is declared, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn empty_meta_block_stored_in_template() {
+    let source = r#"
+        structure def Bracket {
+            meta {}
+            param width : Length = 10mm
+        }
+    "#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "empty meta block should compile without errors, got: {:?}",
+        errors
+    );
+    assert!(
+        template.meta.is_empty(),
+        "template.meta should be empty for an empty meta block"
+    );
 }
 
 // ---------------------------------------------------------------------------

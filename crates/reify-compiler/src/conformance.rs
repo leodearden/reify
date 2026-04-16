@@ -149,7 +149,9 @@ pub(crate) fn check_trait_conformance(
                 DefaultKind::Param { cell_type, .. } => {
                     (AvailableDefaultKind::Param, cell_type.clone())
                 }
-                DefaultKind::Let(_) => (AvailableDefaultKind::Let, Type::Real),
+                DefaultKind::Let { cell_type, .. } => {
+                    (AvailableDefaultKind::Let, cell_type.clone().unwrap_or(Type::Real))
+                }
                 DefaultKind::Constraint(_) => return None,
             };
             Some(((name.to_string(), kind), ty))
@@ -261,7 +263,7 @@ pub(crate) fn check_trait_conformance(
         {
             let ty = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let(_) => Type::Real,
+                DefaultKind::Let { cell_type, .. } => cell_type.clone().unwrap_or(Type::Real),
                 DefaultKind::Constraint(_) => continue,
             };
             let _was_new = scope.register_if_absent(name, ty);
@@ -306,7 +308,7 @@ pub(crate) fn check_trait_conformance(
                     });
                 }
             }
-            DefaultKind::Let(let_decl) => {
+            DefaultKind::Let { let_decl, .. } => {
                 let name = default
                     .name
                     .as_deref()
@@ -485,11 +487,14 @@ pub(crate) fn collect_all_requirements(
     for default in &compiled_trait.defaults {
         if default.name.is_none() {
             // Unnamed defaults (e.g., unlabeled constraints) — always push.
+            // Dedup is implicit: the `visited` set (checked above before recursing into
+            // each trait) prevents re-processing the same trait, so each unnamed default
+            // is encountered at most once regardless of how many paths lead to that trait.
             ctx.defaults.push(default.clone());
         } else if let Some(name) = &default.name {
             // For let bindings: use content_hash comparison to distinguish same
             // expression (dedup) vs different expression (conflict).
-            if let DefaultKind::Let(let_decl) = &default.kind {
+            if let DefaultKind::Let { let_decl, .. } = &default.kind {
                 if let Some((existing_hash, existing_trait)) =
                     ctx.seen_let_hashes.get(name.as_str())
                 {
@@ -541,9 +546,9 @@ pub(crate) fn collect_all_requirements(
             // Note: Let defaults always `continue` above and never reach this match.
             let (default_type, kind_tag) = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => (cell_type.clone(), DefaultKindTag::Param),
-                DefaultKind::Let(_) => {
+                DefaultKind::Let { .. } => {
                     // Unreachable: all Let defaults are handled by the early
-                    // `if let DefaultKind::Let(let_decl)` block above, which always
+                    // `if let DefaultKind::Let { let_decl, .. }` block above, which always
                     // exits via `continue`.
                     unreachable!("Let defaults must be handled by the seen_let_hashes block above")
                 }

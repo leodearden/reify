@@ -287,10 +287,12 @@ fn edit_height_inrange_still_satisfied() {
     // Positive presence check: all constraints should still be evaluated (not silently dropped).
     // Height does not touch the `determined(origin)` guard, so no constraints are excluded —
     // the full assembly count (measured as 49) must be present.
+    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
     assert!(
-        check_result.constraint_results.len() >= 40,
-        "expected >= 40 constraint results after height=400mm, got {} \
-         (constraints may have been silently dropped)",
+        check_result.constraint_results.len() >= 47,
+        "expected >= 47 constraint results after height=400mm, got {} \
+         (constraints may have been silently dropped; \
+          floor is 49 total minus 2 esc-295-78-guarded constraints = 47)",
         check_result.constraint_results.len()
     );
 
@@ -392,10 +394,12 @@ fn edit_height_below_width_triggers_ordering_violation() {
         .edit_check(height_id, mm(100.0))
         .expect("edit_check should succeed");
 
-    // Total count still >=40 (no short-circuit on violation)
+    // Total count still >=47 (no short-circuit on violation).
+    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
     assert!(
-        check_result.constraint_results.len() >= 40,
-        "expected >=40 constraint results even with height=100mm (violation), got {}",
+        check_result.constraint_results.len() >= 47,
+        "expected >=47 constraint results even with height=100mm (violation), got {} \
+         (floor is 49 total minus 2 esc-295-78-guarded constraints = 47)",
         check_result.constraint_results.len()
     );
 
@@ -432,10 +436,12 @@ fn edit_position_x_determinacy_predicates_hold() {
     // Positive presence check: due to esc-295-78, the 2 guarded constraints are excluded from
     // the result when position_x is in the dirty cone.  Even so, the remaining 47 constraints
     // must all be present — any further silent dropping would indicate a regression.
+    // Floor is 47: 49 total minus the 2 guarded constraints excluded by esc-295-78.
     assert!(
-        check_result.constraint_results.len() >= 40,
-        "expected >= 40 constraint results after position_x=200mm, got {} \
-         (constraints may have been silently dropped; note esc-295-78 excludes 2 guarded constraints)",
+        check_result.constraint_results.len() >= 47,
+        "expected >= 47 constraint results after position_x=200mm, got {} \
+         (constraints may have been silently dropped; \
+          note esc-295-78 excludes 2 guarded constraints leaving floor of 47)",
         check_result.constraint_results.len()
     );
 
@@ -495,6 +501,16 @@ fn edit_position_x_where_guard_constraints_remain_satisfied() {
     assert_eq!(
         result_count, 49,
         "expected all 49 constraint results (including 2 guarded), got {result_count}"
+    );
+    // Lower-bound guard: even with esc-295-78 active, any regression that drops
+    // the count below the expected-broken floor of 47 must not silently pass.
+    // The XFAIL assertion above already captures the known breakage (count != 49);
+    // this lower bound catches additional regressions below the broken floor.
+    assert!(
+        result_count >= 47,
+        "expected >= 47 constraint results after position_x=200mm (XFAIL lower bound), \
+         got {result_count} — this indicates a regression beyond the esc-295-78 exclusion \
+         (49 total minus 2 guarded constraints excluded by esc-295-78 = 47 broken floor)"
     );
 
     // 3. The guarded constraints should be Satisfied (determined(origin) is true after edit).
@@ -747,4 +763,85 @@ fn edit_param_snapshot_provenance_chain() {
             }
         );
     }
+}
+
+// ── Error-path tests: CellNotFound ────────────────────────────────────────────
+
+/// edit_param with a ValueCellId whose entity does not exist in the graph
+/// should return Err(EngineError::CellNotFound { .. }).
+#[test]
+fn edit_param_nonexistent_entity_returns_cell_not_found() {
+    let (mut engine, _initial) = make_eval_engine();
+    let bad_id = ValueCellId::new("NoSuchEntity", "height");
+    let err = engine
+        .edit_param(bad_id, mm(100.0))
+        .expect_err("edit_param with nonexistent entity should return Err");
+    assert!(
+        matches!(err, reify_eval::EngineError::CellNotFound { .. }),
+        "expected EngineError::CellNotFound, got {err:?}"
+    );
+}
+
+/// edit_param with a ValueCellId whose member does not exist in the graph
+/// should return Err(EngineError::CellNotFound { .. }).
+#[test]
+fn edit_param_nonexistent_param_returns_cell_not_found() {
+    let (mut engine, _initial) = make_eval_engine();
+    let bad_id = ValueCellId::new("Assembly", "no_such_param");
+    let err = engine
+        .edit_param(bad_id, mm(100.0))
+        .expect_err("edit_param with nonexistent param should return Err");
+    assert!(
+        matches!(err, reify_eval::EngineError::CellNotFound { .. }),
+        "expected EngineError::CellNotFound, got {err:?}"
+    );
+}
+
+/// edit_check with a ValueCellId whose entity does not exist in the graph
+/// should return Err(EngineError::CellNotFound { .. }) (delegates to edit_param).
+#[test]
+fn edit_check_nonexistent_entity_returns_cell_not_found() {
+    let (mut engine, _initial) = make_eval_engine();
+    let bad_id = ValueCellId::new("NoSuchEntity", "height");
+    let err = engine
+        .edit_check(bad_id, mm(100.0))
+        .expect_err("edit_check with nonexistent entity should return Err");
+    assert!(
+        matches!(err, reify_eval::EngineError::CellNotFound { .. }),
+        "expected EngineError::CellNotFound, got {err:?}"
+    );
+}
+
+// ── Error-path tests: DimensionMismatch ───────────────────────────────────────
+
+/// edit_param Assembly.height (Type::Scalar[LENGTH]) with kg(5.0) (Value::Scalar[MASS])
+/// should return Err(EngineError::DimensionMismatch { .. }).
+#[test]
+fn edit_param_dimension_mismatch_returns_error() {
+    let (mut engine, _initial) = make_eval_engine();
+    let height_id = ValueCellId::new("Assembly", "height");
+    // kg(5.0) produces Value::Scalar[MASS], but height is Type::Scalar[LENGTH].
+    let err = engine
+        .edit_param(height_id, kg(5.0))
+        .expect_err("edit_param with dimension mismatch should return Err");
+    assert!(
+        matches!(err, reify_eval::EngineError::DimensionMismatch { .. }),
+        "expected EngineError::DimensionMismatch, got {err:?}"
+    );
+}
+
+/// edit_check Assembly.height (Type::Scalar[LENGTH]) with kg(5.0) (Value::Scalar[MASS])
+/// should return Err(EngineError::DimensionMismatch { .. }) (delegates to edit_param).
+#[test]
+fn edit_check_dimension_mismatch_returns_error() {
+    let (mut engine, _initial) = make_eval_engine();
+    let height_id = ValueCellId::new("Assembly", "height");
+    // kg(5.0) produces Value::Scalar[MASS], but height is Type::Scalar[LENGTH].
+    let err = engine
+        .edit_check(height_id, kg(5.0))
+        .expect_err("edit_check with dimension mismatch should return Err");
+    assert!(
+        matches!(err, reify_eval::EngineError::DimensionMismatch { .. }),
+        "expected EngineError::DimensionMismatch, got {err:?}"
+    );
 }

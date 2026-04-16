@@ -268,9 +268,12 @@ structure def LargeAssembly {
 }
 
 // ── simulation_ready purpose ──────────────────────────────────────────────────
-// Verifies a Physical structure is ready for simulation: positive volume and
-// density constraints are asserted. Activating this purpose injects constraints
-// into the engine graph.
+// Placeholder purpose for mechanism testing only. The tautological constraints
+// (`1 > 0`, `1 >= 0`) exercise purpose activation and constraint injection into
+// the engine graph without requiring subject member access (`subject.volume`,
+// `subject.density`), which is not yet implemented in the compiler.
+// TODO: Replace with real Physical property constraints once subject member
+//       access is supported (see crates/reify-compiler/src/expr.rs).
 
 purpose simulation_ready(subject : Physical) {
     constraint 1 > 0

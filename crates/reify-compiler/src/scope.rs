@@ -24,11 +24,13 @@ pub(crate) struct CompilationScope<'u> {
     pub(crate) sub_structure_traits: HashMap<String, Vec<String>>,
     /// Meta block entries for the current entity: key → value.
     pub(crate) meta_entries: HashMap<String, String>,
+    /// Whether the entity declared a `meta { }` block (even if empty).
+    pub(crate) has_meta_block: bool,
     /// Reference to the active unit registry.
     /// Set by compile_entity/compile_purpose. None for scopes that don't need it (functions, fields).
     pub(crate) unit_registry: Option<&'u UnitRegistry>,
-    /// Whether this scope is an entity (structure/purpose) scope where `self` is valid.
-    /// False for function scopes, where `self` must produce an "unresolved name" error.
+    /// Whether this scope is an entity (structure or occurrence) scope where `self` is valid.
+    /// False for function and purpose scopes, where `self` must produce an "unresolved name" error.
     pub(crate) is_entity_scope: bool,
     /// Member types for all sub-components: sub_name → { member_name → Type }.
     /// Populated for both collection and non-collection subs to resolve self.sub.member
@@ -36,8 +38,8 @@ pub(crate) struct CompilationScope<'u> {
     /// Inner map is BTreeMap so iteration order is lexicographic — this makes bare
     /// collection-sub identifier resolution (expr.rs: members.iter().next()) deterministic.
     pub(crate) sub_member_types: HashMap<String, BTreeMap<String, Type>>,
-    /// Whether the current structure has at least one geometry declaration (realize block).
-    /// Used to gate @face/@edge selectors at compile time.
+    /// Whether the current structure has at least one geometry-producing let binding
+    /// (e.g., `let shape = box(...)`). Used to gate @face/@edge selectors at compile time.
     pub(crate) has_geometry: bool,
 }
 
@@ -52,6 +54,7 @@ impl<'u> CompilationScope<'u> {
             sub_component_types: HashMap::new(),
             sub_structure_traits: HashMap::new(),
             meta_entries: HashMap::new(),
+            has_meta_block: false,
             unit_registry: None,
             is_entity_scope: false,
             sub_member_types: HashMap::new(),

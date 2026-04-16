@@ -3,9 +3,9 @@
 //! Tests span from the compiled IR through evaluation to the final GeometryOp
 //! using MockGeometryKernel to capture executed operations without OCCT.
 
-use reify_compiler::{CompiledGeometryOp, GeomRef, ModifyKind, PrimitiveKind};
+use reify_compiler::ModifyKind;
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, Type};
+use reify_types::{GeometryOp, Type};
 
 // ---------------------------------------------------------------------------
 // step-1: Compiler rejects wrong arg counts, accepts correct count
@@ -132,50 +132,59 @@ fn chamfer_compiler_accepts_two_args() {
 /// ModifyKind::Chamfer correctly (reify-eval/src/lib.rs).
 #[test]
 fn chamfer_through_full_eval_pipeline() {
-    let e = "TestChamfer";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
-    // Op 0: Box (produces handle at step index 0)
-    let box_op = CompiledGeometryOp::Primitive {
-        kind: PrimitiveKind::Box,
-        args: vec![
-            ("width".into(), mm_literal(20.0)),
-            ("height".into(), mm_literal(20.0)),
-            ("depth".into(), mm_literal(20.0)),
-        ],
-    };
+    // Op 1 args: mirrors what the compiler emits (geometry.rs:882-884).
+    // The eval layer resolves the target from GeomRef::Step(0), not from 'target' in args.
+    let args = vec![
+        ("target".to_string(), mm_literal(20.0)),
+        ("distance".to_string(), mm_literal(3.0)),
+    ];
 
-    // Op 1: Chamfer referencing Step(0) as target, distance = 3mm
-    let chamfer_op = CompiledGeometryOp::Modify {
-        kind: ModifyKind::Chamfer,
-        target: GeomRef::Step(0),
-        args: vec![
-            // "target" arg is not evaluated; actual handle resolved from GeomRef::Step(0)
-            ("target".into(), mm_literal(20.0)),
-            ("distance".into(), mm_literal(3.0)),
-        ],
-    };
-
-    let template = TopologyTemplateBuilder::new(e)
-        .realization(e, 0, vec![box_op, chamfer_op])
-        .build();
-
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_chamfer"))
-        .template(template)
-        .build();
-
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let _result = engine.build(&module, ExportFormat::Step);
-
-    let ops = ops_ref.lock().unwrap();
+    let ops = run_modify_pipeline(ModifyKind::Chamfer, args);
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
 
     let target_handle = ops[0].result_handle;
+    match &ops[1].op {
+        GeometryOp::Chamfer { target, distance } => {
+            assert_eq!(
+                *target, target_handle,
+                "Chamfer target should be handle from op 0 ({:?}), got {:?}",
+                target_handle, target
+            );
+            let dist_si = distance.as_f64().expect("distance should be a numeric value");
+            assert!(
+                (dist_si - 0.003).abs() < 1e-9,
+                "Chamfer distance should be 0.003 m (3 mm SI), got {}",
+                dist_si
+            );
+        }
+        other => panic!("expected GeometryOp::Chamfer at op index 1, got {:?}", other),
+    }
+}
 
+// ---------------------------------------------------------------------------
+// step-4 (1819): Contract test — eval only needs 'distance' arg for Chamfer
+// ---------------------------------------------------------------------------
+
+/// Documents the minimal args contract for Chamfer: only 'distance' is needed in args.
+///
+/// The eval layer resolves the target handle from GeomRef::Step(0) on the Modify
+/// variant, not from any 'target' entry in the args vec. This test constructs a
+/// Chamfer op with ONLY ('distance', ...) in args (no 'target' entry at all) and
+/// verifies that eval still produces the correct Chamfer geometry op.
+#[test]
+fn chamfer_modify_only_needs_distance_arg() {
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Only 'distance' in args — no 'target' entry.
+    // "target" handle is resolved from GeomRef::Step(0), not from args.
+    let args = vec![("distance".to_string(), mm_literal(3.0))];
+
+    let ops = run_modify_pipeline(ModifyKind::Chamfer, args);
+    assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
+
+    let target_handle = ops[0].result_handle;
     match &ops[1].op {
         GeometryOp::Chamfer { target, distance } => {
             assert_eq!(
