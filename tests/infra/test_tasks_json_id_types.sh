@@ -38,6 +38,12 @@ assert "tasks.json is valid JSON (jq empty)" \
 echo ""
 echo "--- Check 1: top-level task ids are digit-strings ---"
 
+# Symmetric hardening to the Check 2 guard (esc-1887-53 — same silent-pass
+# class): if tasks[] produces an empty stream, the pipe-based type and pattern
+# checks trivially pass on empty input.  Assert a non-zero count first.
+assert "tasks.json has at least one top-level task" \
+    bash -c "[ \"\$(jq '[.master.tasks[]] | length' '$TASKS_JSON')\" -gt 0 ]"
+
 # Verify no top-level id has JSON type "number".
 assert "all top-level task ids have JSON type string (not number)" \
     bash -c "! jq -r '.master.tasks[].id | type' '$TASKS_JSON' | grep -q 'number'"
