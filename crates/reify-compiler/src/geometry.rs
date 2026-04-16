@@ -713,7 +713,7 @@ mod tests {
         // The per-function tests above (`geometry_arg_indices_covers_all_geom_arg_functions`
         // and `geometry_arg_indices_empty_for_no_geom_arg_functions`) are the primary
         // correctness guardrail — they verify each function is in the right list.
-        // This count is a canary pin: if you add a new function to `compile_geometry_call`
+        // This literal is a canary pin: if you add a new function to `compile_geometry_call`
         // you MUST also add it to one of the four lists above AND bump this literal.
         // That forced bump makes you audit whether the dispatch arm and list are both updated.
         assert_eq!(
@@ -722,19 +722,6 @@ mod tests {
             "total dispatched geometry function count changed — \
              bump the literal here and make sure the new function is added to \
              GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft above"
-        );
-        let expected = GEOM_ARG_FUNCTIONS.len()
-            + NO_GEOM_ARG_FUNCTIONS.len()
-            + boolean_ops.len()
-            + loft.len();
-        assert_eq!(
-            all.len(),
-            expected,
-            "expected {} total dispatched function names, got {} — \
-             did you add a new geometry function? Add it to GEOM_ARG_FUNCTIONS or \
-             NO_GEOM_ARG_FUNCTIONS in this test.",
-            expected,
-            all.len()
         );
     }
 }
