@@ -243,6 +243,23 @@ fn duplicate_meta_key_multiple_duplicates() {
         "all errors should be 'duplicate meta key' errors, got: {:?}",
         errors
     );
+    // Each duplicated key should have its own error message naming the key.
+    assert!(
+        errors.iter().any(|d| d.message.contains("'x'")),
+        "expected an error mentioning key 'x', got: {:?}",
+        errors
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("'y'")),
+        "expected an error mentioning key 'y', got: {:?}",
+        errors
+    );
+    // All label texts should mention "duplicate key" (not just the static fallback).
+    assert!(
+        errors.iter().all(|d| d.labels.iter().any(|l| l.message.contains("duplicate key"))),
+        "all error labels should contain 'duplicate key', got: {:?}",
+        errors
+    );
 
     // First values should be kept.
     assert_eq!(template.meta.get("x").map(|s| s.as_str()), Some("1"));
