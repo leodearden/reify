@@ -8317,7 +8317,15 @@
           "files": [
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-compiler/src/scope.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "empty meta block discrimination compiler reify",
+              "meta block discriminant compiler fix"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         },
         "subtasks": [],
         "updatedAt": "2026-04-16T02:20:30.567Z"
