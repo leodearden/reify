@@ -3197,3 +3197,59 @@ fn commit_state_populates_line_offsets_cache() {
         "newlines should be at bytes 14 and 29"
     );
 }
+
+/// After an update_source call, both caches reflect the NEW source — not the
+/// old one.  This pins the contract that commit_state unconditionally overwrites
+/// (never appends or get_or_inserts) both caches on every call.
+#[test]
+fn commit_state_refreshes_caches_on_update_source() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    // Load a single-structure source (1 declaration, 0 newlines).
+    let source1 = "structure A { param x: Scalar = 1 }";
+    session
+        .load_from_source(source1, "test_refresh")
+        .expect("first load should succeed");
+
+    let decl_count_1 = session
+        .parsed_cache_for_test()
+        .expect("parsed_cache should be Some after first load")
+        .declarations
+        .len();
+    let offsets_len_1 = session
+        .line_offsets_cache_for_test()
+        .expect("line_offsets_cache should be Some after first load")
+        .len();
+
+    // Update with a two-structure source split across two lines (1 newline).
+    let source2 = "structure A { param x: Scalar = 1 }\nstructure B { param y: Scalar = 2 }";
+    session
+        .update_source("test_refresh.ri", source2)
+        .expect("update_source should succeed");
+
+    let decl_count_2 = session
+        .parsed_cache_for_test()
+        .expect("parsed_cache should be Some after update")
+        .declarations
+        .len();
+    let offsets_len_2 = session
+        .line_offsets_cache_for_test()
+        .expect("line_offsets_cache should be Some after update")
+        .len();
+
+    assert!(
+        decl_count_2 > decl_count_1,
+        "parsed_cache should reflect more declarations after update ({} → {})",
+        decl_count_1,
+        decl_count_2
+    );
+    assert!(
+        offsets_len_2 > offsets_len_1,
+        "line_offsets_cache should have more entries after update ({} → {})",
+        offsets_len_1,
+        offsets_len_2
+    );
+    // source2 has exactly one '\n'.
+    assert_eq!(offsets_len_2, 1, "source2 has exactly 1 newline");
+}
