@@ -501,16 +501,22 @@ structure S : T {
 /// expression compilation via the early-branch match.  A topological
 /// ordering pass would fix the general case but is out of scope.
 ///
-/// This test documents the current (lenient) behavior: compilation either
-/// succeeds OR produces a diagnostic that specifically names the unresolved
-/// forward reference `b`.  The "or diagnostic" branch is tight on purpose —
-/// it must reference the name `b` (matching `unresolved name: b` from
+/// This test pins the current deterministic failure: `a` appears before `b`
+/// in `ctx.defaults` iteration order (declaration order, established by
+/// `collect_all_requirements`), so `b` is not yet in scope when `a`'s
+/// expression is compiled.  The diagnostic must specifically name the
+/// unresolved forward reference `b` (matching `unresolved name: b` from
 /// expr.rs:199 or any future wording that quotes the identifier) so that an
 /// unrelated regression in a different subsystem — e.g., a dimension-mismatch
 /// or panic-recovery message that happens to contain the word "scope" —
-/// cannot silently satisfy this test.  A future topological pass would make
-/// the "no diagnostic" branch reliable, at which point the test should be
-/// tightened to assert zero errors.
+/// cannot silently satisfy this test.
+///
+/// A future topological-ordering pass would make this case compile cleanly
+/// (zero errors).  When that lands, flip both assertions: drop the
+/// `!errors.is_empty()` guard and require zero errors.  Asserting failure
+/// today keeps a silent-success regression (e.g., a refactor that quietly
+/// preflights all annotations and bypasses the limitation without an
+/// architectural fix) from passing unnoticed.
 #[test]
 fn mutual_unannotated_lets_documented_limitation() {
     let source = r#"
@@ -524,23 +530,21 @@ structure S : MutualLets {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
-    // Tight assertion: if any error is emitted, at least one must be an
-    // unresolved-identifier diagnostic that specifically names `b`.  We accept
-    // the current `unresolved name: b` format plus two forward-looking shapes
-    // (`'b'`, `` `b` ``) so a future wording change that quotes the identifier
-    // still satisfies the check.
-    if !errors.is_empty() {
-        let names_b = |msg: &str| {
-            msg.contains("unresolved")
-                && (msg.contains(": b") || msg.contains("'b'") || msg.contains("`b`"))
-        };
-        assert!(
-            errors.iter().any(|d| names_b(&d.message)),
-            "mutual unannotated-let diagnostic should surface an unresolved-identifier \
-             error that names `b` (the forward reference), got: {:?}",
-            errors
-        );
-    }
-    // else: compilation succeeded — inference worked out despite iteration order.
-    //       A future topological pass would reliably reach this branch.
+    let names_b = |msg: &str| {
+        msg.contains("unresolved")
+            && (msg.contains(": b") || msg.contains("'b'") || msg.contains("`b`"))
+    };
+    assert!(
+        !errors.is_empty(),
+        "mutual unannotated-let limitation should surface a diagnostic today \
+         (forward reference to `b` from `a`); silent success would mean either \
+         the topological pass landed (flip this assertion) or the inference \
+         pass started preflighting annotations without an architectural fix"
+    );
+    assert!(
+        errors.iter().any(|d| names_b(&d.message)),
+        "mutual unannotated-let diagnostic should surface an unresolved-identifier \
+         error that names `b` (the forward reference), got: {:?}",
+        errors
+    );
 }
