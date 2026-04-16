@@ -3,7 +3,7 @@
 //! A `Solid`-typed param with a geometry-call default should be lowered as a
 //! realization (like a geometry let) rather than a scalar ValueCellDecl.
 
-use reify_compiler::{BooleanOp, CompiledGeometryOp, PrimitiveKind, RealizationDecl, ValueCellKind};
+use reify_compiler::{BooleanOp, CompiledGeometryOp, PrimitiveKind, ValueCellKind};
 use reify_types::{Severity, Type};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -32,8 +32,6 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
     );
     compiled
 }
-
-
 
 // ─── step-5: Solid-typed param must NOT emit a ValueCellDecl ─────────────────
 
@@ -131,10 +129,7 @@ fn solid_param_compiles_as_realization() {
         .expect("Widget template not found");
 
     // (b) No value_cell named "g" — it should be a realization, not a scalar cell.
-    let has_g_cell = template
-        .value_cells
-        .iter()
-        .any(|c| c.id.member == "g");
+    let has_g_cell = template.value_cells.iter().any(|c| c.id.member == "g");
     assert!(
         !has_g_cell,
         "expected no ValueCellDecl for 'g', but one was found (param should lower as realization)"
@@ -209,11 +204,13 @@ fn solid_param_referenced_by_downstream_boolean_op() {
     // Also verify op kinds to tighten the regression anchor: at least one
     // Primitive (Cylinder or Sphere) op and one Boolean(Difference) op must be
     // present.  This rules out a fallback that happens to emit 3 unrelated ops.
-    let has_primitive = out_realization.operations.iter().any(|compiled_op| matches!(
-        compiled_op,
-        CompiledGeometryOp::Primitive { kind, .. }
-            if *kind == PrimitiveKind::Cylinder || *kind == PrimitiveKind::Sphere
-    ));
+    let has_primitive = out_realization.operations.iter().any(|compiled_op| {
+        matches!(
+            compiled_op,
+            CompiledGeometryOp::Primitive { kind, .. }
+                if *kind == PrimitiveKind::Cylinder || *kind == PrimitiveKind::Sphere
+        )
+    });
     assert!(
         has_primitive,
         "expected at least one Primitive (Cylinder or Sphere) op in `out` realization; \
@@ -221,10 +218,15 @@ fn solid_param_referenced_by_downstream_boolean_op() {
         out_realization.operations
     );
 
-    let has_difference = out_realization.operations.iter().any(|compiled_op| matches!(
-        compiled_op,
-        CompiledGeometryOp::Boolean { op: BooleanOp::Difference, .. }
-    ));
+    let has_difference = out_realization.operations.iter().any(|compiled_op| {
+        matches!(
+            compiled_op,
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Difference,
+                ..
+            }
+        )
+    });
     assert!(
         has_difference,
         "expected at least one Boolean(Difference) op in `out` realization; \
@@ -289,10 +291,15 @@ fn solid_param_default_aliasing_geometry_let_is_realization() {
     //     that the Ident branch of is_geometry_let resolved `a`'s cylinder ops
     //     into `g` rather than emitting an unrelated placeholder op.
     let has_cylinder = template.realizations.iter().any(|r| {
-        r.operations.iter().any(|op| matches!(
-            op,
-            CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }
-        ))
+        r.operations.iter().any(|op| {
+            matches!(
+                op,
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Cylinder,
+                    ..
+                }
+            )
+        })
     });
     assert!(
         has_cylinder,
@@ -370,7 +377,7 @@ fn solid_param_with_non_geometry_default_silently_accepts() {
         .find(|c| c.id.member == "g")
         .expect(
             "pin-down: expected a ValueCellDecl named 'g' for `param g : Solid = 42`; \
-             none found — update this test if the lowering strategy changed"
+             none found — update this test if the lowering strategy changed",
         );
     assert_eq!(
         g_cell.cell_type,
