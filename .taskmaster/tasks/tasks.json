@@ -38447,15 +38447,16 @@
         "description": "Three related improvements to trait_conformance_tests.rs diamond tests (from task 384 review):\n\n1. **Return cell from helper (code_reuse):** Change `assert_single_value_cell` return type from `()` to `&ValueCellDecl`. Return `cells[0]` after the assertion so callers can optionally inspect further properties (type, default_expr) without a redundant search. Update existing call sites (they can ignore the return value).\n\n2. **Add dedup assertion to type conflict test (test_coverage):** In `diamond_type_conflict_produces_error` (line ~892), capture the template from `compile_first_template` (currently discarded with `_`) and add `assert_single_value_cell(&template, \"x\", \"diamond_type_conflict\")` to verify both conflict detection AND correct dedup in the same scenario.\n\n3. **Assert cell types in deep diamond test (test_coverage):** In `diamond_deep_five_level` (line ~880), after `assert_single_value_cell` for x and y, find each cell and assert its `cell_type` matches the expected dimension (e.g., `Type::Scalar { dimension: DimensionVector::LENGTH }` for x). This catches future bugs that swap which requirement survives.\n\nMemory hints: search \"diamond trait conformance assert_single_value_cell ValueCellDecl\", entities: assert_single_value_cell, diamond_type_conflict_produces_error, diamond_deep_five_level",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:22:24.010Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:22:23.551Z",
+      "lastModified": "2026-04-16T02:22:24.010Z",
       "taskCount": 1840,
       "completedCount": 1571,
       "tags": [
