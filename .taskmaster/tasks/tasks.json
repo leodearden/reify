@@ -38618,15 +38618,16 @@
         "description": "The `builtin_names_is_exhaustive` test in `constants.rs` compares `BUILTIN_NAMES.len()` against a manually-maintained `BUILTIN_NAMES_COUNT` constant. This is a weak guard: if a developer adds a new match arm to `resolve_builtin_constant` without updating either `BUILTIN_NAMES` or `BUILTIN_NAMES_COUNT`, both tests pass silently.\n\nEither:\n(a) Replace `BUILTIN_NAMES_COUNT` with a more robust reverse check — e.g., test a superset of plausible constant names and assert only `BUILTIN_NAMES` entries resolve, or resolve every `BUILTIN_NAMES` entry and verify the set of resolved names is exactly `BUILTIN_NAMES`. This eliminates the manually-maintained count entirely.\n(b) Update the doc comments on `builtin_names_is_exhaustive` to accurately describe its limited guarantee: it catches `BUILTIN_NAMES` growing without a count update, but NOT new match arms added to `resolve_builtin_constant` without a corresponding `BUILTIN_NAMES` entry.\n\nOption (a) is preferred if feasible. The `builtin_names_covers_all_constants` test already covers the forward direction (BUILTIN_NAMES → resolve_builtin_constant); this task focuses on strengthening the reverse direction.\n\nmemory_hints: search \"BUILTIN_NAMES resolve_builtin_constant\", get_entity \"BUILTIN_NAMES_COUNT\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:41:29.065Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:41:25.195Z",
+      "lastModified": "2026-04-16T02:41:29.065Z",
       "taskCount": 1846,
       "completedCount": 1577,
       "tags": [
