@@ -37357,7 +37357,7 @@
         "description": "**Bug:** In `crates/reify-eval/src/lib.rs:3229`, the export path uses `step_handles.last().copied().unwrap_or(GeometryHandleId(0))`. When `total_ops == 0` (no geometry ops in any template) but a geometry kernel is present, this tries to export handle 0.\n\n**Why it's wrong:**\n1. Handle IDs start at 1 (`next_id: 1` in kernel), so handle 0 never exists → confusing \"export error: shape not found\" instead of clean \"no geometry\" result\n2. Uses `GeometryHandleId(0)` as a sentinel but the codebase standard sentinel is `GeometryHandleId::INVALID` (`u64::MAX`) — inconsistent with the 8+ sites that filter using `!= GeometryHandleId::INVALID`\n3. Violates the silent-defaults convention — should not silently substitute a bogus handle\n\n**Fix:** Restructure the conditional so `step_handles.is_empty()` always returns `None` (no geometry output), regardless of `total_ops`. Only emit the \"all ops failed\" diagnostic when `total_ops > 0`. Use `.unwrap()` (safe: non-empty proven by branch) instead of `unwrap_or`.\n\n```rust\nif step_handles.is_empty() {\n    if total_ops > 0 {\n        diagnostics.push(Diagnostic::error(\"all geometry operations failed; no geometry output produced\"));\n    }\n    None\n} else {\n    let export_handle = *step_handles.last().unwrap(); // safe: non-empty\n    ...\n}\n```\n\n**memory_hints:** search \"GeometryHandleId INVALID sentinel\" for context on handle ID conventions",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -37368,7 +37368,8 @@
           "modules": [
             "crates/reify-eval/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-16T02:38:49.907Z"
       },
       {
         "id": "1781",
@@ -38614,7 +38615,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:38:46.039Z",
+      "lastModified": "2026-04-16T02:38:49.907Z",
       "taskCount": 1845,
       "completedCount": 1575,
       "tags": [
