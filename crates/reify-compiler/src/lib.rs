@@ -1992,4 +1992,77 @@ structure S {
             other => panic!("expected Sweep(Loft), got {:?}", other),
         }
     }
+
+    #[test]
+    fn loft_non_geom_args_emit_per_arg_diagnostics() {
+        // loft() with 3 literal-number args (not geometry expressions).
+        // When step_offset=5, each non-geometry arg should emit a Diagnostic::error
+        // containing 'must be a geometry expression' — one per arg (3 total).
+        // The op should still be produced with fallback GeomRefs.
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "loft".to_string(),
+                args: vec![
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(1.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(2.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                    reify_syntax::Expr {
+                        kind: reify_syntax::ExprKind::NumberLiteral(3.0),
+                        span: reify_types::SourceSpan::new(0, 1),
+                    },
+                ],
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            5, // step_offset = 5
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        // op is still produced (fallback refs used)
+        assert!(
+            result.is_some(),
+            "loft() should produce ops even with non-geometry args"
+        );
+        // one diagnostic per non-geometry arg
+        assert_eq!(
+            diagnostics.len(),
+            3,
+            "expected 3 diagnostics (one per arg), got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        for (i, diag) in diagnostics.iter().enumerate() {
+            assert!(
+                diag.message.contains("must be a geometry expression"),
+                "diagnostic {} should contain 'must be a geometry expression', got: {:?}",
+                i,
+                diag.message
+            );
+            let arg_num = i + 1;
+            assert!(
+                diag.message.contains(&arg_num.to_string()),
+                "diagnostic {} should reference argument number {}, got: {:?}",
+                i,
+                arg_num,
+                diag.message
+            );
+        }
+    }
 }
