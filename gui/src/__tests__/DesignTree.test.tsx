@@ -215,6 +215,16 @@ describe('DesignTree — context menu', () => {
     expect(screen.queryByTestId('design-tree-context-menu')).toBeNull();
   });
 
+  it('pressing Escape while menu is open dismisses it', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    fireEvent.contextMenu(screen.getByTestId('tree-row-Root.A'));
+    expect(screen.getByTestId('design-tree-context-menu')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByTestId('design-tree-context-menu')).toBeNull();
+  });
+
   it('contextmenu on successive rows does not accumulate document click listeners', () => {
     const nodes = [
       makeNode({ entity_path: 'Root.A' }),
