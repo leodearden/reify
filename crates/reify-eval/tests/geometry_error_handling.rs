@@ -12,13 +12,43 @@ use reify_types::{
 };
 
 // ---------------------------------------------------------------------------
-// Helper: build a CompiledModule with one box primitive realization
+// Shared helper: build a CompiledModule with fixed params and optional ops
 // ---------------------------------------------------------------------------
+
+/// Builds a `CompiledModule` at `path` with fixed width=80 / height=100 /
+/// depth=5 mm parameters.  When `ops` is `Some(vec)`, attaches one
+/// realization containing those ops; when `None`, the template has no
+/// realizations (total_ops=0).
+///
+/// Callers that need kernel/checker flexibility receive the raw `CompiledModule`
+/// and wire up their own `Engine` — this helper is intentionally narrow so it
+/// does not need to accept kernel or format parameters.
+fn build_module_with_ops(
+    path: &str,
+    ops: Option<Vec<CompiledGeometryOp>>,
+) -> reify_compiler::CompiledModule {
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    let mut builder = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
+        .param(e, "depth", Type::length(), Some(mm_literal(5.0)));
+
+    if let Some(v) = ops {
+        builder = builder.realization(e, 0, v);
+    }
+
+    let template = builder.build();
+
+    CompiledModuleBuilder::new(reify_types::ModulePath::single(path))
+        .template(template)
+        .build()
+}
 
 /// Creates a compiled module with a single structure containing one box
 /// primitive realization, so there is exactly one geometry operation to process.
 fn module_with_box_realization() -> reify_compiler::CompiledModule {
-    let e = "TestShape";
     let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
@@ -30,16 +60,7 @@ fn module_with_box_realization() -> reify_compiler::CompiledModule {
         ],
     };
 
-    let template = TopologyTemplateBuilder::new("TestShape")
-        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
-        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
-        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
-        .realization(e, 0, vec![box_op])
-        .build();
-
-    CompiledModuleBuilder::new(reify_types::ModulePath::single("test_shape"))
-        .template(template)
-        .build()
+    build_module_with_ops("test_shape", Some(vec![box_op]))
 }
 
 // ---------------------------------------------------------------------------
@@ -1872,18 +1893,9 @@ fn build_snapshot_sentinel_placeholder_continues_independent_ops() {
 /// Helper: build a zero-ops module (no realizations, total_ops=0) at the
 /// given module path and return the BuildResult.
 fn build_zero_ops_result(path: &str) -> reify_eval::BuildResult {
-    let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-
-    // Template with a parameter but NO realizations — total_ops stays 0
-    let template = TopologyTemplateBuilder::new(e)
-        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
-        .build();
-
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single(path))
-        .template(template)
-        .build();
-
+    // `build_module_with_ops(path, None)` produces a template with no
+    // realizations — total_ops stays 0.
+    let module = build_module_with_ops(path, None);
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
