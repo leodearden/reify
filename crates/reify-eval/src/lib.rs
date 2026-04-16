@@ -166,6 +166,10 @@ pub struct Engine {
     cache: CacheStore,
     /// Compiled stdlib prelude modules (cached via OnceLock; zero-cost borrow).
     prelude: &'static [CompiledModule],
+    /// Pre-flattened cache of all functions from every prelude module, computed
+    /// once at Engine construction time. Avoids repeated cloning of the same
+    /// `CompiledFunction` values on every `eval()` call.
+    prelude_functions: Vec<CompiledFunction>,
     /// Overridden param values (set by set_param_and_invalidate).
     param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
     /// Consolidated evaluation state from last eval() or edit_param().
@@ -333,12 +337,16 @@ impl Engine {
         constraint_checker: Box<dyn ConstraintChecker>,
         geometry_kernel: Option<Box<dyn GeometryKernel>>,
     ) -> Self {
+        let prelude = reify_compiler::stdlib_loader::load_stdlib();
+        let prelude_functions: Vec<CompiledFunction> =
+            prelude.iter().flat_map(|pm| pm.functions.iter().cloned()).collect();
         Self {
             constraint_checker,
             geometry_kernel,
             solver: None,
             cache: CacheStore::new(),
-            prelude: reify_compiler::stdlib_loader::load_stdlib(),
+            prelude,
+            prelude_functions,
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
             demand: DemandRegistry::new(),
@@ -792,12 +800,18 @@ impl Engine {
     /// dependency structures. Subsequent calls to edit_param() can perform
     /// incremental re-evaluation using these structures.
     pub fn eval(&mut self, module: &CompiledModule) -> EvalResult {
-        // Store functions and purposes for this module (used by edit_param and purpose activation)
+        // Store functions and purposes for this module (used by edit_param and purpose activation).
+        //
+        // SHADOWING INVARIANT: module (user) functions are stored FIRST, then prelude functions
+        // are appended after. `reify_expr::eval_user_function_call` resolves calls via
+        // `ctx.functions.iter().find(...)` — a first-match-wins linear scan on (name, arity,
+        // param types). Therefore, any user function whose signature matches a prelude function
+        // takes precedence and shadows the prelude implementation. The compiler's
+        // duplicate-function check only compares user functions against each other, not against
+        // the prelude, so user code may freely redefine prelude signatures without diagnostics.
         self.functions = module.functions.clone();
-        // Extend with prelude functions so user expressions can call stdlib functions.
-        for pm in self.prelude {
-            self.functions.extend(pm.functions.iter().cloned());
-        }
+        // Extend with pre-flattened prelude functions (cached once at Engine construction).
+        self.functions.extend(self.prelude_functions.iter().cloned());
         self.compiled_purposes = module.compiled_purposes.clone();
         // Clear stale purpose state from previous eval() calls — the fresh
         // snapshot discards all purpose-injected constraints/objectives.
