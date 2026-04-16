@@ -157,15 +157,14 @@ structure S {
 // ─── step-3: Eval idempotency (caching regression) ───────────────────
 
 /// Regression guard: calling `eval()` twice on the same engine with the
-/// same module must produce identical results. This guards against a
-/// regression where `self.functions` could accumulate prelude functions
-/// across calls (e.g., if `eval()` appended instead of replacing).
+/// same module must produce identical results AND leave an identical number
+/// of entries in the combined function table.
 ///
-/// A user-defined `symmetric_tolerance` with the same signature as the
-/// prelude function (addition body) is used. The prelude version would
-/// also return 7mm, so any ordering shift from accumulation would be
-/// visible if it changed the number of functions found or their types.
-/// Both calls must return 0.007 m (7mm = 5mm + 2mm).
+/// The value assertion (`v1 == v2 == 0.007 m`) verifies semantic idempotency.
+/// The `functions_count()` assertion (`count1 == count2`) directly detects
+/// accumulation bugs: if `eval()` appended prelude functions rather than
+/// replacing, the count would grow on every call even though first-match-wins
+/// lookup would still return the same value.
 #[test]
 fn eval_is_idempotent_for_prelude_functions() {
     let source = r#"
@@ -206,6 +205,7 @@ structure S {
         .get(&cell_id)
         .and_then(|v| v.as_f64())
         .unwrap_or_else(|| panic!("S.v missing or non-numeric on first eval"));
+    let count1 = engine.functions_count();
 
     // Second eval on same engine
     let result2 = engine.eval(&compiled);
@@ -220,7 +220,14 @@ structure S {
         .get(&cell_id)
         .and_then(|v| v.as_f64())
         .unwrap_or_else(|| panic!("S.v missing or non-numeric on second eval"));
+    let count2 = engine.functions_count();
 
+    // Accumulation guard: if eval() appended instead of replaced, count2 > count1.
+    assert_eq!(
+        count1, count2,
+        "eval() must not accumulate functions: count after first eval={} after second={}",
+        count1, count2
+    );
     assert!(
         (v1 - v2).abs() < 1e-9,
         "eval() must be idempotent: first={} second={} (differ by {})",

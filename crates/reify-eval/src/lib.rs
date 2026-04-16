@@ -167,8 +167,13 @@ pub struct Engine {
     /// Compiled stdlib prelude modules (cached via OnceLock; zero-cost borrow).
     prelude: &'static [CompiledModule],
     /// Pre-flattened cache of all functions from every prelude module, computed
-    /// once at Engine construction time. Avoids repeated cloning of the same
-    /// `CompiledFunction` values on every `eval()` call.
+    /// once at Engine construction time. Avoids iterating over the nested
+    /// `prelude: &'static [CompiledModule]` structure on every `eval()` call;
+    /// the per-eval clone cost (one `CompiledFunction` clone per entry) is
+    /// unchanged — only the outer module-level iteration is eliminated.
+    ///
+    /// Note: this duplicates data already held in the static `prelude` slice,
+    /// adding per-Engine memory proportional to the number of prelude functions.
     prelude_functions: Vec<CompiledFunction>,
     /// Overridden param values (set by set_param_and_invalidate).
     param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
@@ -574,6 +579,14 @@ impl Engine {
     /// Returns the compiled stdlib prelude modules stored by this engine.
     pub fn prelude(&self) -> &[CompiledModule] {
         self.prelude
+    }
+
+    /// Returns the number of functions currently loaded in the engine's
+    /// combined function table (user + prelude). Used by integration tests
+    /// to assert that repeated `eval()` calls do not accumulate entries.
+    #[doc(hidden)]
+    pub fn functions_count(&self) -> usize {
+        self.functions.len()
     }
 
     /// Set the maximum depth for recursive sub-component unfolding.
