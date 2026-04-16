@@ -450,6 +450,77 @@ fn pipeline_prepare_resolve_apply_re_resolves_auto_param() {
     }
 }
 
+/// step-3: resolve_concurrent_edit propagates resolved auto params to dependent
+/// let bindings via a second dirty-cone sweep (wave-2).
+///
+/// The constraint `x > a` references a directly, so changing `a` dirties the
+/// constraint node.  After the solver resolves x in wave-1, wave-2 must find y
+/// (which depends on x, not on a) and re-evaluate it.
+///
+/// Assertion: result.values[y] == mm(20.0)*2 = 0.04 SI after resolve.
+#[test]
+fn resolve_concurrent_edit_second_wave_updates_dependent_let_binding() {
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+    let a_id = ValueCellId::new("S", "a");
+
+    let solver = make_two_call_solver(&x_id, mm(5.0), mm(20.0));
+    let module = build_auto_param_module();
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    // Cold eval: x = mm(5.0) = 0.005 SI, y = 0.01 SI
+    let _cold = engine.eval(&module);
+
+    // prepare_concurrent_edit: change a → mm(8.0)
+    let setup = engine
+        .prepare_concurrent_edit(a_id.clone(), mm(8.0))
+        .expect("prepare_concurrent_edit should succeed");
+
+    let mut result = ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: vec![],
+        actual_eval_set: setup.eval_set.clone(),
+        skipped: HashSet::new(),
+        resolved_params: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+
+    // resolve_concurrent_edit: wave-1 re-resolves x to mm(20.0); wave-2 re-evaluates y.
+    engine.resolve_concurrent_edit(&setup, &mut result);
+
+    // Wave-2 must have updated y to x*2 = mm(20.0)*2 = 0.04 SI
+    let val_y = result.values.get(&y_id).expect("values should contain y");
+    assert!(
+        matches!(val_y, Value::Scalar { si_value, .. } if (*si_value - 0.04).abs() < 1e-10),
+        "expected y = 0.04 SI (mm(20.0)*2) after wave-2 propagation, got {:?}",
+        val_y
+    );
+
+    // snapshot_values[y] must also be updated
+    let (snap_y, snap_det) = result
+        .snapshot_values
+        .get(&y_id)
+        .expect("snapshot_values should contain y");
+    assert!(
+        matches!(snap_y, Value::Scalar { si_value, .. } if (*si_value - 0.04).abs() < 1e-10),
+        "expected snapshot_values[y] = 0.04 SI, got {:?}",
+        snap_y
+    );
+    assert_eq!(*snap_det, DeterminacyState::Determined);
+
+    // Cache should have an updated entry for y (wave-2 calls record_evaluation)
+    let y_node = NodeId::Value(y_id.clone());
+    assert!(
+        engine.cache_store().get(&y_node).is_some(),
+        "cache should have an entry for y after wave-2 record_evaluation"
+    );
+    let cache_y = engine.cache_store().get(&y_node).unwrap();
+    assert_eq!(cache_y.basis_version, setup.version, "cache y basis_version should be setup.version");
+    drop(a_id); // suppress unused-variable lint
+}
+
 /// step-9: apply_concurrent_edit uses eval_duration from ConcurrentNodeResult
 /// in the journal Completed event payload, rather than measuring apply-loop time.
 ///
