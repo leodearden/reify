@@ -561,6 +561,11 @@ fn setup_minimal_concurrent_edit() -> (Engine, ConcurrentEditSetup) {
 #[test]
 fn resolve_concurrent_edit_without_solver_is_noop_fresh_input() {
     let (mut engine, setup) = setup_minimal_concurrent_edit();
+    // setup_minimal_concurrent_edit constructs the Engine with `None` as the
+    // solver argument (see its body: `Engine::new(..., None)`), so the
+    // `if let Some(ref solver) = self.solver` guard in `resolve_concurrent_edit`
+    // (src/concurrent.rs) cannot be entered — that guard is what guarantees
+    // the no-op behavior asserted below.
 
     let mut result = empty_result_from_setup(&setup);
 
