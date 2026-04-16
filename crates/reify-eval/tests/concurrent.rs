@@ -297,3 +297,90 @@ fn rollback_concurrent_edit_restores_pending_to_final() {
         "volume should have a value after sequential edit"
     );
 }
+
+/// step-9: apply_concurrent_edit uses eval_duration from ConcurrentNodeResult
+/// in the journal Completed event payload, rather than measuring apply-loop time.
+///
+/// This test is designed to fail until step-10 changes apply_concurrent_edit
+/// to use node_result.eval_duration in the EventPayload::Duration.
+#[test]
+fn apply_concurrent_edit_journal_uses_eval_duration() {
+    use std::time::Duration;
+
+    use reify_eval::journal::{EventKind, EventPayload};
+
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let _initial = engine.eval(&module);
+
+    let e = "Bracket";
+    let width_id = ValueCellId::new(e, "width");
+    let volume_id = ValueCellId::new(e, "volume");
+    let volume_node = NodeId::Value(volume_id.clone());
+
+    let setup = engine
+        .prepare_concurrent_edit(width_id.clone(), Value::length(0.1))
+        .unwrap();
+
+    let new_volume = Value::Scalar {
+        si_value: 5e-5,
+        dimension: reify_types::dimension::DimensionVector::VOLUME,
+    };
+
+    let known_eval_duration = Duration::from_millis(100);
+
+    let mut snapshot_values = setup.snapshot_values.clone();
+    snapshot_values.insert(
+        volume_id.clone(),
+        (new_volume.clone(), DeterminacyState::Determined),
+    );
+
+    let mut values = setup.values.clone();
+    values.insert(volume_id.clone(), new_volume.clone());
+
+    let node_results = vec![ConcurrentNodeResult {
+        node: volume_node.clone(),
+        value: new_volume.clone(),
+        determinacy: DeterminacyState::Determined,
+        trace: DependencyTrace::default(),
+        outcome: reify_eval::cache::EvalOutcome::Changed,
+        eval_duration: Some(known_eval_duration),
+    }];
+
+    let result = ConcurrentEditResult {
+        values,
+        snapshot_values,
+        node_results,
+        actual_eval_set: vec![volume_node.clone()],
+        skipped: HashSet::new(),
+        resolved_params: std::collections::HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+
+    engine.apply_concurrent_edit(&setup, result);
+
+    // Find the Completed event for volume at setup.version
+    let volume_events = engine.journal().events_for_node(&volume_node);
+    let completed_event = volume_events
+        .iter()
+        .filter(|ev| ev.version == setup.version)
+        .find(|ev| matches!(ev.kind, EventKind::Completed { .. }))
+        .expect("should have a Completed event for volume");
+
+    // The Duration payload must equal the eval_duration we provided.
+    // Currently fails because apply_concurrent_edit uses start.elapsed()
+    // (apply-loop time, nanoseconds) instead of node_result.eval_duration.
+    match &completed_event.payload {
+        Some(EventPayload::Duration(d)) => {
+            assert_eq!(
+                *d, known_eval_duration,
+                "Completed event Duration should be the eval_duration from ConcurrentNodeResult, \
+                 not apply-loop time. Got: {:?}",
+                d
+            );
+        }
+        other => panic!("Expected Duration payload, got: {:?}", other),
+    }
+}
