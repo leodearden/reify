@@ -370,6 +370,7 @@ pub(crate) fn compile_unit(
 pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
     match name {
         "Scalar" => Some(Type::length()), // Default scalar is length-dimensioned in M1
+        "Solid" => Some(Type::Geometry),  // Surface-syntax alias for the geometry-handle type
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::Real),
