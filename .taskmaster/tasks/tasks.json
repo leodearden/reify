@@ -38605,15 +38605,16 @@
         "description": "The tests in crates/reify-eval/src/concurrent.rs (lines 463-530) only verify struct construction and field access for ConcurrentNodeResult and ConcurrentEditResult. The four Engine methods (prepare_concurrent_edit, rollback_concurrent_edit, apply_concurrent_edit, resolve_concurrent_edit) — which contain the actual logic — have no unit tests.\n\nThe rollback ID restoration logic and the two-wave resolution propagation are particularly subtle and untested at this level. Add integration-level tests that exercise the prepare → resolve → apply pipeline, and specifically test rollback behavior (verifying IDs are restored and cache nodes return to Final state). These may require test helpers for Engine construction.\n\nmemory_hints:\n- search: \"concurrent edit test\" \"Engine test helper\"\n- entity: Engine, ConcurrentEditSetup, ConcurrentEditResult",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:38:39.579Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:38:38.083Z",
+      "lastModified": "2026-04-16T02:38:39.579Z",
       "taskCount": 1845,
       "completedCount": 1574,
       "tags": [
