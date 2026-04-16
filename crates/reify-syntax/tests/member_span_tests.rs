@@ -300,3 +300,33 @@ fn find_named_member_span_hand_constructed_else_only_found() {
     assert_eq!(info.doc, None);
 }
 
+#[test]
+fn find_named_member_span_hand_constructed_both_branches_empty_returns_none() {
+    // Covers the degenerate empty-guard edge case: GuardedGroup with
+    // both `members` and `else_members` empty. The top-level
+    // `empty_members_returns_none` test covers an empty top-level slice;
+    // this adds coverage for an empty *GuardedGroup* with no declarations
+    // in either branch.
+    use reify_syntax::{Expr, ExprKind, GuardedGroupDecl, MemberDecl};
+    use reify_types::{ContentHash, SourceSpan};
+
+    let dummy_hash = ContentHash(0);
+    let dummy_expr = Expr {
+        kind: ExprKind::BoolLiteral(true),
+        span: SourceSpan::new(0, 1),
+    };
+
+    let members = [MemberDecl::GuardedGroup(GuardedGroupDecl {
+        condition: dummy_expr,
+        members: vec![],
+        else_members: vec![],
+        span: SourceSpan::new(0, 10),
+        content_hash: dummy_hash,
+    })];
+
+    assert!(
+        find_named_member_span(&members, "anything").is_none(),
+        "empty GuardedGroup in both branches should return None"
+    );
+}
+
