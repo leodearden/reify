@@ -38872,11 +38872,11 @@
         "description": "Three UX/rendering issues from the task 1741 review: top-level nodes render their name twice, the 'inherit' visibility state is indistinguishable from 'show', and applyDefaults triggers store writes on every entity-tree-update even when no new paths appeared.",
         "details": "1. **Redundant type_name on top-level nodes (engine.rs:597 + DesignTree.tsx)** — For top-level templates `type_name` is set to `template.name`, identical to `entity_path` (e.g. `Bracket` / `Bracket`), so the tree UI renders `Bracket` twice. For sub nodes the values differ and both are useful. Either (a) populate top-level `type_name` with the entity-kind label (`structure` / `occurrence`), or (b) hide the type_name span in `DesignTree.tsx` when it equals the displayName. Update the test `get_entity_tree_impl_node_fields_are_well_formed` that currently asserts `type_name == entity_path` at top level.\n\n2. **Ambiguous 'inherit' eye icon (DesignTree.tsx:19-24)** — `EYE_ICONS` maps `inherit` to the same glyph as `show` (👁), making it impossible to distinguish an explicitly-set `show` from an inherited-from-parent one. Pick a distinct glyph (e.g. 👁‍🗨) or render the inherit variant with reduced opacity via a CSS modifier class.\n\n3. **applyDefaults churn on every tree update (App.tsx:249-257, 319-331)** — `applyDefaults` walks the entire tree on every `entity-tree-update` event and, even when guarded to only write missing keys, still issues a `setStore(produce(...))` write that invalidates every Solid signal reading `visibility`. Short-circuit when the tree shape hasn't changed — compare incoming paths against the set collected during `setTree`, compute new visibility entries first, and early-return if empty.\n\n### memory_hints\n- search: \"DesignTree EYE_ICONS visibility cycle\"\n- search: \"applyDefaults viewStateStore\"\n<info added on 2026-04-16T21:05:31.852Z>\nNOTE (2026-04-16): Task 1741 was resolved by accepting origin/main's parallel Design Tree implementation. Re-verify on main's current HEAD that (a) top-level nodes still render redundant type_name, (b) EYE_ICONS still maps inherit to the show glyph, and (c) applyDefaults still churns on every entity-tree-update. Main's implementation may already address some of these. Line numbers in this task body refer to task/1741's branch and are no longer accurate.\n</info added on 2026-04-16T21:05:31.852Z>",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T21:06:29.079Z",
+        "updatedAt": "2026-04-16T21:08:15.554Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -38896,7 +38896,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T21:08:05.249Z"
+        "updatedAt": "2026-04-16T21:08:05.249Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Harden build_entity_tree_trait_geometry_true_for_physical_bound against fake-trait shim"
+            ]
+          }
+        }
       },
       {
         "id": "1864",
@@ -38913,7 +38921,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T21:08:05.249Z",
+      "lastModified": "2026-04-16T21:08:15.554Z",
       "taskCount": 1859,
       "completedCount": 1597,
       "tags": [
