@@ -250,6 +250,7 @@ describe('editorStore', () => {
     // 1000 more markDirty calls on the same already-dirty path.
     // The includes-guard in markDirty prevents setState, so the reactive graph
     // does NOT emit and the effect does NOT re-run.
+    const dirtyFilesRefBeforeNoOps = storeRef.state.dirtyFiles;
     for (let i = 0; i < 1000; i++) {
       storeRef.markDirty(file1.path);
     }
@@ -260,6 +261,17 @@ describe('editorStore', () => {
     // Counter must still be 2 — exactly one reactive emission per state transition,
     // zero emissions for idempotent markDirty calls
     expect(counter).toBe(2);
+
+    // Structural assertion: the array still contains exactly one entry (no duplicates
+    // were pushed). This directly proves the includes-guard works without relying on
+    // effect scheduler semantics.
+    expect(storeRef.state.dirtyFiles).toEqual([file1.path]);
+
+    // Reference-identity assertion: the SolidJS store wraps arrays in a WeakMap-cached
+    // Proxy. If setState were called (creating a new underlying array), the proxy
+    // reference would change. Proving same reference confirms zero setState calls
+    // during the 1000 no-op loop.
+    expect(storeRef.state.dirtyFiles).toBe(dirtyFilesRefBeforeNoOps);
 
     disposeRef();
   });
