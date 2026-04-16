@@ -145,7 +145,7 @@ fn fillet_through_full_eval_pipeline() {
         ("radius".to_string(), mm_literal(3.0)),
     ];
 
-    let ops = run_modify_pipeline(ModifyKind::Fillet, args);
+    let (_result, ops) = run_modify_pipeline(ModifyKind::Fillet, args);
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
 
     let target_handle = ops[0].result_handle;
@@ -185,7 +185,7 @@ fn fillet_modify_only_needs_radius_arg() {
     // "target" handle is resolved from GeomRef::Step(0), not from args.
     let args = vec![("radius".to_string(), mm_literal(3.0))];
 
-    let ops = run_modify_pipeline(ModifyKind::Fillet, args);
+    let (_result, ops) = run_modify_pipeline(ModifyKind::Fillet, args);
     assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
 
     let target_handle = ops[0].result_handle;

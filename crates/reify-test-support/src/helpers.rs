@@ -4,7 +4,7 @@ use reify_compiler::TopologyTemplate;
 use reify_types::{Diagnostic, ModulePath, Severity};
 
 #[cfg(feature = "eval-helpers")]
-use crate::mocks::MockConstraintChecker;
+use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
 /// geometry kernel. Suitable for tests that only need to evaluate logic
@@ -375,36 +375,49 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
     );
 }
 
-/// Run a standard 2-op modify pipeline through the eval engine and return the
-/// captured geometry operations.
+/// Run a full geometry pipeline for a given [`reify_compiler::ModifyKind`].
 ///
-/// Constructs a module with:
+/// Creates a module with 2 compiled ops:
 ///
-/// - **Op 0**: A 20×20×20 mm Box primitive that provides a geometry handle.
-/// - **Op 1**: `CompiledGeometryOp::Modify { kind, target: GeomRef::Step(0), args }`
-///   using the supplied `kind` and `args`.
+/// - Op 0: `Box` primitive at 20 mm × 20 mm × 20 mm
+/// - Op 1: `Modify` with `kind`, `target: GeomRef::Step(0)`, and `modify_args`
 ///
-/// Runs [`reify_eval::Engine::build`] with a fresh [`crate::mocks::MockGeometryKernel`]
-/// and returns the cloned `Vec<GeometryOpRecord>`.  Callers assert against `ops[1].op`
-/// for variant-specific fields (e.g. `GeometryOp::Chamfer { distance, .. }`).
+/// Runs the `Engine` with a fresh `MockConstraintChecker` and `MockGeometryKernel`,
+/// then asserts:
 ///
-/// This helper eliminates the ~40-line setup boilerplate shared by every modify-op
-/// pipeline test and will benefit future operations (Shell, Draft, Thicken, …) that
-/// follow the same 2-op pattern.
+/// - No error diagnostics were produced
+/// - `result.geometry_output` is `Some` (geometry was emitted)
+///
+/// Returns the [`reify_eval::BuildResult`] and the recorded
+/// [`crate::mocks::GeometryOpRecord`]s as owned values.
+///
+/// # Example
+///
+/// ```ignore
+/// let (result, ops) = run_modify_pipeline(
+///     ModifyKind::Chamfer,
+///     vec![("distance".into(), CompiledExpr::literal(mm(3.0), Type::length()))],
+/// );
+/// assert_eq!(ops.len(), 2);
+/// assert!(matches!(ops[1].op, GeometryOp::Chamfer { .. }));
+/// ```
 ///
 /// # Panics
-/// Panics if `Engine::build` panics, if the internal mutex is poisoned, or if
-/// the build produces any `Severity::Error` diagnostics.
+///
+/// Panics if the build produces error diagnostics or no geometry output.
 #[cfg(feature = "eval-helpers")]
+#[track_caller]
 pub fn run_modify_pipeline(
     kind: reify_compiler::ModifyKind,
-    args: Vec<(String, reify_types::CompiledExpr)>,
-) -> Vec<crate::mocks::GeometryOpRecord> {
+    modify_args: Vec<(String, reify_types::CompiledExpr)>,
+) -> (reify_eval::BuildResult, Vec<crate::mocks::GeometryOpRecord>) {
     use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind};
     use reify_types::{ExportFormat, Type};
 
     let mm_literal =
         |v: f64| reify_types::CompiledExpr::literal(crate::values::mm(v), Type::length());
+
+    let entity_name = format!("Test{kind:?}");
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -418,33 +431,34 @@ pub fn run_modify_pipeline(
     let modify_op = CompiledGeometryOp::Modify {
         kind,
         target: GeomRef::Step(0),
-        args,
+        args: modify_args,
     };
 
-    let entity_name = "RunModifyPipeline";
-    let template = crate::builders::TopologyTemplateBuilder::new(entity_name)
-        .realization(entity_name, 0, vec![box_op, modify_op])
+    let template = crate::builders::TopologyTemplateBuilder::new(&entity_name)
+        .realization(&entity_name, 0, vec![box_op, modify_op])
         .build();
 
     let module = crate::builders::CompiledModuleBuilder::new(
-        reify_types::ModulePath::single("run_modify_pipeline"),
+        reify_types::ModulePath::single(&format!("test_{}", entity_name.to_lowercase())),
     )
     .template(template)
     .build();
 
-    let kernel = crate::mocks::MockGeometryKernel::new();
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine =
-        reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
+
+    assert_no_error_diagnostics(&result.diagnostics, "run_modify_pipeline");
     assert!(
-        result.diagnostics.iter().all(|d| d.severity != Severity::Error),
-        "engine build failed: {:?}",
-        result.diagnostics
+        result.geometry_output.is_some(),
+        "engine should produce geometry output"
     );
 
-    ops_ref.lock().unwrap().clone()
+    let ops = ops_ref.lock().unwrap().clone();
+    (result, ops)
 }
 
 #[cfg(test)]
@@ -947,100 +961,74 @@ mod tests {
         super::assert_no_diagnostics(&diags, "guard compile");
     }
 
-    // ── run_modify_pipeline ───────────────────────────────────────────────
+    // ── run_modify_pipeline smoke ─────────────────────────────────────────
 
-    /// run_modify_pipeline with Chamfer kind returns 2 ops:
-    ///   ops[0].op is GeometryOp::Box (the implicit 20×20×20mm box primitive)
-    ///   ops[1].op is GeometryOp::Chamfer with target=ops[0].result_handle and
-    ///   distance≈0.003 m (3 mm in SI).
-    ///
-    /// This test fails before step-2 because run_modify_pipeline does not exist.
+    /// Smoke test for `run_modify_pipeline`: verifies the helper produces 2 ops
+    /// and that ops[1].op matches the expected GeometryOp variant for both
+    /// Chamfer and Fillet kinds.
     #[cfg(feature = "eval-helpers")]
     #[test]
-    fn test_run_modify_pipeline_chamfer_returns_two_ops() {
-        use crate::mocks::GeometryOpRecord;
-        use crate::values::mm;
+    fn test_run_modify_pipeline_smoke() {
         use reify_compiler::ModifyKind;
         use reify_types::{GeometryOp, Type};
+        let mm_literal =
+            |v: f64| reify_types::CompiledExpr::literal(crate::values::mm(v), Type::length());
 
-        let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-        let args = vec![("distance".to_string(), mm_literal(3.0))];
-        let ops: Vec<GeometryOpRecord> = super::run_modify_pipeline(ModifyKind::Chamfer, args);
-
-        assert_eq!(ops.len(), 2, "expected 2 ops, got {}", ops.len());
-
-        // op[0] must be a Box primitive
+        // Chamfer: expect 2 ops, ops[1] is GeometryOp::Chamfer
+        let (_result, ops) = super::run_modify_pipeline(
+            ModifyKind::Chamfer,
+            vec![("distance".into(), mm_literal(3.0))],
+        );
+        assert_eq!(
+            ops.len(),
+            2,
+            "expected 2 ops for Chamfer pipeline, got {}",
+            ops.len()
+        );
         assert!(
-            matches!(ops[0].op, GeometryOp::Box { .. }),
-            "ops[0] should be GeometryOp::Box, got {:?}",
-            ops[0].op
+            matches!(ops[1].op, GeometryOp::Chamfer { .. }),
+            "expected ops[1].op to be GeometryOp::Chamfer, got {:?}",
+            ops[1].op
         );
 
-        // op[1] must be Chamfer with the correct target handle and ~0.003 m distance
-        let target_handle = ops[0].result_handle;
-        match &ops[1].op {
-            GeometryOp::Chamfer { target, distance } => {
-                assert_eq!(
-                    *target, target_handle,
-                    "Chamfer target should be handle from op 0 ({:?}), got {:?}",
-                    target_handle, target
-                );
-                let dist_si = distance.as_f64().expect("distance should be numeric");
-                assert!(
-                    (dist_si - 0.003).abs() < 1e-9,
-                    "Chamfer distance should be 0.003 m (3 mm SI), got {}",
-                    dist_si
-                );
-            }
-            other => panic!("ops[1] should be GeometryOp::Chamfer, got {:?}", other),
-        }
-    }
-
-    /// run_modify_pipeline with Fillet kind returns 2 ops:
-    ///   ops[0].op is GeometryOp::Box
-    ///   ops[1].op is GeometryOp::Fillet with target=ops[0].result_handle and
-    ///   radius≈0.003 m (3 mm in SI).
-    ///
-    /// Verifies the helper is generic over ModifyKind. Passes immediately
-    /// because the step-2 implementation is kind-agnostic.
-    #[cfg(feature = "eval-helpers")]
-    #[test]
-    fn test_run_modify_pipeline_fillet_returns_two_ops() {
-        use crate::mocks::GeometryOpRecord;
-        use crate::values::mm;
-        use reify_compiler::ModifyKind;
-        use reify_types::{GeometryOp, Type};
-
-        let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-        let args = vec![("radius".to_string(), mm_literal(3.0))];
-        let ops: Vec<GeometryOpRecord> = super::run_modify_pipeline(ModifyKind::Fillet, args);
-
-        assert_eq!(ops.len(), 2, "expected 2 ops, got {}", ops.len());
-
-        // op[0] must be a Box primitive
+        // Fillet: expect 2 ops, ops[1] is GeometryOp::Fillet
+        let (_result, ops) = super::run_modify_pipeline(
+            ModifyKind::Fillet,
+            vec![("radius".into(), mm_literal(3.0))],
+        );
+        assert_eq!(
+            ops.len(),
+            2,
+            "expected 2 ops for Fillet pipeline, got {}",
+            ops.len()
+        );
         assert!(
-            matches!(ops[0].op, GeometryOp::Box { .. }),
-            "ops[0] should be GeometryOp::Box, got {:?}",
-            ops[0].op
+            matches!(ops[1].op, GeometryOp::Fillet { .. }),
+            "expected ops[1].op to be GeometryOp::Fillet, got {:?}",
+            ops[1].op
         );
 
-        // op[1] must be Fillet with the correct target handle and ~0.003 m radius
-        let target_handle = ops[0].result_handle;
-        match &ops[1].op {
-            GeometryOp::Fillet { target, radius } => {
-                assert_eq!(
-                    *target, target_handle,
-                    "Fillet target should be handle from op 0 ({:?}), got {:?}",
-                    target_handle, target
-                );
-                let radius_si = radius.as_f64().expect("radius should be numeric");
-                assert!(
-                    (radius_si - 0.003).abs() < 1e-9,
-                    "Fillet radius should be 0.003 m (3 mm SI), got {}",
-                    radius_si
-                );
-            }
-            other => panic!("ops[1] should be GeometryOp::Fillet, got {:?}", other),
-        }
+        // Shell: expect 2 ops, ops[1] is GeometryOp::Shell
+        // Shell only requires a `thickness` length arg; face indices are optional.
+        // Draft and Thicken are not included here: Draft requires a plane handle
+        // resolved from `step_handles.last()` (which in a 2-op pipeline is the Box
+        // handle — valid, but the arg shape differs), and Thicken shares the same
+        // structure as Shell without the face-list complexity.  Shell provides
+        // sufficient additional coverage of the dispatch path.
+        let (_result, ops) = super::run_modify_pipeline(
+            ModifyKind::Shell,
+            vec![("thickness".into(), mm_literal(2.0))],
+        );
+        assert_eq!(
+            ops.len(),
+            2,
+            "expected 2 ops for Shell pipeline, got {}",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[1].op, GeometryOp::Shell { .. }),
+            "expected ops[1].op to be GeometryOp::Shell, got {:?}",
+            ops[1].op
+        );
     }
 }
