@@ -268,6 +268,121 @@ describe('viewStateStore — resetToInherit', () => {
   });
 });
 
+describe('viewStateStore — showOnly', () => {
+  function makeTree() {
+    // Root { A { a1, a2 }, B { b1, b2 } }
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+              makeNode({ entity_path: 'Root.A.a2', kind: 'param' }),
+            ],
+          }),
+          makeNode({
+            entity_path: 'Root.B',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.B.b1', kind: 'param' }),
+              makeNode({ entity_path: 'Root.B.b2', kind: 'param' }),
+            ],
+          }),
+        ],
+      }),
+    ];
+  }
+
+  it('showOnly(cascade=true): target has explicit show, all nodes not in {target, ancestors} are hidden', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.showOnly('Root.A.a1', true);
+      // Target
+      expect(store.state.explicit['Root.A.a1']).toBe('show');
+      // Ancestors: Root and Root.A should be null (not hidden)
+      expect(store.state.explicit['Root']).toBeNull();
+      expect(store.state.explicit['Root.A']).toBeNull();
+      // Non-ancestors: B, b1, b2, a2 should be hidden
+      expect(store.state.explicit['Root.A.a2']).toBe('hidden');
+      expect(store.state.explicit['Root.B']).toBe('hidden');
+      expect(store.state.explicit['Root.B.b1']).toBe('hidden');
+      expect(store.state.explicit['Root.B.b2']).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('showOnly(cascade=true): descendants of target have explicit=null (inherit show)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      // Prime a1's child (add a deeper node)
+      const tree = [
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({
+              entity_path: 'Root.A',
+              kind: 'structure',
+              children: [
+                makeNode({
+                  entity_path: 'Root.A.a1',
+                  kind: 'param',
+                  children: [makeNode({ entity_path: 'Root.A.a1.x', kind: 'param' })],
+                }),
+              ],
+            }),
+          ],
+        }),
+      ];
+      store.setTree(tree);
+      store.setVisibility('Root.A.a1.x', 'hidden', false);
+      store.showOnly('Root.A.a1', true);
+      // cascade=true: descendants of a1 are cleared to null
+      expect(store.state.explicit['Root.A.a1.x']).toBeNull();
+      expect(store.getEffectiveVisibility('Root.A.a1.x')).toBe('show');
+      dispose();
+    });
+  });
+
+  it('showOnly(cascade=false): descendants of target are hidden (not cleared to null)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.showOnly('Root.A', false);
+      // cascade=false: a1 and a2 are set hidden by the universal-hide pass (not null)
+      expect(store.state.explicit['Root.A.a1']).toBe('hidden');
+      expect(store.state.explicit['Root.A.a2']).toBe('hidden');
+      // B hidden too
+      expect(store.state.explicit['Root.B']).toBe('hidden');
+      // target is show
+      expect(store.state.explicit['Root.A']).toBe('show');
+      // ancestor is null
+      expect(store.state.explicit['Root']).toBeNull();
+      dispose();
+    });
+  });
+
+  it('ancestors of target have explicit=null so they do not block target', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      // Pre-set an ancestor to hidden
+      store.setVisibility('Root.A', 'hidden', false);
+      store.showOnly('Root.A.a1', true);
+      // After showOnly, ancestor Root.A must be null (not hidden) so a1 can show
+      expect(store.state.explicit['Root.A']).toBeNull();
+      expect(store.getEffectiveVisibility('Root.A.a1')).toBe('show');
+      dispose();
+    });
+  });
+});
+
 describe('viewStateStore — skeleton', () => {
   it('has empty explicit map on creation', () => {
     createRoot((dispose) => {
