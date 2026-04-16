@@ -36469,22 +36469,13 @@
             "gui/src/viewport/meshManager.ts"
           ],
           "memory_hints": {
-            "entities": [
-              "reify-gui",
-              "Three.js viewport",
-              "DesignTree",
-              "viewStateStore",
-              "meshManager"
-            ],
-            "searches": [
-              "GUI panel layout App.tsx right panel PropertyEditor tab bar",
-              "meshManager Three.js scene mesh sync rendering",
-              "engineStore state meshes evaluation complete event",
-              "design tree entity hierarchy instance elaborated graph reify-gui",
-              "get_entity_tree Tauri command entity path kind type"
-            ],
-            "_causation_id": "9255cb58-9827-4ba9-a1de-71532f4fe900"
-          }
+            "entities": [],
+            "queries": [
+              "Tree panel MVP visibility controls UI design reify",
+              "tree panel component hierarchy visibility architecture"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         }
       },
       {
