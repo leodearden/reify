@@ -517,19 +517,19 @@ structure S {
                 CompiledExprKind::BinOp { left, .. } => {
                     extract_value_ref_id(left, "condition.left")
                 }
-                _ => unreachable!("already validated condition is BinOp"),
+                other => panic!("expected BinOp for condition, got {:?}", other),
             };
             let then_width_id = match &then_branch.kind {
                 CompiledExprKind::BinOp { left, .. } => {
                     extract_value_ref_id(left, "then_branch.left")
                 }
-                _ => unreachable!("already validated then_branch is BinOp"),
+                other => panic!("expected BinOp for then_branch, got {:?}", other),
             };
             let else_width_id = match &else_branch.kind {
                 CompiledExprKind::BinOp { left, .. } => {
                     extract_value_ref_id(left, "else_branch.left")
                 }
-                _ => unreachable!("already validated else_branch is BinOp"),
+                other => panic!("expected BinOp for else_branch, got {:?}", other),
             };
             assert_eq!(
                 condition_width_id, then_width_id,

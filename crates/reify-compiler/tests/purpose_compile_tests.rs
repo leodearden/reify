@@ -408,6 +408,7 @@ purpose check(subject : Widget) {
     );
     let has_self_error = errors.iter().any(|d| {
         let lower = d.message.to_lowercase();
+        // Error format defined in expr.rs – update if the wording changes
         lower.contains("unresolved name: self")
     });
     assert!(
