@@ -320,3 +320,45 @@ structure S : HasX {
     );
 }
 
+// ── task 1834 step-3: compatible annotation+expression stays silent ─────────
+
+/// Happy-path guard: exact-match annotation/expression types — `let x : Real = 5.0`
+/// and `let x : Length = 5mm` — must compile without any error diagnostic.
+/// Protects against a future over-eager cross-check that would reject the
+/// happy path where the expression's inferred type implicitly converts to
+/// (or exactly matches) the annotation type.
+#[test]
+fn annotated_let_compatible_expr_no_diagnostic() {
+    // Exact match: Real annotation, Real expression.
+    let real_source = r#"
+trait HasR {
+    let x : Real = 5.0
+}
+structure S : HasR {
+}
+    "#;
+    let real_module = compile_source(real_source);
+    let real_errors = errors_only(&real_module);
+    assert!(
+        real_errors.is_empty(),
+        "let x : Real = 5.0 (exact Real) should not emit any errors, got: {:?}",
+        real_errors
+    );
+
+    // Exact match: Length annotation, Length expression.
+    let len_source = r#"
+trait HasL {
+    let x : Length = 5mm
+}
+structure S : HasL {
+}
+    "#;
+    let len_module = compile_source(len_source);
+    let len_errors = errors_only(&len_module);
+    assert!(
+        len_errors.is_empty(),
+        "let x : Length = 5mm (exact Length) should not emit any errors, got: {:?}",
+        len_errors
+    );
+}
+
