@@ -108,4 +108,74 @@ mod tests {
             BUILTIN_NAMES_COUNT,
         );
     }
+
+    /// Guard (reverse direction): no plausible mathematical constant name
+    /// should resolve via `resolve_builtin_constant` unless it is also listed
+    /// in `BUILTIN_NAMES`.
+    ///
+    /// This test probes a comprehensive superset of names — all
+    /// `std::f64::consts` lowercase equivalents plus common mathematical and
+    /// physical constant names — and asserts that any name returning `Some`
+    /// from `resolve_builtin_constant` is also present in `BUILTIN_NAMES`.
+    ///
+    /// If this test fails, a match arm was added to `resolve_builtin_constant`
+    /// without adding the name to `BUILTIN_NAMES`; the hint system would then
+    /// fail to suggest that constant for case-variant misspellings.
+    ///
+    /// **Limitation:** names that are entirely novel (outside this probe set)
+    /// are not caught. The probe set covers all `std::f64::consts` variants and
+    /// the most common mathematical/physical constants, which encompasses the
+    /// realistic namespace of plausible additions.
+    #[test]
+    fn builtin_names_no_unlisted_resolvers() {
+        // All std::f64::consts lowercase equivalents plus common
+        // mathematical/physical names and the current builtins (pi, tau).
+        const PROBE: &[&str] = &[
+            // current builtins
+            "pi",
+            "tau",
+            // std::f64::consts equivalents
+            "e",
+            "frac_1_pi",
+            "frac_1_sqrt_2",
+            "frac_2_pi",
+            "frac_2_sqrt_pi",
+            "frac_pi_2",
+            "frac_pi_3",
+            "frac_pi_4",
+            "frac_pi_6",
+            "frac_pi_8",
+            "ln_2",
+            "ln_10",
+            "log2_e",
+            "log2_10",
+            "log10_2",
+            "log10_e",
+            "sqrt_2",
+            // common mathematical / physical names
+            "phi",
+            "golden_ratio",
+            "euler",
+            "avogadro",
+            "boltzmann",
+            "planck",
+            "speed_of_light",
+            "gravity",
+            "infinity",
+            "nan",
+        ];
+
+        for &name in PROBE {
+            if resolve_builtin_constant(name).is_some() {
+                assert!(
+                    BUILTIN_NAMES.contains(&name),
+                    "resolve_builtin_constant({:?}) returned Some but {:?} is not in \
+                     BUILTIN_NAMES — add the name to BUILTIN_NAMES so the hint system \
+                     can suggest it for case-variant misspellings",
+                    name,
+                    name,
+                );
+            }
+        }
+    }
 }
