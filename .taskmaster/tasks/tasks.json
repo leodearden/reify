@@ -38847,11 +38847,11 @@
         "description": "emit_entity_tree fires after every set_parameter / update_source / mcp_tool_call and triggers a second full tessellation on top of build_gui_state's, doubling geometry-kernel workload on every parameter tweak. Fix the double-tessellation hot path and silence duplicated diagnostics.",
         "details": "Four related issues from the task 1741 review:\n\n1. **Double tessellation (main.rs:36-41)** — `emit_entity_tree` calls `session.build_entity_tree()` which re-tessellates even though `build_gui_state` just did. Rewrite `emit_entity_tree` to accept the freshly-built meshes (or `GuiState.meshes`) and call the existing `session.build_entity_tree_from_mesh_data(&gui_state.meshes)` helper, which is currently unused. In `mcp_tool_call` this also removes the `drop(session)/re-lock` dance.\n\n2. **Duplicate stderr diagnostics (engine.rs:543-549)** — The `eprintln!` loop over tessellation diagnostics inside `build_entity_tree` duplicates identical output already printed by `build_gui_state` in the same request cycle. Remove the diagnostic loop from `build_entity_tree` (or gate behind a debug flag); `build_gui_state` is the canonical place.\n\n3. **Emit-churn on parameter changes (main.rs:116, 174, 192, 219, 304)** — `emit_entity_tree` fires on every `set_parameter` even when topology is unchanged, causing a full tessellation + serialization + frontend re-render + applyDefaults walk per intermediate drag value. Cache `last_entity_tree` in `AppState` and only emit when the new tree differs (mirroring how `last_state` gates delta emission), or restrict entity-tree emission to topology-changing paths (`update_source`, `open_file_engine`).\n\n4. **Tessellate-once helper (engine.rs:539-551, 582-613)** — `build_entity_tree` currently tessellates and then discards the `MeshData`. Introduce a helper like `session.build_gui_state_and_tree(&mut self) -> (GuiState, Vec<EntityTreeNode>)` that tessellates once and feeds both consumers. Optionally cache the `name -> template` `HashMap` rebuilt on every call in `build_entity_tree_nodes` on `CompiledModule`/`EngineSession` if profiling shows it matters (low priority).\n\n### memory_hints\n- search: \"emit_entity_tree build_entity_tree_from_mesh_data\"\n- search: \"last_state delta emission AppState\"\n- search: \"tessellate_snapshot GuiState\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-16T21:00:47.783Z"
+        "updatedAt": "2026-04-16T21:04:08.078Z"
       },
       {
         "id": "1862",
@@ -38892,7 +38892,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T21:04:04.155Z",
+      "lastModified": "2026-04-16T21:04:08.078Z",
       "taskCount": 1859,
       "completedCount": 1596,
       "tags": [
