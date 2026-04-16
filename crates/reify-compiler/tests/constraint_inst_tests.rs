@@ -37,6 +37,22 @@ fn assert_value_ref(expr: &CompiledExpr, expected_member: &str) {
     }
 }
 
+/// Extract the `ValueCellId` from a `ValueRef` expression.
+///
+/// Returns a reference to the `ValueCellId` inside the expression, panicking
+/// with a descriptive message (including `label`) if the expression is not a
+/// `ValueRef`.  Used for cross-branch consistency assertions where all
+/// references to the same parameter must resolve to the same `ValueCellId`.
+fn extract_value_ref_id<'a>(expr: &'a CompiledExpr, label: &str) -> &'a ValueCellId {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => id,
+        other => panic!(
+            "extract_value_ref_id({}): expected ValueRef but got {:?}",
+            label, other
+        ),
+    }
+}
+
 // ── Step 7: basic single-arg instantiation ───────────────────────────────────
 
 /// Constraint def with single param, structure with one instantiation.
