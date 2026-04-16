@@ -968,9 +968,11 @@ mod tests {
         let values = ValueMap::new();
 
         // All seven required args with valid default values, in one canonical order.
-        // `ox` must be present here so each iteration only omits the named arg
-        // under test — without it, the f64_arg? short-circuit on `ox` would mask
-        // the missing arg under examination.
+        // `ox` must be present so that iterations omitting `oy` or `oz` (which eval
+        // after `ox` in the ax→ay→az→angle→ox→oy→oz Revolve branch order) short-circuit
+        // on the named omitted arg rather than on a missing `ox`. For iterations
+        // omitting `ax`/`ay`/`az`/`angle`, ox's presence is irrelevant because those
+        // short-circuit earlier in the sequence, before ever reaching `ox`.
         let full_args: Vec<(&'static str, reify_types::CompiledExpr)> = vec![
             ("ox", literal_f64(0.0)),
             ("oy", literal_f64(0.0)),
