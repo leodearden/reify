@@ -1931,74 +1931,12 @@ structure S {
 
     #[test]
     fn loft_non_geom_args_fallback_uses_step_offset() {
-        // loft() with literal-number args (not geometry expressions).
-        // When step_offset=5, the fallback GeomRef for profile i should be
-        // GeomRef::Step(5 + i) — each profile gets a unique step, matching
-        // sweep()'s convention (profile=step_offset, path=step_offset+1).
-        let expr = reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::FunctionCall {
-                name: "loft".to_string(),
-                args: vec![
-                    reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral(1.0),
-                        span: reify_types::SourceSpan::new(0, 1),
-                    },
-                    reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::NumberLiteral(2.0),
-                        span: reify_types::SourceSpan::new(0, 1),
-                    },
-                ],
-            },
-            span: reify_types::SourceSpan::new(0, 10),
-        };
-        let scope = CompilationScope::new("test");
-        let enum_defs: Vec<reify_types::EnumDef> = vec![];
-        let functions: Vec<CompiledFunction> = vec![];
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
-
-        let result = compile_geometry_call(
-            &expr,
-            &scope,
-            &enum_defs,
-            &functions,
-            &mut diagnostics,
-            5, // step_offset = 5
-            &geometry_lets,
-            &mut HashSet::new(),
-        );
-
-        // loft() with non-geometry args should still produce an op (with fallback refs)
-        let ops = result.expect("loft() should produce ops even with non-geometry args");
-        let loft_op = ops.last().expect("should have at least one op");
-        match loft_op {
-            CompiledGeometryOp::Sweep {
-                kind: SweepKind::Loft,
-                profiles,
-                ..
-            } => {
-                assert_eq!(profiles.len(), 2, "loft should have 2 profiles");
-                for (i, profile) in profiles.iter().enumerate() {
-                    assert_eq!(
-                        *profile,
-                        GeomRef::Step(5 + i),
-                        "loft fallback for profile {} should be Step(step_offset + {0} = {}), not {:?}",
-                        i,
-                        5 + i,
-                        profile
-                    );
-                }
-            }
-            other => panic!("expected Sweep(Loft), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn loft_non_geom_args_emit_per_arg_diagnostics() {
         // loft() with 3 literal-number args (not geometry expressions).
-        // When step_offset=5, each non-geometry arg should emit a Diagnostic::error
-        // containing 'must be a geometry expression' — one per arg (3 total).
-        // The op should still be produced with fallback GeomRefs.
+        // When step_offset=5:
+        //   - The fallback GeomRef for profile i is GeomRef::Step(5 + i) — unique per
+        //     profile, matching sweep()'s convention (profile=step_offset, path=step_offset+1).
+        //   - Each non-geometry arg emits a Diagnostic::error naming the argument number.
+        //   - Ops are still produced (fallback refs allow compilation to continue).
         let expr = reify_syntax::Expr {
             kind: reify_syntax::ExprKind::FunctionCall {
                 name: "loft".to_string(),
@@ -2036,11 +1974,30 @@ structure S {
             &mut HashSet::new(),
         );
 
-        // op is still produced (fallback refs used)
-        assert!(
-            result.is_some(),
-            "loft() should produce ops even with non-geometry args"
-        );
+        // loft() with non-geometry args should still produce an op (with fallback refs)
+        let ops = result.expect("loft() should produce ops even with non-geometry args");
+        let loft_op = ops.last().expect("should have at least one op");
+        match loft_op {
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Loft,
+                profiles,
+                ..
+            } => {
+                assert_eq!(profiles.len(), 3, "loft should have 3 profiles");
+                for (i, profile) in profiles.iter().enumerate() {
+                    assert_eq!(
+                        *profile,
+                        GeomRef::Step(5 + i),
+                        "loft fallback for profile {} should be Step(step_offset + {0} = {}), not {:?}",
+                        i,
+                        5 + i,
+                        profile
+                    );
+                }
+            }
+            other => panic!("expected Sweep(Loft), got {:?}", other),
+        }
+
         // one diagnostic per non-geometry arg
         assert_eq!(
             diagnostics.len(),
@@ -2049,16 +2006,18 @@ structure S {
             diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         for (i, diag) in diagnostics.iter().enumerate() {
+            let arg_num = i + 1;
             assert!(
                 diag.message.contains("must be a geometry expression"),
                 "diagnostic {} should contain 'must be a geometry expression', got: {:?}",
                 i,
                 diag.message
             );
-            let arg_num = i + 1;
+            // Match 'argument N' exactly to avoid false positives from other numbers
+            // in the message (e.g. "argument 1" should not match on "argument 10").
             assert!(
-                diag.message.contains(&arg_num.to_string()),
-                "diagnostic {} should reference argument number {}, got: {:?}",
+                diag.message.contains(&format!("argument {}", arg_num)),
+                "diagnostic {} should reference 'argument {}', got: {:?}",
                 i,
                 arg_num,
                 diag.message

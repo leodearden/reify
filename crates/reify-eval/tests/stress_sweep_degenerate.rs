@@ -397,38 +397,32 @@ fn loft_non_geometry_profiles_emit_diagnostics() {
     let parsed = reify_syntax::parse(source, ModulePath::single("test_loft_diag"));
     let compiled = reify_compiler::compile(&parsed);
 
-    let error_diags: Vec<_> = compiled
+    // Filter specifically for per-argument geometry diagnostics so the count is
+    // exact (== 2 for the two scalar args) regardless of any other error
+    // diagnostics that might be present in the pipeline.
+    let geom_expr_diags: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.contains("must be a geometry expression")
+        })
         .collect();
-    assert!(
-        error_diags.len() >= 2,
-        "expected at least 2 error diagnostics (one per non-geometry arg), got: {:?}",
-        error_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    let has_geom_expr_msg = compiled
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("must be a geometry expression"));
-    assert!(
-        has_geom_expr_msg,
-        "expected diagnostic containing 'must be a geometry expression', got: {:?}",
+    assert_eq!(
+        geom_expr_diags.len(),
+        2,
+        "expected exactly 2 per-argument diagnostics (one per non-geometry arg), got: {:?}",
         compiled
             .diagnostics
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
     );
-    let has_loft_msg = compiled
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("loft()"));
+    let has_loft_msg = geom_expr_diags.iter().any(|d| d.message.contains("loft()"));
     assert!(
         has_loft_msg,
         "expected diagnostic mentioning 'loft()', got: {:?}",
-        compiled
-            .diagnostics
+        geom_expr_diags
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
