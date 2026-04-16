@@ -101,19 +101,16 @@ pub(crate) fn check_trait_conformance(
 
     // Collect all requirements and defaults from all trait bounds,
     // handling refinement chains and deduplication.
-    let mut all_requirements: Vec<TraitRequirement> = Vec::new();
-    let mut all_defaults: Vec<TraitDefault> = Vec::new();
-    // MergeContext bundles the 5 mutable tracking maps (visited, seen_names,
-    // seen_defaults, seen_let_hashes, seen_let_conflict_names) so the recursive
-    // collect_all_requirements signature stays manageable.
+    // MergeContext bundles the output accumulators (requirements, defaults) and
+    // the 5 mutable tracking maps (visited, seen_names, seen_defaults,
+    // seen_let_hashes, seen_let_conflict_names) so the recursive
+    // collect_all_requirements signature stays within Clippy's argument-count limit.
     let mut ctx = MergeContext::new();
 
     for trait_bound in structure.trait_bounds {
         collect_all_requirements(
             &trait_bound.name,
             trait_registry,
-            &mut all_requirements,
-            &mut all_defaults,
             &mut ctx,
             &structure_members,
             structure.span,
@@ -135,7 +132,7 @@ pub(crate) fn check_trait_conformance(
         Let,
     }
 
-    // Build a map of available default names from all_defaults (non-constraint, named).
+    // Build a map of available default names from ctx.defaults (non-constraint, named).
     // Used to cross-check requirements: a requirement is satisfied if the structure
     // provides the member OR if another trait in the bound set provides a matching default
     // of the SAME kind. Kind mismatches are ignored (treated as absent).
@@ -144,7 +141,7 @@ pub(crate) fn check_trait_conformance(
     // member name occupy separate slots and are looked up independently. A Param default
     // can satisfy a Param requirement, and a Let default can satisfy a Let requirement,
     // without interfering with each other.
-    let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = all_defaults
+    let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = ctx.defaults
         .iter()
         .filter_map(|d| {
             let name = d.name.as_deref()?;
@@ -160,7 +157,7 @@ pub(crate) fn check_trait_conformance(
         .collect();
 
     // Check each requirement against structure members.
-    for req in &all_requirements {
+    for req in &ctx.requirements {
         match &req.kind {
             RequirementKind::Param(expected_type) | RequirementKind::Let(expected_type) => {
                 // Determine which default kind can satisfy this requirement.
@@ -258,7 +255,7 @@ pub(crate) fn check_trait_conformance(
     // reference each other (e.g., constraint x > 0 references param x from same trait).
     // register_if_absent provides the no-overwrite guarantee: first-seen type wins,
     // and the method itself is safe against cross-kind overwrites without a call-site guard.
-    for default in &all_defaults {
+    for default in &ctx.defaults {
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
         {
@@ -276,7 +273,7 @@ pub(crate) fn check_trait_conformance(
     }
 
     // Inject defaults for members not overridden by the structure.
-    for default in &all_defaults {
+    for default in &ctx.defaults {
         match &default.kind {
             DefaultKind::Param {
                 cell_type,
@@ -384,10 +381,15 @@ pub(crate) enum DefaultKindTag {
 
 /// Mutable tracking state threaded through `collect_all_requirements`.
 ///
-/// Bundles the 5 maps that accumulate across the trait traversal so the
-/// function signature stays manageable. `MergeContext::new()` initialises
-/// all maps to empty; callers create one instance per structure.
+/// Bundles the output accumulators and the 5 dedup/conflict-tracking maps so
+/// the recursive function signature stays within Clippy's argument-count limit.
+/// `MergeContext::new()` initialises all fields to empty; callers create one
+/// instance per structure and read `requirements` / `defaults` after the loop.
 pub(crate) struct MergeContext {
+    /// Accumulated requirements collected across all visited traits.
+    pub requirements: Vec<TraitRequirement>,
+    /// Accumulated defaults collected across all visited traits.
+    pub defaults: Vec<TraitDefault>,
     /// Trait names already visited — prevents double-processing diamond patterns.
     pub visited: HashSet<String>,
     /// Maps member name → (type, originating trait) for requirement conflict reporting.
@@ -403,6 +405,8 @@ pub(crate) struct MergeContext {
 impl MergeContext {
     pub fn new() -> Self {
         Self {
+            requirements: Vec::new(),
+            defaults: Vec::new(),
             visited: HashSet::new(),
             seen_names: HashMap::new(),
             seen_defaults: HashMap::new(),
@@ -416,8 +420,6 @@ impl MergeContext {
 pub(crate) fn collect_all_requirements(
     trait_name: &str,
     trait_registry: &HashMap<String, &CompiledTrait>,
-    requirements: &mut Vec<TraitRequirement>,
-    defaults: &mut Vec<TraitDefault>,
     ctx: &mut MergeContext,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
@@ -440,8 +442,6 @@ pub(crate) fn collect_all_requirements(
         collect_all_requirements(
             refinement,
             trait_registry,
-            requirements,
-            defaults,
             ctx,
             structure_members,
             span,
@@ -479,14 +479,14 @@ pub(crate) fn collect_all_requirements(
             );
         }
 
-        requirements.push(req.clone());
+        ctx.requirements.push(req.clone());
     }
 
     // Collect defaults from this trait, deduplicating by name.
     for default in &compiled_trait.defaults {
         if default.name.is_none() {
             // Unnamed defaults (e.g., unlabeled constraints) — always push.
-            defaults.push(default.clone());
+            ctx.defaults.push(default.clone());
         } else if let Some(name) = &default.name {
             // For let bindings: use content_hash comparison to distinguish same
             // expression (dedup) vs different expression (conflict).
@@ -528,7 +528,7 @@ pub(crate) fn collect_all_requirements(
                 // Let dedup/conflict is fully handled by seen_let_hashes.
                 // Push the default and skip the seen_defaults composite-key path —
                 // the Type::Real sentinel there is redundant and confusing.
-                defaults.push(default.clone());
+                ctx.defaults.push(default.clone());
                 continue;
             }
 
@@ -568,7 +568,7 @@ pub(crate) fn collect_all_requirements(
                 continue;
             }
             ctx.seen_defaults.insert(key, (default_type, trait_name.to_string()));
-            defaults.push(default.clone());
+            ctx.defaults.push(default.clone());
         }
     }
 }
