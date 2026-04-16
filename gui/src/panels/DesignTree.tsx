@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import type { Component } from 'solid-js';
 import { DesignTreeContextMenu } from './DesignTreeContextMenu';
 import type { MenuAction } from './DesignTreeContextMenu';
@@ -45,11 +45,6 @@ const DesignTree: Component<Props> = (props) => {
     e.preventDefault();
     e.stopPropagation();
     setMenu({ path, x: e.clientX, y: e.clientY });
-    document.addEventListener(
-      'click',
-      () => setMenu(null),
-      { once: true },
-    );
   }
 
   function handleAction(action: MenuAction, path: string) {
@@ -79,7 +74,13 @@ const DesignTree: Component<Props> = (props) => {
     }
   }
 
-  onCleanup(() => setMenu(null));
+  onMount(() => {
+    function handleDocumentClick() {
+      if (menu()) setMenu(null);
+    }
+    document.addEventListener('click', handleDocumentClick);
+    onCleanup(() => document.removeEventListener('click', handleDocumentClick));
+  });
 
   const renderNode = (node: EntityTreeNode, depth = 0) => {
     // Memoized accessor — tracks reactive reads inside getEffectiveVisibility
