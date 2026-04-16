@@ -946,7 +946,11 @@ mod tests {
         let values = ValueMap::new();
 
         // All seven required args with valid default values, in one canonical order.
+        // `ox` must be present here so each iteration only omits the named arg
+        // under test — without it, the f64_arg? short-circuit on `ox` would mask
+        // the missing arg under examination.
         let full_args: Vec<(&'static str, reify_types::CompiledExpr)> = vec![
+            ("ox", literal_f64(0.0)),
             ("oy", literal_f64(0.0)),
             ("oz", literal_f64(0.0)),
             ("ax", literal_f64(0.0)),
