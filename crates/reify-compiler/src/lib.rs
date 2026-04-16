@@ -1868,4 +1868,72 @@ structure S {
             panic!("expected Transform, got {:?}", op);
         }
     }
+
+    // --- Task 1732: GeomRef::Step(0) fallback bug in loft/sweep error paths ---
+
+    #[test]
+    fn loft_fallback_uses_step_offset() {
+        // Construct a loft(NumberLiteral, NumberLiteral) expr.
+        // NumberLiterals are not geometry refs so the loft error-path fires for
+        // both args.  We call compile_geometry_call with step_offset=5 so that
+        // correct Step(5) is clearly distinct from the buggy Step(0).
+        let num_lit = |v: f64| reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral(v),
+            span: reify_types::SourceSpan::new(0, 1),
+        };
+        let expr = reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::FunctionCall {
+                name: "loft".to_string(),
+                args: vec![num_lit(1.0), num_lit(2.0)],
+            },
+            span: reify_types::SourceSpan::new(0, 10),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_types::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_syntax::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            5, // step_offset
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("loft() should return Some even for non-geometry args");
+        let loft_op = ops.last().expect("expected at least one op");
+        if let CompiledGeometryOp::Sweep { kind, profiles, .. } = loft_op {
+            assert_eq!(*kind, SweepKind::Loft, "expected Loft kind");
+            for (i, profile) in profiles.iter().enumerate() {
+                assert_eq!(
+                    *profile,
+                    GeomRef::Step(5),
+                    "loft fallback profile[{}] should be GeomRef::Step(step_offset=5), got {:?}",
+                    i,
+                    profile
+                );
+            }
+        } else {
+            panic!("expected Sweep(Loft) op, got {:?}", loft_op);
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("loft() argument 1 must be a geometry expression")),
+            "expected diagnostic for arg 1, got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("loft() argument 2 must be a geometry expression")),
+            "expected diagnostic for arg 2, got: {:?}",
+            diagnostics
+        );
+    }
 }
