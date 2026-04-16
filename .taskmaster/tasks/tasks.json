@@ -39427,11 +39427,11 @@
         "description": "Two minor polish items from task 1872 review (reviewer_comprehensive). Both touch crates/reify-eval/src/geometry_ops.rs in the tests module.\n\n(1) Line ~2203 — the standalone test `compile_geometry_op_sweep_revolve_missing_ox_emits_diagnostic` is now redundant with the table-driven `compile_geometry_op_revolve_missing_each_required_arg_returns_none` loop (which folds `ox` in as just another iteration and additionally checks the quoted `'ox'` name). Remove the standalone test, or — if kept — update its doc-comment to acknowledge it is a readability-focused single-arg smoke test rather than the canonical coverage.\n\n(2) Lines ~918-927 — the comment block explaining short-circuit ordering singles out `ox`/`oy`/`oz` and walks through the ax→ay→az→angle→ox→oy→oz eval order. The `ox`-specific rationale is no longer load-bearing now that `ox` is just another iteration of the loop; the same invariant applies transitively to every arg (e.g. if `ax` were also missing when testing `ay`, the short-circuit would fire on `ax`). Replace the multi-line `ox`-specific walkthrough with a single-line general invariant such as: \"Each iteration omits exactly one named arg; all other required args remain present so that `f64_arg?` short-circuits on (and diagnoses) only the omitted arg under test.\"\n\nMemory hint: search for \"task 1872\" and \"compile_geometry_op_revolve_missing_each_required_arg_returns_none\". Verify with `cargo test -p reify-eval compile_geometry_op_revolve_missing`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:26:04.474Z"
+        "updatedAt": "2026-04-16T23:15:17.052Z"
       },
       {
         "id": "1885",
@@ -39554,9 +39554,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T23:13:29.032Z",
+      "lastModified": "2026-04-16T23:15:17.052Z",
       "taskCount": 1887,
-      "completedCount": 1619,
+      "completedCount": 1620,
       "tags": [
         "master"
       ]
