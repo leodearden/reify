@@ -305,7 +305,18 @@ impl Engine {
         setup: &ConcurrentEditSetup,
         result: &mut ConcurrentEditResult,
     ) {
-        // Clear any stale data from a previous call — makes the overwrite semantics explicit.
+        // Callers must pass a fresh ConcurrentEditResult: these buckets are the
+        // method's outputs, not its inputs. The debug_assert guards catch accidental
+        // double-calls during development; the .clear() calls remain as a
+        // release-build safety net (debug_assert compiles out in release).
+        debug_assert!(
+            result.resolved_params.is_empty(),
+            "resolve_concurrent_edit: resolved_params must be empty on entry (double-call?)"
+        );
+        debug_assert!(
+            result.diagnostics.is_empty(),
+            "resolve_concurrent_edit: diagnostics must be empty on entry (double-call?)"
+        );
         result.resolved_params.clear();
         result.diagnostics.clear();
 
