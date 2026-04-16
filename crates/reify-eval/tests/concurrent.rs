@@ -518,7 +518,6 @@ fn resolve_concurrent_edit_second_wave_updates_dependent_let_binding() {
     );
     let cache_y = engine.cache_store().get(&y_node).unwrap();
     assert_eq!(cache_y.basis_version, setup.version, "cache y basis_version should be setup.version");
-    drop(a_id); // suppress unused-variable lint
 }
 
 /// Returns an `(Engine, ConcurrentEditSetup)` for a minimal N-template:
