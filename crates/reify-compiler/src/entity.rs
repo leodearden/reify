@@ -340,13 +340,12 @@ pub(crate) fn compile_entity(
                 // symmetrically to geometry lets: register as Type::Geometry,
                 // mark scope as having geometry, and track in known_geometry_lets
                 // so subsequent members can reference this param as a geometry source.
-                if ty == Type::Geometry {
-                    if let Some(default_expr) = &param.default {
-                        if is_geometry_let(default_expr, functions, &known_geometry_lets) {
-                            scope.has_geometry = true;
-                            known_geometry_lets.insert(param.name.as_str());
-                        }
-                    }
+                if ty == Type::Geometry
+                    && let Some(default_expr) = &param.default
+                    && is_geometry_let(default_expr, functions, &known_geometry_lets)
+                {
+                    scope.has_geometry = true;
+                    known_geometry_lets.insert(param.name.as_str());
                 }
                 scope.register(&param.name, ty);
             }
@@ -1332,31 +1331,29 @@ pub(crate) fn compile_entity(
             // realizations here — that is a separate, unimplemented feature.
             reify_syntax::MemberDecl::GuardedGroup(g) => {
                 for gm in g.members.iter().chain(g.else_members.iter()) {
-                    if let reify_syntax::MemberDecl::Param(param) = gm {
-                        if known_geometry_lets.contains(param.name.as_str()) {
-                            if let Some(default_expr) = &param.default
-                                && let Some(ops) = compile_geometry_call(
-                                    default_expr,
-                                    &scope,
-                                    enum_defs,
-                                    functions,
-                                    diagnostics,
-                                    0,
-                                    &geometry_lets,
-                                    &mut HashSet::new(),
-                                )
-                            {
-                                realizations.push(RealizationDecl {
-                                    id: RealizationNodeId::new(
-                                        entity_name,
-                                        realization_index,
-                                    ),
-                                    operations: ops,
-                                    span: SourceSpan::new(0, 0),
-                                });
-                                realization_index += 1;
-                            }
-                        }
+                    if let reify_syntax::MemberDecl::Param(param) = gm
+                        && known_geometry_lets.contains(param.name.as_str())
+                        && let Some(default_expr) = &param.default
+                        && let Some(ops) = compile_geometry_call(
+                            default_expr,
+                            &scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            0,
+                            &geometry_lets,
+                            &mut HashSet::new(),
+                        )
+                    {
+                        realizations.push(RealizationDecl {
+                            id: RealizationNodeId::new(
+                                entity_name,
+                                realization_index,
+                            ),
+                            operations: ops,
+                            span: SourceSpan::new(0, 0),
+                        });
+                        realization_index += 1;
                     }
                 }
             }
