@@ -427,6 +427,29 @@ fn loft_non_geometry_profiles_emit_diagnostics() {
             .map(|d| &d.message)
             .collect::<Vec<_>>()
     );
+
+    // Verify per-argument numbering: diagnostics must reference both "argument 1"
+    // and "argument 2" (order-independent), so a future ordering or duplication
+    // regression is caught at the integration level as well as the unit level.
+    let arg_numbers: std::collections::HashSet<u32> = geom_expr_diags
+        .iter()
+        .filter_map(|d| {
+            // Extract the digit that follows "argument " in the message.
+            let prefix = "argument ";
+            d.message.find(prefix).and_then(|pos| {
+                d.message[pos + prefix.len()..]
+                    .chars()
+                    .next()
+                    .and_then(|c| c.to_digit(10))
+            })
+        })
+        .collect();
+    assert_eq!(
+        arg_numbers,
+        [1u32, 2u32].iter().cloned().collect::<std::collections::HashSet<_>>(),
+        "expected diagnostics to reference argument numbers {{1, 2}}, got: {:?}",
+        arg_numbers
+    );
 }
 
 // ---------------------------------------------------------------------------
