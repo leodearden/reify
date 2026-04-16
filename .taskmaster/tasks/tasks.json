@@ -39454,6 +39454,17 @@
             "examples/integration_full_v01.ri"
           ]
         }
+      },
+      {
+        "id": 1887,
+        "title": "tasks.json: normalize subtask IDs to digit-strings (or document mixed-type contract)",
+        "description": "Follow-up from Task 1866 review. Top-level task IDs in .taskmaster/tasks/tasks.json were normalized to digit-strings (commit 5a9558c0f et al), but the 8 subtask entries still carry integer IDs — the file is mixed-type. If any consumer (Taskmaster CLI, TaskInterceptor, reconciliation) compares subtask IDs against parent (string) IDs or vice versa without coercion, matches will silently miss.\n\nPick one:\n(a) Convert all subtask `id` fields in .taskmaster/tasks/tasks.json to digit-strings in a single migration pass (matching the existing parent-ID convention), OR\n(b) Document the intentional asymmetry in a companion doc / commit message and audit all consumers (TaskInterceptor, reconciliation, any CLI paths that touch subtask IDs) to confirm they coerce before comparison.\n\nPrior context: commit 5a9558c0f explicitly deferred ID normalization pending reviewer guidance (esc-1418-202). This escalation (esc-1866-37) is that guidance: finish the job or document why it's deliberately partial.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -39465,7 +39476,8 @@
         "master"
       ],
       "created": "2026-04-16T22:46:35.396Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-16T22:48:46.489Z"
     }
   }
 }
