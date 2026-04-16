@@ -694,7 +694,7 @@ fn rollback_restores_every_pending_node_to_final() {
         examined_count
     );
 
-    // Sanity: we examined at least one node (the volume value cell is always cached).
+    // Sanity: confirm volume's value cell is in eval_set, so the count above is non-vacuous.
     let volume_node = NodeId::Value(ValueCellId::new(e, "volume"));
     assert!(
         setup.eval_set.contains(&volume_node),
@@ -845,13 +845,16 @@ fn apply_concurrent_edit_persists_resolved_params_to_param_overrides() {
     );
 
     // (b) A subsequent eval() must return x == mm(99.0) exactly (solver call 3).
-    //     Asserting the exact SI value (0.099) is stronger than the previous check of
-    //     `Value::Scalar { .. }` and would catch bugs where x resolves to a wrong scalar.
+    //     Derive expected SI from mm(99.0) so the assertion stays in sync with the
+    //     solver setup if unit conversion semantics ever change.
+    let Value::Scalar { si_value: expected_si, .. } = mm(99.0) else {
+        unreachable!("mm() always returns Value::Scalar")
+    };
     let second = engine.eval(&module);
     let second_x = second.values.get(&x_id).expect("x must be in second eval values");
     assert!(
-        matches!(second_x, Value::Scalar { si_value, .. } if (*si_value - 0.099).abs() < 1e-10),
-        "expected second eval x == mm(99.0) = 0.099 SI (solver call 3), got {:?}",
+        matches!(second_x, Value::Scalar { si_value, .. } if (*si_value - expected_si).abs() < 1e-10),
+        "expected second eval x == mm(99.0) (from solver call 3), got {:?}",
         second_x
     );
 }
