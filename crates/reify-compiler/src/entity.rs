@@ -336,6 +336,18 @@ pub(crate) fn compile_entity(
                     // Infer type from default expression if available
                     Type::Real
                 };
+                // Solid-typed params with a geometry-call default are treated
+                // symmetrically to geometry lets: register as Type::Geometry,
+                // mark scope as having geometry, and track in known_geometry_lets
+                // so subsequent members can reference this param as a geometry source.
+                if ty == Type::Geometry {
+                    if let Some(default_expr) = &param.default {
+                        if is_geometry_let(default_expr, functions, &known_geometry_lets) {
+                            scope.has_geometry = true;
+                            known_geometry_lets.insert(param.name.as_str());
+                        }
+                    }
+                }
                 scope.register(&param.name, ty);
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
