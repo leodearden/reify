@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { SHORTCUTS, SHORTCUT_IDS, getShortcut, shortcutKey, matchesEvent, type KeyBinding, type ShortcutId } from '../shortcuts';
+
+const SRC = readFileSync(join(__dirname, '../shortcuts.ts'), 'utf-8');
 
 describe('shortcuts', () => {
   it('SHORTCUTS array contains entries for all expected shortcut ids', () => {
@@ -297,5 +301,38 @@ describe('SHORTCUTS bind fields', () => {
   it('fitToView has no bind field (empty key, no shortcut)', () => {
     const entry = getShortcut('fitToView');
     expect(entry?.bind).toBeUndefined();
+  });
+});
+
+describe('shortcuts.ts source documentation', () => {
+  it('does not contain brittle KeyboardHelp.tsx: file:line reference', () => {
+    expect(SRC).not.toContain('KeyboardHelp.tsx:');
+  });
+
+  it('does not contain brittle useKeyboardShortcuts.ts: file:line reference', () => {
+    expect(SRC).not.toContain('useKeyboardShortcuts.ts:');
+  });
+
+  it('does not contain brittle shortcuts.test.ts: file:line reference', () => {
+    expect(SRC).not.toContain('shortcuts.test.ts:');
+  });
+
+  it('contains no "Filename.ext:N" file:line patterns anywhere', () => {
+    expect(SRC).not.toMatch(/\b\w+\.tsx?:\d+\b/);
+  });
+
+  it('comment block immediately before _SHORTCUTS_DEF is at most 5 lines', () => {
+    const defIdx = SRC.indexOf('\nconst _SHORTCUTS_DEF');
+    const before = SRC.slice(0, defIdx);
+    const lines = before.split('\n');
+    let commentCount = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i].trim().startsWith('//')) {
+        commentCount++;
+      } else {
+        break;
+      }
+    }
+    expect(commentCount, 'comment block before _SHORTCUTS_DEF exceeds 5 lines').toBeLessThanOrEqual(5);
   });
 });
