@@ -1335,6 +1335,7 @@ describe('App F5 re-evaluate multi-file', () => {
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
     // Modify the non-active file's content via the captured editor store
     capturedEditorStore!.updateFileContent('/project/bracket.ri', 'MODIFIED CONTENT');
