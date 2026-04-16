@@ -3,29 +3,9 @@
 //!
 //! Task 267: @test compiler support.
 
+use reify_test_support::{compile_source, errors_only, warnings_only};
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn compile_module(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_marker_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    reify_compiler::compile(&parsed)
-}
-
-fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect()
-}
-
-fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Warning)
-        .collect()
-}
 
 fn annotation_warnings<'a>(
     module: &'a reify_compiler::CompiledModule,
@@ -58,12 +38,12 @@ fn parse_first_constraint_def(source: &str) -> reify_syntax::ConstraintDef {
 
 #[test]
 fn template_marked_is_test_when_test_annotation_present() {
-    let module = compile_module("@test structure S { param x : Real }");
+    let module = compile_source("@test structure S { param x : Real }");
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     assert!(
-        module.templates[0].is_test,
-        "expected is_test == true for @test-annotated structure"
+        module.templates[0].is_test(),
+        "expected is_test() == true for @test-annotated structure"
     );
 }
 
@@ -71,18 +51,18 @@ fn template_marked_is_test_when_test_annotation_present() {
 
 #[test]
 fn template_not_marked_is_test_when_no_annotation() {
-    let module = compile_module("structure S { param x : Real }");
+    let module = compile_source("structure S { param x : Real }");
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     assert!(
-        !module.templates[0].is_test,
-        "expected is_test == false for unannotated structure"
+        !module.templates[0].is_test(),
+        "expected is_test() == false for unannotated structure"
     );
 }
 
 #[test]
 fn occurrence_marked_is_test_when_test_annotation_present() {
-    let module = compile_module("@test occurrence Heat { param temp : Real }");
+    let module = compile_source("@test occurrence Heat { param temp : Real }");
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     assert_eq!(module.templates.len(), 1, "expected 1 template");
     assert_eq!(
@@ -91,8 +71,8 @@ fn occurrence_marked_is_test_when_test_annotation_present() {
         "expected Occurrence entity_kind"
     );
     assert!(
-        module.templates[0].is_test,
-        "expected is_test == true for @test-annotated occurrence"
+        module.templates[0].is_test(),
+        "expected is_test() == true for @test-annotated occurrence"
     );
 }
 
@@ -118,7 +98,7 @@ fn constraint_def_is_test_returns_false_without_annotation() {
 
 #[test]
 fn unknown_annotation_on_constraint_def_emits_warning() {
-    let module = compile_module(
+    let module = compile_source(
         "@unknownfoo constraint def C { param x : Length\n x > 0 }",
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
@@ -139,7 +119,7 @@ fn unknown_annotation_on_constraint_def_emits_warning() {
 
 #[test]
 fn unknown_pragma_on_constraint_def_emits_warning() {
-    let module = compile_module(
+    let module = compile_source(
         "constraint def C { #unknownfoo\n param x : Length\n x > 0 }",
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
@@ -160,7 +140,7 @@ fn unknown_pragma_on_constraint_def_emits_warning() {
 
 #[test]
 fn test_annotation_on_constraint_def_emits_no_invalid_context_warning() {
-    let module = compile_module("@test constraint def C { param x : Length\n x > 0 }");
+    let module = compile_source("@test constraint def C { param x : Length\n x > 0 }");
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let bad_warns: Vec<_> = warnings_only(&module)
         .into_iter()
@@ -177,7 +157,7 @@ fn test_annotation_on_constraint_def_emits_no_invalid_context_warning() {
 
 #[test]
 fn test_annotation_on_field_still_warns_invalid_context() {
-    let module = compile_module(
+    let module = compile_source(
         "@test field def f : Point3 -> Real { source = analytical { |p| 0.0 } }",
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
@@ -205,19 +185,61 @@ fn compiled_module_test_templates_returns_only_marked() {
         structure B { param y : Real }
         @test occurrence H { param z : Real }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
 
-    let test_tmpls = module.test_templates();
+    let test_tmpls: Vec<_> = module.test_templates().collect();
     assert_eq!(test_tmpls.len(), 2, "expected 2 test templates, got {:?}", test_tmpls.iter().map(|t| &t.name).collect::<Vec<_>>());
     let test_names: std::collections::HashSet<&str> =
         test_tmpls.iter().map(|t| t.name.as_str()).collect();
     assert!(test_names.contains("A"), "expected A in test_templates");
     assert!(test_names.contains("H"), "expected H in test_templates");
 
-    let non_test_tmpls = module.non_test_templates();
+    let non_test_tmpls: Vec<_> = module.non_test_templates().collect();
     assert_eq!(non_test_tmpls.len(), 1, "expected 1 non-test template");
     assert_eq!(non_test_tmpls[0].name, "B");
+}
+
+// ── Filter helpers return iterators (not Vec) ──────────────────────────────
+
+#[test]
+fn filter_helpers_return_iterators() {
+    let source = r#"
+        @test structure A { param x : Real }
+        structure B { param y : Real }
+        @test constraint def TC { param x : Length
+            x > 0
+        }
+        constraint def NC { param y : Length
+            y > 0
+        }
+        @test fn tested() -> Real { 1.0 }
+        fn normal() -> Real { 2.0 }
+    "#;
+    let module = compile_source(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    // These calls use iterator chaining (.map, .count, .any) directly on the
+    // return value — this only compiles if the return type is an iterator,
+    // not Vec (Vec doesn't have .map() or .count()).
+    let test_count = module.test_templates().count();
+    assert_eq!(test_count, 1);
+
+    let has_b = module.non_test_templates().any(|t| t.name == "B");
+    assert!(has_b);
+
+    let test_cd_names: Vec<&str> = module.test_constraint_defs().map(|d| d.name.as_str()).collect();
+    assert_eq!(test_cd_names, vec!["TC"]);
+
+    let non_test_cd_count = module.non_test_constraint_defs().count();
+    assert_eq!(non_test_cd_count, 1);
+
+    // test_functions / non_test_functions return iterators too
+    let test_fn_names: Vec<&str> = module.test_functions().map(|f| f.name.as_str()).collect();
+    assert_eq!(test_fn_names, vec!["tested"]);
+
+    let has_normal = module.non_test_functions().any(|f| f.name == "normal");
+    assert!(has_normal);
 }
 
 // ── Steps 14-15: CompiledModule::test_constraint_defs() / non_test_constraint_defs() ──
@@ -232,14 +254,14 @@ fn compiled_module_test_constraint_defs_returns_only_marked() {
             y > 0
         }
     "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
 
-    let test_defs = module.test_constraint_defs();
+    let test_defs: Vec<_> = module.test_constraint_defs().collect();
     assert_eq!(test_defs.len(), 1, "expected 1 test constraint def");
     assert_eq!(test_defs[0].name, "TestC");
 
-    let non_test_defs = module.non_test_constraint_defs();
+    let non_test_defs: Vec<_> = module.non_test_constraint_defs().collect();
     assert_eq!(non_test_defs.len(), 1, "expected 1 non-test constraint def");
     assert_eq!(non_test_defs[0].name, "NormalC");
 }
@@ -248,13 +270,13 @@ fn compiled_module_test_constraint_defs_returns_only_marked() {
 
 #[test]
 fn multiple_annotations_with_test_marks_template() {
-    let module = compile_module(
+    let module = compile_source(
         r#"@test @deprecated("old") structure S { param x : Real }"#,
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
     let template = &module.templates[0];
 
-    assert!(template.is_test, "expected is_test == true");
+    assert!(template.is_test(), "expected is_test() == true");
     assert_eq!(
         template.annotations.len(),
         2,
@@ -290,4 +312,63 @@ fn multiple_annotations_with_test_marks_constraint_def() {
         "expected StringLiteral(\"old\") arg on @deprecated, got: {:?}",
         def.annotations[1].args[0].kind
     );
+}
+
+// ── TopologyTemplate::is_test() method encapsulation ─────────────────────────
+
+#[test]
+fn topology_template_is_test_method_matches_annotation() {
+    let source = r#"
+        @test structure TestS { param x : Real }
+        structure NormalS { param y : Real }
+    "#;
+    let module = compile_source(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let test_tmpl = module.templates.iter().find(|t| t.name == "TestS").unwrap();
+    let normal_tmpl = module.templates.iter().find(|t| t.name == "NormalS").unwrap();
+
+    assert!(test_tmpl.is_test(), "expected is_test() == true for @test structure");
+    assert!(!normal_tmpl.is_test(), "expected is_test() == false for normal structure");
+}
+
+// ── CompiledFunction::is_test() ─────────────────────────────────────────────
+
+#[test]
+fn compiled_function_is_test_returns_correct_values() {
+    let source = r#"
+        @test fn tested() -> Real { 1.0 }
+        fn normal() -> Real { 2.0 }
+    "#;
+    let module = compile_source(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let tested_fn = module.functions.iter().find(|f| f.name == "tested").unwrap();
+    let normal_fn = module.functions.iter().find(|f| f.name == "normal").unwrap();
+
+    assert!(tested_fn.is_test(), "expected is_test() == true for @test fn");
+    assert!(!normal_fn.is_test(), "expected is_test() == false for normal fn");
+}
+
+// ── CompiledModule::test_functions() / non_test_functions() ──────────────────
+
+#[test]
+fn compiled_module_function_filter_helpers() {
+    let source = r#"
+        @test fn tested() -> Real { 1.0 }
+        fn normal() -> Real { 2.0 }
+    "#;
+    let module = compile_source(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    assert_eq!(module.test_functions().count(), 1);
+    assert!(module.test_functions().any(|f| f.name == "tested"));
+
+    assert_eq!(module.non_test_functions().count(), 1);
+    assert!(module.non_test_functions().any(|f| f.name == "normal"));
+
+    // Edge case: module with no functions at all
+    let no_fns = compile_source("structure A { param x : Real }");
+    assert_eq!(no_fns.test_functions().count(), 0);
+    assert_eq!(no_fns.non_test_functions().count(), 0);
 }

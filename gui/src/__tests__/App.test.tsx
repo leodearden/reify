@@ -63,7 +63,9 @@ vi.mock('../bridge', () => ({
   pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
   pickOpenPath: vi.fn().mockResolvedValue(null),
   updateSource: vi.fn().mockResolvedValue(undefined),
+  saveFile: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
+  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
   onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -79,6 +81,7 @@ vi.mock('../bridge', () => ({
   claudeAbort: vi.fn().mockResolvedValue(undefined),
   claudeClearSession: vi.fn().mockResolvedValue(undefined),
   subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
+  isDebugEnabled: vi.fn().mockResolvedValue(false),
 }));
 
 import App from '../App';
@@ -123,6 +126,11 @@ describe('App layout wiring', () => {
   it('renders app-layout container', async () => {
     await renderAndWaitForReady();
     expect(screen.getByTestId('app-layout')).toBeTruthy();
+  });
+
+  it('renders MenuBar above Toolbar', async () => {
+    await renderAndWaitForReady();
+    expect(screen.getByTestId('menu-bar')).toBeTruthy();
   });
 
   it('renders Toolbar at top', async () => {
@@ -1307,6 +1315,54 @@ describe('App re-evaluate error toast', () => {
   });
 });
 
+describe('App F5 re-evaluate multi-file', () => {
+  it('F5 re-evaluate sends only the active file content when multiple files are open', async () => {
+    // Arrange: two files — after init, mount.ri is activeFile (last opened)
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [
+        { path: '/project/bracket.ri', content: 'structure Bracket {}' },
+        { path: '/project/mount.ri', content: 'structure Mount {}' },
+      ],
+    });
+    vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
+
+    render(() => <App />);
+
+    // Wait for ready state (both files opened, activeFile = '/project/mount.ri')
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    // Modify the non-active file's content via the captured editor store
+    capturedEditorStore!.updateFileContent('/project/bracket.ri', 'MODIFIED CONTENT');
+    // Also modify the active file's content — F5 should send this updated content, not a stale snapshot
+    capturedEditorStore!.updateFileContent('/project/mount.ri', 'structure Mount { updated: true }');
+
+    // Clear any prior updateSource calls (e.g. from initial file load) so the assertion is self-contained
+    vi.mocked(bridge.updateSource).mockClear();
+
+    // Act: press F5 to trigger handleReEvaluate
+    fireEvent.keyDown(document, { key: 'F5' });
+
+    // Assert: updateSource called exactly once with the ACTIVE file (mount.ri) and its CURRENT content
+    await waitFor(() => {
+      expect(vi.mocked(bridge.updateSource)).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(bridge.updateSource)).toHaveBeenCalledWith(
+      '/project/mount.ri',
+      'structure Mount { updated: true }',
+    );
+    // The non-active file (bracket.ri) must not have been sent
+    expect(vi.mocked(bridge.updateSource)).not.toHaveBeenCalledWith(
+      '/project/bracket.ri',
+      expect.anything(),
+    );
+  });
+});
+
 describe('App event subscription error toast', () => {
   it('shows warning toast when subscribeToEvents fails', async () => {
     await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
@@ -2285,5 +2341,43 @@ describe('App serialization-error subscription', () => {
 
     // The alive guard (App.tsx:267-269) calls it once; onCleanup's serializationErrorUnsub?.() is a no-op.
     expect(unlistenSerialization).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('handleSave clears dirty indicator after successful save', () => {
+  it('clears dirty indicator after successful save via Ctrl+S', async () => {
+    const path = '/project/test.ri';
+    const content = 'module Test {}';
+
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+
+    render(() => <App />);
+
+    // Wait for App to be ready and capturedEditorStore to be set
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Open a file in the store, mark it dirty, and set as active
+    capturedEditorStore.openFile({ path, content });
+    capturedEditorStore.markDirty(path);
+    capturedEditorStore.setActiveFile(path);
+
+    // Confirm the file is dirty before save
+    expect(capturedEditorStore.state.dirtyFiles).toContain(path);
+
+    // Trigger handleSave via global Ctrl+S shortcut
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    // bridge.saveFile should be called with the correct path and content
+    await waitFor(() => {
+      expect(bridge.saveFile).toHaveBeenCalledWith(path, content);
+    });
+
+    // After a successful save the dirty indicator must be cleared
+    await waitFor(() => {
+      expect(capturedEditorStore.state.dirtyFiles).not.toContain(path);
+    });
   });
 });

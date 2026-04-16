@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) fn resolve_port_name(expr: &reify_syntax::Expr) -> Option<String> {
     match &expr.kind {
@@ -18,39 +19,31 @@ fn is_ad_hoc_selector(expr: &reify_syntax::Expr) -> bool {
     matches!(&expr.kind, reify_syntax::ExprKind::AdHocSelector { .. })
 }
 
-/// Auto-match port members between two bare port names when no explicit port_mappings given.
+/// Auto-match port members between two pre-looked-up ports when no explicit port_mappings given.
 ///
 /// Conditions for auto-matching:
-/// 1. Both port names must be bare (no dot), and both must exist in `ports`.
+/// 1. Both compiled ports must be `Some` (bare ports that exist in the context).
+///    The caller is responsible for the bare-port guard and for passing `None` when a port
+///    was not found (undefined-port error will have been emitted by the caller).
 /// 2. Both ports must share the same `type_name` (same trait).
 /// 3. All Param/Auto members on both sides must match by name (all-or-nothing).
 ///
 /// Returns:
 /// - Identity mappings `[(name, name), ...]` sorted alphabetically when all members match.
-/// - Empty vec when ports are dotted, unknown, have different traits, or have unmatched members.
+/// - Empty vec when either port is `None`, traits differ, or members are unmatched.
 ///   In the unmatched case a Warning diagnostic is emitted.
 pub(crate) fn auto_match_port_members(
-    left_port: &str,
-    right_port: &str,
-    ports: &[CompiledPort],
+    left_compiled: Option<&CompiledPort>,
+    right_compiled: Option<&CompiledPort>,
     diagnostics: &mut Vec<Diagnostic>,
     span: SourceSpan,
 ) -> Vec<(String, String)> {
     use std::collections::BTreeSet;
 
-    // Only auto-match bare (non-dotted) port names
-    if left_port.contains('.') || right_port.contains('.') {
-        return Vec::new();
-    }
-
-    // Look up both ports; skip if either is not found (undefined port error already emitted)
-    let left_compiled = match ports.iter().find(|p| p.name == left_port) {
-        Some(p) => p,
-        None => return Vec::new(),
-    };
-    let right_compiled = match ports.iter().find(|p| p.name == right_port) {
-        Some(p) => p,
-        None => return Vec::new(),
+    // Skip if either port is not found (undefined port error already emitted by caller)
+    let (left_compiled, right_compiled) = match (left_compiled, right_compiled) {
+        (Some(l), Some(r)) => (l, r),
+        _ => return Vec::new(),
     };
 
     // Only auto-match when both ports implement the same trait
@@ -79,7 +72,7 @@ pub(crate) fn auto_match_port_members(
         let mut msg = format!(
             "port members do not match between '{}' and '{}' (same trait '{}'); \
              consider using explicit mapping {{ left_member -> right_member }}",
-            left_port, right_port, left_compiled.type_name
+            left_compiled.name, right_compiled.name, left_compiled.type_name
         );
         if !only_left.is_empty() {
             msg.push_str(&format!("; unmatched on left: {}", only_left.join(", ")));
@@ -130,6 +123,8 @@ pub(crate) struct ConnectContext<'a> {
     pub(crate) scope: &'a CompilationScope<'a>,
     pub(crate) enum_defs: &'a [reify_types::EnumDef],
     pub(crate) functions: &'a [CompiledFunction],
+    /// Trait registry for transitive LocatedPort checking.
+    pub(crate) trait_registry: &'a HashMap<String, &'a CompiledTrait>,
 }
 
 /// Per-statement inputs for compiling a single connection.
@@ -180,15 +175,11 @@ pub(crate) fn compile_connection(
         }
     };
 
-    // Look up port directions for compatibility checking
-    let dir_of = |name: &str| {
-        ctx.ports
-            .iter()
-            .find(|p| p.name == name)
-            .map(|p| p.direction)
-    };
-    let left_dir = dir_of(&left_port);
-    let right_dir = dir_of(&right_port);
+    // Hoist port lookups once — used for both direction checking and auto-matching.
+    let left_compiled = ctx.ports.iter().find(|p| p.name == left_port);
+    let right_compiled = ctx.ports.iter().find(|p| p.name == right_port);
+    let left_dir = left_compiled.map(|p| p.direction);
+    let right_dir = right_compiled.map(|p| p.direction);
 
     // Bare ident (no dot) that doesn't match any port is undefined
     let is_bare = |name: &str| !name.contains('.');
@@ -268,6 +259,46 @@ pub(crate) fn compile_connection(
         },
     };
 
+    // Asymmetric LocatedPort check: warn when exactly one side of a connection
+    // satisfies LocatedPort (directly or via refinement chain). Dotted port names
+    // (sub-component references) are skipped because they cannot be resolved to a
+    // CompiledPort in the current entity scope.
+    {
+        let is_bare = |name: &str| !name.contains('.');
+        if is_bare(&left_port) && is_bare(&right_port) {
+            let left_type = ctx.ports.iter().find(|p| p.name == left_port).map(|p| p.type_name.as_str());
+            let right_type = ctx.ports.iter().find(|p| p.name == right_port).map(|p| p.type_name.as_str());
+
+            // NOTE: this check only works for trait-typed ports. Ports declared with a
+            // structure type (or a built-in type) won't be found in the trait_registry,
+            // so trait_satisfies returns false for them — no warning is emitted even if
+            // the structure conforms to LocatedPort via a separate trait declaration.
+            // This is a known limitation acceptable for the current use-cases.
+            if let (Some(lt), Some(rt)) = (left_type, right_type) {
+                let mut visited_l = HashSet::new();
+                let mut visited_r = HashSet::new();
+                let left_located = trait_satisfies(lt, reify_types::LOCATED_PORT_TRAIT, ctx.trait_registry, &mut visited_l);
+                let right_located = trait_satisfies(rt, reify_types::LOCATED_PORT_TRAIT, ctx.trait_registry, &mut visited_r);
+
+                if left_located != right_located {
+                    let (located_port, located_type, unlocated_port, unlocated_type) = if left_located {
+                        (&left_port, lt, &right_port, rt)
+                    } else {
+                        (&right_port, rt, &left_port, lt)
+                    };
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "asymmetric LocatedPort: port \"{}\" ({}) satisfies LocatedPort but port \"{}\" ({}) does not \
+                             — frame alignment constraint will not be generated",
+                            located_port, located_type, unlocated_port, unlocated_type,
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "asymmetric spatial frame")),
+                    );
+                }
+            }
+        }
+    }
+
     // Create compatibility constraint
     let compat_id = ConstraintNodeId::new(ctx.entity_name, *acc.constraint_index);
     let compat_expr = CompiledExpr::literal(Value::Bool(compatible), Type::Bool);
@@ -323,8 +354,16 @@ pub(crate) fn compile_connection(
     };
 
     // Determine effective port mappings: explicit takes priority; otherwise auto-match.
+    // Auto-matching is only attempted for bare (non-dotted) ports when directions are compatible.
+    // Skipping when incompatible avoids a misleading "members do not match" warning when the
+    // real problem is direction incompatibility.
     let effective_mappings = if port_mappings.is_empty() {
-        auto_match_port_members(&left_port, &right_port, ctx.ports, diagnostics, span)
+        // is_bare guards are defense-in-depth; dotted ports also yield None from the lookup above
+        if compatible && is_bare(&left_port) && is_bare(&right_port) {
+            auto_match_port_members(left_compiled, right_compiled, diagnostics, span)
+        } else {
+            Vec::new() // direction error already emitted, or dotted ports; skip auto-match
+        }
     } else {
         port_mappings.to_vec()
     };

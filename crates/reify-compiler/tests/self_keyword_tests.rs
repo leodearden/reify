@@ -14,43 +14,8 @@
 //! There is no gap between step-8 and step-11 in this file — the apparent gap
 //! is a cross-file artifact of the original task-153 plan.
 
+use reify_test_support::{compile_source, parse_and_compile};
 use reify_types::{Severity, ValueCellId};
-
-/// Helper: parse + compile source, assert no errors, return compiled output.
-fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    let compiled = reify_compiler::compile(&parsed);
-
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no error diagnostics, got: {:?}",
-        errors
-    );
-    compiled
-}
-
-/// Helper: parse + compile source, return compiled output (may have errors).
-#[allow(dead_code)]
-fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
 
 /// Returns `true` if any string in `messages` contains `word` as a whole token.
 ///
@@ -68,6 +33,36 @@ fn mentions_word<'a>(mut messages: impl Iterator<Item = &'a str>, word: &str) ->
 /// the word `"self"` as a whole token (i.e. not as part of `myself` or `self_param`).
 fn msgs_mention_self(msgs: &[String]) -> bool {
     mentions_word(msgs.iter().map(String::as_str), "self")
+}
+
+/// Asserts that `ty` is `Type::List(Box::new(Type::StructureRef(expected_name)))`.
+///
+/// `label` is an optional context prefix (e.g. `"via_self:"`) that is prepended
+/// to failure messages to distinguish calls when the same helper is invoked
+/// multiple times in one test.  Pass `""` when no label is needed.
+///
+/// Panics with a descriptive message if the type does not match.
+/// Extracted from duplicated match-assert blocks that appeared in the three
+/// collection-sub fallback tests added in task 1770.
+fn assert_list_of_struct_ref(ty: &reify_types::Type, expected_name: &str, label: &str) {
+    let prefix = if label.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", label)
+    };
+    match ty {
+        reify_types::Type::List(inner) => {
+            assert_eq!(
+                inner.as_ref(),
+                &reify_types::Type::StructureRef(expected_name.to_string()),
+                "{}expected List(StructureRef({:?})), got List({:?})",
+                prefix,
+                expected_name,
+                inner,
+            );
+        }
+        other => panic!("{}expected List type, got: {:?}", prefix, other),
+    }
 }
 
 #[test]
@@ -107,6 +102,41 @@ fn test_mentions_word() {
     ));
 }
 
+#[test]
+fn test_assert_list_of_struct_ref_valid() {
+    // Calling with a List(StructureRef("Foo")) and expected name "Foo" should not panic.
+    let ty = reify_types::Type::List(Box::new(reify_types::Type::StructureRef("Foo".to_string())));
+    assert_list_of_struct_ref(&ty, "Foo", "");
+}
+
+#[test]
+#[should_panic(expected = "expected List type")]
+fn test_assert_list_of_struct_ref_non_list_panics() {
+    // Calling with a non-List type should panic with "expected List type".
+    let ty = reify_types::Type::Bool;
+    assert_list_of_struct_ref(&ty, "Foo", "");
+}
+
+#[test]
+#[should_panic(expected = "expected List(StructureRef")]
+fn test_assert_list_of_struct_ref_wrong_name_panics() {
+    // Calling with List(StructureRef("Bar")) but expecting "Foo" should panic with
+    // a message that includes "expected List(StructureRef".
+    let ty = reify_types::Type::List(Box::new(reify_types::Type::StructureRef("Bar".into())));
+    assert_list_of_struct_ref(&ty, "Foo", "");
+}
+
+#[test]
+#[should_panic(expected = "ctx:")]
+fn test_assert_list_of_struct_ref_label_in_panic() {
+    // Calling with a non-List type and a non-empty label should produce a panic
+    // message that includes the label prefix.  This exercises the `prefix` formatting
+    // path (lines 48-52) together with the outer `other =>` panic branch (line 64),
+    // producing "ctx: expected List type, got: Bool".
+    let ty = reify_types::Type::Bool;
+    assert_list_of_struct_ref(&ty, "Foo", "ctx:");
+}
+
 // ─── step-1: self.param resolves to correct ValueRef ───
 
 #[test]
@@ -116,7 +146,7 @@ fn self_dot_param_resolves_to_value_ref() {
     param x : Scalar = 5mm
     let y = self.x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // `y` should be a value cell
@@ -158,7 +188,7 @@ structure S {
     sub bolt = Bolt()
     let val = self.bolt.d
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
 
     // Find the S template
     let template = compiled
@@ -203,7 +233,7 @@ fn self_in_let_binding_compiles() {
     param a : Scalar = 3mm
     let b = self.a + 1mm
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Both value cells should exist
@@ -226,7 +256,7 @@ fn self_in_constraint_compiles() {
     param x : Scalar = 5mm
     constraint self.x > 2mm
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Should have at least one constraint
@@ -259,7 +289,7 @@ fn bare_self_as_entity_reference() {
     param x : Scalar = 5mm
     let me = self
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -300,7 +330,7 @@ fn self_in_guarded_block() {
         let child_width = self.width / 2
     }
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     // Should have a guarded group
@@ -427,12 +457,12 @@ fn self_error_at_module_scope() {
     }
 }
 
-// ─── task-1125 step-1: self.collection_sub emits error ───
+// ─── task-1125 step-1 (updated by task-1280 step-3): self.collection_sub resolves to List<T> ───
 
 #[test]
-fn self_dot_collection_sub_emits_error() {
-    // `self.items` where `items` is a collection sub should emit an error,
-    // not silently return StructureRef("Bolt") as if it were a single-instance sub.
+fn self_dot_collection_sub_resolves_to_list() {
+    // `self.items` where `items` is a collection sub should resolve to a List<T> value cell,
+    // mirroring bare `items`. No error should be emitted (task-1280 fix).
     let source = r#"structure Bolt {
     param diameter : Scalar = 10mm
 }
@@ -440,27 +470,36 @@ structure S {
     sub items : List<Bolt>
     let x = self.items
 }"#;
-    let compiled = compile_with_diagnostics(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
         .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let x_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("x value cell");
+
+    let expected_id = ValueCellId::new("S", "__list_items__diameter");
+    let x_refs = x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .collect_value_refs();
     assert!(
-        !errors.is_empty(),
-        "expected at least one error for `self.items` on collection sub, got no errors"
+        x_refs.contains(&expected_id),
+        "self.items should reference S.__list_items__diameter, got: {:?}",
+        x_refs
     );
-    let has_helpful_msg = errors.iter().any(|d| {
-        let msg = &d.message;
-        msg.contains("items")
-            && (msg.contains("collection")
-                || msg.contains("indexed")
-                || msg.contains("index"))
-    });
+
+    let x_ty = &x_cell.default_expr.as_ref().expect("x default_expr").result_type;
     assert!(
-        has_helpful_msg,
-        "expected error message mentioning 'items' and 'collection'/'indexed'/'index', got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        matches!(x_ty, reify_types::Type::List(_)),
+        "self.items should have List type, got: {:?}",
+        x_ty
     );
 }
 
@@ -477,7 +516,7 @@ structure S {
     sub items : List<Bolt>
     let d = self.items.diameter
 }"#;
-    let compiled = compile_with_diagnostics(source);
+    let compiled = compile_source(source);
     let errors: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -514,7 +553,7 @@ structure S {
     sub bolt = Bolt()
     let b = self.bolt
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -544,7 +583,7 @@ fn self_param_equivalence_with_bare_param() {
     let via_self = self.x
     let via_bare = x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let template = &compiled.templates[0];
 
     let via_self_cell = template
@@ -596,7 +635,7 @@ fn self_dot_param_inside_lambda_captures_entity_param() {
     param x : Scalar = 5mm
     let f = |y: Scalar| y + self.x
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -643,7 +682,7 @@ fn bare_self_inside_lambda_captures_entity_ref() {
     param x : Scalar = 5mm
     let f = |_unused| self
 }"#;
-    let compiled = compile_no_errors(source);
+    let compiled = parse_and_compile(source);
     let s_template = compiled
         .templates
         .iter()
@@ -719,4 +758,595 @@ fn self_inside_lambda_in_fn_body_errors() {
             parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
     }
+}
+
+// ─── task-1280 step-1: self.collection_sub equivalence with bare collection sub ───
+
+#[test]
+fn self_dot_collection_sub_equivalence_with_bare() {
+    // `self.bolts` and bare `bolts` (a collection sub) should compile to the same
+    // ValueRef, mirroring how `self.param` ≡ bare `param` (step-11).
+    // Both should resolve to S.__list_bolts__diameter with type List<T>.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub bolts : List<Bolt>
+    let via_self = self.bolts
+    let via_bare = bolts
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let via_self_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_self")
+        .expect("via_self value cell");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    let expected_id = ValueCellId::new("S", "__list_bolts__diameter");
+
+    let self_refs = via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .collect_value_refs();
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        self_refs.contains(&expected_id),
+        "via_self should reference S.__list_bolts__diameter, got: {:?}",
+        self_refs
+    );
+    assert!(
+        bare_refs.contains(&expected_id),
+        "via_bare should reference S.__list_bolts__diameter, got: {:?}",
+        bare_refs
+    );
+
+    // Both should resolve to List type
+    let self_ty = &via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .result_type;
+    let bare_ty = &via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .result_type;
+
+    assert!(
+        matches!(self_ty, reify_types::Type::List(_)),
+        "via_self should have List type, got: {:?}",
+        self_ty
+    );
+    assert!(
+        matches!(bare_ty, reify_types::Type::List(_)),
+        "via_bare should have List type, got: {:?}",
+        bare_ty
+    );
+    assert_eq!(
+        self_ty,
+        bare_ty,
+        "via_self and via_bare should have identical result types"
+    );
+}
+
+// ─── task-1280 amend: lexicographic first-member selection with multiple params ───
+
+#[test]
+fn self_dot_collection_sub_picks_lexicographic_first_member() {
+    // `Bolt` has two params: `diameter` and `length`.
+    // Lexicographically "diameter" < "length" (d < l), so the resolver must pick
+    // `diameter` as the representative member — both via `self.bolts` and bare `bolts`.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+    param length : Scalar = 50mm
+}
+structure S {
+    sub bolts : List<Bolt>
+    let via_self = self.bolts
+    let via_bare = bolts
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let via_self_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_self")
+        .expect("via_self value cell");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    // Must resolve to diameter (lexicographically first), not length.
+    let expected_id = ValueCellId::new("S", "__list_bolts__diameter");
+    let wrong_id = ValueCellId::new("S", "__list_bolts__length");
+
+    let self_refs = via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .collect_value_refs();
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        self_refs.contains(&expected_id),
+        "via_self should reference __list_bolts__diameter (lexicographic first), got: {:?}",
+        self_refs
+    );
+    assert!(
+        !self_refs.contains(&wrong_id),
+        "via_self must NOT reference __list_bolts__length, got: {:?}",
+        self_refs
+    );
+    assert!(
+        bare_refs.contains(&expected_id),
+        "via_bare should reference __list_bolts__diameter (lexicographic first), got: {:?}",
+        bare_refs
+    );
+    assert!(
+        !bare_refs.contains(&wrong_id),
+        "via_bare must NOT reference __list_bolts__length, got: {:?}",
+        bare_refs
+    );
+}
+
+// ─── task-1770 steps: fallback path tests ───
+// step-1: empty-params structure (sub_member_types["parts"] = Some(empty BTreeMap))
+// step-3: forward reference      (sub_member_types.get("bolts") = None)
+// step-4: self/bare equivalence on fallback path
+
+// ─── task-1770 step-1: fallback path — empty-params structure ───
+
+#[test]
+fn collection_sub_fallback_empty_structure_cell_id_and_type() {
+    // `structure Empty {}` has no params, so sub_member_types["parts"] is Some(empty BTreeMap).
+    // resolve_collection_sub_to_list falls back to the coarse path and should produce:
+    //   (a) cell ID  : S.__list_parts  (not __list_parts__<member>, since there is no member)
+    //   (b) type     : List(StructureRef("Empty"))  ← structure TYPE name, not field name
+    //
+    // Before the fix this test FAILS because the fallback produces StructureRef("parts")
+    // (the field name) instead of StructureRef("Empty") (the structure type name).
+    let source = r#"structure Empty {}
+structure S {
+    sub parts : List<Empty>
+    let x = self.parts
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let x_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("x value cell");
+
+    // (a) cell ID must be S.__list_parts (fallback coarse ID)
+    let expected_id = ValueCellId::new("S", "__list_parts");
+    let x_refs = x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .collect_value_refs();
+    assert!(
+        x_refs.contains(&expected_id),
+        "self.parts should reference S.__list_parts (fallback coarse ID), got: {:?}",
+        x_refs
+    );
+
+    // (b) type must be List(StructureRef("Empty")) — the structure type name, not the field name
+    let x_ty = &x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .result_type;
+    assert_list_of_struct_ref(x_ty, "Empty", "");
+}
+
+// ─── task-1770 step-3: fallback path — forward reference (sub_member_types returns None) ───
+
+#[test]
+fn collection_sub_fallback_forward_ref_uses_type_name() {
+    // S is declared BEFORE Bolt.  When the compiler processes S, Bolt's template has not
+    // yet been compiled, so sub_member_types.get("bolts") returns None — triggering the
+    // outer-None branch of the fallback (different from step-1's empty-BTreeMap branch).
+    // The fix should make both branches produce List(StructureRef("Bolt")), not
+    // List(StructureRef("bolts")).
+    //
+    // Assertions:
+    //   (a) cell ID : S.__list_bolts  (coarse fallback ID)
+    //   (b) type    : List(StructureRef("Bolt"))  — structure TYPE name
+    let source = r#"structure S {
+    sub bolts : List<Bolt>
+    let x = self.bolts
+}
+structure Bolt {
+    param diameter : Scalar = 10mm
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let x_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "x")
+        .expect("x value cell");
+
+    // (a) cell ID must be S.__list_bolts (coarse fallback — Bolt was not yet compiled)
+    let expected_id = ValueCellId::new("S", "__list_bolts");
+    let x_refs = x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .collect_value_refs();
+    assert!(
+        x_refs.contains(&expected_id),
+        "forward-ref fallback should reference S.__list_bolts, got: {:?}",
+        x_refs
+    );
+
+    // (b) type must be List(StructureRef("Bolt")) — the structure type name
+    let x_ty = &x_cell
+        .default_expr
+        .as_ref()
+        .expect("x default_expr")
+        .result_type;
+    assert_list_of_struct_ref(x_ty, "Bolt", "");
+}
+
+// ─── task-1770 step-4: self/bare equivalence on the fallback path ───
+
+#[test]
+fn collection_sub_fallback_equivalence_self_and_bare() {
+    // Extends the equivalence pattern from self_dot_collection_sub_equivalence_with_bare
+    // to the fallback scenario: `structure Empty {}` (no params) triggers the fallback.
+    // Both `self.parts` and bare `parts` should resolve to the same cell and type.
+    //
+    // Assertions:
+    //   (a) both via_self and via_bare reference S.__list_parts (same coarse ID)
+    //   (b) both have type List(StructureRef("Empty"))
+    let source = r#"structure Empty {}
+structure S {
+    sub parts : List<Empty>
+    let via_self = self.parts
+    let via_bare = parts
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let via_self_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_self")
+        .expect("via_self value cell");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    // (a) Both should reference S.__list_parts
+    let expected_id = ValueCellId::new("S", "__list_parts");
+
+    let self_refs = via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .collect_value_refs();
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        self_refs.contains(&expected_id),
+        "via_self (fallback) should reference S.__list_parts, got: {:?}",
+        self_refs
+    );
+    assert!(
+        bare_refs.contains(&expected_id),
+        "via_bare (fallback) should reference S.__list_parts, got: {:?}",
+        bare_refs
+    );
+
+    // (b) Both should have type List(StructureRef("Empty"))
+    let self_ty = &via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .result_type;
+    let bare_ty = &via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .result_type;
+
+    assert_list_of_struct_ref(self_ty, "Empty", "via_self:");
+    assert_list_of_struct_ref(bare_ty, "Empty", "via_bare:");
+}
+
+// ─── task-1281 step-3: self.collection_sub.member error uses correct fallback type ───
+
+#[test]
+fn self_dot_collection_sub_member_error_has_correct_fallback_type() {
+    // `self.items.diameter` where `items` is List<Bolt> should emit an error AND
+    // have a cell type matching Bolt's diameter type (Scalar with length dimension),
+    // NOT Type::Real.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let d = self.items.diameter
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.diameter` on collection sub"
+    );
+
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let d_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("d value cell");
+
+    // The fallback type should be exactly Scalar{LENGTH} — diameter is declared as `Scalar = 10mm`.
+    // (Type::Scalar { dimension: DimensionVector::LENGTH })
+    assert_eq!(
+        d_cell.cell_type,
+        reify_types::Type::Scalar {
+            dimension: reify_types::DimensionVector::LENGTH
+        },
+        "self.items.diameter error fallback should be Scalar{{LENGTH}}, got {:?}",
+        d_cell.cell_type
+    );
+}
+
+// ─── task-1281 step-5: self.collection_sub aggregation recommends drop self ───
+
+#[test]
+fn self_dot_collection_sub_aggregation_recommends_drop_self() {
+    // `self.items.count` should emit an error recommending `items.count`
+    // (drop self.), NOT `items[i].count` (the per-instance recommendation).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let c = self.items.count
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.count` on collection sub"
+    );
+
+    // (a) an error diagnostic exists — checked above
+
+    // (b) error message should contain 'items.count' (correct aggregation recommendation)
+    let has_items_count = errors
+        .iter()
+        .any(|d| d.message.contains("items.count"));
+    assert!(
+        has_items_count,
+        "expected error message containing 'items.count', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (c) error message should NOT contain 'items[i].count' (misleading per-instance recommendation)
+    let has_indexed = errors
+        .iter()
+        .any(|d| d.message.contains("items[i].count"));
+    assert!(
+        !has_indexed,
+        "error message should not recommend 'items[i].count' for aggregation, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1281 step-7: no cascading diagnostics after type fallback fixes ───
+
+#[test]
+fn self_dot_collection_sub_no_cascading_diagnostics() {
+    // `self.items.diameter` used in a constraint should produce exactly 1 error
+    // (the collection sub error), not additional type-mismatch diagnostics from
+    // d being Type::Real and then being compared with 5mm (Scalar{Length}).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let d = self.items.diameter
+    constraint d > 5mm
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error (collection sub access), got {}: {:?}",
+        errors.len(),
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1281 amend: self.collection_sub.sum also recommends drop self ───
+
+#[test]
+fn self_dot_collection_sub_sum_aggregation_recommends_drop_self() {
+    // `self.items.sum` should emit an error recommending `items.sum`
+    // (drop self.), NOT `items[i].sum` (the per-instance recommendation).
+    // This guards against partial regressions in the aggregation-member list
+    // (e.g. if a new aggregation is added only to one branch).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let s = self.items.sum
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.sum` on collection sub"
+    );
+
+    // error message should contain 'items.sum' (correct aggregation recommendation)
+    let has_items_sum = errors
+        .iter()
+        .any(|d| d.message.contains("items.sum"));
+    assert!(
+        has_items_sum,
+        "expected error message containing 'items.sum', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // error message should NOT contain 'items[i].sum' (misleading per-instance recommendation)
+    let has_indexed = errors
+        .iter()
+        .any(|d| d.message.contains("items[i].sum"));
+    assert!(
+        !has_indexed,
+        "error message should not recommend 'items[i].sum' for aggregation, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1281 review S2: aggregation no-cascading-diagnostics ───
+
+#[test]
+fn self_dot_collection_sub_aggregation_no_cascading_diagnostics() {
+    // `self.items.count` used in a constraint should produce exactly 1 error
+    // (the collection sub aggregation error), not additional type-mismatch
+    // diagnostics from the fallback type being wrong (e.g. Real vs Int).
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let c = self.items.count
+    constraint c > 0
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error (collection sub aggregation access), got {}: {:?}",
+        errors.len(),
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1281 review S3: unknown member on collection sub ───
+
+#[test]
+fn self_dot_collection_sub_unknown_member_error() {
+    // `self.items.nonexistent` where `nonexistent` is neither an aggregation method
+    // nor a field of the element struct should emit an "unknown member" error,
+    // NOT suggest indexed access to a field that doesn't exist.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let x = self.items.nonexistent
+}"#;
+    let compiled = compile_source(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.nonexistent`"
+    );
+
+    let has_unknown_member = errors
+        .iter()
+        .any(|d| d.message.contains("unknown member"));
+    assert!(
+        has_unknown_member,
+        "expected 'unknown member' error, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Should NOT suggest indexed access for a member that doesn't exist
+    let has_indexed = errors
+        .iter()
+        .any(|d| d.message.contains("items[i]"));
+    assert!(
+        !has_indexed,
+        "should not suggest indexed access for unknown member, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }

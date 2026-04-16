@@ -6,31 +6,10 @@
 //! constraints into the parent entity's constraint list.
 
 use reify_compiler::*;
+use reify_test_support::{compile_source, compile_template};
 use reify_types::*;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile(&parsed)
-}
-
-/// Parse and compile, returning the template with the given name + diagnostics.
-fn compile_template(source: &str, name: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let module = compile_module(source);
-    let diags = module.diagnostics.clone();
-    let tmpl = module
-        .templates
-        .into_iter()
-        .find(|t| t.name == name)
-        .unwrap_or_else(|| panic!("expected template '{name}' in compiled module"));
-    (tmpl, diags)
-}
 
 /// Collect only error diagnostics from a list.
 fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
@@ -38,6 +17,40 @@ fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect()
+}
+
+/// Assert that `expr` is a `ValueRef` with the given member name.
+///
+/// Panics with a descriptive message if the expression is not a `ValueRef` or
+/// if the member name does not match `expected_member`.
+fn assert_value_ref(expr: &CompiledExpr, expected_member: &str) {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => assert_eq!(
+            id.member, expected_member,
+            "expected ValueRef with member '{}', got '{}'",
+            expected_member, id.member
+        ),
+        other => panic!(
+            "expected ValueRef({}) but got {:?}",
+            expected_member, other
+        ),
+    }
+}
+
+/// Extract the `ValueCellId` from a `ValueRef` expression.
+///
+/// Returns a reference to the `ValueCellId` inside the expression, panicking
+/// with a descriptive message (including `label`) if the expression is not a
+/// `ValueRef`.  Used for cross-branch consistency assertions where all
+/// references to the same parameter must resolve to the same `ValueCellId`.
+fn extract_value_ref_id<'a>(expr: &'a CompiledExpr, label: &str) -> &'a ValueCellId {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => id,
+        other => panic!(
+            "extract_value_ref_id({}): expected ValueRef but got {:?}",
+            label, other
+        ),
+    }
 }
 
 // ── Step 7: basic single-arg instantiation ───────────────────────────────────
@@ -224,7 +237,7 @@ structure S {
     constraint UnknownDef(x: t)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = error_diags(&module.diagnostics);
     assert!(
         !errors.is_empty(),
@@ -256,7 +269,7 @@ structure S {
     constraint TwoParam(a: x)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = error_diags(&module.diagnostics);
     assert!(
         !errors.is_empty(),
@@ -286,7 +299,7 @@ structure S {
     constraint OneParam(a: x, b: 5)
 }
 "#;
-    let module = compile_module(source);
+    let module = compile_source(source);
     let errors = error_diags(&module.diagnostics);
     assert!(
         !errors.is_empty(),
@@ -413,4 +426,219 @@ structure S {
         "expected second constraint label Some(\"Bounded[1]\"), got: {:?}",
         tmpl.constraints[1].label
     );
+}
+
+// ── Step 3 (task-1717): substitute_expr recurses into Conditional branches ───
+
+/// substitute_expr must recurse into all three branches of a Conditional
+/// (condition, then-branch, else-branch).  This test verifies the behavior
+/// by instantiating a constraint def whose predicate is an `if/then/else`
+/// expression and asserting that ValueRefs (not bare idents) appear in every
+/// branch after substitution + compilation.
+#[test]
+fn constraint_inst_conditional_substitution() {
+    let source = r#"
+constraint def Gated {
+    param x: Length
+    param threshold: Length
+    if x > threshold then x < 100mm else x > 0mm
+}
+structure S {
+    param width: Length
+    param limit: Length
+    constraint Gated(x: width, threshold: limit)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(tmpl.constraints.len(), 1, "expected exactly 1 constraint");
+
+    let cc = &tmpl.constraints[0];
+    // The compiled constraint should be a Conditional expression.
+    match &cc.expr.kind {
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            // condition: x > threshold  →  BinOp(Gt, ValueRef(S.width), ValueRef(S.limit))
+            match &condition.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Gt, "condition op should be Gt");
+                    assert!(
+                        matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "width"),
+                        "condition left should be ValueRef(S.width), got {:?}",
+                        left.kind
+                    );
+                    assert!(
+                        matches!(&right.kind, CompiledExprKind::ValueRef(id) if id.member == "limit"),
+                        "condition right should be ValueRef(S.limit), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp for condition, got {:?}", other),
+            }
+            // then_branch: x < 100mm  →  BinOp(Lt, ValueRef(S.width), Literal)
+            match &then_branch.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Lt, "then_branch op should be Lt");
+                    assert_value_ref(left, "width");
+                    assert!(
+                        matches!(&right.kind, CompiledExprKind::Literal(_)),
+                        "then_branch right should be Literal (100mm), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp for then_branch, got {:?}", other),
+            }
+            // else_branch: x > 0mm  →  BinOp(Gt, ValueRef(S.width), Literal)
+            match &else_branch.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Gt, "else_branch op should be Gt");
+                    assert_value_ref(left, "width");
+                    assert!(
+                        matches!(&right.kind, CompiledExprKind::Literal(_)),
+                        "else_branch right should be Literal (0mm), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp for else_branch, got {:?}", other),
+            }
+
+            // Cross-branch ValueCellId consistency: all three references to
+            // parameter `x` (substituted to `width`) must resolve to the
+            // *same* ValueCellId (entity + member).  A bug that produces
+            // different entity prefixes across branches (e.g. 'S' vs 'S2')
+            // would be invisible to the per-branch member-name checks above.
+            let condition_width_id = match &condition.kind {
+                CompiledExprKind::BinOp { left, .. } => {
+                    extract_value_ref_id(left, "condition.left")
+                }
+                other => panic!("expected BinOp for condition, got {:?}", other),
+            };
+            let then_width_id = match &then_branch.kind {
+                CompiledExprKind::BinOp { left, .. } => {
+                    extract_value_ref_id(left, "then_branch.left")
+                }
+                other => panic!("expected BinOp for then_branch, got {:?}", other),
+            };
+            let else_width_id = match &else_branch.kind {
+                CompiledExprKind::BinOp { left, .. } => {
+                    extract_value_ref_id(left, "else_branch.left")
+                }
+                other => panic!("expected BinOp for else_branch, got {:?}", other),
+            };
+            assert_eq!(
+                condition_width_id, then_width_id,
+                "condition and then_branch must reference the same ValueCellId for param x"
+            );
+            assert_eq!(
+                condition_width_id, else_width_id,
+                "condition and else_branch must reference the same ValueCellId for param x"
+            );
+        }
+        other => panic!(
+            "expected Conditional constraint expr, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── Step 4 (task-1717): substitute_expr handles Match arms (no shadowing) ────
+
+/// substitute_expr must substitute param references in both the match
+/// discriminant and each arm body.  Match arm patterns are structural
+/// (enum variants) — they do NOT introduce binders, so no shadowing
+/// suppression applies.  This test verifies that behaviour.
+#[test]
+fn constraint_inst_match_substitution() {
+    let source = r#"
+enum Quality { Standard, Premium }
+
+constraint def QualityBound {
+    param grade: Quality
+    param x: Length
+    match grade { Standard => x < 100mm, Premium => x < 10mm }
+}
+structure S {
+    param quality: Quality
+    param size: Length
+    constraint QualityBound(grade: quality, x: size)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(tmpl.constraints.len(), 1, "expected exactly 1 constraint");
+
+    let cc = &tmpl.constraints[0];
+    // The compiled constraint should be a Match expression.
+    match &cc.expr.kind {
+        CompiledExprKind::Match { discriminant, arms } => {
+            // Discriminant: grade → ValueRef(S.quality)
+            assert!(
+                matches!(&discriminant.kind, CompiledExprKind::ValueRef(id) if id.member == "quality"),
+                "discriminant should be ValueRef(S.quality), got {:?}",
+                discriminant.kind
+            );
+            // Two arms: Standard (x < 100mm) and Premium (x < 10mm).
+            // Arms are emitted in source order by the compiler; tests index
+            // by position to detect body swaps or duplication.
+            assert_eq!(arms.len(), 2, "expected 2 match arms");
+
+            // arms[0]: Standard => x < 100mm
+            assert_eq!(
+                arms[0].patterns,
+                vec!["Standard".to_string()],
+                "first arm should be Standard"
+            );
+            match &arms[0].body.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Lt, "Standard arm op should be Lt");
+                    assert_value_ref(left, "size");
+                    // Right should be Literal(100mm); 100mm = 0.1 m in SI.
+                    assert!(
+                        matches!(
+                            &right.kind,
+                            CompiledExprKind::Literal(Value::Scalar { si_value, .. })
+                            if (si_value - 0.1_f64).abs() < 1e-9
+                        ),
+                        "Standard arm right should be Literal(100mm = 0.1 SI), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp in Standard arm body, got {:?}", other),
+            }
+
+            // arms[1]: Premium => x < 10mm
+            assert_eq!(
+                arms[1].patterns,
+                vec!["Premium".to_string()],
+                "second arm should be Premium"
+            );
+            match &arms[1].body.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Lt, "Premium arm op should be Lt");
+                    assert_value_ref(left, "size");
+                    // Right should be Literal(10mm); 10mm = 0.01 m in SI.
+                    assert!(
+                        matches!(
+                            &right.kind,
+                            CompiledExprKind::Literal(Value::Scalar { si_value, .. })
+                            if (si_value - 0.01_f64).abs() < 1e-9
+                        ),
+                        "Premium arm right should be Literal(10mm = 0.01 SI), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp in Premium arm body, got {:?}", other),
+            }
+        }
+        other => panic!("expected Match constraint expr, got {:?}", other),
+    }
 }

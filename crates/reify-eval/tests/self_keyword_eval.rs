@@ -5,49 +5,8 @@
 //! with self-references works correctly, and constraints using self compile
 //! and evaluate without violations.
 
-use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
-
-/// Helper: parse, compile, and eval source, return eval result.
-fn eval_source(source: &str) -> reify_eval::EvalResult {
-    let parsed = reify_syntax::parse(source, ModulePath::single("self_eval_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    engine.eval(&compiled)
-}
-
-/// Helper: parse, compile, and check constraints, return check result.
-fn check_source(source: &str) -> reify_eval::CheckResult {
-    let parsed = reify_syntax::parse(source, ModulePath::single("self_eval_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    engine.check(&compiled)
-}
+use reify_test_support::{check_source, eval_source};
+use reify_types::{Satisfaction, Value, ValueCellId};
 
 // ─── step-9: self.param eval produces correct value ───
 

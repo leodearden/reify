@@ -58,6 +58,7 @@ vi.mock('../bridge', () => ({
   onValueRemoved: vi.fn().mockResolvedValue(() => {}),
   onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
   onFileChanged: vi.fn().mockResolvedValue(() => {}),
+  isDebugEnabled: vi.fn().mockResolvedValue(false),
 }));
 
 import { ChatPanel } from '../panels/ChatPanel';

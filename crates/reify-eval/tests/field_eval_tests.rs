@@ -4,31 +4,45 @@
 //! and applying field operations (sample, gradient, etc.).
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_test_support::{eval_source, make_engine, parse_and_compile};
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type,
-    ValueMap, FIELD_ENTITY_PREFIX, ModulePath, Severity, Value, ValueCellId,
+    ValueMap, FIELD_ENTITY_PREFIX, Value, ValueCellId,
 };
 
-/// Helper: parse, compile, and eval source, return eval result.
-fn eval_source(source: &str) -> reify_eval::EvalResult {
-    let parsed = reify_syntax::parse(source, ModulePath::single("field_eval_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+/// Extract eigenvalues from a `Value::List` of three `Value::Real` items.
+///
+/// Panics with a descriptive message if any item is not `Value::Real`.
+/// Panics if `items` does not contain exactly 3 elements.
+/// Used by the three principal-stress tests to avoid duplicating the
+/// extraction loop.
+fn extract_eigenvalues(items: &[Value]) -> [f64; 3] {
+    assert_eq!(items.len(), 3, "expected 3 eigenvalues, got {}", items.len());
+    let mut eigenvalues = [0.0_f64; 3];
+    for (i, item) in items.iter().enumerate() {
+        match item {
+            Value::Real(v) => eigenvalues[i] = *v,
+            _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
+        }
+    }
+    eigenvalues
+}
 
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    engine.eval(&compiled)
+#[test]
+#[should_panic(expected = "expected 3 eigenvalues")]
+fn extract_eigenvalues_panics_on_too_few_items() {
+    extract_eigenvalues(&[Value::Real(1.0), Value::Real(2.0)]);
+}
+
+#[test]
+#[should_panic(expected = "expected 3 eigenvalues")]
+fn extract_eigenvalues_panics_on_too_many_items() {
+    extract_eigenvalues(&[
+        Value::Real(1.0),
+        Value::Real(2.0),
+        Value::Real(3.0),
+        Value::Real(4.0),
+    ]);
 }
 
 // ── Step 21: eval analytical field at point ────────────────────────────
@@ -126,22 +140,8 @@ fn eval_field_snapshot_consistency() {
     // This ensures incremental re-evaluation via edit_param/warm-starting
     // can see field values.
     let source = "field def temp : Point3 -> Scalar { source = analytical { |p| p } }";
-    let parsed = reify_syntax::parse(source, ModulePath::single("field_snapshot_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let compiled = parse_and_compile(source);
+    let mut engine = make_engine();
     let _result = engine.eval(&compiled);
 
     // The field should be in the snapshot values
@@ -363,25 +363,56 @@ fn test_make_sample_at_produces_sample_call() {
 // ── Helper test: assert_real_approx behavior ─────────────────────────────────
 
 #[test]
+#[allow(clippy::assertions_on_constants)]
 fn test_assert_real_approx_passes_within_tolerance() {
     // Should not panic: value matches expected within REAL_TOLERANCE
-    assert_real_approx(&Value::Real(3.14), 3.14, "pi");
+    assert_real_approx(&Value::Real(std::f64::consts::PI), std::f64::consts::PI, "pi");
     // Should not panic: difference is exactly at zero
     assert_real_approx(&Value::Real(0.0), 0.0, "zero");
+    // Should not panic: value is just inside tolerance (90% of REAL_TOLERANCE)
+    assert_real_approx(
+        &Value::Real(std::f64::consts::PI + REAL_TOLERANCE * 0.9),
+        std::f64::consts::PI,
+        "near-boundary",
+    );
     // Verify REAL_TOLERANCE constant exists and has the expected magnitude
     assert!(REAL_TOLERANCE > 0.0, "REAL_TOLERANCE must be positive");
     assert!(REAL_TOLERANCE <= 1e-10, "REAL_TOLERANCE should be small (≤1e-10)");
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "diff =")]
 fn test_assert_real_approx_panics_outside_tolerance() {
     // Difference of 1.0 is far beyond REAL_TOLERANCE — must panic
     assert_real_approx(&Value::Real(1.0), 2.0, "should fail");
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "diff =")]
+fn test_assert_real_approx_panics_at_exact_boundary() {
+    // Difference of exactly REAL_TOLERANCE is NOT strictly less-than, so must panic
+    assert_real_approx(
+        &Value::Real(std::f64::consts::PI + REAL_TOLERANCE),
+        std::f64::consts::PI,
+        "boundary",
+    );
+}
+
+#[test]
+#[should_panic(expected = "diff =")]
+fn test_assert_real_approx_panics_at_exact_boundary_negative() {
+    // Negative-direction: subtracting REAL_TOLERANCE also yields a difference of exactly
+    // REAL_TOLERANCE (via .abs()), which is NOT strictly less-than, so must panic.
+    // Guards against a regression where .abs() is removed from assert_real_approx.
+    assert_real_approx(
+        &Value::Real(std::f64::consts::PI - REAL_TOLERANCE),
+        std::f64::consts::PI,
+        "boundary-neg",
+    );
+}
+
+#[test]
+#[should_panic(expected = "expected Value::Real")]
 fn test_assert_real_approx_panics_for_non_real_variant() {
     // Bool is not a Real — must panic with a descriptive message
     assert_real_approx(&Value::Bool(true), 0.0, "should fail");
@@ -459,6 +490,17 @@ fn eval_sample_principal_stresses_field_dispatch() {
         );
     };
     assert_eq!(items.len(), 3, "should have 3 principal stresses");
+
+    let eigenvalues = extract_eigenvalues(items);
+
+    // Eigenvalues should be sorted ascending
+    assert!(
+        eigenvalues[0] <= eigenvalues[1] && eigenvalues[1] <= eigenvalues[2],
+        "eigenvalues should be sorted ascending, got {:?}",
+        eigenvalues
+    );
+
+    // Check known values: uniaxial stress eigenvalues = [0.0, 0.0, σ]
     let expected = [0.0_f64, 0.0, sigma];
     for (i, (item, &exp)) in items.iter().zip(expected.iter()).enumerate() {
         assert_real_approx(item, exp, &format!("principal stress[{i}]"));
@@ -633,15 +675,24 @@ fn eval_sample_principal_stresses_hydrostatic_dispatch() {
         );
     };
     assert_eq!(items.len(), 3, "should have 3 principal stresses");
-    for (i, item) in items.iter().enumerate() {
-        match item {
-            Value::Real(v) => assert!(
-                (v - p).abs() < 1e-10,
-                "principal stress[{i}]: expected {p}, got {v}"
-            ),
-            _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
-        }
+
+    let eigenvalues = extract_eigenvalues(items);
+
+    // Each eigenvalue should equal p
+    for (i, &v) in eigenvalues.iter().enumerate() {
+        assert!(
+            (v - p).abs() < 1e-10,
+            "principal stress[{i}]: expected {p}, got {v}"
+        );
     }
+
+    // Eigenvalues should be sorted ascending
+    // Degenerate: all equal, so trivially sorted — guards against regression if tensor changes
+    assert!(
+        eigenvalues[0] <= eigenvalues[1] && eigenvalues[1] <= eigenvalues[2],
+        "eigenvalues should be sorted ascending, got {:?}",
+        eigenvalues
+    );
 }
 
 // ── Edge case: max_shear of hydrostatic tensor ────────────────────────────────
@@ -696,7 +747,7 @@ fn eval_sample_safety_factor_hydrostatic_dispatch() {
 //
 // Uses [[2,1,1],[1,3,1],[1,1,4]], which exercises the trigonometric eigenvalue
 // branch in compute_eigenvalues_3x3 (non-zero off-diagonals). Trace=9 acts as
-// a checksum; expected eigenvalues ≈ [1.3256, 2.4601, 5.2143].
+// a checksum; expected eigenvalues ≈ [1.3249, 2.4608, 5.2143].
 
 #[test]
 fn eval_sample_principal_stresses_full_symmetric_dispatch() {
@@ -720,14 +771,7 @@ fn eval_sample_principal_stresses_full_symmetric_dispatch() {
     };
     assert_eq!(items.len(), 3, "should have 3 principal stresses");
 
-    // Extract eigenvalues
-    let mut eigenvalues = [0.0_f64; 3];
-    for (i, item) in items.iter().enumerate() {
-        match item {
-            Value::Real(v) => eigenvalues[i] = *v,
-            _ => panic!("principal stress[{i}] should be Real, got {:?}", item),
-        }
-    }
+    let eigenvalues = extract_eigenvalues(items);
 
     // Checksum: sum of eigenvalues = trace = 2 + 3 + 4 = 9
     let trace_sum = eigenvalues.iter().sum::<f64>();
@@ -745,12 +789,12 @@ fn eval_sample_principal_stresses_full_symmetric_dispatch() {
 
     // Known eigenvalues (trigonometric closed-form result): characteristic polynomial
     // λ³ - 9λ² + 23λ - 17 = 0, depressed form t³ - 4t - 2 = 0 (t = λ - 3).
-    // The closed-form trig computation is accurate to ~1e-12; tolerance 1e-3 gives
-    // comfortable margin for the 4-decimal expected values below.
-    let expected = [1.3256_f64, 2.4601, 5.2143];
+    // The closed-form trig computation is accurate to ~1e-12; tolerance 1e-8 gives
+    // comfortable margin while catching regressions much earlier than 1e-3.
+    let expected = [1.3248691294_f64, 2.4608111272, 5.2143197434];
     for (i, (&got, &exp)) in eigenvalues.iter().zip(expected.iter()).enumerate() {
         assert!(
-            (got - exp).abs() < 1e-3,
+            (got - exp).abs() < 1e-8,
             "eigenvalue[{i}]: expected ≈ {exp}, got {got}"
         );
     }

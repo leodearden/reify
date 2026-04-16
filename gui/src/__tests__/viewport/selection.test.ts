@@ -1235,6 +1235,76 @@ describe('createSelection', () => {
     });
   });
 
+  describe('ghost exclusion (via meshManager contract)', () => {
+    it('raycaster.intersectObjects is called only with meshes from getMeshes, excluding ghosts', () => {
+      // Simulate: meshManager.getSceneMeshes() returns only 'show' mesh (meshA)
+      // Ghost entity (meshB) is excluded from the map returned by getMeshes
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B'); // ghost entity — excluded from getMeshes
+      const meshMap = new Map([['A', meshA]]); // meshB intentionally excluded
+      const { domElement } = setup(meshMap);
+
+      const event = new MouseEvent('pointermove', { clientX: 400, clientY: 300 });
+      domElement.dispatchEvent(event);
+
+      // intersectObjects should only receive meshA, not meshB
+      expect(mockRaycasterIntersectObjects).toHaveBeenCalledTimes(1);
+      const meshArray = mockRaycasterIntersectObjects.mock.calls[0][0];
+      expect(meshArray).toContain(meshA);
+      expect(meshArray).not.toContain(meshB);
+    });
+
+    it('onHover is not triggered for ghost entity paths excluded from getMeshes', () => {
+      // If a ghost entity is excluded from getMeshes, selection can never raycast it,
+      // so onHover is never called with that entity path
+      const meshA = createMockMesh('A'); // visible 'show' mesh
+      // getMeshes only returns meshA (ghost-entity excluded by meshManager)
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onHover } = setup(meshMap);
+
+      // Simulate raycast hit on meshA (the only visible mesh)
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      const event = new MouseEvent('pointermove', { clientX: 400, clientY: 300 });
+      domElement.dispatchEvent(event);
+
+      // onHover should be called with 'A', not with 'ghost-entity'
+      expect(onHover).toHaveBeenCalledWith('A');
+      expect(onHover).not.toHaveBeenCalledWith('ghost-entity');
+    });
+
+    it('setSelected does not create wireframe for ghost entity excluded from getMeshes', () => {
+      // Ghost entity is not in getMeshes() result
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]); // ghost-entity excluded
+      const { selection } = setup(meshMap);
+
+      // Attempt to select a ghost entity (not in getMeshes result)
+      selection.setSelected('ghost-entity');
+
+      // No wireframe should be created since mesh not found
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+    });
+
+    it('raycasting is limited to exactly the meshes getMeshes returns', () => {
+      // Comprehensive: verify selection system uses exactly what getMeshes returns
+      const showMeshA = createMockMesh('show-A');
+      const showMeshB = createMockMesh('show-B');
+      // Ghost and hidden entities are not in the map
+      const meshMap = new Map([['show-A', showMeshA], ['show-B', showMeshB]]);
+      const { domElement } = setup(meshMap);
+
+      domElement.dispatchEvent(new MouseEvent('pointermove', { clientX: 400, clientY: 300 }));
+
+      const meshArray = mockRaycasterIntersectObjects.mock.calls[0][0];
+      expect(meshArray).toHaveLength(2);
+      expect(meshArray).toContain(showMeshA);
+      expect(meshArray).toContain(showMeshB);
+    });
+  });
+
   describe('refreshSelected (V-08)', () => {
     it('exposes refreshSelected method', () => {
       const { selection } = setup();

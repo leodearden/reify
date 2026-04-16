@@ -198,6 +198,13 @@ export async function claudeClearSession(): Promise<void> {
   return invoke('claude_clear_session');
 }
 
+// ── Debug ───────────────────────────────────────────────────────────
+
+/** Check if REIFY_DEBUG=1 is set (debug server and bridge enabled). */
+export async function isDebugEnabled(): Promise<boolean> {
+  return invoke<boolean>('is_debug_enabled');
+}
+
 // ── Claude event subscription ───────────────────────────────────────
 
 /**

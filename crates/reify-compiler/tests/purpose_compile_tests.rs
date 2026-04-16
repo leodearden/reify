@@ -3,26 +3,8 @@
 //! Tests for compiling purpose declarations into CompiledPurpose entries.
 
 use reify_compiler::*;
+use reify_test_support::parse_and_compile;
 use reify_types::*;
-
-/// Helper: parse source and compile, returning the CompiledModule.
-/// Asserts no parse errors and no compile-level Severity::Error diagnostics.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-    compiled
-}
 
 // ── Step 9: basic purpose compilation ───────────────────────────
 
@@ -40,7 +22,7 @@ purpose mfg_ready(subject : Structure) {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = parse_and_compile(source);
 
     // Should have 1 template (Bracket) and 1 compiled purpose
     assert_eq!(module.templates.len(), 1, "expected 1 template");
@@ -77,7 +59,7 @@ purpose check_params(subject : Widget) {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = parse_and_compile(source);
 
     assert_eq!(
         module.compiled_purposes.len(),
@@ -127,7 +109,7 @@ purpose broken(subject : Structure) {
 }
 "#;
 
-    let _module = compile_module(source);
+    let _module = parse_and_compile(source);
 }
 
 // ── Step 23: let bindings in purposes should emit error ───────────────
@@ -150,7 +132,7 @@ purpose check(subject : Structure) {
 }
 "#;
 
-    let _module = compile_module(source);
+    let _module = parse_and_compile(source);
 }
 
 // ── Step 25: unsupported member variants should emit error ───────────────
@@ -288,7 +270,7 @@ purpose machining_tolerance(subject : Structure) {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = parse_and_compile(source);
     assert_eq!(
         module.compiled_purposes.len(),
         1,
@@ -371,7 +353,7 @@ purpose hot_enough(subject : Structure) {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = parse_and_compile(source);
     assert_eq!(
         module.compiled_purposes.len(),
         1,
@@ -394,5 +376,44 @@ purpose hot_enough(subject : Structure) {
         (right_si - 473.15).abs() < 1e-9,
         "200degC should compile to 473.15K, got {}",
         right_si
+    );
+}
+
+// ── Step 1 (task-1717): self is not valid in purpose scope ───────────────────
+
+/// `is_entity_scope` is false for purpose scopes — only compile_entity sets it
+/// true for structures and occurrences.  Using `self.param` in a purpose
+/// constraint must produce an error diagnostic ("unresolved name: self"), not
+/// silently resolve as if self were in scope.
+#[test]
+fn self_in_purpose_body_rejected() {
+    let source = r#"
+structure Widget {
+    param width : Length = 80mm
+}
+
+purpose check(subject : Widget) {
+    constraint self.width > 0mm
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an error for `self` used in purpose scope, but got none"
+    );
+    let has_self_error = errors.iter().any(|d| {
+        let lower = d.message.to_lowercase();
+        // Error format defined in expr.rs – update if the wording changes
+        lower.contains("unresolved name: self")
+    });
+    assert!(
+        has_self_error,
+        "expected an error containing 'unresolved name: self', got: {:?}",
+        errors
     );
 }

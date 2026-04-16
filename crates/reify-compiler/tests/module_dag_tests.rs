@@ -3,26 +3,15 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
-
-/// Create a unique temp directory for tests.
-fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join("reify_dag_test")
-        .join(name)
-        .join(format!("{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 // ── Step 19: Circular import detection ────────────────────────────
 
 #[test]
 fn circular_import_detected() {
-    let dir = test_dir("circular");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a imports b
     fs::write(
@@ -54,15 +43,14 @@ fn circular_import_detected() {
         "error should mention circular dependency, got: {}",
         msg
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 21: Diamond import (deduplication) ───────────────────────
 
 #[test]
 fn diamond_import_compiles_each_module_once() {
-    let dir = test_dir("diamond");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // D (leaf) — no imports
     fs::write(dir.join("d.ri"), "structure D { param v: Scalar = 1mm }").unwrap();
@@ -106,15 +94,14 @@ fn diamond_import_compiles_each_module_once() {
     assert!(dag.modules.contains_key("b"), "should have module 'b'");
     assert!(dag.modules.contains_key("c"), "should have module 'c'");
     assert!(dag.modules.contains_key("a"), "should have module 'a'");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 23: Topological ordering ─────────────────────────────────
 
 #[test]
 fn topological_order_leaves_first() {
-    let dir = test_dir("topo");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // C (leaf)
     fs::write(dir.join("c.ri"), "structure C { param v: Scalar = 1mm }").unwrap();
@@ -140,13 +127,12 @@ fn topological_order_leaves_first() {
 
     // Topological order: C first (leaf), then B, then A (root)
     assert_eq!(dag.topo_order, vec!["c", "b", "a"]);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn topological_order_diamond() {
-    let dir = test_dir("topo_diamond");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // D (leaf)
     fs::write(dir.join("d.ri"), "structure D { param v: Scalar = 1mm }").unwrap();
@@ -187,15 +173,14 @@ fn topological_order_diamond() {
     assert!(d_pos < c_pos, "d should come before c");
     assert!(b_pos < a_pos, "b should come before a");
     assert!(c_pos < a_pos, "c should come before a");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 25: Name resolution with entity import ──────────────────
 
 #[test]
 fn entity_import_resolves_structure_name() {
-    let dir = test_dir("entity_resolve");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a defines a pub structure Bolt
     fs::write(
@@ -227,15 +212,14 @@ fn entity_import_resolves_structure_name() {
     assert_eq!(template.sub_components.len(), 1);
     assert_eq!(template.sub_components[0].name, "b");
     assert_eq!(template.sub_components[0].structure_name, "Bolt");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 27: Shadowing warning ───────────────────────────────────
 
 #[test]
 fn local_definition_shadows_import_with_warning() {
-    let dir = test_dir("shadowing");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a defines Bolt
     fs::write(
@@ -261,15 +245,14 @@ fn local_definition_shadows_import_with_warning() {
     let b_module = modules.last().unwrap();
     let template = &b_module.templates[0];
     assert_eq!(template.name, "Bolt");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 29: Re-export ───────────────────────────────────────────
 
 #[test]
 fn pub_import_re_exports_entity() {
-    let dir = test_dir("reexport");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a defines Helper
     fs::write(
@@ -310,8 +293,6 @@ fn pub_import_re_exports_entity() {
         .unwrap();
     assert_eq!(template.sub_components.len(), 1);
     assert_eq!(template.sub_components[0].structure_name, "Helper");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 31: Backward compatibility ──────────────────────────────
@@ -334,7 +315,8 @@ fn backward_compatible_single_module_no_imports() {
     assert_eq!(compiled_single.templates[0].name, "Bracket");
 
     // Via compile_project() — write source to temp file and compile
-    let dir = test_dir("backward_compat");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
     fs::write(dir.join("bracket.ri"), source).unwrap();
 
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
@@ -355,15 +337,14 @@ fn backward_compatible_single_module_no_imports() {
         compiled_single.templates[0].value_cells.len(),
         modules[0].templates[0].value_cells.len(),
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 35: in_progress cleanup on error ────────────────────────
 
 #[test]
 fn dag_recovers_after_parse_error_in_dependency() {
-    let dir = test_dir("in_progress_cleanup");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a imports b
     fs::write(
@@ -400,15 +381,14 @@ fn dag_recovers_after_parse_error_in_dependency() {
     // Verify both modules are in the DAG
     assert!(dag.modules.contains_key("a"), "should have module 'a'");
     assert!(dag.modules.contains_key("b"), "should have module 'b'");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── Step 33: CompiledImport preserves kind and is_pub ────────────
 
 #[test]
 fn compiled_import_preserves_kind_and_is_pub() {
-    let dir = test_dir("compiled_import_fields");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Module a defines a pub structure Helper
     fs::write(
@@ -446,8 +426,6 @@ fn compiled_import_preserves_kind_and_is_pub() {
     let imp1 = &b_module.imports[1];
     assert_eq!(imp1.kind, reify_syntax::ImportKind::Module);
     assert!(!imp1.is_pub, "second import should not be pub");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── step-2 (task-1074): cross-module unit collision names the source module ───
@@ -459,7 +437,8 @@ fn compiled_import_preserves_kind_and_is_pub() {
 /// (c) have no label with SourceSpan::empty(0).
 #[test]
 fn compile_project_detects_cross_module_unit_collision() {
-    let dir = test_dir("cross_module_unit_collision");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // dep.ri: exports pub unit 'myunit'
     fs::write(dir.join("dep.ri"), "pub unit myunit : Length = 0.001").unwrap();
@@ -471,19 +450,7 @@ fn compile_project_detects_cross_module_unit_collision() {
     )
     .unwrap();
 
-    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let result =
-        reify_compiler::module_dag::compile_project(&dir.join("main.ri"), &resolver);
-
-    // compile_project returns Ok even when entry module has diagnostics
-    let modules = result.expect("compile_project should not return Err for duplicate unit");
-    let entry_module = modules.last().expect("no modules returned");
-
-    let errors: Vec<_> = entry_module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
+    let errors = common::compile_errors(&dir, "main.ri");
 
     // There should be a duplicate-unit error
     let dup_diag = errors
@@ -514,8 +481,6 @@ fn compile_project_detects_cross_module_unit_collision() {
     // emits only the duplicate decl span and omits the original's
     // SourceSpan::empty(0) to avoid a misleading byte-0 label.
     common::assert_single_non_empty_label(dup_diag);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ── step-3 (task-1575): compile_project-level stdlib unit collision mentions stdlib ───
@@ -533,7 +498,8 @@ fn compile_project_detects_cross_module_unit_collision() {
 /// (`prelude_unit_collision_diagnostic_mentions_stdlib`).
 #[test]
 fn compile_project_stdlib_unit_collision_mentions_stdlib() {
-    let dir = test_dir("stdlib_unit_collision");
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
 
     // Minimal stdlib: a single pub unit.  The resolver maps `std.*` imports
     // to files under `<stdlib_root>/`, so `import std.units` resolves to
@@ -549,19 +515,7 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
     )
     .unwrap();
 
-    let resolver = ModuleResolver::new(&dir, &stdlib_dir);
-    let result =
-        reify_compiler::module_dag::compile_project(&dir.join("main.ri"), &resolver);
-
-    // compile_project returns Ok even when the entry module has diagnostics
-    let modules = result.expect("compile_project should not return Err for duplicate unit");
-    let entry_module = modules.last().expect("no modules returned");
-
-    let errors: Vec<_> = entry_module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_types::Severity::Error)
-        .collect();
+    let errors = common::compile_errors_with_stdlib(&dir, "main.ri", &stdlib_dir);
 
     // (a) There must be a duplicate-unit error mentioning 'myunit'
     let dup_diag = errors
@@ -606,6 +560,490 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
             label.message
         );
     }
+}
 
-    let _ = fs::remove_dir_all(&dir);
+// ── step-1 (task-1392): prelude propagation via compile_module ────────────────
+
+/// Pins the compile_module prelude-collection path (the loop that filters
+/// import declarations and looks up already-compiled modules).
+///
+/// Module c defines a pub structure `Part`. Module b imports c.Part and
+/// references `Part` in a sub declaration. Compiling via dag.compile_module
+/// must produce a compiled b with one sub_component whose structure_name
+/// is "Part", proving the prelude was collected and propagated correctly.
+#[test]
+fn compile_module_prelude_propagates_pub_structure() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // Module c: defines pub structure Part
+    fs::write(
+        dir.join("c.ri"),
+        "pub structure Part {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    // Module b: imports c.Part and uses it in a sub declaration
+    fs::write(
+        dir.join("b.ri"),
+        "import c.Part\nstructure B {\n    sub p = Part(x: 5mm)\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("b", &resolver);
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    // b should have exactly one template: B
+    let b_module = dag.modules.get("b").expect("module 'b' should be in DAG");
+    assert_eq!(b_module.templates.len(), 1, "expected 1 template in b");
+    let template = &b_module.templates[0];
+    assert_eq!(template.name, "B");
+
+    // B should have one sub_component referencing Part
+    assert_eq!(
+        template.sub_components.len(),
+        1,
+        "expected 1 sub_component, got {:?}",
+        template.sub_components.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        template.sub_components[0].structure_name,
+        "Part",
+        "sub_component structure_name should be 'Part'"
+    );
+}
+
+// ── step-2 (task-1392): multi-import prelude via compile_module ───────────────
+
+/// Pins the collect_import_preludes behaviour for multiple imports.
+///
+/// Modules x and y each define a pub structure (Bolt and Nut). Module z
+/// imports both and references each in a sub declaration. Compiling via
+/// dag.compile_module('z') must produce a compiled z with 2 sub_components,
+/// proving that collect_import_preludes handles multiple imports correctly.
+#[test]
+fn compile_module_multi_import_prelude() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // Module x: pub structure Bolt
+    fs::write(
+        dir.join("x.ri"),
+        "pub structure Bolt {\n    param d: Scalar = 6mm\n}",
+    )
+    .unwrap();
+
+    // Module y: pub structure Nut
+    fs::write(
+        dir.join("y.ri"),
+        "pub structure Nut {\n    param d: Scalar = 6mm\n}",
+    )
+    .unwrap();
+
+    // Module z: imports both and uses each in a sub declaration
+    fs::write(
+        dir.join("z.ri"),
+        "import x.Bolt\nimport y.Nut\nstructure Assembly {\n    sub b = Bolt(d: 8mm)\n    sub n = Nut(d: 8mm)\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("z", &resolver);
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    // z should have exactly one template: Assembly
+    let z_module = dag.modules.get("z").expect("module 'z' should be in DAG");
+    assert_eq!(z_module.templates.len(), 1, "expected 1 template in z");
+    let template = &z_module.templates[0];
+    assert_eq!(template.name, "Assembly");
+
+    // Assembly should have 2 sub_components: Bolt and Nut
+    assert_eq!(
+        template.sub_components.len(),
+        2,
+        "expected 2 sub_components, got {:?}",
+        template.sub_components.iter().map(|s| &s.structure_name).collect::<Vec<_>>()
+    );
+
+    let structure_names: Vec<&str> = template
+        .sub_components
+        .iter()
+        .map(|s| s.structure_name.as_str())
+        .collect();
+    assert!(
+        structure_names.contains(&"Bolt"),
+        "expected sub_component with structure_name 'Bolt', got {:?}",
+        structure_names
+    );
+    assert!(
+        structure_names.contains(&"Nut"),
+        "expected sub_component with structure_name 'Nut', got {:?}",
+        structure_names
+    );
+}
+
+// ── task-370/step-9: circular_import_error_message_deterministic ──────────────
+
+/// Validate that circular-import error messages are deterministic.
+///
+/// Creates a three-module cycle: cherry -> apple -> banana -> cherry.
+/// Module names are chosen so alphabetical order (apple, banana, cherry)
+/// DIFFERS from DFS traversal order (cherry, apple, banana).  This ensures
+/// IndexSet insertion-order is the source of determinism, not alphabetical sorting.
+///
+/// Compiles twice (with independent `ModuleDag` instances) and asserts:
+/// (a) both runs produce an error mentioning "circular" or "cycle",
+/// (b) the error messages are identical between runs, and
+/// (c) the module names appear in DFS traversal order within the message
+///     ("cherry" before "apple" before "banana").
+///
+/// IndexSet preserves insertion order (= DFS traversal order), so the message
+/// reads "cherry -> apple -> banana -> cherry" — showing the actual import chain.
+#[test]
+fn circular_import_error_message_deterministic() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // cherry imports apple (DFS entry point)
+    fs::write(
+        dir.join("cherry.ri"),
+        "import apple\nstructure Cherry { param x: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    // apple imports banana
+    fs::write(
+        dir.join("apple.ri"),
+        "import banana\nstructure Apple { param y: Scalar = 2mm }",
+    )
+    .unwrap();
+
+    // banana imports cherry (closes the cycle: cherry -> apple -> banana -> cherry)
+    fs::write(
+        dir.join("banana.ri"),
+        "import cherry\nstructure Banana { param z: Scalar = 3mm }",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+
+    // First compilation — DFS visits cherry, apple, banana, then detects cherry again.
+    // in_progress = [cherry, apple, banana] (insertion order); message: cherry -> apple -> banana -> cherry.
+    let mut dag1 = ModuleDag::new();
+    let result1 = dag1.compile_module("cherry", &resolver);
+    assert!(result1.is_err(), "expected error for 3-cycle (first run)");
+    let msg1 = result1
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+    assert!(
+        msg1.contains("circular") || msg1.contains("cycle"),
+        "first run: error should mention circular dependency, got: {}",
+        msg1
+    );
+
+    // Second compilation (fresh dag)
+    let mut dag2 = ModuleDag::new();
+    let result2 = dag2.compile_module("cherry", &resolver);
+    assert!(result2.is_err(), "expected error for 3-cycle (second run)");
+    let msg2 = result2
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // (b) Messages must be identical between runs (determinism)
+    assert_eq!(
+        msg1, msg2,
+        "circular-import error messages must be identical across compilations"
+    );
+
+    // (c) Module names must appear in DFS traversal order within the message.
+    // DFS order: cherry < apple < banana (cherry is the entry, then apple, then banana).
+    // The message should read "cherry -> apple -> banana -> cherry".
+    // cherry appears twice (start and end of the arrow chain); take the first occurrence.
+    let cherry_pos = msg1.find("cherry").expect("'cherry' must appear in error");
+    let apple_pos = msg1.find("apple").expect("'apple' must appear in error");
+    let banana_pos = msg1.find("banana").expect("'banana' must appear in error");
+    assert!(
+        cherry_pos < apple_pos,
+        "expected 'cherry' before 'apple' (DFS traversal order), got: {}",
+        msg1
+    );
+    assert!(
+        apple_pos < banana_pos,
+        "expected 'apple' before 'banana' (DFS traversal order), got: {}",
+        msg1
+    );
+}
+
+// ── amendment (task-1392): compile_project multi-import prelude path ──────────
+
+/// Covers the block-scoped prelude path in `compile_project` (lines 257-260 in
+/// module_dag.rs) with multiple imports.
+///
+/// Modules p and q each define a pub structure (Pin and Socket). Module r imports
+/// both and references each in a sub declaration. `compile_project` on r must
+/// return a compiled entry module with 2 sub_components, proving that:
+///   1. `collect_import_preludes` aggregates both imports, and
+///   2. the block-scoped borrow in `compile_project` is correct under multiple
+///      simultaneously-borrowed prelude modules.
+#[test]
+fn compile_project_multi_import_prelude() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // Module p: pub structure Pin
+    fs::write(
+        dir.join("p.ri"),
+        "pub structure Pin {\n    param d: Scalar = 2mm\n}",
+    )
+    .unwrap();
+
+    // Module q: pub structure Socket
+    fs::write(
+        dir.join("q.ri"),
+        "pub structure Socket {\n    param d: Scalar = 2mm\n}",
+    )
+    .unwrap();
+
+    // Entry module r: imports both and uses each in a sub declaration
+    fs::write(
+        dir.join("r.ri"),
+        "import p.Pin\nimport q.Socket\nstructure Connector {\n    sub pin = Pin(d: 3mm)\n    sub sock = Socket(d: 3mm)\n}",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result = reify_compiler::module_dag::compile_project(&dir.join("r.ri"), &resolver);
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    let modules = result.unwrap();
+    // Should have 3 modules in topo order: p, q, r
+    assert_eq!(modules.len(), 3, "expected 3 modules (p, q, r), got {}", modules.len());
+
+    // Entry module r is last (topological order: dependencies first)
+    let r_module = modules.last().unwrap();
+    assert_eq!(r_module.templates.len(), 1, "expected 1 template in r");
+    let template = &r_module.templates[0];
+    assert_eq!(template.name, "Connector");
+
+    // Connector should have 2 sub_components: Pin and Socket
+    assert_eq!(
+        template.sub_components.len(),
+        2,
+        "expected 2 sub_components, got {:?}",
+        template.sub_components.iter().map(|s| &s.structure_name).collect::<Vec<_>>()
+    );
+
+    let structure_names: Vec<&str> = template
+        .sub_components
+        .iter()
+        .map(|s| s.structure_name.as_str())
+        .collect();
+    assert!(
+        structure_names.contains(&"Pin"),
+        "expected sub_component with structure_name 'Pin', got {:?}",
+        structure_names
+    );
+    assert!(
+        structure_names.contains(&"Socket"),
+        "expected sub_component with structure_name 'Socket', got {:?}",
+        structure_names
+    );
+}
+
+// ── step-1 (task-1759): #no_prelude suppresses import prelude pub units ───────
+
+/// Verifies that `#no_prelude` suppresses the import prelude so that pub units
+/// from imported modules are NOT seeded into the unit registry.
+///
+/// dep defines `pub unit myunit : Length = 0.001`.  consumer declares
+/// `#no_prelude`, imports dep, and references `5myunit` in a param.
+/// Because `#no_prelude` shadows the prelude with `&[]` (lib.rs:131), the
+/// unit lookup fails and the consumer module must carry an "unknown unit"
+/// diagnostic for `myunit`.
+///
+/// This exercises the lib.rs:130-131 empty-slice shadowing path through the
+/// full `compile_project` pipeline.
+#[test]
+fn no_prelude_suppresses_import_prelude() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // dep.ri: exports pub unit myunit
+    fs::write(
+        dir.join("dep.ri"),
+        "pub unit myunit : Length = 0.001\npub structure Part {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    // consumer.ri: #no_prelude suppresses dep's pub units
+    fs::write(
+        dir.join("consumer.ri"),
+        "#no_prelude\nimport dep\nstructure S {\n    param y: Length = 5myunit\n}",
+    )
+    .unwrap();
+
+    let errors = common::compile_errors(&dir, "consumer.ri");
+    let unknown_unit_diag = errors
+        .iter()
+        .find(|d| d.message.contains("unknown unit") && d.message.contains("myunit"));
+    assert!(
+        unknown_unit_diag.is_some(),
+        "expected 'unknown unit: myunit' error (prelude suppressed by #no_prelude), got: {:#?}",
+        errors
+    );
+
+    // Positive control: WITHOUT #no_prelude the same import/unit resolves fine.
+    let _tmp2 = tempfile::tempdir().unwrap();
+    let dir2 = _tmp2.path().to_path_buf();
+    fs::write(
+        dir2.join("dep.ri"),
+        "pub unit myunit : Length = 0.001\npub structure Part {\n    param x: Scalar = 1mm\n}",
+    )
+    .unwrap();
+    fs::write(
+        dir2.join("consumer.ri"),
+        "import dep\nstructure S {\n    param y: Length = 5myunit\n}",
+    )
+    .unwrap();
+    let errors2 = common::compile_errors(&dir2, "consumer.ri");
+    assert!(
+        errors2.is_empty(),
+        "positive control (no #no_prelude): expected zero errors but got: {:#?}",
+        errors2
+    );
+}
+
+// ── step-3 (task-1759): private units not exported through reference-based prelude ──
+
+/// Verifies that the `if cu.is_pub` filter (lib.rs:266) correctly blocks
+/// private units from being seeded into a consumer module's unit registry,
+/// even through the reference-based prelude indirection introduced in task 1392.
+///
+/// dep defines a private `unit secret : Length = 0.005` (no pub keyword).
+/// consumer imports dep and references `3secret` in a param.
+/// Because `secret` is not pub, the is_pub filter prevents it from being
+/// seeded, and the consumer module must carry an "unknown unit" diagnostic.
+#[test]
+fn private_unit_not_exported_through_import_prelude() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // dep.ri: private unit (no pub) and a pub structure to make import valid
+    fs::write(
+        dir.join("dep.ri"),
+        "unit secret : Length = 0.005\npub structure Widget {\n    param w: Scalar = 1mm\n}",
+    )
+    .unwrap();
+
+    // consumer.ri: imports dep and tries to use the private unit
+    fs::write(
+        dir.join("consumer.ri"),
+        "import dep\nstructure S {\n    param z: Length = 3secret\n}",
+    )
+    .unwrap();
+
+    let errors = common::compile_errors(&dir, "consumer.ri");
+    let unknown_unit_diag = errors
+        .iter()
+        .find(|d| d.message.contains("unknown unit") && d.message.contains("secret"));
+    assert!(
+        unknown_unit_diag.is_some(),
+        "expected 'unknown unit: secret' error (private unit not exported), got: {:#?}",
+        errors
+    );
+
+    // Positive control: with `pub unit secret` the unit resolves and there are no errors.
+    let _tmp2 = tempfile::tempdir().unwrap();
+    let dir2 = _tmp2.path().to_path_buf();
+    fs::write(
+        dir2.join("dep.ri"),
+        "pub unit secret : Length = 0.005\npub structure Widget {\n    param w: Scalar = 1mm\n}",
+    )
+    .unwrap();
+    fs::write(
+        dir2.join("consumer.ri"),
+        "import dep\nstructure S {\n    param z: Length = 3secret\n}",
+    )
+    .unwrap();
+    let errors2 = common::compile_errors(&dir2, "consumer.ri");
+    assert!(
+        errors2.is_empty(),
+        "positive control (pub unit): expected zero errors but got: {:#?}",
+        errors2
+    );
+}
+
+// ── step-2 (task-1833): cycle_error_excludes_non_cycle_ancestors ─────────────
+
+/// Validates that cycle detection excludes non-cycle ancestors from the error
+/// message, showing only the modules that are part of the actual cycle.
+///
+/// Creates a 4-module graph: d -> a -> b -> a
+///   - d is an ancestor that triggers the DFS, but is NOT part of the cycle
+///   - a -> b -> a is the actual cycle
+///
+/// The error message should show exactly "a -> b -> a" without mentioning "d".
+/// IndexSet::get_index_of finds where 'a' starts in in_progress ([d, a, b]),
+/// then slices from that index to exclude the non-cycle ancestor.
+#[test]
+fn cycle_error_excludes_non_cycle_ancestors() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // d imports a (DFS entry; d is NOT in the cycle)
+    fs::write(
+        dir.join("d.ri"),
+        "import a\nstructure D { param v: Scalar = 4mm }",
+    )
+    .unwrap();
+
+    // a imports b
+    fs::write(
+        dir.join("a.ri"),
+        "import b\nstructure A { param v: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    // b imports a (closes the cycle: a -> b -> a)
+    fs::write(
+        dir.join("b.ri"),
+        "import a\nstructure B { param v: Scalar = 2mm }",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("d", &resolver);
+    assert!(result.is_err(), "expected error for cycle a->b->a triggered via d");
+
+    let msg = result
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // (a) error mentions circular/cycle
+    assert!(
+        msg.contains("circular") || msg.contains("cycle"),
+        "error should mention circular dependency, got: {}",
+        msg
+    );
+
+    // (b) message is exactly the cycle chain — this positive assertion proves 'd'
+    // is absent without fragile per-pattern negative checks.
+    assert_eq!(
+        msg,
+        "circular dependency detected: a -> b -> a",
+        "message should contain exactly the cycle, not non-cycle ancestors"
+    );
 }

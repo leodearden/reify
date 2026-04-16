@@ -92,7 +92,7 @@ impl TraitDefBuilder {
             let default_hashes = self.defaults.iter().map(|d| {
                 let kind_tag = match &d.kind {
                     DefaultKind::Param { .. } => "Param",
-                    DefaultKind::Let(_) => "Let",
+                    DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
@@ -219,7 +219,7 @@ impl CompiledTraitBuilder {
             let default_hashes = self.defaults.iter().map(|d| {
                 let kind_tag = match &d.kind {
                     DefaultKind::Param { .. } => "Param",
-                    DefaultKind::Let(_) => "Let",
+                    DefaultKind::Let { .. } => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
                 };
                 ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
@@ -456,20 +456,21 @@ mod tests {
 mod trait_def_annotation_tests {
     use super::*;
     use crate::builders::{ann_str, annotation, annotation_with_args};
+    use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
     #[test]
     fn trait_def_builder_single_annotation() {
         let t = TraitDefBuilder::new("T")
-            .annotation(annotation("deprecated"))
+            .annotation(annotation(DEPRECATED_ANNOTATION))
             .build();
         assert_eq!(t.annotations.len(), 1);
-        assert_eq!(t.annotations[0].name, "deprecated");
+        assert_eq!(t.annotations[0].name, DEPRECATED_ANNOTATION);
     }
 
     #[test]
     fn trait_def_builder_annotation_with_args() {
         let t = TraitDefBuilder::new("T")
-            .annotation(annotation_with_args("deprecated", vec![ann_str("use Bar")]))
+            .annotation(annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use Bar")]))
             .build();
         assert_eq!(t.annotations.len(), 1);
         assert_eq!(t.annotations[0].args.len(), 1);
@@ -487,7 +488,7 @@ mod trait_def_annotation_tests {
     fn trait_def_builder_annotation_does_not_affect_content_hash() {
         let t1 = TraitDefBuilder::new("T").build();
         let t2 = TraitDefBuilder::new("T")
-            .annotation(annotation("test"))
+            .annotation(annotation(TEST_ANNOTATION))
             .build();
         assert_eq!(t1.content_hash, t2.content_hash);
     }
@@ -499,23 +500,24 @@ mod trait_def_annotation_tests {
 mod compiled_trait_annotation_tests {
     use super::*;
     use crate::builders::{ann_str, annotation, annotation_with_args};
+    use reify_types::{DEPRECATED_ANNOTATION, TEST_ANNOTATION};
 
     #[test]
     fn compiled_trait_builder_single_annotation() {
         let t = CompiledTraitBuilder::new("T")
-            .annotation(annotation("test"))
+            .annotation(annotation(TEST_ANNOTATION))
             .build();
         assert_eq!(t.annotations.len(), 1);
-        assert_eq!(t.annotations[0].name, "test");
+        assert_eq!(t.annotations[0].name, TEST_ANNOTATION);
     }
 
     #[test]
     fn compiled_trait_builder_annotation_with_args() {
         let t = CompiledTraitBuilder::new("T")
-            .annotation(annotation_with_args("deprecated", vec![ann_str("use Foo")]))
+            .annotation(annotation_with_args(DEPRECATED_ANNOTATION, vec![ann_str("use Foo")]))
             .build();
         assert_eq!(t.annotations.len(), 1);
-        assert_eq!(t.annotations[0].name, "deprecated");
+        assert_eq!(t.annotations[0].name, DEPRECATED_ANNOTATION);
         assert_eq!(t.annotations[0].args.len(), 1);
     }
 
@@ -535,7 +537,7 @@ mod compiled_trait_annotation_tests {
     fn compiled_trait_builder_annotation_does_not_affect_content_hash() {
         let t1 = CompiledTraitBuilder::new("T").build();
         let t2 = CompiledTraitBuilder::new("T")
-            .annotation(annotation("test"))
+            .annotation(annotation(TEST_ANNOTATION))
             .build();
         assert_eq!(t1.content_hash, t2.content_hash);
     }

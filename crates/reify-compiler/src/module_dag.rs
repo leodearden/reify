@@ -3,12 +3,38 @@
 //! Provides `ModuleResolver` for mapping import paths to filesystem paths,
 //! and `ModuleDag` for building and traversing the module dependency graph.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use indexmap::IndexSet;
 
 use reify_types::Diagnostic;
 
 use crate::CompiledModule;
+
+/// Collect the already-compiled modules that correspond to the import declarations
+/// in `parsed`, returning references into `modules`.
+///
+/// For each import declaration in `parsed`, looks up `import.path` in `modules`.
+/// Returns a `Vec` of references to the compiled modules that were found.
+/// Missing entries (not yet compiled) are silently skipped — the caller is
+/// responsible for ensuring dependencies are compiled before calling this.
+fn collect_import_preludes<'a>(
+    parsed: &reify_syntax::ParsedModule,
+    modules: &'a HashMap<String, CompiledModule>,
+) -> Vec<&'a CompiledModule> {
+    parsed
+        .declarations
+        .iter()
+        .filter_map(|d| {
+            if let reify_syntax::Declaration::Import(import) = d {
+                modules.get(&import.path)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 /// Resolves import dot-paths to filesystem paths.
 ///
@@ -84,7 +110,9 @@ pub struct ModuleDag {
     /// Post-order traversal (leaves first) — topological sort.
     pub topo_order: Vec<String>,
     /// Modules currently being compiled (for cycle detection).
-    in_progress: HashSet<String>,
+    /// IndexSet preserves insertion order (= DFS traversal order), enabling
+    /// the cycle error to show the actual import chain.
+    in_progress: IndexSet<String>,
 }
 
 impl Default for ModuleDag {
@@ -98,7 +126,7 @@ impl ModuleDag {
         Self {
             modules: HashMap::new(),
             topo_order: Vec::new(),
-            in_progress: HashSet::new(),
+            in_progress: IndexSet::new(),
         }
     }
 
@@ -116,12 +144,20 @@ impl ModuleDag {
         }
 
         // Cycle detection
-        if self.in_progress.contains(module_path) {
-            let cycle: Vec<&str> = self.in_progress.iter().map(|s| s.as_str()).collect();
+        if let Some(cycle_start) = self.in_progress.get_index_of(module_path) {
+            // in_progress is ordered by DFS insertion, so slicing from cycle_start
+            // gives only the cycle members, excluding any non-cycle ancestors.
+            // Appending module_path at the end closes the cycle visually.
+            let chain: Vec<&str> = self.in_progress[cycle_start..]
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            let mut arrow_chain = chain.join(" -> ");
+            arrow_chain.push_str(" -> ");
+            arrow_chain.push_str(module_path);
             return Err(vec![Diagnostic::error(format!(
-                "circular dependency detected: {} -> {}",
-                cycle.join(" -> "),
-                module_path,
+                "circular dependency detected: {}",
+                arrow_chain,
             ))]);
         }
 
@@ -164,25 +200,21 @@ impl ModuleDag {
                 }
             }
 
-            // Collect prelude modules (already-compiled imports) for constraint def propagation.
-            let preludes: Vec<CompiledModule> = parsed
-                .declarations
-                .iter()
-                .filter_map(|d| {
-                    if let reify_syntax::Declaration::Import(import) = d {
-                        self.modules.get(&import.path).cloned()
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            // NB: all recursive compile_module calls are done; self.modules is now
+            // stable for shared borrowing. Do not add any code here that mutates
+            // self before compile_with_prelude_refs returns — that would break
+            // the borrow checker (unlike compile_project, this separation is
+            // implicit and not block-scoped).
+            let preludes = collect_import_preludes(&parsed, &self.modules);
 
             // Compile this module with prelude context so imported constraint defs are visible.
-            Ok(crate::compile_with_prelude(&parsed, &preludes))
+            Ok(crate::compile_with_prelude_refs(&parsed, &preludes))
         })();
 
-        // Always remove from in-progress, whether the inner block succeeded or failed
-        self.in_progress.remove(module_path);
+        // Always remove from in-progress, whether the inner block succeeded or failed.
+        // shift_remove preserves insertion order of remaining elements, which matters
+        // for the cycle error message in sibling-import scenarios.
+        self.in_progress.shift_remove(module_path);
 
         // Propagate error after cleanup
         let compiled = result?;
@@ -238,20 +270,12 @@ pub fn compile_project(
 
     // Collect imported modules as prelude so their pub units (and other
     // exported definitions) are visible in the entry module.
-    let preludes: Vec<CompiledModule> = parsed
-        .declarations
-        .iter()
-        .filter_map(|d| {
-            if let reify_syntax::Declaration::Import(import) = d {
-                dag.modules.get(&import.path).cloned()
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Compile the entry module with prelude context
-    let compiled_entry = crate::compile_with_prelude(&parsed, &preludes);
+    // Block-scope the preludes so the shared borrows of dag.modules are
+    // dropped before the mutable borrow in dag.modules.insert below.
+    let compiled_entry = {
+        let preludes = collect_import_preludes(&parsed, &dag.modules);
+        crate::compile_with_prelude_refs(&parsed, &preludes)
+    };
     let entry_key = entry_name.to_string();
     dag.topo_order.push(entry_key.clone());
     dag.modules.insert(entry_key, compiled_entry);

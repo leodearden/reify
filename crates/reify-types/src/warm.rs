@@ -11,6 +11,7 @@ pub struct OpaqueState {
     estimated_size: usize,
 }
 
+
 impl fmt::Debug for OpaqueState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OpaqueState")
@@ -107,5 +108,61 @@ mod tests {
         let state = OpaqueState::new(42i32, 4);
         let value_ref = state.downcast_ref::<String>();
         assert_eq!(value_ref, None);
+    }
+
+    // --- WarmStartable trait tests ---
+
+    struct MockWarmStartable {
+        stored_i32: Option<i32>,
+    }
+
+    impl MockWarmStartable {
+        fn new() -> Self {
+            Self { stored_i32: None }
+        }
+    }
+
+    impl WarmStartable for MockWarmStartable {
+        fn warm_state(&self) -> Option<OpaqueState> {
+            self.stored_i32
+                .map(|v| OpaqueState::new(v, 4)) // i32 is 4 bytes
+        }
+
+        fn with_warm_state(&mut self, state: OpaqueState) {
+            if let Some(v) = state.downcast::<i32>() {
+                self.stored_i32 = Some(v);
+            }
+            // Silently ignore non-i32 values
+        }
+    }
+
+    #[test]
+    fn warm_startable_roundtrip_returns_correct_state() {
+        let mut mock = MockWarmStartable::new();
+        let state = OpaqueState::new(123i32, 8);
+
+        mock.with_warm_state(state);
+        let retrieved = mock.warm_state();
+
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().downcast::<i32>(), Some(123i32));
+    }
+
+    #[test]
+    fn warm_startable_with_warm_state_wrong_type_silently_ignores() {
+        let mut mock = MockWarmStartable::new();
+
+        // Store a String (wrong type) - should be silently ignored
+        let wrong_state = OpaqueState::new(String::from("hello"), 10);
+        mock.with_warm_state(wrong_state);
+
+        // The mock only stores i32 values, so String should be ignored
+        assert!(mock.warm_state().is_none());
+    }
+
+    #[test]
+    fn warm_startable_warm_state_returns_none_when_no_state() {
+        let mock = MockWarmStartable::new();
+        assert!(mock.warm_state().is_none());
     }
 }

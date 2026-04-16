@@ -1,5 +1,12 @@
 use super::*;
 
+/// Aggregation operations available on collection subs.
+///
+/// When accessed through `self.<sub>.<member>`, these emit a "drop self." recommendation
+/// rather than the indexed-access recommendation used for regular struct members.
+/// Also used by the general method-call path to infer result types for collection methods.
+const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "values"];
+
 /// Extract the `free` flag from an `ExprKind::Auto` expression.
 ///
 /// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
@@ -29,6 +36,52 @@ pub(crate) fn compile_expr(
         None,
         &mut lambda_counter,
     )
+}
+
+/// Resolve a collection sub name to its `List<T>` value cell.
+///
+/// Shared by both the bare-ident arm (`bolts`) and the `self.member` arm (`self.bolts`)
+/// of the Identifier/MemberAccess branches in `compile_expr_guarded`, ensuring that
+/// `self.bolts` and `bolts` compile to identical `ValueRef`s.
+///
+/// Resolution strategy:
+/// 1. Look up `sub_name` in `scope.sub_member_types` (populated from compiled structure templates).
+/// 2. Pick the lexicographically-first key in the inner `BTreeMap` (deterministic order).
+/// 3. Return `ValueCellId(entity, "__list_{sub}__{first_member}")` with `Type::List(member_ty)`.
+///
+/// Fallback (no entry or empty inner map): returns `__list_{sub}` with
+/// `List(StructureRef(type_name))`.  The structure type name (e.g. `"Bolt"`) is
+/// looked up from `scope.sub_component_types` (populated unconditionally for every
+/// sub declaration in the `MemberDecl::Sub` arm of `compile_entity_members` in entity.rs).
+/// If absent (e.g. manually constructed scopes in unit tests), the field name is used as
+/// a safety fallback.
+/// This path is legitimately reached when the sub's structure template has not yet
+/// been compiled (e.g. ad-hoc structures or forward references), so it must not panic.
+fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> CompiledExpr {
+    if let Some(members) = scope.sub_member_types.get(sub_name) {
+        // sub_member_types inner map is BTreeMap — iteration order is lexicographic.
+        if let Some((first_member, member_ty)) = members.iter().next() {
+            let list_id = ValueCellId::new(
+                &scope.entity_name,
+                format!("__list_{}__{}", sub_name, first_member),
+            );
+            let list_type = Type::List(Box::new(member_ty.clone()));
+            return CompiledExpr::value_ref(list_id, list_type);
+        }
+    }
+    // Fallback: sub_member_types has no entry for this sub (structure not yet compiled,
+    // ad-hoc structure, or empty params).  Use the structure type name from
+    // sub_component_types so the StructureRef carries the correct type name, not the
+    // field name.  Fall back to field name only if the map has no entry (safety net for
+    // manually-constructed CompilationScope in unit tests).
+    let type_name = scope
+        .sub_component_types
+        .get(sub_name)
+        .cloned()
+        .unwrap_or_else(|| sub_name.to_owned());
+    let list_id = ValueCellId::new(&scope.entity_name, format!("__list_{}", sub_name));
+    let list_type = Type::List(Box::new(Type::StructureRef(type_name)));
+    CompiledExpr::value_ref(list_id, list_type)
 }
 
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
@@ -122,29 +175,31 @@ pub(crate) fn compile_expr_guarded(
             match scope.resolve(name) {
                 Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
                 None => {
-                    // Check if this is a collection sub name — resolve to per-member __list_{name}__{member}
+                    // Check if this is a collection sub name — delegate to shared helper
+                    // that also handles `self.sub_name` in the MemberAccess arm.
+                    // Collection sub-names originate from user-declared structures, so they take
+                    // precedence over built-in constants (mirroring how scope.resolve already
+                    // prioritises user definitions).
                     if scope.collection_sub_names.contains(name.as_str()) {
-                        if let Some(members) = scope.sub_member_types.get(name.as_str())
-                        {
-                            // Resolve to the lexicographically-first member's per-member list.
-                            // sub_member_types inner map is BTreeMap, so iteration order is deterministic.
-                            if let Some((first_member, member_ty)) = members.iter().next() {
-                                let list_id = ValueCellId::new(
-                                    &scope.entity_name,
-                                    format!("__list_{}__{}", name, first_member),
-                                );
-                                let list_type = Type::List(Box::new(member_ty.clone()));
-                                return CompiledExpr::value_ref(list_id, list_type);
-                            }
-                        }
-                        // Fallback: no member types available
-                        let list_id =
-                            ValueCellId::new(&scope.entity_name, format!("__list_{}", name));
-                        let list_type = Type::List(Box::new(Type::StructureRef(name.clone())));
-                        return CompiledExpr::value_ref(list_id, list_type);
+                        return resolve_collection_sub_to_list(scope, name.as_str());
                     }
+                    // Check built-in constants (pi, tau, …) after scope and collection
+                    // sub-name resolution so that user definitions always shadow builtins.
+                    if let Some(ce) = crate::constants::resolve_builtin_constant(name) {
+                        return ce;
+                    }
+                    let msg = if let Some(canonical) =
+                        crate::constants::builtin_constant_hint(name)
+                    {
+                        format!(
+                            "unresolved name: {} (did you mean `{}`?)",
+                            name, canonical
+                        )
+                    } else {
+                        format!("unresolved name: {}", name)
+                    };
                     diagnostics.push(
-                        Diagnostic::error(format!("unresolved name: {}", name))
+                        Diagnostic::error(msg)
                             .with_label(DiagnosticLabel::new(expr.span, "not found in scope")),
                     );
                     CompiledExpr::literal(Value::Undef, Type::Real)
@@ -638,14 +693,12 @@ pub(crate) fn compile_expr_guarded(
                 if let reify_syntax::ExprKind::Ident(obj_name) = &object.kind
                     && obj_name == "self"
                 {
-                    // Check for self.sub.member chaining (handled at outer level): skip here
-                    // if member is a sub-component name — return a StructureRef for the sub.
-                    // Guard: exclude collection subs (List<T>), which must be accessed via index.
+                    // self.sub — for single-instance subs, return a StructureRef so outer
+                    // chaining works. Collection subs are excluded here and handled below
+                    // via resolve_collection_sub_to_list (self.bolts ≡ bare bolts).
                     if scope.sub_component_types.contains_key(member.as_str())
                         && !scope.collection_sub_names.contains(member.as_str())
                     {
-                        // self.sub_name — return StructureRef so that chaining works
-                        // (but note: this case is handled by the outer MemberAccess pattern below)
                         let structure_name = scope.sub_component_types[member.as_str()].clone();
                         let scoped_entity = format!("{}.{}", scope.entity_name, member);
                         let sub_id = ValueCellId::new(&scoped_entity, "__self");
@@ -654,20 +707,11 @@ pub(crate) fn compile_expr_guarded(
                             Type::StructureRef(structure_name),
                         );
                     }
-                    // Error: collection sub accessed directly through self.
+                    // Collection sub accessed through self: delegate to the same helper used
+                    // by the bare-ident collection-sub resolution in the Identifier arm of
+                    // compile_expr_guarded.  Guarantees `self.bolts` ≡ bare `bolts`.
                     if scope.collection_sub_names.contains(member.as_str()) {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "cannot access collection sub '{}' directly through self; \
-                                 use indexed access like `{}[i].<field>` or aggregation like `{}.count`",
-                                member, member, member
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "collection sub requires indexing",
-                            )),
-                        );
-                        return CompiledExpr::literal(Value::Undef, Type::Real);
+                        return resolve_collection_sub_to_list(scope, member.as_str());
                     }
                     // Resolve member from the entity scope (same as bare identifier).
                     match scope.resolve(member) {
@@ -692,8 +736,10 @@ pub(crate) fn compile_expr_guarded(
                     }
                 }
 
-                // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name })
-                // Guard: exclude collection subs (List<T>), which must be accessed via index.
+                // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name }).
+                // Single match; branches internally on whether sub_name is a collection sub.
+                // Invariant: collection_sub_names ⊆ sub_component_types.keys(), so the outer
+                // sub_component_types guard is sufficient to cover both branches.
                 if let reify_syntax::ExprKind::MemberAccess {
                     object: inner_obj,
                     member: sub_name,
@@ -701,9 +747,75 @@ pub(crate) fn compile_expr_guarded(
                     && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
                     && self_name == "self"
                     && scope.sub_component_types.contains_key(sub_name.as_str())
-                    && !scope.collection_sub_names.contains(sub_name.as_str())
                 {
-                    // Resolve member type from sub_member_types
+                    if scope.collection_sub_names.contains(sub_name.as_str()) {
+                        // Error: collection sub member accessed directly through self.
+                        // Aggregation members (count/sum/keys/values) should use bare sub
+                        // access, not indexed access — emit a distinct recommendation.
+                        // For members that don't exist on the sub type at all, emit a
+                        // generic "unknown member" error rather than suggesting indexed
+                        // access to a field that doesn't exist.
+                        if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "cannot access aggregation '{}' of collection sub '{}' through self; \
+                                     use `{}.{}` directly",
+                                    member, sub_name, sub_name, member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "collection sub aggregation: drop `self.`",
+                                )),
+                            );
+                        } else if scope
+                            .sub_member_types
+                            .get(sub_name.as_str())
+                            .is_some_and(|m| m.contains_key(member.as_str()))
+                        {
+                            // Known struct member — recommend indexed access.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "cannot access member '{}' of collection sub '{}' directly through self; \
+                                     use `{}[i].{}` for a specific instance",
+                                    member, sub_name, sub_name, member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "collection sub member requires indexing",
+                                )),
+                            );
+                        } else {
+                            // Member doesn't exist on the element type at all — don't suggest
+                            // indexing a field that isn't there.
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unknown member '{}' on collection sub '{}'",
+                                    member, sub_name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "unknown member",
+                                )),
+                            );
+                        }
+                        // Use the member's actual type as fallback so downstream expressions
+                        // do not cascade spurious type-mismatch diagnostics.
+                        // Aggregation members are not in sub_member_types (they're methods,
+                        // not struct fields), so infer their types the same way the general
+                        // method-call path does at the bottom of this arm.
+                        let fallback_type = match member.as_str() {
+                            "count" => Type::Int,
+                            "sum" | "keys" | "values" => Type::Real,
+                            _ => scope
+                                .sub_member_types
+                                .get(sub_name.as_str())
+                                .and_then(|m| m.get(member.as_str()))
+                                .cloned()
+                                .unwrap_or(Type::Real),
+                        };
+                        return CompiledExpr::literal(Value::Undef, fallback_type);
+                    }
+                    // Non-collection sub: resolve member type from sub_member_types.
                     let member_type = match scope
                         .sub_member_types
                         .get(sub_name.as_str())
@@ -722,32 +834,9 @@ pub(crate) fn compile_expr_guarded(
                             return CompiledExpr::literal(Value::Undef, Type::Real);
                         }
                     };
-                    let scoped_entity =
-                        format!("{}.{}", scope.entity_name, sub_name);
+                    let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
                     let scoped_id = ValueCellId::new(&scoped_entity, member);
                     return CompiledExpr::value_ref(scoped_id, member_type);
-                }
-                // Error: collection sub member accessed directly through self.
-                if let reify_syntax::ExprKind::MemberAccess {
-                    object: inner_obj,
-                    member: sub_name,
-                } = &object.kind
-                    && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
-                    && self_name == "self"
-                    && scope.collection_sub_names.contains(sub_name.as_str())
-                {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "cannot access member '{}' of collection sub '{}' directly through self; \
-                             use `{}[i].{}` for a specific instance",
-                            member, sub_name, sub_name, member
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            expr.span,
-                            "collection sub member requires indexing",
-                        )),
-                    );
-                    return CompiledExpr::literal(Value::Undef, Type::Real);
                 }
             }
 
@@ -853,7 +942,7 @@ pub(crate) fn compile_expr_guarded(
             if let reify_syntax::ExprKind::Ident(name) = &object.kind
                 && name == "meta"
             {
-                if scope.meta_entries.is_empty() {
+                if !scope.has_meta_block {
                     diagnostics.push(
                         Diagnostic::error("entity has no meta block".to_string())
                             .with_label(DiagnosticLabel::new(expr.span, "no meta block")),
@@ -881,8 +970,7 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
-            let collection_methods = ["count", "sum", "keys", "values"];
-            if collection_methods.contains(&member.as_str()) {
+            if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
                 // Infer result type from method and object type
                 let result_type = match member.as_str() {
                     "count" => Type::Int,
@@ -1550,10 +1638,22 @@ pub(crate) fn compile_expr_guarded(
             match scope.resolve(member) {
                 Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
                 None => {
-                    // Fallback: create a ValueCellId directly (trait conformance will catch
-                    // missing members separately).
-                    let id = ValueCellId::new(&scope.entity_name, member);
-                    CompiledExpr::value_ref(id, Type::Real)
+                    // Member not found in scope.  Conformance checking will report the
+                    // missing member as a separate error.  Emit an info diagnostic here
+                    // so this path is visible if conformance checking is ever bypassed
+                    // or reordered in the future.
+                    diagnostics.push(
+                        Diagnostic::info(format!(
+                            "qualified access '{}::{}': member not found in scope; \
+                             conformance checking should report the missing member separately",
+                            trait_name, member,
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "member not found in scope",
+                        )),
+                    );
+                    CompiledExpr::literal(Value::Undef, Type::Real)
                 }
             }
         }
@@ -1680,6 +1780,50 @@ pub(crate) fn compile_expr_guarded(
                     Type::Real
                 });
             CompiledExpr::value_ref(id, ty)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify the `unwrap_or_else` safety fallback in `resolve_collection_sub_to_list`:
+    /// when `sub_component_types` has no entry for the sub name (as in a manually-constructed
+    /// CompilationScope used in unit tests), the field name is used as the StructureRef name.
+    ///
+    /// This path cannot be triggered by the full compilation pipeline (entity.rs always
+    /// populates `sub_component_types` for every sub declaration), but it must not panic —
+    /// and this test documents and guards that contract.
+    #[test]
+    fn collection_sub_fallback_missing_sub_component_types_uses_field_name() {
+        let mut scope = CompilationScope::new("S");
+        // Populate collection_sub_names so the name is recognised as a collection sub,
+        // but leave sub_component_types and sub_member_types empty.
+        scope.collection_sub_names.insert("parts".to_string());
+
+        let result = resolve_collection_sub_to_list(&scope, "parts");
+
+        // Cell ID should be S.__list_parts
+        let expected_id = ValueCellId::new("S", "__list_parts");
+        let refs = result.collect_value_refs();
+        assert!(
+            refs.contains(&expected_id),
+            "safety-fallback cell ID should be S.__list_parts, got: {:?}",
+            refs
+        );
+
+        // Type should be List(StructureRef("parts")) — the field name, not a structure type name
+        match &result.result_type {
+            Type::List(inner) => {
+                assert_eq!(
+                    inner.as_ref(),
+                    &Type::StructureRef("parts".to_string()),
+                    "safety-fallback inner type should be StructureRef(\"parts\") (field name), got: {:?}",
+                    inner
+                );
+            }
+            other => panic!("expected List type, got: {:?}", other),
         }
     }
 }

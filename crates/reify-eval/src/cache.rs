@@ -2002,4 +2002,28 @@ mod tests {
         // Warm state should be cleared after re-evaluation
         assert!(store.get(&node).unwrap().warm_state.is_none());
     }
+
+    // --- NodeCache Clone invariant ---
+
+    #[test]
+    fn node_cache_clone_drops_warm_state() {
+        // NodeCache has a manual Clone impl that intentionally sets warm_state: None.
+        // Warm state is a transient optimization hint — it is not preserved across
+        // clones. This test documents that invariant and guards against regressions
+        // (e.g. if someone replaces the manual impl with #[derive(Clone)], which
+        // would fail to compile since OpaqueState is not Clone — but documenting
+        // intent is still valuable).
+        let mut cache = make_test_node_cache(42, 1);
+        cache.warm_state = Some(reify_types::OpaqueState::new(42i32, 4));
+        assert!(
+            cache.warm_state.is_some(),
+            "precondition: warm_state must be Some before cloning"
+        );
+
+        let cloned = cache.clone();
+        assert!(
+            cloned.warm_state.is_none(),
+            "NodeCache::clone must drop warm_state (transient hint, not preserved)"
+        );
+    }
 }

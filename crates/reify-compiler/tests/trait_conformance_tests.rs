@@ -4,28 +4,32 @@
 //! default merging, and composition conflict detection.
 
 use reify_compiler::*;
+use reify_test_support::{compile_first_template, compile_source};
 use reify_types::*;
 
-/// Helper: parse source and compile, returning the CompiledModule.
-fn compile_module(source: &str) -> CompiledModule {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
+/// Assert that `template.value_cells` contains exactly one cell whose member name equals
+/// `member`. Prints `context` in the failure message for easy diagnosis.
+/// Returns a reference to the matched cell so callers can inspect its properties.
+fn assert_single_value_cell<'a>(
+    template: &'a TopologyTemplate,
+    member: &str,
+    context: &str,
+) -> &'a ValueCellDecl {
+    let cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == member)
+        .collect();
+    assert_eq!(
+        cells.len(),
+        1,
+        "{}: expected exactly 1 value cell '{}', got {}: {:?}",
+        context,
+        member,
+        cells.len(),
+        cells
     );
-    reify_compiler::compile(&parsed)
-}
-
-/// Helper: parse source and compile, returning first template + diagnostics.
-fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
-    let module = compile_module(source);
-    let template = module
-        .templates
-        .into_iter()
-        .next()
-        .expect("expected 1 template");
-    (template, module.diagnostics)
+    cells[0]
 }
 
 /// Step 1: Compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs.
@@ -37,7 +41,7 @@ trait Fastener {
 }
 "#;
 
-    let module = compile_module(source);
+    let module = compile_source(source);
 
     // Should have 1 trait def
     assert_eq!(module.trait_defs.len(), 1, "expected 1 trait def");
@@ -608,13 +612,17 @@ structure def S : A {
 }
 "#;
 
-    let (_, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
     let errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // x comes from D, reachable via both B->D and C->D paths; must appear exactly once.
+    let x_cell = assert_single_value_cell(&template, "x", "diamond_satisfies_once");
+    assert_eq!(x_cell.cell_type, Type::length(), "diamond_satisfies_once: x must be Length");
 }
 
 /// Task-189 step-3: Missing member in deep diamond produces exactly 1 error.
@@ -659,10 +667,10 @@ structure def S : A {
         errors
     );
 
-    let msg = format!("{:?}", errors[0]);
+    let msg = &errors[0].message;
     assert!(
-        msg.contains("missing required member") && msg.contains("x"),
-        "expected 'missing required member x', got: {}",
+        msg.contains("missing required member 'x'"),
+        "expected 'missing required member 'x'' in error message, got: {}",
         msg
     );
 }
@@ -783,13 +791,17 @@ structure def S : A {
 }
 "#;
 
-    let (_, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
     let errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // d comes from trait D, reachable via both B->D and C->D; must appear exactly once.
+    let d_cell = assert_single_value_cell(&template, "d", "diamond_default_from_D_once");
+    assert_eq!(d_cell.cell_type, Type::length(), "diamond_default_from_D_once: d must be Length");
 }
 
 /// Task-189 step-11: Let default from D injected exactly once in deep diamond.
@@ -865,13 +877,96 @@ structure def S : A {
 }
 "#;
 
-    let (_, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
     let errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+    // x comes from D, reachable via B->E->D and C->D; must appear exactly once.
+    let x_cell = assert_single_value_cell(&template, "x", "deep_diamond_A_B_E_D_C_D");
+
+    // y comes from E, reachable via one path (B->E); must also appear exactly once.
+    let y_cell = assert_single_value_cell(&template, "y", "deep_diamond_A_B_E_D_C_D");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::length(),
+        "deep_diamond x cell_type mismatch"
+    );
+    assert_eq!(
+        y_cell.cell_type,
+        Type::length(),
+        "deep_diamond y cell_type mismatch"
+    );
+}
+
+/// Task-384 step-1: Diamond with conflicting param types produces exactly 1 error.
+/// Topology: D {}, B:D { param x : Length }, C:D { param x : Angle }, A:B+C {}, S:A { x provided }.
+/// S provides x : Length to satisfy B's requirement; only the conflict diagnostic remains.
+/// The seen_names conflict detection in collect_all_requirements should fire once.
+#[test]
+fn diamond_type_conflict_produces_error() {
+    let source = r#"
+trait D {
+}
+
+trait B : D {
+    param x : Length
+}
+
+trait C : D {
+    param x : Angle
+}
+
+trait A : B + C {
+}
+
+structure def S : A {
+    param x : Length = 5mm
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 conflict error, got {}: {:?}",
+        errors.len(),
+        errors
+    );
+
+    assert!(
+        errors[0].message.contains("conflicting trait requirements"),
+        "expected 'conflicting trait requirements' in error message, got: {}",
+        errors[0].message
+    );
+
+    assert!(
+        errors[0].message.contains("x"),
+        "expected mention of 'x' in conflict message, got: {}",
+        errors[0].message
+    );
+
+    assert!(
+        !errors[0].labels.is_empty(),
+        "expected at least one label on conflict diagnostic"
+    );
+    assert!(
+        !errors[0].labels[0].span.is_empty(),
+        "expected non-empty span on conflict diagnostic label"
+    );
+
+    // Even with a type conflict error, dedup must still produce exactly one cell for 'x'.
+    assert_single_value_cell(&template, "x", "diamond_type_conflict");
 }
 
 /// Step 21b: Trait with constraint and param — both injected correctly.

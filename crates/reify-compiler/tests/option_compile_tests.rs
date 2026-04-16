@@ -4,7 +4,7 @@
 //! CompiledExprKind::OptionNone with correct types instead of falling through
 //! to generic function call resolution.
 
-use reify_compiler::{CompiledGuardedGroup, TopologyTemplate};
+use reify_compiler::{CompiledGuardedGroup, TopologyTemplate, ValueCellDecl};
 use reify_types::{CompiledExprKind, DimensionVector, Severity, Type};
 
 /// Helper: compile source, return the first topology template and diagnostics.
@@ -56,6 +56,34 @@ fn compile_expecting_errors(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
     reify_compiler::compile(&parsed)
+}
+
+/// Helper: assert that `member` has cell_type == Option<inner_type>, a default_expr
+/// of kind OptionNone, and that default_expr.result_type == Option<inner_type>.
+/// `label` is incorporated into assertion failure messages for diagnostics.
+fn assert_option_none(member: &ValueCellDecl, inner_type: Type, label: &str) {
+    let option_type = Type::Option(Box::new(inner_type));
+    assert_eq!(
+        member.cell_type,
+        option_type,
+        "{label}: cell_type should be Option<{option_type:?}>, got {:?}",
+        member.cell_type
+    );
+    let default = member
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{label}: member should have a default_expr"));
+    assert_eq!(
+        default.result_type,
+        option_type,
+        "{label}: default_expr.result_type should be Option<{option_type:?}>, got {:?}",
+        default.result_type
+    );
+    assert!(
+        matches!(&default.kind, CompiledExprKind::OptionNone),
+        "{label}: expected OptionNone, got {:?}",
+        default.kind
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -373,32 +401,10 @@ structure def S {
     let member = port
         .members
         .iter()
-        .find(|m| m.id.member.contains("p.x"))
+        .find(|m| m.id.member == "p.x")
         .expect("should have port member 'p.x'");
 
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "port member cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("port member 'p.x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone port param, got {:?}",
-        default.kind
-    );
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port param");
 }
 
 // ---------------------------------------------------------------------------
@@ -436,32 +442,10 @@ structure def S {
     let member = port
         .members
         .iter()
-        .find(|m| m.id.member.contains("p.y"))
+        .find(|m| m.id.member == "p.y")
         .expect("should have port member 'p.y'");
 
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "port let member cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("port member 'p.y' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "port let default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for port let, got {:?}",
-        default.kind
-    );
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port let");
 }
 
 // ---------------------------------------------------------------------------
@@ -503,29 +487,7 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have guarded member 'x'");
 
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded param cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("guarded member 'x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded param default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for guarded param, got {:?}",
-        default.kind
-    );
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded param");
 }
 
 // ---------------------------------------------------------------------------
@@ -567,29 +529,7 @@ structure S {
         .find(|m| m.id.member == "y")
         .expect("should have guarded member 'y'");
 
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded let cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("guarded member 'y' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded let default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for guarded let, got {:?}",
-        default.kind
-    );
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded let");
 }
 
 // ---------------------------------------------------------------------------
@@ -637,29 +577,7 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have nested guarded member 'x'");
 
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "nested guarded param cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("nested guarded member 'x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "nested guarded param default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for nested guarded param, got {:?}",
-        default.kind
-    );
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "nested guarded param");
 }
 
 // ---------------------------------------------------------------------------
@@ -707,29 +625,7 @@ structure S {
         .expect("should have guarded member 'x'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded param (alias) cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("guarded member 'x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded param (alias) default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for guarded param with type alias, got {:?}",
-        default.kind
-    );
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded param (alias)");
 }
 
 // ---------------------------------------------------------------------------
@@ -775,33 +671,11 @@ structure def S {
     let member = port
         .members
         .iter()
-        .find(|m| m.id.member.contains("p.x"))
+        .find(|m| m.id.member == "p.x")
         .expect("should have port member 'p.x'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "port param (alias) cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("port member 'p.x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "port param (alias) default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for port param with type alias, got {:?}",
-        default.kind
-    );
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port param (alias)");
 }
 
 // ---------------------------------------------------------------------------
@@ -847,33 +721,11 @@ structure def S {
     let member = port
         .members
         .iter()
-        .find(|m| m.id.member.contains("p.y"))
+        .find(|m| m.id.member == "p.y")
         .expect("should have port member 'p.y'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "port let (alias) cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("port member 'p.y' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "port let (alias) default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for port let with type alias, got {:?}",
-        default.kind
-    );
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "port let (alias)");
 }
 
 // ---------------------------------------------------------------------------
@@ -924,29 +776,7 @@ structure S {
         .expect("should have guarded member 'y'");
 
     // MyLen resolves to Length, so Option<MyLen> resolves to Option<Length>.
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded let (alias) cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("guarded member 'y' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "guarded let (alias) default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for guarded let with type alias, got {:?}",
-        default.kind
-    );
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "guarded let (alias)");
 }
 
 // ---------------------------------------------------------------------------
@@ -989,27 +819,5 @@ structure S {
         .find(|m| m.id.member == "x")
         .expect("should have else-branch guarded member 'x'");
 
-    assert_eq!(
-        member.cell_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "else-branch guarded param cell_type should be Option<Length>, got {:?}",
-        member.cell_type
-    );
-
-    let default = member
-        .default_expr
-        .as_ref()
-        .expect("else-branch guarded member 'x' should have a default_expr");
-
-    assert_eq!(
-        default.result_type,
-        Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::LENGTH })),
-        "else-branch guarded param default_expr.result_type should be Option<Length>, got {:?}",
-        default.result_type
-    );
-    assert!(
-        matches!(&default.kind, CompiledExprKind::OptionNone),
-        "expected OptionNone for else-branch guarded param, got {:?}",
-        default.kind
-    );
+    assert_option_none(member, Type::Scalar { dimension: DimensionVector::LENGTH }, "else-branch guarded param");
 }

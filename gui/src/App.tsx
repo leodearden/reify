@@ -12,6 +12,7 @@ import {
   Toast,
   ReloadPrompt,
   ChatPanel,
+  MenuBar,
 } from './panels';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
@@ -29,6 +30,7 @@ import {
   updateSource as bridgeUpdateSource,
   openFile as bridgeOpenFile,
   openFileEngine as bridgeOpenFileEngine,
+  saveFile as bridgeSaveFile,
   onFileChanged,
   onSerializationError,
   getSourceLocation as bridgeGetSourceLocation,
@@ -36,6 +38,7 @@ import {
   claudeSendMessage,
   claudeAbort,
   subscribeToClaudeEvents,
+  isDebugEnabled,
 } from './bridge';
 import {
   navigateToSource,
@@ -150,41 +153,60 @@ const App: Component = () => {
     }
   });
 
+  async function handleSave() {
+    const activeFile = editorStore.state.activeFile;
+    if (!activeFile) return;
+    const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
+    if (!file) return;
+    try {
+      await bridgeSaveFile(file.path, file.content);
+      editorStore.markClean(file.path);
+    } catch (err) {
+      showToast(`Save failed: ${errorMessage(err)}`, 'error');
+    }
+  }
+
+  async function handleOpen() {
+    try {
+      const path = await pickOpenPath();
+      if (!path) return;
+      const fileData = await bridgeOpenFile(path);
+      editorStore.openFile(fileData);
+      // Load into engine for evaluation (meshes, values, constraints)
+      const guiState = await bridgeOpenFileEngine(path);
+      engineStore.initFromState(guiState);
+    } catch (err) {
+      const msg = errorMessage(err);
+      console.error('Open file failed:', msg);
+      showToast(`Open file failed: ${msg}`, 'error');
+    }
+  }
+
+  function handleReEvaluate() {
+    // Re-evaluate the active file
+    const activeFile = editorStore.state.activeFile;
+    if (activeFile) {
+      const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
+      if (file) {
+        bridgeUpdateSource(file.path, file.content).catch((err) =>
+          showToast(`Re-evaluation failed: ${errorMessage(err)}`, 'error'),
+        );
+      }
+    }
+  }
+
   // Keyboard shortcuts
   useKeyboardShortcuts({
-    onOpen: async () => {
-      try {
-        const path = await pickOpenPath();
-        if (!path) return;
-        const fileData = await bridgeOpenFile(path);
-        editorStore.openFile(fileData);
-        // Load into engine for evaluation (meshes, values, constraints)
-        const guiState = await bridgeOpenFileEngine(path);
-        engineStore.initFromState(guiState);
-      } catch (err) {
-        const msg = errorMessage(err);
-        console.error('Open file failed:', msg);
-        showToast(`Open file failed: ${msg}`, 'error');
-      }
-    },
-    onReEvaluate: () => {
-      // Re-evaluate the active file
-      const activeFile = editorStore.state.activeFile;
-      if (activeFile) {
-        const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
-        if (file) {
-          bridgeUpdateSource(file.path, file.content).catch((err) =>
-            showToast(`Re-evaluation failed: ${errorMessage(err)}`, 'error'),
-          );
-        }
-      }
-    },
+    onOpen: handleOpen,
+    onSave: handleSave,
+    onReEvaluate: handleReEvaluate,
     onExportDialog: () => {
       setShowExportDialog((v) => !v);
     },
     onHelp: () => {
       setShowHelp((v) => !v);
     },
+    onToggleChatPanel: handleToggleChat,
     onReloadShortcut: () => {
       if (changedFiles().size > 0) {
         handleReload();
@@ -202,6 +224,7 @@ const App: Component = () => {
   let fileChangedUnsub: (() => void) | undefined;
   let serializationErrorUnsub: (() => void) | undefined;
   let claudeEventUnsub: (() => void) | undefined;
+  let debugBridgeUnsub: (() => void) | undefined;
 
   async function initApp() {
     // Clean up existing subscriptions before proceeding (defensive against
@@ -290,6 +313,26 @@ const App: Component = () => {
       showToast('Claude assistant unavailable — chat features may not work', 'error');
     }
 
+    // Initialize debug bridge if REIFY_DEBUG=1 (dynamic import for tree-shaking)
+    try {
+      if (await isDebugEnabled()) {
+        const { initDebugBridge } = await import('./debug');
+        const unsub = await initDebugBridge({
+          engine: engineStore,
+          editor: editorStore,
+          selection: selectionStore,
+          claude: claudeStore,
+        });
+        if (!alive) {
+          unsub();
+          return;
+        }
+        debugBridgeUnsub = unsub;
+      }
+    } catch (err) {
+      console.error('[debug-bridge] init failed:', err);
+    }
+
     if (!alive) return;
     setInitPhase('ready');
   }
@@ -306,6 +349,8 @@ const App: Component = () => {
     serializationErrorUnsub?.();
     serializationErrorCoalescer.cleanup();
     claudeEventUnsub?.();
+    debugBridgeUnsub?.();
+    delete window.__REIFY_DEBUG__;
   });
 
   function handleSetParameter(cellId: string, value: string) {
@@ -496,6 +541,15 @@ const App: Component = () => {
       </Show>
       <Show when={initPhase() === 'ready'}>
         <div data-testid="app-layout" class={styles.layout}>
+          <MenuBar
+            onOpen={handleOpen}
+            onSave={handleSave}
+            onExport={handleExport}
+            onReEvaluate={handleReEvaluate}
+            onFitToView={handleFitToView}
+            onToggleChat={handleToggleChat}
+            onHelp={() => setShowHelp((v) => !v)}
+          />
           <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
           <ReloadPrompt
             filePaths={Array.from(changedFiles())}

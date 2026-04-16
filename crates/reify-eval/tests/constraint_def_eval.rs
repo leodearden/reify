@@ -5,31 +5,8 @@
 //! - Diagnostic messages that use the label instead of the raw ConstraintNodeId
 //! - Individual satisfaction states per predicate
 
-use reify_constraints::SimpleConstraintChecker;
-use reify_eval::Engine;
-use reify_types::{ModulePath, Satisfaction, Severity};
-
-// ── Helper ────────────────────────────────────────────────────────────────────
-
-fn check_source(source: &str) -> reify_eval::CheckResult {
-    let parsed = reify_syntax::parse(source, ModulePath::single("constraint_def_eval_test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    let checker = SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), None);
-    engine.check(&compiled)
-}
+use reify_test_support::check_source;
+use reify_types::{Satisfaction, Severity};
 
 // ── step-3: violated constraint def produces labeled diagnostic ───────────────
 

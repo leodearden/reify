@@ -113,6 +113,87 @@ pub struct EvaluationStatus {
     pub progress: Option<f64>,
 }
 
+/// A node in the hierarchical entity tree emitted by `get_entity_tree`.
+///
+/// Root nodes correspond to top-level topology templates (structures/occurrences).
+/// Children represent value cells (param, let, auto), sub-components, and ports.
+///
+/// # Kind values
+/// - `"structure"` / `"occurrence"` — top-level template root
+/// - `"param"` — a `ValueCellKind::Param` cell
+/// - `"let"` — a `ValueCellKind::Let` cell
+/// - `"auto"` — a `ValueCellKind::Auto` cell
+/// - `"sub"` — a sub-component (`SubComponentDecl`)
+/// - `"port"` — a port (`CompiledPort`)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EntityTreeNode {
+    /// Dot-separated path identifying this entity (e.g. `"Bracket"`, `"Bracket.width"`, `"Bracket.bolt"`).
+    pub entity_path: String,
+    /// Entity kind string — one of `"structure"`, `"occurrence"`, `"param"`, `"let"`, `"auto"`, `"sub"`, `"port"`.
+    pub kind: String,
+    /// Type name for value cells (`cell_type.to_string()`) and sub-components (`structure_name`).
+    /// `None` for template root nodes.
+    pub type_name: Option<String>,
+    /// Whether this entity has at least one realization (tessellatable geometry).
+    pub has_mesh: bool,
+    /// Heuristic: member is named `"geometry"` AND the parent template has `"Physical"` in `trait_bounds`.
+    pub trait_geometry: bool,
+    /// Child nodes (value cells, sub-components, ports of this template).
+    pub children: Vec<EntityTreeNode>,
+}
+
+/// Source span (byte offsets) for an entity in the source file.
+///
+/// Emitted as part of `EntityIdentity` for value cells and sub-components.
+/// Both offsets are byte positions within the source text of the containing module.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceSpanInfo {
+    /// Inclusive start byte offset of the entity's declaration.
+    pub start: u32,
+    /// Exclusive end byte offset of the entity's declaration.
+    pub end: u32,
+}
+
+/// Identity record for a single entity (template root or value cell) in the compiled module.
+///
+/// Returned as the value type in the `HashMap<String, EntityIdentity>` from
+/// `get_entity_identity_map`. The map key is the entity's `entity_path`
+/// (e.g. `"Bracket"`, `"Bracket.width"`).
+///
+/// # Fields
+/// - `content_hash`: 32-character lowercase hex string from `ContentHash::to_string()`.
+///   Derived from `template.content_hash` for roots and `ContentHash::of_str(cell_id)` for cells.
+/// - `structural_fingerprint`: `"{type}:{parent}:{child_count}:{hash}"` format.
+///   - `type` — entity kind (`"structure"`, `"occurrence"`, `"param"`, `"let"`, `"auto"`)
+///   - `parent` — parent template name, empty string for root templates
+///   - `child_count` — number of sub-components (0 for value cells)
+///   - `hash` — hex hash combining sub-component content hashes
+/// - `source_span`: byte span of the entity's declaration; `None` for template roots
+///   (which have no span in the compiled representation).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EntityIdentity {
+    /// 32-character lowercase hex string from `ContentHash::to_string()`.
+    pub content_hash: String,
+    /// Structural fingerprint: `"{type}:{parent}:{child_count}:{hash}"`.
+    pub structural_fingerprint: String,
+    /// Source byte span; present for value cells and sub-components, absent for template roots.
+    pub source_span: Option<SourceSpanInfo>,
+}
+
+/// A definition (structure or occurrence) found at a given source position.
+///
+/// Returned by `get_containing_definition(line, col)`.
+/// `span` uses byte offsets matching the source text stored in the session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DefInfo {
+    /// Name of the structure or occurrence (e.g. `"Bracket"`).
+    pub name: String,
+    /// Kind: `"structure"` or `"occurrence"`.
+    pub kind: String,
+    /// Byte span of the declaration in the source file.
+    pub span: SourceSpanInfo,
+}
+
 /// Format a Value for GUI display, returning (formatted_value, unit_string).
 ///
 /// Delegates to [`Value::format_display_pair()`] — the canonical implementation

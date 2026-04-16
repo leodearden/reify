@@ -172,6 +172,64 @@ impl OptimizedImpl for MockOptimizedImpl {
     }
 }
 
+/// Mock optimized-constraint implementation that returns a fixed, possibly
+/// wrong, number of results — used to exercise the contract-violation fallback
+/// path in reify-eval (Task 1657).
+///
+/// Unlike [`MockOptimizedImpl`], which correctly returns one result per input
+/// constraint, `BrokenCountOptimizedImpl` returns a caller-supplied result set
+/// verbatim regardless of how many constraints are in the input. This triggers
+/// the result-count mismatch that `dispatch_constraints` must detect and
+/// recover from gracefully by emitting a `Diagnostic::error` and falling back
+/// to the language-level `ConstraintChecker`.
+///
+/// The `calls` field records every `ConstraintNodeId` the impl was invoked
+/// with (across all calls), so tests can assert the broken impl was actually
+/// invoked before the fallback kicked in.
+pub struct BrokenCountOptimizedImpl {
+    fixed_results: Vec<ConstraintResult>,
+    calls: Arc<Mutex<Vec<ConstraintNodeId>>>,
+}
+
+impl BrokenCountOptimizedImpl {
+    /// Create an impl that always returns `fixed_results` verbatim, regardless
+    /// of how many constraints are in the input.
+    pub fn new(fixed_results: Vec<ConstraintResult>) -> Self {
+        Self {
+            fixed_results,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// A clone of the shared call-tracking handle.
+    ///
+    /// Grab this before boxing so the test can inspect calls after the engine
+    /// run:
+    ///
+    /// ```ignore
+    /// let mock = BrokenCountOptimizedImpl::new(vec![]);
+    /// let calls = mock.calls_handle();
+    /// engine.register_optimized_impl("target_a", Box::new(mock));
+    /// engine.check(&compiled);
+    /// assert!(!calls.lock().unwrap().is_empty());
+    /// ```
+    pub fn calls_handle(&self) -> Arc<Mutex<Vec<ConstraintNodeId>>> {
+        Arc::clone(&self.calls)
+    }
+}
+
+impl OptimizedImpl for BrokenCountOptimizedImpl {
+    fn check(&self, input: &OptimizedImplInput) -> OptimizedImplOutput {
+        let mut calls = self.calls.lock().unwrap();
+        for (id, _) in &input.constraints {
+            calls.push(id.clone());
+        }
+        OptimizedImplOutput {
+            results: self.fixed_results.clone(),
+        }
+    }
+}
+
 /// Mock constraint solver that returns predetermined results.
 pub struct MockConstraintSolver {
     result: SolveResult,
@@ -1655,6 +1713,91 @@ mod tests {
                 assert_eq!(*plane_normal, [1.0, 0.0, 0.0]);
             }
             other => panic!("expected Mirror, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_linear_pattern_2d_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.01),
+                height: Value::length(0.01),
+                depth: Value::length(0.01),
+            })
+            .unwrap();
+
+        let handle = kernel
+            .execute(&GeometryOp::LinearPattern2D {
+                target: target.id,
+                direction1: [1.0, 0.0, 0.0],
+                count1: 3,
+                spacing1: Value::length(0.02),
+                direction2: [0.0, 1.0, 0.0],
+                count2: 4,
+                spacing2: Value::length(0.03),
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::LinearPattern2D {
+                target,
+                direction1,
+                count1,
+                spacing1,
+                direction2,
+                count2,
+                spacing2,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(*direction1, [1.0, 0.0, 0.0]);
+                assert_eq!(*count1, 3);
+                assert_eq!(*spacing1, Value::length(0.02));
+                assert_eq!(*direction2, [0.0, 1.0, 0.0]);
+                assert_eq!(*count2, 4);
+                assert_eq!(*spacing2, Value::length(0.03));
+            }
+            other => panic!("expected LinearPattern2D, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mock_execute_arbitrary_pattern_records_op() {
+        let mut kernel = MockGeometryKernel::new();
+        let target = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::length(0.01),
+                height: Value::length(0.01),
+                depth: Value::length(0.01),
+            })
+            .unwrap();
+
+        let transforms = vec![
+            [0.02, 0.0, 0.0],
+            [0.0, 0.02, 0.0],
+            [0.02, 0.02, 0.0],
+        ];
+        let handle = kernel
+            .execute(&GeometryOp::ArbitraryPattern {
+                target: target.id,
+                transforms: transforms.clone(),
+            })
+            .unwrap();
+
+        assert_eq!(handle.id, GeometryHandleId(2));
+        match &kernel.operations()[1].op {
+            GeometryOp::ArbitraryPattern {
+                target,
+                transforms: recorded_transforms,
+            } => {
+                assert_eq!(*target, GeometryHandleId(1));
+                assert_eq!(recorded_transforms.len(), 3);
+                assert_eq!(recorded_transforms[0], [0.02, 0.0, 0.0]);
+                assert_eq!(recorded_transforms[1], [0.0, 0.02, 0.0]);
+                assert_eq!(recorded_transforms[2], [0.02, 0.02, 0.0]);
+            }
+            other => panic!("expected ArbitraryPattern, got {:?}", other),
         }
     }
 

@@ -1,11 +1,21 @@
 use super::*;
 
-pub(crate) fn is_geometry_let(expr: &reify_syntax::Expr, functions: &[CompiledFunction]) -> bool {
-    matches!(
-        &expr.kind,
-        reify_syntax::ExprKind::FunctionCall { name, .. }
-            if is_geometry_function(name) && !functions.iter().any(|f| f.name == *name)
-    )
+pub(crate) fn is_geometry_let(
+    expr: &reify_syntax::Expr,
+    functions: &[CompiledFunction],
+    known_geometry_lets: &HashSet<&str>,
+) -> bool {
+    match &expr.kind {
+        reify_syntax::ExprKind::FunctionCall { name, .. } => {
+            is_geometry_function(name) && !functions.iter().any(|f| f.name == *name)
+        }
+        // No `!functions.iter().any(...)` guard needed: `known_geometry_lets` is
+        // populated only from let-binding names (never function names), and an Ident
+        // expression is syntactically distinct from FunctionCall, so a user-defined
+        // function cannot collide with a geometry let via this branch.
+        reify_syntax::ExprKind::Ident(name) => known_geometry_lets.contains(name.as_str()),
+        _ => false,
+    }
 }
 
 /// Returns the arg indices that are geometry refs for each non-boolean geometry function.
@@ -85,24 +95,10 @@ pub(crate) fn compile_geometry_call(
     // Boolean ops: args are nested geometry calls, NOT scalars.
     // Handle before scalar arg compilation below.
     match name {
-        "union" | "intersection" | "difference" => {
-            if args.len() != 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "{}() expects 2 arguments, got {}",
-                    name,
-                    args.len()
-                )));
-                return None;
-            }
-            let bool_op = match name {
-                "union" => BooleanOp::Union,
-                "intersection" => BooleanOp::Intersection,
-                "difference" => BooleanOp::Difference,
-                _ => unreachable!(),
-            };
-            // Compile left arg recursively.
-            let left_ops = match compile_geometry_call(
-                &args[0],
+        "union" | "intersection" | "difference" | "union_all" | "intersection_all" => {
+            return compile_boolean_op(
+                name,
+                args,
                 scope,
                 enum_defs,
                 functions,
@@ -110,145 +106,7 @@ pub(crate) fn compile_geometry_call(
                 step_offset,
                 geometry_lets,
                 visiting,
-            ) {
-                Some(ops) => ops,
-                None => {
-                    // Only emit extra diagnostic if the arg is not a geometry expression
-                    // (neither a FunctionCall nor a geometry-let Ident).
-                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. })
-                        && !matches!(&args[0].kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
-                    {
-                        diagnostics.push(Diagnostic::error(format!(
-                            "{}() argument 1 must be a geometry expression",
-                            name
-                        )));
-                    }
-                    return None;
-                }
-            };
-            let left_result_step = step_offset + left_ops.len() - 1;
-            let right_offset = step_offset + left_ops.len();
-            // Compile right arg recursively.
-            let right_ops = match compile_geometry_call(
-                &args[1],
-                scope,
-                enum_defs,
-                functions,
-                diagnostics,
-                right_offset,
-                geometry_lets,
-                visiting,
-            ) {
-                Some(ops) => ops,
-                None => {
-                    if !matches!(args[1].kind, reify_syntax::ExprKind::FunctionCall { .. })
-                        && !matches!(&args[1].kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
-                    {
-                        diagnostics.push(Diagnostic::error(format!(
-                            "{}() argument 2 must be a geometry expression",
-                            name
-                        )));
-                    }
-                    return None;
-                }
-            };
-            let right_result_step = right_offset + right_ops.len() - 1;
-            let mut all_ops = left_ops;
-            all_ops.extend(right_ops);
-            all_ops.push(CompiledGeometryOp::Boolean {
-                op: bool_op,
-                left: GeomRef::Step(left_result_step),
-                right: GeomRef::Step(right_result_step),
-            });
-            return Some(all_ops);
-        }
-        "union_all" | "intersection_all" => {
-            if args.len() < 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "{}() expects at least 2 arguments, got {}",
-                    name,
-                    args.len()
-                )));
-                return None;
-            }
-            let bool_op = match name {
-                "union_all" => BooleanOp::Union,
-                "intersection_all" => BooleanOp::Intersection,
-                _ => unreachable!(),
-            };
-            // Left-fold: compile all args, interleaving binary Boolean ops.
-            // After each pair (accumulator, next_arg), emit a Boolean op whose
-            // result becomes the next accumulator.
-            let mut all_ops: Vec<CompiledGeometryOp> = Vec::new();
-            let mut current_offset = step_offset;
-
-            // Compile first arg.
-            let first_ops = match compile_geometry_call(
-                &args[0],
-                scope,
-                enum_defs,
-                functions,
-                diagnostics,
-                current_offset,
-                geometry_lets,
-                visiting,
-            ) {
-                Some(ops) => ops,
-                None => {
-                    if !matches!(args[0].kind, reify_syntax::ExprKind::FunctionCall { .. })
-                        && !matches!(&args[0].kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
-                    {
-                        diagnostics.push(Diagnostic::error(format!(
-                            "{}() argument 1 must be a geometry expression",
-                            name
-                        )));
-                    }
-                    return None;
-                }
-            };
-            let mut accumulator_step = current_offset + first_ops.len() - 1;
-            current_offset += first_ops.len();
-            all_ops.extend(first_ops);
-
-            // Fold remaining args left-to-right.
-            for (i, arg) in args.iter().enumerate().skip(1) {
-                let arg_ops = match compile_geometry_call(
-                    arg,
-                    scope,
-                    enum_defs,
-                    functions,
-                    diagnostics,
-                    current_offset,
-                    geometry_lets,
-                    visiting,
-                ) {
-                    Some(ops) => ops,
-                    None => {
-                        if !matches!(arg.kind, reify_syntax::ExprKind::FunctionCall { .. })
-                            && !matches!(&arg.kind, reify_syntax::ExprKind::Ident(n) if geometry_lets.contains_key(n.as_str()))
-                        {
-                            diagnostics.push(Diagnostic::error(format!(
-                                "{}() argument {} must be a geometry expression",
-                                name,
-                                i + 1
-                            )));
-                        }
-                        return None;
-                    }
-                };
-                let arg_result_step = current_offset + arg_ops.len() - 1;
-                current_offset += arg_ops.len();
-                all_ops.extend(arg_ops);
-                // Emit binary op: (accumulator, arg) → new accumulator at current_offset.
-                all_ops.push(CompiledGeometryOp::Boolean {
-                    op: bool_op,
-                    left: GeomRef::Step(accumulator_step),
-                    right: GeomRef::Step(arg_result_step),
-                });
-                accumulator_step = current_offset;
-                current_offset += 1;
-            }
-            return Some(all_ops);
+            );
         }
         _ => {}
     }
@@ -440,6 +298,57 @@ pub(crate) fn compile_geometry_call(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1, dx2, dy2, dz2, count2, spacing2)
+        "linear_pattern_2d" => {
+            if compiled_args.len() != 11 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "linear_pattern_2d() expects 11 arguments, got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Linear2D,
+                target: GeomRef::Step(0),
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("dx1".to_string(), it.next().unwrap()),
+                    ("dy1".to_string(), it.next().unwrap()),
+                    ("dz1".to_string(), it.next().unwrap()),
+                    ("count1".to_string(), it.next().unwrap()),
+                    ("spacing1".to_string(), it.next().unwrap()),
+                    ("dx2".to_string(), it.next().unwrap()),
+                    ("dy2".to_string(), it.next().unwrap()),
+                    ("dz2".to_string(), it.next().unwrap()),
+                    ("count2".to_string(), it.next().unwrap()),
+                    ("spacing2".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // arbitrary_pattern(target, dx1, dy1, dz1, dx2, dy2, dz2, ...)
+        "arbitrary_pattern" => {
+            if compiled_args.len() < 4 || !(compiled_args.len() - 1).is_multiple_of(3) {
+                diagnostics.push(Diagnostic::error(format!(
+                    "arbitrary_pattern() expects target + N*(dx,dy,dz) triples (>= 4 args, (len-1) % 3 == 0), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let mut args = vec![("target".to_string(), it.next().unwrap())];
+            let coords: Vec<_> = it.collect();
+            for (idx, chunk) in coords.chunks_exact(3).enumerate() {
+                args.push((format!("t{}_dx", idx), chunk[0].clone()));
+                args.push((format!("t{}_dy", idx), chunk[1].clone()));
+                args.push((format!("t{}_dz", idx), chunk[2].clone()));
+            }
+            Some(vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Arbitrary,
+                target: GeomRef::Step(0),
+                args,
+            }])
+        }
         // --- Sweeps ---
         // loft(profile1, profile2, ...)
         "loft" => {
@@ -452,15 +361,12 @@ pub(crate) fn compile_geometry_call(
             }
             let mut profiles = Vec::with_capacity(args.len());
             for i in 0..args.len() {
-                let r = if let Some(r) = geom_refs.get(&i).cloned() {
-                    r
-                } else {
-                    diagnostics.push(Diagnostic::error(format!(
-                        "loft() argument {} must be a geometry expression",
-                        i + 1
-                    )));
-                    GeomRef::Step(step_offset + i)
-                };
+                // Silent fallback — consistent with extrude/revolve_full which use
+                // geom_ref() and never emit an error for non-geometry profiles.
+                let r = geom_refs
+                    .get(&i)
+                    .cloned()
+                    .unwrap_or(GeomRef::Step(step_offset + i));
                 profiles.push(r);
             }
             let loft_args: Vec<(String, CompiledExpr)> = compiled_args
@@ -588,6 +494,12 @@ pub(crate) fn compile_geometry_call(
                 );
                 return None;
             }
+            // Note: sweep() emits an error diagnostic when profile or path are not
+            // geometry expressions. This is intentionally asymmetric with loft(), which
+            // silently falls back to GeomRef::Step(step_offset) for any non-geometry
+            // profile (matching the geom_ref() helper convention used by extrude/revolve_full).
+            // sweep() is stricter because its two arguments have specific, named roles
+            // (profile and path) that are clearly communicated to the user.
             let profile = if let Some(r) = geom_refs.get(&0).cloned() {
                 r
             } else {
@@ -618,317 +530,23 @@ pub(crate) fn compile_geometry_call(
             Some(sub_ops)
         }
         // --- Transforms ---
-        // translate(target, dx, dy, dz)
-        "translate" => {
-            if compiled_args.len() != 4 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "translate() expects 4 arguments, got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Transform {
-                kind: TransformKind::Translate,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("dx".to_string(), it.next().unwrap()),
-                    ("dy".to_string(), it.next().unwrap()),
-                    ("dz".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
-        // rotate(target, ax, ay, az, angle)
-        "rotate" => {
-            if compiled_args.len() != 5 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "rotate() expects 5 arguments, got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Transform {
-                kind: TransformKind::Rotate,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("ax".to_string(), it.next().unwrap()),
-                    ("ay".to_string(), it.next().unwrap()),
-                    ("az".to_string(), it.next().unwrap()),
-                    ("angle".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
-        // scale(target, factor)
-        "scale" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "scale() expects 2 arguments, got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Transform {
-                kind: TransformKind::Scale,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("factor".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
-        // rotate_around(target, px, py, pz, ax, ay, az, angle)
-        "rotate_around" => {
-            if compiled_args.len() != 8 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "rotate_around() expects 8 arguments, got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Transform {
-                kind: TransformKind::RotateAround,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("px".to_string(), it.next().unwrap()),
-                    ("py".to_string(), it.next().unwrap()),
-                    ("pz".to_string(), it.next().unwrap()),
-                    ("ax".to_string(), it.next().unwrap()),
-                    ("ay".to_string(), it.next().unwrap()),
-                    ("az".to_string(), it.next().unwrap()),
-                    ("angle".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
+        "translate" | "rotate" | "scale" | "rotate_around" => {
+            compile_transform_op(name, compiled_args, geom_ref(0), diagnostics, sub_ops)
         }
         // --- Modify extensions ---
-        // shell(target, thickness, ...)
-        "shell" => {
-            if compiled_args.len() < 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "shell() expects at least 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let mut shell_args = vec![
-                ("target".to_string(), it.next().unwrap()),
-                ("thickness".to_string(), it.next().unwrap()),
-            ];
-            // Remaining args are face indices to remove
-            for (i, expr) in it.enumerate() {
-                shell_args.push((format!("face_{}", i), expr));
-            }
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Shell,
-                target,
-                args: shell_args,
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
+        // shell/thicken/draft: pass geom_ref(0) as target (correctly resolved from geom_refs).
+        "shell" | "thicken" | "draft" => {
+            compile_modify_op(name, compiled_args, geom_ref(0), expr.span, diagnostics, sub_ops)
         }
-        // thicken(target, offset)
-        "thicken" => {
-            if compiled_args.len() != 2 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "thicken() expects 2 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Thicken,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("offset".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
-        // draft(target, angle, plane)
-        "draft" => {
-            if compiled_args.len() != 3 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "draft() expects 3 arguments, got {}",
-                        compiled_args.len()
-                    ))
-                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
-                );
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Draft,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("angle".to_string(), it.next().unwrap()),
-                    ("plane".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
+        // chamfer/fillet: pass GeomRef::Step(0) explicitly to preserve the known bug.
+        // These are NOT registered in geometry_arg_indices(), so sub_ops is always empty
+        // and geom_ref(0) would fall back to GeomRef::Step(step_offset), not Step(0).
+        "chamfer" | "fillet" => {
+            compile_modify_op(name, compiled_args, GeomRef::Step(0), expr.span, diagnostics, sub_ops)
         }
         // --- Curve constructors ---
-        // line_segment(x1, y1, z1, x2, y2, z2)
-        "line_segment" => {
-            if compiled_args.len() != 6 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "line_segment() expects 6 arguments, got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Curve {
-                kind: CurveKind::LineSegment,
-                args: vec![
-                    ("x1".to_string(), it.next().unwrap()),
-                    ("y1".to_string(), it.next().unwrap()),
-                    ("z1".to_string(), it.next().unwrap()),
-                    ("x2".to_string(), it.next().unwrap()),
-                    ("y2".to_string(), it.next().unwrap()),
-                    ("z2".to_string(), it.next().unwrap()),
-                ],
-            }])
-        }
-        // arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
-        "arc" => {
-            if compiled_args.len() != 9 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "arc() expects 9 arguments, got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Curve {
-                kind: CurveKind::Arc,
-                args: vec![
-                    ("cx".to_string(), it.next().unwrap()),
-                    ("cy".to_string(), it.next().unwrap()),
-                    ("cz".to_string(), it.next().unwrap()),
-                    ("radius".to_string(), it.next().unwrap()),
-                    ("start_angle".to_string(), it.next().unwrap()),
-                    ("end_angle".to_string(), it.next().unwrap()),
-                    ("ax".to_string(), it.next().unwrap()),
-                    ("ay".to_string(), it.next().unwrap()),
-                    ("az".to_string(), it.next().unwrap()),
-                ],
-            }])
-        }
-        // helix(radius, pitch, height)
-        "helix" => {
-            if compiled_args.len() != 3 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "helix() expects 3 arguments, got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            Some(vec![CompiledGeometryOp::Curve {
-                kind: CurveKind::Helix,
-                args: vec![
-                    ("radius".to_string(), it.next().unwrap()),
-                    ("pitch".to_string(), it.next().unwrap()),
-                    ("height".to_string(), it.next().unwrap()),
-                ],
-            }])
-        }
-        // interp(x1,y1,z1, x2,y2,z2, ...) — variadic, triples of coordinates
-        "interp" => {
-            if compiled_args.len() < 6 || !compiled_args.len().is_multiple_of(3) {
-                diagnostics.push(Diagnostic::error(format!(
-                    "interp() expects coordinate triples (at least 6 args for 2 points), got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let args: Vec<(String, CompiledExpr)> = compiled_args
-                .into_iter()
-                .enumerate()
-                .map(|(i, expr)| (format!("c{}", i), expr))
-                .collect();
-            Some(vec![CompiledGeometryOp::Curve {
-                kind: CurveKind::InterpCurve,
-                args,
-            }])
-        }
-        // bezier(x1,y1,z1, x2,y2,z2, ...) — variadic, triples of coordinates
-        "bezier" => {
-            if compiled_args.len() < 6 || !compiled_args.len().is_multiple_of(3) {
-                diagnostics.push(Diagnostic::error(format!(
-                    "bezier() expects coordinate triples (at least 6 args for 2 points), got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let args: Vec<(String, CompiledExpr)> = compiled_args
-                .into_iter()
-                .enumerate()
-                .map(|(i, expr)| (format!("c{}", i), expr))
-                .collect();
-            Some(vec![CompiledGeometryOp::Curve {
-                kind: CurveKind::BezierCurve,
-                args,
-            }])
-        }
-        // nurbs(degree, n_points, x1,y1,z1,..., w1,..., k1,...)
-        // For simplicity: nurbs(degree, x1,y1,z1,...xn,yn,zn, w1,...wn, k1,...km)
-        // Actually, let's use a flat encoding: first arg is degree, then groups.
-        // Simpler: nurbs takes named-style flat args similar to other constructors.
-        // We'll pass all args as positional and decode in eval.
-        "nurbs" => {
-            // Minimum: degree(1) + n_points(1) + 2×3 coords(6) + 2 weights(2) = 10
-            // (knots are also required but their count depends on degree, so we
-            // defer full validation to the eval layer)
-            if compiled_args.len() < 10 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "nurbs() expects at least 10 arguments (degree + n_points + coords + weights), got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let args: Vec<(String, CompiledExpr)> = compiled_args
-                .into_iter()
-                .enumerate()
-                .map(|(i, expr)| (format!("c{}", i), expr))
-                .collect();
-            Some(vec![CompiledGeometryOp::Curve {
-                kind: CurveKind::NurbsCurve,
-                args,
-            }])
+        "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
+            compile_curve_op(name, compiled_args, diagnostics)
         }
         _ => {
             diagnostics.push(Diagnostic::error(format!(
@@ -937,6 +555,138 @@ pub(crate) fn compile_geometry_call(
             )));
             None
         }
+    }
+}
+
+// ─── Registry cross-check (task-1733) ────────────────────────────────────────
+//
+// The test below cross-checks the set of function names handled in
+// `geometry_arg_indices` against the names dispatched in `compile_geometry_call`.
+// When a new geometry function is added to the dispatch block, it must also be
+// added to one of the lists below, ensuring `geometry_arg_indices` is kept in
+// sync and geometry-arg resolution is not silently broken.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every non-boolean, non-loft function dispatched in `compile_geometry_call`
+    /// that takes at least one geometry arg (first arg is target/profile/etc.).
+    /// These MUST return non-empty from `geometry_arg_indices`.
+    const GEOM_ARG_FUNCTIONS: &[&str] = &[
+        "translate",
+        "rotate",
+        "scale",
+        "rotate_around",
+        "circular_pattern",
+        "linear_pattern",
+        "mirror",
+        "extrude",
+        "revolve",
+        "revolve_full",
+        "shell",
+        "thicken",
+        "draft",
+        "sweep",
+    ];
+
+    /// Every non-boolean function dispatched in `compile_geometry_call` that has
+    /// NO geometry args (primitives, curves, patterns that don't use geom_ref).
+    /// These MUST return empty from `geometry_arg_indices`.
+    const NO_GEOM_ARG_FUNCTIONS: &[&str] = &[
+        "box",
+        "cylinder",
+        "sphere",
+        "linear_pattern_2d",
+        "arbitrary_pattern",
+        "chamfer",
+        "fillet",
+        "line_segment",
+        "arc",
+        "helix",
+        "interp",
+        "bezier",
+        "nurbs",
+    ];
+
+    #[test]
+    fn geometry_arg_indices_covers_all_geom_arg_functions() {
+        for &name in GEOM_ARG_FUNCTIONS {
+            assert!(
+                !geometry_arg_indices(name).is_empty(),
+                "geometry_arg_indices(\"{}\") returned empty — \
+                 this function takes geometry args but is not registered in the index",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_arg_indices_empty_for_no_geom_arg_functions() {
+        for &name in NO_GEOM_ARG_FUNCTIONS {
+            assert!(
+                geometry_arg_indices(name).is_empty(),
+                "geometry_arg_indices(\"{}\") returned non-empty — \
+                 this function should not have geometry args registered",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_arg_indices_loft_is_empty_handled_specially() {
+        // loft is variadic — handled with special logic in compile_geometry_call,
+        // not via geometry_arg_indices. Verify it returns empty (the wildcard arm)
+        // so we know the special path is the only handler.
+        assert!(
+            geometry_arg_indices("loft").is_empty(),
+            "loft should not be in geometry_arg_indices — it uses variadic handling"
+        );
+    }
+
+    #[test]
+    fn all_dispatch_functions_accounted_for() {
+        // Ensure the two lists together with loft and the boolean ops cover every
+        // arm in compile_geometry_call.  If a new function is added there but not
+        // listed here, this test should be updated (the developer will notice
+        // because the new function is absent from both lists).
+        let boolean_ops: &[&str] =
+            &["union", "intersection", "difference", "union_all", "intersection_all"];
+        let loft: &[&str] = &["loft"];
+
+        let mut all: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for &name in GEOM_ARG_FUNCTIONS
+            .iter()
+            .chain(NO_GEOM_ARG_FUNCTIONS.iter())
+            .chain(boolean_ops.iter())
+            .chain(loft.iter())
+        {
+            assert!(
+                all.insert(name),
+                "duplicate function name \"{}\" in cross-check lists",
+                name
+            );
+        }
+
+        // The per-function tests above (`geometry_arg_indices_covers_all_geom_arg_functions`
+        // and `geometry_arg_indices_empty_for_no_geom_arg_functions`) are the primary
+        // correctness guardrail — they verify each function is in the right list.
+        // This count check is a secondary reminder: if you add a new function to
+        // `compile_geometry_call` without adding it to one of the four lists here,
+        // the count will be wrong and this test will tell you to update the lists.
+        let expected = GEOM_ARG_FUNCTIONS.len()
+            + NO_GEOM_ARG_FUNCTIONS.len()
+            + boolean_ops.len()
+            + loft.len();
+        assert_eq!(
+            all.len(),
+            expected,
+            "expected {} total dispatched function names, got {} — \
+             did you add a new geometry function? Add it to GEOM_ARG_FUNCTIONS or \
+             NO_GEOM_ARG_FUNCTIONS in this test.",
+            expected,
+            all.len()
+        );
     }
 }
 

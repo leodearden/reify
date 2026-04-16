@@ -104,6 +104,14 @@ export type ConstraintUpdate = ConstraintData;
 /** Supported export formats for geometry. */
 export type ExportFormat = 'step' | 'stl';
 
+/**
+ * Visibility state for entities in the 3D viewport.
+ * - 'show': Opaque, selectable, raycasted normally.
+ * - 'ghost': Translucent, not selectable, not raycasted. Uses ghost material.
+ * - 'hidden': Completely invisible, not rendered.
+ */
+export type VisibilityState = 'show' | 'ghost' | 'hidden';
+
 /** An entry in the file browser tree. */
 export interface FileEntry {
   path: string;

@@ -7,6 +7,10 @@
     "escalation": {
       "type": "http",
       "url": "http://127.0.0.1:8100/mcp"
+    },
+    "reify-debug": {
+      "type": "http",
+      "url": "http://127.0.0.1:3939/mcp"
     }
   }
 }
