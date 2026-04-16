@@ -2953,6 +2953,57 @@ mod tests {
         }
     }
 
+    // ── Shell face index diagnostic precision tests ───────────────────────────
+
+    #[test]
+    fn compile_geometry_op_shell_string_face_diagnostic_excludes_non_finite() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_0 is a String — as_f64() returns None (non-numeric type, NOT non-finite)
+        // Diagnostic should say 'non-numeric' only, NOT 'non-finite'
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                (
+                    "face_0".into(),
+                    reify_types::CompiledExpr::literal(
+                        reify_types::Value::String("bad".into()),
+                        reify_types::Type::String,
+                    ),
+                ),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_some(), "Shell should return Some even when face_0 is String, got {:?}", result);
+        let diag = diagnostics
+            .iter()
+            .find(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
+            .expect("expected a Warning mentioning 'face_0'");
+        assert!(
+            diag.message.contains("non-numeric"),
+            "diagnostic should mention 'non-numeric', got: {:?}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("non-finite"),
+            "diagnostic should NOT mention 'non-finite' for a non-numeric type, got: {:?}",
+            diag.message
+        );
+    }
+
     // ── validate_pattern_count upper-bound tests ──────────────────────────────
 
     #[test]
