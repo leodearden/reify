@@ -1,15 +1,31 @@
-structure def BoltFlange {
-    param outer_radius : Scalar = 60mm
-    param height : Scalar = 12mm
+structure def BoltFlange : Rigid {
+    param outer_radius : Length = 60mm
+    param height : Length = 12mm
     param hole_count : Int = 8
-    param bolt_circle_radius : Scalar = 45mm
-    param hole_radius : Scalar = 4mm
+    param bolt_circle_radius : Length = 45mm
+    param hole_radius : Length = 4mm
+
+    // Material trait requirements
+    param density : Real = 7850
+    param name : String = "steel"
+
+    // Physical trait requirements
+    param volume : Real = 0.0001
+    param centroid_x : Real = 0.0
+    param centroid_y : Real = 0.0
+    param centroid_z : Real = 0.0
+
+    // Rigid trait requirements
+    param moment_of_inertia : Real = 0.000001
+
+    // Stand-in for material reference
+    param material : String = "steel"
 
     constraint outer_radius > bolt_circle_radius
     constraint hole_count > 0
 
     let body = cylinder(outer_radius, height)
-    let hole = cylinder(hole_radius, height)
-    let holes = circular_pattern(hole, 0, 0, 0, 0, 0, 1, hole_count, 360deg)
-    let flange = difference(body, holes)
+    let hole = translate(cylinder(hole_radius, height), bolt_circle_radius, 0mm, 0mm)
+    let holes = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, hole_count, 360deg)
+    param geometry : Solid = difference(body, holes)
 }
