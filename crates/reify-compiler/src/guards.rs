@@ -141,6 +141,16 @@ pub(crate) fn register_guarded_names<'a>(
                 } else {
                     Type::Real
                 };
+                // Solid-typed params with a geometry-call default are treated
+                // symmetrically to geometry lets (mirrors entity.rs pre-pass, step-4).
+                if ty == Type::Geometry {
+                    if let Some(default_expr) = &param.default {
+                        if is_geometry_let(default_expr, functions, known_geometry_lets) {
+                            scope.has_geometry = true;
+                            known_geometry_lets.insert(param.name.as_str());
+                        }
+                    }
+                }
                 scope.register(&param.name, ty);
             }
             reify_syntax::MemberDecl::Let(let_decl) => {
@@ -311,6 +321,18 @@ pub(crate) fn compile_guarded_members(
                         );
                         Type::Real
                     });
+
+                // Solid-typed params with a geometry-call default are lowered as
+                // realizations (not scalar cells) — mirrors entity.rs main loop (step-6).
+                if cell_type == Type::Geometry
+                    && param
+                        .default
+                        .as_ref()
+                        .map(|e| is_geometry_let(e, functions, known_geometry_lets))
+                        .unwrap_or(false)
+                {
+                    continue;
+                }
 
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 

@@ -1224,30 +1224,56 @@ pub(crate) fn compile_entity(
     // Build a lookup table mapping geometry let/param names to their initializer AST
     // expressions. This allows compile_geometry_call to resolve Ident references
     // (let-bound geometry variables) used as arguments to boolean ops.
-    let geometry_lets: HashMap<&str, &reify_syntax::Expr> = structure
-        .members
-        .iter()
-        .filter_map(|m| {
+    // Also recurses one level into GuardedGroupDecl members so guarded geometry
+    // params (registered into known_geometry_lets by register_guarded_names) are
+    // included.
+    let geometry_lets: HashMap<&str, &reify_syntax::Expr> = {
+        let mut map = HashMap::new();
+        for m in structure.members {
             match m {
                 reify_syntax::MemberDecl::Let(let_decl)
                     if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) =>
                 {
-                    Some((let_decl.name.as_str(), &let_decl.value))
+                    map.insert(let_decl.name.as_str(), &let_decl.value);
                 }
                 // Solid-typed params with a geometry-call default also contribute
                 // to the lookup table so boolean ops can reference them by name.
                 reify_syntax::MemberDecl::Param(param)
                     if known_geometry_lets.contains(param.name.as_str()) =>
                 {
-                    param
-                        .default
-                        .as_ref()
-                        .map(|e| (param.name.as_str(), e))
+                    if let Some(e) = &param.default {
+                        map.insert(param.name.as_str(), e);
+                    }
                 }
-                _ => None,
+                // Recurse into guarded groups to capture guarded geometry params/lets.
+                reify_syntax::MemberDecl::GuardedGroup(g) => {
+                    for gm in g.members.iter().chain(g.else_members.iter()) {
+                        match gm {
+                            reify_syntax::MemberDecl::Let(let_decl)
+                                if is_geometry_let(
+                                    &let_decl.value,
+                                    functions,
+                                    &known_geometry_lets,
+                                ) =>
+                            {
+                                map.insert(let_decl.name.as_str(), &let_decl.value);
+                            }
+                            reify_syntax::MemberDecl::Param(param)
+                                if known_geometry_lets.contains(param.name.as_str()) =>
+                            {
+                                if let Some(e) = &param.default {
+                                    map.insert(param.name.as_str(), e);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
             }
-        })
-        .collect();
+        }
+        map
+    };
 
     let mut realizations = Vec::new();
     let mut realization_index: u32 = 0;
@@ -1298,6 +1324,70 @@ pub(crate) fn compile_entity(
                         span: SourceSpan::new(0, 0),
                     });
                     realization_index += 1;
+                }
+            }
+            // Recurse into guarded groups to emit realizations for guarded geometry
+            // lets and Solid-typed params (registered in known_geometry_lets by
+            // register_guarded_names after step-8).
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                for gm in g.members.iter().chain(g.else_members.iter()) {
+                    match gm {
+                        reify_syntax::MemberDecl::Let(let_decl)
+                            if is_geometry_let(
+                                &let_decl.value,
+                                functions,
+                                &known_geometry_lets,
+                            ) =>
+                        {
+                            if let Some(ops) = compile_geometry_call(
+                                &let_decl.value,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                0,
+                                &geometry_lets,
+                                &mut HashSet::new(),
+                            ) {
+                                realizations.push(RealizationDecl {
+                                    id: RealizationNodeId::new(
+                                        entity_name,
+                                        realization_index,
+                                    ),
+                                    operations: ops,
+                                    span: SourceSpan::new(0, 0),
+                                });
+                                realization_index += 1;
+                            }
+                        }
+                        reify_syntax::MemberDecl::Param(param)
+                            if known_geometry_lets.contains(param.name.as_str()) =>
+                        {
+                            if let Some(default_expr) = &param.default
+                                && let Some(ops) = compile_geometry_call(
+                                    default_expr,
+                                    &scope,
+                                    enum_defs,
+                                    functions,
+                                    diagnostics,
+                                    0,
+                                    &geometry_lets,
+                                    &mut HashSet::new(),
+                                )
+                            {
+                                realizations.push(RealizationDecl {
+                                    id: RealizationNodeId::new(
+                                        entity_name,
+                                        realization_index,
+                                    ),
+                                    operations: ops,
+                                    span: SourceSpan::new(0, 0),
+                                });
+                                realization_index += 1;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             _ => {}
