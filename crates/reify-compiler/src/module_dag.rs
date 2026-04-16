@@ -4,9 +4,9 @@
 //! and `ModuleDag` for building and traversing the module dependency graph.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use indexmap::IndexSet;
-use std::path::{Path, PathBuf};
 
 use reify_types::Diagnostic;
 

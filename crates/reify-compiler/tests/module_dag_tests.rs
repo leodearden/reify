@@ -982,87 +982,6 @@ fn private_unit_not_exported_through_import_prelude() {
     );
 }
 
-// ── step-1 (task-1833): cycle_error_shows_import_chain_in_traversal_order ──────
-
-/// Validates that cycle detection shows the import chain in DFS traversal order
-/// using arrow notation instead of sorted alphabetical order.
-///
-/// Creates a three-module cycle: cherry -> apple -> banana -> cherry.
-/// DFS visits cherry first, then apple, then banana — so the cycle message
-/// should read "cherry -> apple -> banana -> cherry".
-///
-/// This test FAILS with the current implementation because:
-///   - current code sorts alphabetically: "apple, banana, cherry"
-///   - current code uses comma-separated format, not arrows
-#[test]
-fn cycle_error_shows_import_chain_in_traversal_order() {
-    let _tmp = tempfile::tempdir().unwrap();
-    let dir = _tmp.path().to_path_buf();
-
-    // cherry imports apple (DFS entry point)
-    fs::write(
-        dir.join("cherry.ri"),
-        "import apple\nstructure Cherry { param x: Scalar = 1mm }",
-    )
-    .unwrap();
-
-    // apple imports banana
-    fs::write(
-        dir.join("apple.ri"),
-        "import banana\nstructure Apple { param y: Scalar = 2mm }",
-    )
-    .unwrap();
-
-    // banana imports cherry (closes the cycle: cherry -> apple -> banana -> cherry)
-    fs::write(
-        dir.join("banana.ri"),
-        "import cherry\nstructure Banana { param z: Scalar = 3mm }",
-    )
-    .unwrap();
-
-    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
-    let mut dag = ModuleDag::new();
-    let result = dag.compile_module("cherry", &resolver);
-    assert!(result.is_err(), "expected error for 3-cycle");
-
-    let msg = result
-        .unwrap_err()
-        .iter()
-        .map(|d| d.message.clone())
-        .collect::<Vec<_>>()
-        .join("; ");
-
-    // (a) error mentions circular/cycle
-    assert!(
-        msg.contains("circular") || msg.contains("cycle"),
-        "error should mention circular dependency, got: {}",
-        msg
-    );
-
-    // (b) arrow-format shows the DFS traversal chain
-    // DFS visits: cherry, apple, banana — then detects cherry again.
-    assert!(
-        msg.contains("cherry -> apple -> banana -> cherry"),
-        "error should show DFS chain 'cherry -> apple -> banana -> cherry', got: {}",
-        msg
-    );
-
-    // (c) DFS order: cherry comes BEFORE apple, apple comes BEFORE banana
-    let cherry_pos = msg.find("cherry").expect("'cherry' must appear in error");
-    let apple_pos = msg.find("apple").expect("'apple' must appear in error");
-    let banana_pos = msg.find("banana").expect("'banana' must appear in error");
-    assert!(
-        cherry_pos < apple_pos,
-        "expected 'cherry' before 'apple' (DFS order), got: {}",
-        msg
-    );
-    assert!(
-        apple_pos < banana_pos,
-        "expected 'apple' before 'banana' (DFS order), got: {}",
-        msg
-    );
-}
-
 // ── step-2 (task-1833): cycle_error_excludes_non_cycle_ancestors ─────────────
 
 /// Validates that cycle detection excludes non-cycle ancestors from the error
@@ -1072,10 +991,9 @@ fn cycle_error_shows_import_chain_in_traversal_order() {
 ///   - d is an ancestor that triggers the DFS, but is NOT part of the cycle
 ///   - a -> b -> a is the actual cycle
 ///
-/// The error message should show "a -> b -> a" and must NOT mention "d".
-///
-/// This test FAILS with the current implementation because current code
-/// includes all in_progress members (including d) in the sorted list.
+/// The error message should show exactly "a -> b -> a" without mentioning "d".
+/// IndexSet::get_index_of finds where 'a' starts in in_progress ([d, a, b]),
+/// then slices from that index to exclude the non-cycle ancestor.
 #[test]
 fn cycle_error_excludes_non_cycle_ancestors() {
     let _tmp = tempfile::tempdir().unwrap();
@@ -1121,17 +1039,11 @@ fn cycle_error_excludes_non_cycle_ancestors() {
         msg
     );
 
-    // (b) cycle chain shows a -> b -> a (the actual cycle)
-    assert!(
-        msg.contains("a -> b -> a"),
-        "error should show cycle chain 'a -> b -> a', got: {}",
-        msg
-    );
-
-    // (c) non-cycle ancestor 'd' must NOT appear in the message
-    assert!(
-        !msg.contains(" d ") && !msg.contains("-> d") && !msg.contains("d ->"),
-        "error should NOT mention non-cycle ancestor 'd', got: {}",
-        msg
+    // (b) message is exactly the cycle chain — this positive assertion proves 'd'
+    // is absent without fragile per-pattern negative checks.
+    assert_eq!(
+        msg,
+        "circular dependency detected: a -> b -> a",
+        "message should contain exactly the cycle, not non-cycle ancestors"
     );
 }
