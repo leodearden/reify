@@ -1291,21 +1291,34 @@ structure def S : TraitX + TraitY + TraitZ {
 }
 
 /// Verifies that a DEBUG-level tracing event is emitted from the `reify_compiler` target
-/// when two traits supply the same-named default and the second registration is silently
-/// dropped (first-seen type wins in `register_if_absent`).
+/// when two traits supply the same-named default of **different kinds** (`let x` from one
+/// trait and `param x` from another), causing the second `register_if_absent` call to
+/// return `false` (the Occupied branch — first-seen type wins).
+///
+/// Same-kind duplicates (e.g., two `let x` from two traits) are deduplicated by
+/// `collect_all_requirements` before the pre-registration loop runs and therefore never
+/// exercise the `was_new = false` path. A cross-kind collision (let + param with the same
+/// name) causes BOTH defaults to appear in `ctx.defaults` because they use separate
+/// dedup maps (`seen_let_hashes` for Let, `seen_defaults` for Param). The pre-registration
+/// loop then visits the let first (was_new = true) and the param second (was_new = false),
+/// which is exactly the path guarded by the new `tracing::debug!` emission.
 ///
 /// This is an observability regression guard: the `tracing::debug!` emission in
 /// `conformance.rs` must fire when `register_if_absent` returns `false` (the Occupied
 /// branch). Any future removal of that emission will be caught here.
 #[test]
 fn trait_merge_name_conflict_emits_debug_event() {
+    // TraitA contributes `let x` (Let kind); TraitB contributes `param x` (Param kind).
+    // Both are pushed into ctx.defaults by collect_all_requirements (different dedup maps).
+    // The pre-registration loop registers x from TraitA (was_new=true) then tries to
+    // register x from TraitB (was_new=false) → debug! fires.
     let source = r#"
 trait TraitA {
     let x : Real = 1.0
 }
 
 trait TraitB {
-    let x : Real = 2.0
+    param x : Real = 2.0
 }
 
 structure def S : TraitA + TraitB {
