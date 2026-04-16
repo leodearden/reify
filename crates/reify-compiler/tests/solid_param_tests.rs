@@ -42,25 +42,6 @@ fn compile_allowing_errors(source: &str) -> reify_compiler::CompiledModule {
     parse_and_compile(source)
 }
 
-/// Looks up a realization by name within a fixed declaration order.
-///
-/// `names` must list every realization in source order; `target` is the name
-/// to look up.  More self-documenting than raw index access and resilient to
-/// minor ordering changes when `names` is updated alongside the source.
-fn realization_named<'a>(realizations: &'a [RealizationDecl], names: &[&str], target: &str) -> &'a RealizationDecl {
-    assert_eq!(
-        names.len(),
-        realizations.len(),
-        "names count ({}) does not match realizations count ({})",
-        names.len(),
-        realizations.len()
-    );
-    let idx = names
-        .iter()
-        .position(|&n| n == target)
-        .unwrap_or_else(|| panic!("realization '{}' not found in names list {:?}", target, names));
-    &realizations[idx]
-}
 
 // ─── step-5: Solid-typed param must NOT emit a ValueCellDecl ─────────────────
 
@@ -223,8 +204,7 @@ fn solid_param_referenced_by_downstream_boolean_op() {
     // (c) The `out` realization must have >= 3 ops, proving that
     //     difference(g, other) inlined the resolved primitives via the
     //     geometry_lets map rather than emitting a degenerate single-op realization.
-    //     Use realization_named to avoid brittle index-based access.
-    let out_realization = realization_named(&template.realizations, &["g", "other", "out"], "out");
+    let out_realization = &template.realizations[2]; // realizations emitted in source order: [0]=g, [1]=other, [2]=out
     assert!(
         out_realization.operations.len() >= 3,
         "expected `out` realization to have >= 3 ops (cylinder + sphere + difference); \
