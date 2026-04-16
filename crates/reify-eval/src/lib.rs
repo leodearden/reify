@@ -10,6 +10,7 @@ pub mod graph;
 pub mod journal;
 pub mod snapshot;
 pub mod test_runner;
+mod unfold;
 pub use test_runner::{TestResult, TestStatus, run_tests};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
