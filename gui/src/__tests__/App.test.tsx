@@ -2426,10 +2426,7 @@ describe('App handleSave dirty-indicator and error handling', () => {
       expect(capturedEditorStore.state.dirtyFiles).toContain(path);
 
       // console.error should NOT be called — errors route through showToast, not console
-      expect(errorSpy).not.toHaveBeenCalledWith(
-        expect.stringContaining('save'),
-        expect.anything(),
-      );
+      expect(errorSpy).not.toHaveBeenCalled();
     });
   });
 });

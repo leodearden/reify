@@ -124,14 +124,17 @@ describe('MenuBar — Help dropdown', () => {
 });
 
 describe('MenuBar — callbacks', () => {
+  function clickMenuItem(label: string) {
+    const item = screen.getAllByRole('menuitem').find((el) => el.textContent?.includes(label));
+    expect(item).toBeTruthy();
+    fireEvent.click(item!);
+  }
+
   it('clicking Open in File menu calls onOpen callback', () => {
     const onOpen = vi.fn();
     render(() => <MenuBar onOpen={onOpen} />);
     fireEvent.click(screen.getByText('File'));
-    const items = screen.getAllByRole('menuitem');
-    const openItem = items.find((el) => el.textContent?.includes('Open'));
-    expect(openItem).toBeTruthy();
-    fireEvent.click(openItem!);
+    clickMenuItem('Open');
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
@@ -139,10 +142,7 @@ describe('MenuBar — callbacks', () => {
     const onSave = vi.fn();
     render(() => <MenuBar onSave={onSave} />);
     fireEvent.click(screen.getByText('File'));
-    const items = screen.getAllByRole('menuitem');
-    const saveItem = items.find((el) => el.textContent?.includes('Save'));
-    expect(saveItem).toBeTruthy();
-    fireEvent.click(saveItem!);
+    clickMenuItem('Save');
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
@@ -150,10 +150,7 @@ describe('MenuBar — callbacks', () => {
     const onExport = vi.fn();
     render(() => <MenuBar onExport={onExport} />);
     fireEvent.click(screen.getByText('File'));
-    const items = screen.getAllByRole('menuitem');
-    const exportItem = items.find((el) => el.textContent?.includes('Export'));
-    expect(exportItem).toBeTruthy();
-    fireEvent.click(exportItem!);
+    clickMenuItem('Export');
     expect(onExport).toHaveBeenCalledTimes(1);
   });
 
@@ -161,10 +158,7 @@ describe('MenuBar — callbacks', () => {
     const onReEvaluate = vi.fn();
     render(() => <MenuBar onReEvaluate={onReEvaluate} />);
     fireEvent.click(screen.getByText('View'));
-    const items = screen.getAllByRole('menuitem');
-    const item = items.find((el) => el.textContent?.includes('Re-evaluate'));
-    expect(item).toBeTruthy();
-    fireEvent.click(item!);
+    clickMenuItem('Re-evaluate');
     expect(onReEvaluate).toHaveBeenCalledTimes(1);
   });
 
@@ -172,10 +166,7 @@ describe('MenuBar — callbacks', () => {
     const onFitToView = vi.fn();
     render(() => <MenuBar onFitToView={onFitToView} />);
     fireEvent.click(screen.getByText('View'));
-    const items = screen.getAllByRole('menuitem');
-    const item = items.find((el) => el.textContent?.includes('Fit to View'));
-    expect(item).toBeTruthy();
-    fireEvent.click(item!);
+    clickMenuItem('Fit to View');
     expect(onFitToView).toHaveBeenCalledTimes(1);
   });
 
@@ -183,20 +174,14 @@ describe('MenuBar — callbacks', () => {
     const onHelp = vi.fn();
     render(() => <MenuBar onHelp={onHelp} />);
     fireEvent.click(screen.getByText('Help'));
-    const items = screen.getAllByRole('menuitem');
-    const item = items.find((el) => el.textContent?.includes('Keyboard Shortcuts'));
-    expect(item).toBeTruthy();
-    fireEvent.click(item!);
+    clickMenuItem('Keyboard Shortcuts');
     expect(onHelp).toHaveBeenCalledTimes(1);
   });
 
   it('menu closes after clicking a menu item', () => {
     render(() => <MenuBar onOpen={vi.fn()} />);
     fireEvent.click(screen.getByText('File'));
-    const items = screen.getAllByRole('menuitem');
-    const openItem = items.find((el) => el.textContent?.includes('Open'));
-    expect(openItem).toBeTruthy();
-    fireEvent.click(openItem!);
+    clickMenuItem('Open');
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
@@ -204,10 +189,7 @@ describe('MenuBar — callbacks', () => {
     const onToggleChat = vi.fn();
     render(() => <MenuBar onToggleChat={onToggleChat} />);
     fireEvent.click(screen.getByText('View'));
-    const items = screen.getAllByRole('menuitem');
-    const item = items.find((el) => el.textContent?.includes('Toggle Chat'));
-    expect(item).toBeTruthy();
-    fireEvent.click(item!);
+    clickMenuItem('Toggle Chat');
     expect(onToggleChat).toHaveBeenCalledTimes(1);
   });
 });
