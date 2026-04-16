@@ -39225,6 +39225,17 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-04-16T22:02:03.917Z"
+      },
+      {
+        "id": 1879,
+        "title": "Tighten m5_integration Rigid conformance assertion beyond nominal bound string",
+        "description": "`crates/reify-eval/tests/m5_integration.rs:1318-1326` checks only `flange.trait_bounds.contains(&\"Rigid\".to_string())`, which passes even if Rigid's transitive supertrait chain (Physical → Material) was not evaluated. Either tighten the assertion to verify trait-conformance diagnostics are clean for Physical/Material, or narrow the test's docstring to clearly state that it only checks the nominal bound string.",
+        "details": "From reviewer_comprehensive suggestion on task 1751 (esc-1751-27).\n\n### memory_hints\n- search: \"trait_bounds conformance Rigid Physical Material\"",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -39236,7 +39247,8 @@
         "master"
       ],
       "created": "2026-04-16T22:02:21.185Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-16T22:02:51.440Z"
     }
   }
 }
