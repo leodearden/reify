@@ -57,24 +57,21 @@ pub(crate) fn resolve_builtin_constant(name: &str) -> Option<CompiledExpr> {
 mod tests {
     use super::*;
 
-    /// The number of constants recognised by `resolve_builtin_constant`.
-    ///
-    /// **Keep this in sync with the match arms in `resolve_builtin_constant`.**
-    /// When you add a new match arm, bump this constant AND add the name to
-    /// `BUILTIN_NAMES`. The two guard tests below enforce both directions:
-    ///
-    /// - `builtin_names_covers_all_constants` — every name in `BUILTIN_NAMES`
-    ///   resolves (forward direction).
-    /// - `builtin_names_is_exhaustive` — `BUILTIN_NAMES` contains exactly
-    ///   `BUILTIN_NAMES_COUNT` entries, equal to the number of match arms
-    ///   (reverse direction).
-    const BUILTIN_NAMES_COUNT: usize = 2;
-
     /// Guard: every name in `BUILTIN_NAMES` must resolve via
     /// `resolve_builtin_constant`. If this test fails, a name was added to
     /// `BUILTIN_NAMES` (the hint source-of-truth) without a corresponding
     /// match arm in `resolve_builtin_constant`, which would cause the hint
     /// system to suggest a name that also fails to resolve.
+    ///
+    /// Bidirectional exhaustiveness contract:
+    ///
+    /// - `builtin_names_covers_all_constants` (forward) — every name in
+    ///   `BUILTIN_NAMES` resolves via `resolve_builtin_constant`.
+    /// - `builtin_names_no_unlisted_resolvers` (reverse) — no plausible
+    ///   constant name resolves unless it is also listed in `BUILTIN_NAMES`.
+    ///   The probe set covers all `std::f64::consts` equivalents and common
+    ///   mathematical/physical names; truly novel names outside the probe set
+    ///   are not caught automatically.
     #[test]
     fn builtin_names_covers_all_constants() {
         for &name in BUILTIN_NAMES {
@@ -88,24 +85,74 @@ mod tests {
         }
     }
 
-    /// Guard: `BUILTIN_NAMES` must be exhaustive relative to the match arms in
-    /// `resolve_builtin_constant`. If this test fails after adding a new
-    /// constant, you must both bump `BUILTIN_NAMES_COUNT` and add the name to
-    /// `BUILTIN_NAMES`.
+    /// Guard (reverse direction): no plausible mathematical constant name
+    /// should resolve via `resolve_builtin_constant` unless it is also listed
+    /// in `BUILTIN_NAMES`.
     ///
-    /// Together with `builtin_names_covers_all_constants` this enforces the
-    /// bidirectional contract: every name in the list resolves, and the list
-    /// contains exactly as many names as there are match arms.
+    /// This test probes a comprehensive superset of names — all
+    /// `std::f64::consts` lowercase equivalents plus common mathematical and
+    /// physical constant names — and asserts that any name returning `Some`
+    /// from `resolve_builtin_constant` is also present in `BUILTIN_NAMES`.
+    ///
+    /// If this test fails, a match arm was added to `resolve_builtin_constant`
+    /// without adding the name to `BUILTIN_NAMES`; the hint system would then
+    /// fail to suggest that constant for case-variant misspellings.
+    ///
+    /// **Limitation:** names that are entirely novel (outside this probe set)
+    /// are not caught. The probe set covers all `std::f64::consts` variants and
+    /// the most common mathematical/physical constants, which encompasses the
+    /// realistic namespace of plausible additions.
     #[test]
-    fn builtin_names_is_exhaustive() {
-        assert_eq!(
-            BUILTIN_NAMES.len(),
-            BUILTIN_NAMES_COUNT,
-            "BUILTIN_NAMES.len() ({}) != BUILTIN_NAMES_COUNT ({}) — \
-             if you added a match arm in resolve_builtin_constant, \
-             bump BUILTIN_NAMES_COUNT AND add the name to BUILTIN_NAMES",
-            BUILTIN_NAMES.len(),
-            BUILTIN_NAMES_COUNT,
-        );
+    fn builtin_names_no_unlisted_resolvers() {
+        // All std::f64::consts lowercase equivalents plus common
+        // mathematical/physical names and the current builtins (pi, tau).
+        const PROBE: &[&str] = &[
+            // current builtins
+            "pi",
+            "tau",
+            // std::f64::consts equivalents
+            "e",
+            "frac_1_pi",
+            "frac_1_sqrt_2",
+            "frac_2_pi",
+            "frac_2_sqrt_pi",
+            "frac_pi_2",
+            "frac_pi_3",
+            "frac_pi_4",
+            "frac_pi_6",
+            "frac_pi_8",
+            "ln_2",
+            "ln_10",
+            "log2_e",
+            "log2_10",
+            "log10_2",
+            "log10_e",
+            "sqrt_2",
+            // common mathematical / physical names
+            "phi",
+            "golden_ratio",
+            "euler",
+            "avogadro",
+            "boltzmann",
+            "planck",
+            "speed_of_light",
+            "gravity",
+            "infinity",
+            "nan",
+            // If you add a constant outside this list, add its name here too.
+        ];
+
+        for &name in PROBE {
+            if resolve_builtin_constant(name).is_some() {
+                assert!(
+                    BUILTIN_NAMES.contains(&name),
+                    "resolve_builtin_constant({:?}) returned Some but {:?} is not in \
+                     BUILTIN_NAMES — add the name to BUILTIN_NAMES so the hint system \
+                     can suggest it for case-variant misspellings",
+                    name,
+                    name,
+                );
+            }
+        }
     }
 }
