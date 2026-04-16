@@ -194,17 +194,7 @@ fn build_returns_no_geometry_when_all_ops_fail_to_compile() {
         right: GeomRef::Step(1),
     };
 
-    let e = "TestShape";
-    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
-
-    let template = TopologyTemplateBuilder::new("TestShape")
-        .param(e, "width", Type::length(), Some(mm_literal(10.0)))
-        .realization(e, 0, vec![union_op])
-        .build();
-
-    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_compile_fail"))
-        .template(template)
-        .build();
+    let module = build_module_with_ops("test_compile_fail", &[union_op]);
 
     // Use standard MockGeometryKernel — kernel.execute() should never be called
     let checker = MockConstraintChecker::new();
@@ -1992,62 +1982,6 @@ fn build_all_ops_fail_diagnostic_emitted_after_refactor() {
         has_summary,
         "expected 'all geometry operations failed' diagnostic when total_ops>0 \
          and all kernel ops fail, got: {:?}",
-        result
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-}
-
-/// Regression guard (compile-None path mirror of
-/// `build_all_ops_fail_diagnostic_emitted_after_refactor`): when total_ops > 0
-/// but all ops fail at the `compile_geometry_op` stage (returning None before
-/// kernel.execute is ever called), build() should still return
-/// geometry_output=None AND emit 'all geometry operations failed'.
-///
-/// Covers the `None` arm of `compile_geometry_op` in `Engine::build`: the op
-/// returns None → GeometryHandleId::INVALID is pushed as sentinel,
-/// had_failure=true, and realization handles are truncated. The
-/// `if total_ops > 0` summary-diagnostic guard inside the
-/// `step_handles.is_empty()` branch must be reached via this compile-None path
-/// too — not only via the kernel-execute-failure path exercised by
-/// `build_all_ops_fail_diagnostic_emitted_after_refactor`.
-///
-/// Uses a standard MockGeometryKernel (not FailingMockGeometryKernel) so that
-/// if kernel.execute were incorrectly called the test would succeed for the
-/// wrong reason — the sole op must fail during compilation, not execution.
-#[test]
-fn build_all_ops_fail_compile_path_diagnostic_emitted_after_refactor() {
-    // Boolean(Union, Step(0), Step(1)) — step_handles is empty when op 0 is
-    // processed, so compile_geometry_op cannot resolve the references and
-    // returns None. kernel.execute is never called.
-    let union_op = CompiledGeometryOp::Boolean {
-        op: BooleanOp::Union,
-        left: GeomRef::Step(0),
-        right: GeomRef::Step(1),
-    };
-
-    let module = build_module_with_ops("test_compile_fail_regression", &[union_op]);
-    let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new(); // execute() must NOT be called
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&module, ExportFormat::Step);
-
-    assert!(
-        result.geometry_output.is_none(),
-        "expected geometry_output=None when all ops fail to compile, got Some({} bytes)",
-        result.geometry_output.as_ref().map_or(0, |v| v.len())
-    );
-
-    let has_summary = result
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("all geometry operations failed"));
-    assert!(
-        has_summary,
-        "expected 'all geometry operations failed' diagnostic when total_ops>0 \
-         and all ops fail at compile stage (compile-None path), got: {:?}",
         result
             .diagnostics
             .iter()
