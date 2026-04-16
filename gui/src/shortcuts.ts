@@ -5,6 +5,45 @@
  * both MenuBar (for hotkey annotations) and KeyboardHelp (for the overlay).
  */
 
+/**
+ * Structured keyboard binding with tri-state modifier fields.
+ * - true  → modifier MUST be held
+ * - false → modifier MUST NOT be held
+ * - undefined → don't care (modifier state is ignored)
+ *
+ * Note: `ctrl` checks `event.ctrlKey` only. For macOS Cmd-key support, use
+ * `meta: true` (checks `event.metaKey`). Combining both allows cross-platform
+ * bindings without conflating the two modifier keys.
+ */
+export interface KeyBinding {
+  /** The KeyboardEvent.key value to match */
+  key: string;
+  ctrl?: boolean;
+  shift?: boolean;
+  alt?: boolean;
+  /** Tri-state for the Meta/Cmd key (event.metaKey). Useful for macOS bindings. */
+  meta?: boolean;
+}
+
+/**
+ * Returns true if the given KeyboardEvent matches the binding.
+ *
+ * Key comparison is case-insensitive for single-character keys.
+ * Modifier fields use tri-state semantics: true/false enforce the state,
+ * undefined means don't care.
+ */
+export function matchesEvent(bind: KeyBinding, event: KeyboardEvent): boolean {
+  const isSingleChar = bind.key.length === 1;
+  const bindKey = isSingleChar ? bind.key.toLowerCase() : bind.key;
+  const eventKey = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  if (bindKey !== eventKey) return false;
+  if (bind.ctrl !== undefined && bind.ctrl !== event.ctrlKey) return false;
+  if (bind.shift !== undefined && bind.shift !== event.shiftKey) return false;
+  if (bind.alt !== undefined && bind.alt !== event.altKey) return false;
+  if (bind.meta !== undefined && bind.meta !== event.metaKey) return false;
+  return true;
+}
+
 export interface ShortcutDef {
   /** Unique identifier for the shortcut */
   id: string;
@@ -14,20 +53,44 @@ export interface ShortcutDef {
   description: string;
   /** When true, the shortcut is defined but not currently functional */
   disabled?: boolean;
+  /** Structured binding for event matching. Absent when there is no keyboard shortcut. */
+  bind?: KeyBinding;
 }
 
 export const SHORTCUTS: ShortcutDef[] = [
-  { id: 'open', key: 'Ctrl+O', description: 'Open file' },
-  { id: 'save', key: 'Ctrl+S', description: 'Save file' },
-  { id: 'export', key: 'Ctrl+E', description: 'Export' },
-  { id: 'undo', key: 'Ctrl+Z', description: 'Undo', disabled: true },
-  { id: 'redo', key: 'Ctrl+Shift+Z', description: 'Redo', disabled: true },
-  { id: 'reEvaluate', key: 'F5', description: 'Re-evaluate' },
-  { id: 'fitToView', key: '', description: 'Fit to view' },
-  { id: 'toggleChat', key: 'Ctrl+J', description: 'Toggle chat panel' },
-  { id: 'reload', key: 'Ctrl+Shift+R', description: 'Reload changed files' },
-  { id: 'help', key: '?', description: 'Toggle this help' },
+  // shift: false on Ctrl-only bindings prevents them from firing on Ctrl+Shift+<letter>,
+  // which produces an uppercase key that the case-insensitive comparison would otherwise
+  // accept. This restores the behavior of the original per-key equality checks.
+  { id: 'open',       key: 'Ctrl+O',       description: 'Open file',            bind: { key: 'o', ctrl: true, shift: false } },
+  { id: 'save',       key: 'Ctrl+S',       description: 'Save file',            bind: { key: 's', ctrl: true, shift: false } },
+  { id: 'export',     key: 'Ctrl+E',       description: 'Export',               bind: { key: 'e', ctrl: true, shift: false } },
+  // shift: false makes the undo intent explicit and prevents it from shadowing redo
+  // (which requires shift: true) if a callback were ever wired to undo in ID_TO_CALLBACK.
+  { id: 'undo',       key: 'Ctrl+Z',       description: 'Undo',                 disabled: true, bind: { key: 'z', ctrl: true, shift: false } },
+  { id: 'redo',       key: 'Ctrl+Shift+Z', description: 'Redo',                 disabled: true, bind: { key: 'z', ctrl: true, shift: true } },
+  { id: 'reEvaluate', key: 'F5',           description: 'Re-evaluate',          bind: { key: 'F5' } },
+  { id: 'fitToView',  key: '',             description: 'Fit to view' },
+  { id: 'toggleChat', key: 'Ctrl+J',       description: 'Toggle chat panel',    bind: { key: 'j', ctrl: true, shift: false } },
+  { id: 'reload',     key: 'Ctrl+Shift+R', description: 'Reload changed files', bind: { key: 'r', ctrl: true, shift: true } },
+  { id: 'help',       key: '?',            description: 'Toggle this help',     bind: { key: '?', ctrl: false, alt: false } },
 ];
+
+/**
+ * Union of all valid shortcut IDs.
+ * Consumed by useKeyboardShortcuts to give compile-time safety to its
+ * ID→callback map. Must be kept in sync with the SHORTCUTS array.
+ */
+export type ShortcutId =
+  | 'open'
+  | 'save'
+  | 'export'
+  | 'undo'
+  | 'redo'
+  | 'reEvaluate'
+  | 'fitToView'
+  | 'toggleChat'
+  | 'reload'
+  | 'help';
 
 /**
  * Look up a shortcut definition by id.

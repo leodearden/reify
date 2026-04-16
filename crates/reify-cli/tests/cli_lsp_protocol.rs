@@ -117,7 +117,7 @@ fn spawn_reader(stdout: std::process::ChildStdout) -> mpsc::Receiver<serde_json:
 /// timeouts in the other LSP tests (esc-1685-81).  When `LSP_TEST_LOCK` is poisoned
 /// and multiple test threads race to recover it, OS scheduling non-determinism
 /// occasionally starves the second LSP child process long enough to hit the
-/// 10-second `wait_for_response` timeout.  The fix is to:
+/// 30-second `wait_for_response` timeout.  The fix is to:
 ///   1. Hold `LSP_TEST_LOCK` for the whole test so this function is fully
 ///      serialised with the other LSP tests (no concurrent LSP process running).
 ///   2. Test the poison-recovery idiom on `POISON_TEST_LOCK` — a static
