@@ -292,6 +292,23 @@ fn solid_param_default_aliasing_geometry_let_is_realization() {
             i
         );
     }
+
+    // (d) At least one realization must contain a Cylinder primitive, confirming
+    //     that the Ident branch of is_geometry_let resolved `a`'s cylinder ops
+    //     into `g` rather than emitting an unrelated placeholder op.
+    let has_cylinder = template.realizations.iter().any(|r| {
+        r.operations.iter().any(|op| matches!(
+            op,
+            CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, .. }
+        ))
+    });
+    assert!(
+        has_cylinder,
+        "expected at least one realization to contain a Cylinder primitive — \
+         Ident-alias branch of is_geometry_let may not be inlining a's cylinder ops into g; \
+         got: {:#?}",
+        template.realizations
+    );
 }
 
 // ─── coverage: Solid param with non-geometry default (pin-down) ───────────────
