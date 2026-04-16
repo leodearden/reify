@@ -212,6 +212,26 @@ pub fn assert_no_eval_errors(result: &reify_eval::EvalResult) {
     assert!(errors.is_empty(), "eval errors: {:?}", errors);
 }
 
+/// Assert that a [`reify_eval::CheckResult`] contains no Error-severity diagnostics.
+///
+/// Use this immediately after `engine.check(&compiled)` — before inspecting
+/// `constraint_results` or `values` — so that eval-phase errors produce a precise
+/// failure message rather than an opaque `unwrap()`/index-out-of-bounds panic.
+///
+/// # Panics
+/// Panics if `result.diagnostics` contains any [`reify_types::Severity::Error`]
+/// entry. The panic message lists all error diagnostics for easy debugging.
+#[cfg(feature = "eval-helpers")]
+#[track_caller]
+pub fn assert_no_check_errors(result: &reify_eval::CheckResult) {
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "check errors: {:?}", errors);
+}
+
 /// Assert that an [`reify_eval::EvalResult`] contains no diagnostics of any severity.
 ///
 /// This is stricter than [`assert_no_eval_errors`]: it also fails on Warning, Info,
@@ -494,6 +514,55 @@ mod tests {
             resolved_params: HashMap::new(),
         };
         super::assert_no_eval_errors(&result);
+    }
+
+    /// assert_no_check_errors should not panic when the CheckResult has no diagnostics.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_assert_no_check_errors_passes_on_clean_result() {
+        use reify_types::ValueMap;
+        use std::collections::HashMap;
+        let result = reify_eval::CheckResult {
+            values: ValueMap::new(),
+            constraint_results: vec![],
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+        };
+        super::assert_no_check_errors(&result);
+    }
+
+    /// assert_no_check_errors should panic (with message containing "check errors")
+    /// when the CheckResult contains at least one Error-severity diagnostic.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    #[should_panic(expected = "check errors")]
+    fn test_assert_no_check_errors_panics_on_error_diagnostic() {
+        use reify_types::{Diagnostic, ValueMap};
+        use std::collections::HashMap;
+        let result = reify_eval::CheckResult {
+            values: ValueMap::new(),
+            constraint_results: vec![],
+            diagnostics: vec![Diagnostic::error("something went wrong")],
+            resolved_params: HashMap::new(),
+        };
+        super::assert_no_check_errors(&result);
+    }
+
+    /// assert_no_check_errors should not panic when the CheckResult has only warnings
+    /// (no Error-severity diagnostics).
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_assert_no_check_errors_passes_with_warnings_only() {
+        use reify_types::{Diagnostic, ValueMap};
+        use std::collections::HashMap;
+        let result = reify_eval::CheckResult {
+            values: ValueMap::new(),
+            constraint_results: vec![],
+            diagnostics: vec![Diagnostic::warning("just a warning")],
+            resolved_params: HashMap::new(),
+        };
+        // Should not panic — warnings are not errors
+        super::assert_no_check_errors(&result);
     }
 
     /// assert_no_eval_errors should not panic when the result has only warnings
