@@ -9,6 +9,7 @@ description = "Name resolution and elaboration from ParsedModule to CompiledModu
 reify-types.workspace = true
 reify-syntax.workspace = true
 indexmap.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 reify-test-support.workspace = true
