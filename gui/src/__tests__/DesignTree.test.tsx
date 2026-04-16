@@ -243,6 +243,26 @@ describe('DesignTree — context menu', () => {
       addSpy.mockRestore();
     }
   });
+
+  it('unmount removes document click and keydown listeners (no leak)', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+    try {
+      const { unmount } = render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+      const clickAdds = addSpy.mock.calls.filter((c) => c[0] === 'click').length;
+      const keydownAdds = addSpy.mock.calls.filter((c) => c[0] === 'keydown').length;
+      unmount();
+      const clickRemoves = removeSpy.mock.calls.filter((c) => c[0] === 'click').length;
+      const keydownRemoves = removeSpy.mock.calls.filter((c) => c[0] === 'keydown').length;
+      expect(clickRemoves).toBe(clickAdds);
+      expect(keydownRemoves).toBe(keydownAdds);
+    } finally {
+      addSpy.mockRestore();
+      removeSpy.mockRestore();
+    }
+  });
 });
 
 describe('DesignTree — keyboard shortcuts', () => {
