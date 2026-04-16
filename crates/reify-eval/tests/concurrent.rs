@@ -782,9 +782,8 @@ fn rollback_multiple_cycles_reuse_ids_no_gaps() {
 
 /// step-11: apply_concurrent_edit persists resolved auto params to param_overrides.
 ///
-/// The `for (id, val) in &result.resolved_params { self.param_overrides.insert(…) }` loop
-/// at concurrent.rs:261-263 writes solved auto-param values into the engine's
-/// param_overrides map. We verify this by asserting:
+/// The `param_overrides` commit loop inside `apply_concurrent_edit` writes solved
+/// auto-param values into the engine's param_overrides map. We verify this by asserting:
 /// (a) The snapshot immediately after apply carries x = mm(20.0).
 /// (b) A subsequent engine.eval() seeds x from param_overrides (mm(20.0)) before
 ///     calling the solver (call 3 → mm(99.0)), meaning the values returned by eval
