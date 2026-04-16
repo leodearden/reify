@@ -177,10 +177,18 @@ pub(crate) fn check_trait_conformance(
     // where `let b = 5mm` is *also* unannotated and appears *after* `a` in
     // iteration order — will fail inference for the forward-referencing
     // binding (`b` is not in scope when `a`'s expression is compiled), yielding
-    // a diagnostic from `compile_expr`.  Adding an annotation to either
-    // binding unblocks the case.  A topological ordering pass could resolve
-    // every such pair but is explicitly out of scope for task 1834 ("documenting
-    // as intentional simplification").
+    // a diagnostic from `compile_expr`.  Adding an annotation to the
+    // *forward-referencing* binding (the one that needs its referent in scope)
+    // unblocks the case, because the annotated branch above skips `compile_expr`
+    // in the pre-register pass — by the time the injection loop compiles that
+    // binding's expression, the referent has already been registered.
+    // Annotating only the *forward-referenced* binding does NOT help here,
+    // because the pre-register pass walks `ctx.defaults` in iteration order and
+    // the forward-referencing binding's `compile_expr` still fires before the
+    // referenced binding's match arm runs.  A two-pass variant — first register
+    // all annotated defaults/params, then compile unannotated-let expressions —
+    // would make either-side annotation sufficient, but is out of scope for
+    // task 1834 ("documenting as intentional simplification").
     let mut inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
 
     // Pre-register default member names in scope so their expressions can
