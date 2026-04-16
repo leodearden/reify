@@ -38399,10 +38399,11 @@
         "description": "Three test quality improvements from task 1717 review:\n\n1. **ValueCellId consistency across conditional branches** (constraint_inst_tests.rs ~lines 471-490): The Conditional substitution test checks that condition, then-branch, and else-branch each have their top-level parameter replaced with ValueRefs, but does not verify that the *same* parameter appearing in multiple branches resolves to the *same* ValueCellId. Extract the ValueCellId from each branch's left operand and assert they are equal (e.g. `assert_eq!(condition_left_id, then_left_id)`).\n\n2. **Document arm ordering invariant** (constraint_inst_tests.rs ~lines 541-543): The Match substitution test checks `arms[0].patterns == vec![\"Standard\"]` and `arms[1].patterns == vec![\"Premium\"]`, coupling to arm ordering. Add a brief comment like `// Arms are emitted in source order by the compiler` documenting this reliance.\n\n3. **Tighten self_in_purpose_body_rejected assertion** (purpose_compile_tests.rs ~lines 419-435): The test asserts that at least one error contains either 'self' or 'unresolved' (case-insensitive), but this is too broad — could match unrelated errors. Tighten to check that the error mentions both 'self' and 'unresolved', or match against the specific diagnostic message.\n\n## memory_hints\n- search: \"constraint instantiation substitution test ValueRef\"\n- search: \"self_in_purpose_body_rejected test assertion\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:20:31.679Z"
       },
       {
         "id": "1842",
@@ -38418,7 +38419,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:20:31.439Z",
+      "lastModified": "2026-04-16T02:20:31.679Z",
       "taskCount": 1837,
       "completedCount": 1569,
       "tags": [
