@@ -909,70 +909,19 @@ mod tests {
     }
 
     #[test]
-    fn compile_geometry_op_revolve_missing_arg_returns_none() {
-        let step_handles = vec![GeometryHandleId(10)];
-        let values = ValueMap::new();
-
-        // Revolve with missing 'ox' arg — should return None, not silently use 0.0
-        let op = CompiledGeometryOp::Sweep {
-            kind: SweepKind::Revolve,
-            profiles: vec![GeomRef::Step(0)],
-            args: vec![
-                // Deliberately omit "ox"
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                ("angle".into(), literal_f64(std::f64::consts::PI)),
-            ],
-        };
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
-        assert!(
-            result.is_none(),
-            "expected None for missing 'ox' arg, got {:?}",
-            result
-        );
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "missing 'ox' should emit exactly one diagnostic, got: {:?}",
-            diagnostics
-        );
-        assert_eq!(
-            diagnostics[0].severity,
-            reify_types::Severity::Warning,
-            "missing 'ox' should emit a Warning severity"
-        );
-        assert!(
-            diagnostics[0].message.contains("ox"),
-            "diagnostic for missing 'ox' should mention 'ox', got: {}",
-            diagnostics[0].message
-        );
-        assert!(
-            diagnostics[0].message.contains("Revolve"),
-            "diagnostic for missing 'ox' should mention 'Revolve', got: {}",
-            diagnostics[0].message
-        );
-    }
-
-    #[test]
     fn compile_geometry_op_revolve_missing_each_required_arg_returns_none() {
-        // Table-driven coverage for the remaining 6 required Revolve args
-        // that the canonical `ox`-only test above doesn't exercise. Revolve
-        // reads seven f64 args (ax, ay, az, angle, ox, oy, oz) via f64_arg?;
-        // omitting any of them must yield None (not silently treat as 0.0).
+        // Table-driven coverage for all 7 required Revolve args. Revolve reads
+        // ax, ay, az, angle, ox, oy, oz via f64_arg?; omitting any of them must
+        // yield None (not silently treat as 0.0).
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
 
         // All seven required args with valid default values, in one canonical order.
-        // `ox` must be present so that iterations omitting `oy` or `oz` (which eval
-        // after `ox` in the ax→ay→az→angle→ox→oy→oz Revolve branch order) short-circuit
-        // on the named omitted arg rather than on a missing `ox`. For iterations
-        // omitting `ax`/`ay`/`az`/`angle`, ox's presence is irrelevant because those
-        // short-circuit earlier in the sequence, before ever reaching `ox`.
+        // Each iteration filters out one arg by name and tests the full contract.
+        // Note: when `oy`/`oz` are omitted, `ox` is still present in full_args —
+        // if it were also missing, the eval would short-circuit on `ox` (which evals
+        // before `oy`/`oz` in ax→ay→az→angle→ox→oy→oz order) and not on the named
+        // omitted arg. The `ox` omit iteration itself is covered by this loop.
         let full_args: Vec<(&'static str, reify_types::CompiledExpr)> = vec![
             ("ox", literal_f64(0.0)),
             ("oy", literal_f64(0.0)),
@@ -983,7 +932,7 @@ mod tests {
             ("angle", literal_f64(std::f64::consts::PI)),
         ];
 
-        for omit in ["oy", "oz", "ax", "ay", "az", "angle"] {
+        for omit in ["ox", "oy", "oz", "ax", "ay", "az", "angle"] {
             let args: Vec<(String, reify_types::CompiledExpr)> = full_args
                 .iter()
                 .filter(|(name, _)| *name != omit)
@@ -998,9 +947,8 @@ mod tests {
 
             // Pin the observable contract: each missing required arg
             // must (a) return None and (b) emit exactly one warning
-            // diagnostic naming the omitted arg and the 'Revolve' op.
-            // This matches the per-arg contract exercised for `ox` in
-            // `compile_geometry_op_revolve_missing_arg_returns_none`.
+            // diagnostic naming the quoted arg (e.g. `'ox'`) and the
+            // 'Revolve' op. Covers all seven required args including `ox`.
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             let result = compile_geometry_op(
                 &op,
@@ -1027,8 +975,8 @@ mod tests {
                 "missing '{omit}' should emit a Warning severity"
             );
             assert!(
-                diagnostics[0].message.contains(omit),
-                "diagnostic for missing '{omit}' should mention '{omit}', got: {}",
+                diagnostics[0].message.contains(&format!("'{omit}'")),
+                "diagnostic for missing '{omit}' should mention \"'{omit}'\", got: {}",
                 diagnostics[0].message
             );
             assert!(
