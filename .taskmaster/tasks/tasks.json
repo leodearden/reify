@@ -36595,7 +36595,7 @@
         "description": "Implement automatic view generation. The \"Default\" auto view applies Physical-trait-aware visibility rules (show geometry param, hide other solids). The \"All geometry\" auto view shows everything. Purpose-linked auto views are generated when purposes are active, showing entities relevant to that purpose. Auto views update dynamically as the design changes.",
         "details": "## Scope\n\nPRD: docs/prd-design-tree-views.md, Sections 5.4 (Default Rules) and 6.1 (Auto Views).\n\n### Implementation\n\n1. **Auto view generator** (`stores/autoViewGenerator.ts`)\n   - `generateDefaultView(tree: EntityTree) -> ViewDefinition`:\n     - Walk tree; for each node:\n       - If node.traitGeometry: visibility = show\n       - Else if node.kind == \"let\" && node.typeName in {Solid, Surface, Curve}: visibility = hidden\n       - Else if node.kind == \"structure\" || node.kind == \"sub\": visibility = show (container)\n     - Name: \"Default\", auto: true\n   - `generateAllGeometryView(tree: EntityTree) -> ViewDefinition`:\n     - All geometric nodes: visibility = show\n     - Name: \"All geometry\", auto: true\n   - `generatePurposeViews(tree: EntityTree, activePurposes: string[]) -> ViewDefinition[]`:\n     - Heuristic: for each active purpose, generate a view emphasizing relevant entities\n     - e.g., `manufacturing_ready` → show final geometry + material-related params, ghost intermediates\n     - This is v0.1 heuristic — can be refined later\n     - Name: purpose name, auto: true\n\n2. **Extend `viewStateStore.ts`**\n   - `views: Map<string, ViewDefinition>` — all views (auto + user)\n   - `activeViewId: string` — currently applied view\n   - `regenerateAutoViews(tree)`: called on every tree rebuild; regenerates auto views, preserves user views\n   - Auto view IDs prefixed with `auto:` (e.g., `auto:default`, `auto:all-geometry`)\n   - User view IDs prefixed with `user:` (e.g., `user:my-assembly-view`)\n\n3. **Wire into evaluation cycle**\n   - When engine emits new state → rebuild designTreeStore → regenerateAutoViews → reconcile active view\n   - If active view is auto: apply regenerated version\n   - If active view is user: keep user state, apply default rules only for NEW entities\n\n4. **Backend support**\n   - `get_entity_tree` response must include `traitGeometry` flag per node\n   - Engine must expose which purposes are currently active (may already be available via evaluation state)\n\n### Requirements covered\nVM-1, VM-2, VM-3 (heuristic)\n\n### memory_hints\n- search: \"Physical trait geometry param\"\n- search: \"purpose declarations active\"\n- search: \"designTreeStore entity tree\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1743"
         ],
@@ -36609,7 +36609,8 @@
           "modules": [
             "gui/src/stores"
           ]
-        }
+        },
+        "updatedAt": "2026-04-16T22:23:02.019Z"
       },
       {
         "id": "1746",
@@ -39357,7 +39358,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T22:22:55.197Z",
+      "lastModified": "2026-04-16T22:23:02.020Z",
       "taskCount": 1878,
       "completedCount": 1608,
       "tags": [
