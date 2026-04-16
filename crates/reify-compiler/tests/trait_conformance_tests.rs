@@ -9,7 +9,12 @@ use reify_types::*;
 
 /// Assert that `template.value_cells` contains exactly one cell whose member name equals
 /// `member`. Prints `context` in the failure message for easy diagnosis.
-fn assert_single_value_cell(template: &TopologyTemplate, member: &str, context: &str) {
+/// Returns a reference to the matched cell so callers can inspect its properties.
+fn assert_single_value_cell<'a>(
+    template: &'a TopologyTemplate,
+    member: &str,
+    context: &str,
+) -> &'a ValueCellDecl {
     let cells: Vec<_> = template
         .value_cells
         .iter()
@@ -24,6 +29,7 @@ fn assert_single_value_cell(template: &TopologyTemplate, member: &str, context: 
         cells.len(),
         cells
     );
+    cells[0]
 }
 
 /// Step 1: Compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs.
@@ -878,10 +884,21 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via B->E->D and C->D; must appear exactly once.
-    assert_single_value_cell(&template, "x", "deep_diamond_A_B_E_D_C_D");
+    let x_cell = assert_single_value_cell(&template, "x", "deep_diamond_A_B_E_D_C_D");
 
     // y comes from E, reachable via one path (B->E); must also appear exactly once.
-    assert_single_value_cell(&template, "y", "deep_diamond_A_B_E_D_C_D");
+    let y_cell = assert_single_value_cell(&template, "y", "deep_diamond_A_B_E_D_C_D");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::length(),
+        "deep_diamond x cell_type mismatch"
+    );
+    assert_eq!(
+        y_cell.cell_type,
+        Type::length(),
+        "deep_diamond y cell_type mismatch"
+    );
 }
 
 /// Task-384 step-1: Diamond with conflicting param types produces exactly 1 error.
