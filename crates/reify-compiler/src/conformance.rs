@@ -114,6 +114,9 @@ pub(crate) fn check_trait_conformance(
     let mut seen_default_names: HashMap<(String, DefaultKindTag), (Type, String)> =
         HashMap::new();
     let mut seen_let_hashes: HashMap<String, (ContentHash, String)> = HashMap::new();
+    // Tracks let binding names that already have a conflict diagnostic.
+    // Ensures N conflicting traits emit exactly 1 error (not N-1).
+    let mut seen_let_conflict_names: HashSet<String> = HashSet::new();
 
     for trait_bound in structure.trait_bounds {
         collect_all_requirements(
@@ -125,6 +128,7 @@ pub(crate) fn check_trait_conformance(
             &mut seen_requirement_names,
             &mut seen_default_names,
             &mut seen_let_hashes,
+            &mut seen_let_conflict_names,
             &structure_members,
             structure.span,
             diagnostics,
@@ -404,6 +408,9 @@ pub(crate) fn collect_all_requirements(
     seen_names: &mut HashMap<String, (Type, String)>,
     seen_defaults: &mut HashMap<(String, DefaultKindTag), (Type, String)>,
     seen_let_hashes: &mut HashMap<String, (ContentHash, String)>,
+    // Tracks let binding names that already have a conflict diagnostic, so
+    // N traits with conflicting lets emit exactly 1 diagnostic (not N-1).
+    seen_let_conflict_names: &mut HashSet<String>,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
@@ -431,6 +438,7 @@ pub(crate) fn collect_all_requirements(
             seen_names,
             seen_defaults,
             seen_let_hashes,
+            seen_let_conflict_names,
             structure_members,
             span,
             diagnostics,
@@ -482,8 +490,10 @@ pub(crate) fn collect_all_requirements(
                 if let Some((existing_hash, existing_trait)) = seen_let_hashes.get(name.as_str()) {
                     if existing_hash != &let_decl.content_hash
                         && !structure_members.contains_key(name.as_str())
+                        && !seen_let_conflict_names.contains(name.as_str())
                     {
-                        // Same name, different expression, not overridden → conflict.
+                        // Same name, different expression, not overridden, first conflict → emit.
+                        seen_let_conflict_names.insert(name.clone());
                         diagnostics.push(
                             Diagnostic::error(format!(
                                 "conflicting trait let bindings for '{}': \
