@@ -704,3 +704,50 @@ describe('viewStateStore — full PRD integration scenario', () => {
     });
   });
 });
+
+describe('viewStateStore — setTree pruning', () => {
+  it('stale explicit entries for removed paths are pruned when setTree is called', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const nodeA = makeNode({ entity_path: 'Root.A' });
+      const nodeB = makeNode({ entity_path: 'Root.B' });
+
+      // Set up initial tree with A and B.
+      store.setTree([nodeA, nodeB]);
+      store.setVisibility('Root.A', 'hidden', false);
+      store.setVisibility('Root.B', 'ghost', false);
+      expect(store.state.explicit['Root.A']).toBe('hidden');
+      expect(store.state.explicit['Root.B']).toBe('ghost');
+
+      // Replace tree with only B — A is removed.
+      store.setTree([nodeB]);
+      // Stale entry for Root.A must be pruned.
+      expect(store.state.explicit['Root.A']).toBeUndefined();
+      // Root.B's explicit is preserved since it still exists.
+      expect(store.state.explicit['Root.B']).toBe('ghost');
+
+      dispose();
+    });
+  });
+
+  it('re-introducing a previously-removed path does not inherit old explicit state', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const nodeA = makeNode({ entity_path: 'Root.A' });
+      const nodeB = makeNode({ entity_path: 'Root.B' });
+
+      store.setTree([nodeA, nodeB]);
+      store.setVisibility('Root.A', 'hidden', false);
+
+      // Remove A, then re-introduce it.
+      store.setTree([nodeB]);
+      store.setTree([nodeA, nodeB]);
+
+      // Re-introduced A should have no explicit state (fresh inherit).
+      expect(store.state.explicit['Root.A']).toBeUndefined();
+      expect(store.getEffectiveVisibility('Root.A')).toBe('show');
+
+      dispose();
+    });
+  });
+});

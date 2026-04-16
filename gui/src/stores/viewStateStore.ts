@@ -69,6 +69,19 @@ export function createViewStateStore() {
     nodeByPath = new Map();
     parentByPath = new Map();
     buildMaps(nodes, nodeByPath, parentByPath, null);
+    // Prune explicit overrides for paths that no longer exist in the tree.
+    // Stale entries can accumulate when nodes are deleted or renamed upstream,
+    // causing hasOverride / getEffectiveVisibility to return stale values for
+    // removed paths, and re-introduced paths would silently inherit old state.
+    setState(
+      produce((s) => {
+        for (const path of Object.keys(s.explicit)) {
+          if (!nodeByPath.has(path)) {
+            delete s.explicit[path];
+          }
+        }
+      }),
+    );
   }
 
   // ---------------------------------------------------------------------------
