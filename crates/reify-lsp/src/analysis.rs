@@ -870,11 +870,20 @@ mod tests {
             Type::length(),
             "deep_x should have length type"
         );
-        let decl_text = &source[info.span.start as usize..info.span.end as usize];
-        assert!(
-            decl_text.contains("deep_x") && decl_text.contains("1mm"),
-            "span should cover full param declaration, got: {decl_text:?}"
+        // Exact byte-position assertions: span must start at the 'p' in
+        // 'param deep_x' and end immediately after '1mm'. This closes
+        // the depth-2 nesting coverage gap.
+        let expected_start = source.find("param deep_x").unwrap() as u32;
+        let expected_end = (source.find("1mm").unwrap() + "1mm".len()) as u32;
+        assert_eq!(
+            info.span.start, expected_start,
+            "span.start should point at 'param deep_x'"
         );
+        assert_eq!(
+            info.span.end, expected_end,
+            "span.end should end after '1mm'"
+        );
+        assert_eq!(info.decl_name, "S");
     }
 
     #[test]
