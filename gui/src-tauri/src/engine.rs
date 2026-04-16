@@ -58,6 +58,14 @@ pub struct EngineSession {
     /// every subsequent `commit_state` call.  Used by `get_containing_definition`
     /// to avoid re-parsing the source on every cursor/hover event.
     parsed_cache: Option<reify_syntax::ParsedModule>,
+    /// Cached line-offset table for the currently-loaded source.
+    ///
+    /// Each entry is the byte position of a `\n` character in the source text.
+    /// Populated by `commit_state` via `build_line_offsets(source)` in the same
+    /// atomic block as `parsed_cache`.  Set to `None` until the first load;
+    /// overwritten on every `commit_state` call.  Used by `get_containing_definition`
+    /// to skip the O(M) newline scan on every cursor/hover call.
+    line_offsets_cache: Option<Vec<usize>>,
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -85,6 +93,7 @@ impl EngineSession {
             module_name: None,
             def_preview_cache: HashMap::new(),
             parsed_cache: None,
+            line_offsets_cache: None,
         }
     }
 
@@ -258,6 +267,9 @@ impl EngineSession {
         // on every cursor/hover call.  Unconditionally overwrites any prior value
         // (never appends) — this is an invalidation, not an accumulation.
         self.parsed_cache = Some(parsed);
+        // Cache the line-offset table so get_containing_definition can skip the O(M)
+        // newline scan on each call.  Unconditionally overwrites any prior value.
+        self.line_offsets_cache = Some(build_line_offsets(source));
     }
 
     /// Export geometry to a file.
@@ -1001,6 +1013,15 @@ impl EngineSession {
     /// the production API.
     pub(crate) fn parsed_cache_for_test(&self) -> Option<&reify_syntax::ParsedModule> {
         self.parsed_cache.as_ref()
+    }
+
+    /// Return a slice of the cached line-offset table, or `None` if no module
+    /// has been loaded yet.
+    ///
+    /// Each element is the byte offset of a `\n` in the current source text.
+    /// Intended only for tests that need to inspect cache state.
+    pub(crate) fn line_offsets_cache_for_test(&self) -> Option<&[usize]> {
+        self.line_offsets_cache.as_deref()
     }
 }
 
