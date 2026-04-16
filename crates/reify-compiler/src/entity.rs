@@ -573,6 +573,19 @@ pub(crate) fn compile_entity(
                         Type::Real
                     });
 
+                // Solid-typed params with a geometry-call default are lowered as
+                // realizations (third pass), not as scalar ValueCellDecls.
+                // Symmetric with the geometry-let early-continue in the Let branch.
+                if cell_type == Type::Geometry
+                    && param
+                        .default
+                        .as_ref()
+                        .map(|e| is_geometry_let(e, functions, &known_geometry_lets))
+                        .unwrap_or(false)
+                {
+                    continue;
+                }
+
                 let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
                 // Lower and validate annotations on this param
@@ -1208,19 +1221,31 @@ pub(crate) fn compile_entity(
     }
 
     // Third pass: compile geometry let bindings into realizations.
-    // Build a lookup table mapping geometry let names to their initializer AST
+    // Build a lookup table mapping geometry let/param names to their initializer AST
     // expressions. This allows compile_geometry_call to resolve Ident references
     // (let-bound geometry variables) used as arguments to boolean ops.
     let geometry_lets: HashMap<&str, &reify_syntax::Expr> = structure
         .members
         .iter()
         .filter_map(|m| {
-            if let reify_syntax::MemberDecl::Let(let_decl) = m
-                && is_geometry_let(&let_decl.value, functions, &known_geometry_lets)
-            {
-                return Some((let_decl.name.as_str(), &let_decl.value));
+            match m {
+                reify_syntax::MemberDecl::Let(let_decl)
+                    if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) =>
+                {
+                    Some((let_decl.name.as_str(), &let_decl.value))
+                }
+                // Solid-typed params with a geometry-call default also contribute
+                // to the lookup table so boolean ops can reference them by name.
+                reify_syntax::MemberDecl::Param(param)
+                    if known_geometry_lets.contains(param.name.as_str()) =>
+                {
+                    param
+                        .default
+                        .as_ref()
+                        .map(|e| (param.name.as_str(), e))
+                }
+                _ => None,
             }
-            None
         })
         .collect();
 
@@ -1228,25 +1253,54 @@ pub(crate) fn compile_entity(
     let mut realization_index: u32 = 0;
 
     for member in structure.members {
-        if let reify_syntax::MemberDecl::Let(let_decl) = member
-            && is_geometry_let(&let_decl.value, functions, &known_geometry_lets)
-            && let Some(ops) = compile_geometry_call(
-                &let_decl.value,
-                &scope,
-                enum_defs,
-                functions,
-                diagnostics,
-                0,
-                &geometry_lets,
-                &mut HashSet::new(),
-            )
-        {
-            realizations.push(RealizationDecl {
-                id: RealizationNodeId::new(entity_name, realization_index),
-                operations: ops,
-                span: SourceSpan::new(0, 0),
-            });
-            realization_index += 1;
+        match member {
+            reify_syntax::MemberDecl::Let(let_decl)
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) =>
+            {
+                if let Some(ops) = compile_geometry_call(
+                    &let_decl.value,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    0,
+                    &geometry_lets,
+                    &mut HashSet::new(),
+                ) {
+                    realizations.push(RealizationDecl {
+                        id: RealizationNodeId::new(entity_name, realization_index),
+                        operations: ops,
+                        span: SourceSpan::new(0, 0),
+                    });
+                    realization_index += 1;
+                }
+            }
+            // Solid-typed params with a geometry-call default are lowered into
+            // realizations at the same position in source order.
+            reify_syntax::MemberDecl::Param(param)
+                if known_geometry_lets.contains(param.name.as_str()) =>
+            {
+                if let Some(default_expr) = &param.default
+                    && let Some(ops) = compile_geometry_call(
+                        default_expr,
+                        &scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        0,
+                        &geometry_lets,
+                        &mut HashSet::new(),
+                    )
+                {
+                    realizations.push(RealizationDecl {
+                        id: RealizationNodeId::new(entity_name, realization_index),
+                        operations: ops,
+                        span: SourceSpan::new(0, 0),
+                    });
+                    realization_index += 1;
+                }
+            }
+            _ => {}
         }
     }
 
