@@ -38804,7 +38804,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/geometry_error_handling.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       }
     ],
     "metadata": {
