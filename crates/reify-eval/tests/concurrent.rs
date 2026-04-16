@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 use reify_eval::cache::{EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
+use reify_eval::journal::{EventKind, EventPayload};
 use reify_eval::{ConcurrentEditResult, ConcurrentNodeResult, Engine};
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::mocks::MockConstraintChecker;
@@ -206,6 +207,21 @@ fn apply_concurrent_edit_updates_engine_state() {
         new_events.len(),
         2,
         "should have Started+Completed for volume"
+    );
+
+    // (5) Completed event Duration payload must be Some(_) even when eval_duration is None.
+    // This exercises the `unwrap_or_else(|| start.elapsed())` fallback path —
+    // verifying that the fallback produces a valid, non-None Duration when no
+    // eval_duration was supplied by the concurrent adapter.
+    let completed = new_events
+        .iter()
+        .find(|ev| matches!(ev.kind, EventKind::Completed { .. }))
+        .expect("should have a Completed event");
+    assert!(
+        matches!(completed.payload, Some(EventPayload::Duration(_))),
+        "Completed event must carry a Duration payload even when eval_duration is None; \
+         got: {:?}",
+        completed.payload
     );
 }
 

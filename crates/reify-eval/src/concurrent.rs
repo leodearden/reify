@@ -305,8 +305,9 @@ impl Engine {
         setup: &ConcurrentEditSetup,
         result: &mut ConcurrentEditResult,
     ) {
-        let mut resolved_params = HashMap::new();
-        let mut diagnostics = Vec::new();
+        // Clear any stale data from a previous call — makes the overwrite semantics explicit.
+        result.resolved_params.clear();
+        result.diagnostics.clear();
 
         if let Some(ref solver) = self.solver {
             let state = self
@@ -387,7 +388,7 @@ impl Engine {
                     } => {
                         for (id, val) in &solver_values {
                             result.values.insert(id.clone(), val.clone());
-                            resolved_params.insert(id.clone(), val.clone());
+                            result.resolved_params.insert(id.clone(), val.clone());
                             all_resolved_ids.insert(id.clone());
 
                             result
@@ -408,7 +409,7 @@ impl Engine {
                         if !unique {
                             for ap in auto_param_list {
                                 if ap.free {
-                                    diagnostics.push(Diagnostic::warning(format!(
+                                    result.diagnostics.push(Diagnostic::warning(format!(
                                         "Parameter `{}` resolved via auto(free) \
                                          -- result is not uniquely determined.",
                                         ap.id.member
@@ -420,10 +421,10 @@ impl Engine {
                     SolveResult::Infeasible {
                         diagnostics: solver_diags,
                     } => {
-                        diagnostics.extend(solver_diags);
+                        result.diagnostics.extend(solver_diags);
                     }
                     SolveResult::NoProgress { reason } => {
-                        diagnostics.push(Diagnostic::warning(format!(
+                        result.diagnostics.push(Diagnostic::warning(format!(
                             "Constraint solver made no progress: {}",
                             reason
                         )));
@@ -467,9 +468,6 @@ impl Engine {
                 }
             }
         }
-
-        result.resolved_params = resolved_params;
-        result.diagnostics = diagnostics;
     }
 }
 
@@ -581,44 +579,81 @@ mod tests {
         assert_eq!(snap_det, &DeterminacyState::Determined);
     }
 
-    /// step-7: ConcurrentNodeResult has an eval_duration field that carries
-    /// the actual evaluation time from the concurrent adapter.
+    /// step-7 (revised): When eval_duration is None, apply_concurrent_edit falls
+    /// back to `start.elapsed()` for the journal Completed event's Duration payload.
     ///
-    /// Tests both Some(duration) and None for backward compatibility.
+    /// Verifies the `unwrap_or_else(|| start.elapsed())` fallback path produces
+    /// a non-None Duration — not that the struct field round-trips (which is a
+    /// Rust language guarantee, not a behavioral assertion).
     #[test]
-    fn concurrent_node_result_eval_duration_field() {
-        use std::time::Duration;
+    fn apply_concurrent_edit_fallback_duration_when_eval_duration_none() {
+        use reify_test_support::bracket_compiled_module;
+        use reify_test_support::mocks::MockConstraintChecker;
 
-        let node_id = NodeId::Value(ValueCellId::new("E", "z"));
+        use crate::journal::{EventKind, EventPayload};
 
-        // With a measured duration
-        let result_with_duration = ConcurrentNodeResult {
-            node: node_id.clone(),
-            value: Value::Real(1.0),
+        let module = bracket_compiled_module();
+        let checker = MockConstraintChecker::new();
+        let mut engine = Engine::new(Box::new(checker), None);
+        let _initial = engine.eval(&module);
+
+        let e = "Bracket";
+        let width_id = ValueCellId::new(e, "width");
+        let volume_id = ValueCellId::new(e, "volume");
+        let volume_node = NodeId::Value(volume_id.clone());
+
+        let setup = engine
+            .prepare_concurrent_edit(width_id.clone(), Value::length(0.1))
+            .unwrap();
+
+        let new_volume = Value::Scalar {
+            si_value: 5e-5,
+            dimension: reify_types::dimension::DimensionVector::VOLUME,
+        };
+
+        let mut snapshot_values = setup.snapshot_values.clone();
+        snapshot_values.insert(
+            volume_id.clone(),
+            (new_volume.clone(), DeterminacyState::Determined),
+        );
+        let mut values = setup.values.clone();
+        values.insert(volume_id.clone(), new_volume.clone());
+
+        // eval_duration: None  →  fallback path is taken
+        let node_results = vec![ConcurrentNodeResult {
+            node: volume_node.clone(),
+            value: new_volume.clone(),
             determinacy: DeterminacyState::Determined,
             trace: DependencyTrace::default(),
             outcome: EvalOutcome::Changed,
-            eval_duration: Some(Duration::from_millis(42)),
-        };
-        assert_eq!(
-            result_with_duration.eval_duration,
-            Some(Duration::from_millis(42)),
-            "eval_duration should round-trip Some(42ms)"
-        );
-
-        // With no duration (backward compat / skipped timing)
-        let result_no_duration = ConcurrentNodeResult {
-            node: node_id.clone(),
-            value: Value::Real(1.0),
-            determinacy: DeterminacyState::Determined,
-            trace: DependencyTrace::default(),
-            outcome: EvalOutcome::Unchanged,
             eval_duration: None,
+        }];
+
+        let result = ConcurrentEditResult {
+            values,
+            snapshot_values,
+            node_results,
+            actual_eval_set: vec![volume_node.clone()],
+            skipped: std::collections::HashSet::new(),
+            resolved_params: HashMap::new(),
+            diagnostics: vec![],
         };
-        assert_eq!(
-            result_no_duration.eval_duration,
-            None,
-            "eval_duration should support None for backward compatibility"
+
+        engine.apply_concurrent_edit(&setup, result);
+
+        let volume_events = engine.journal().events_for_node(&volume_node);
+        let completed = volume_events
+            .iter()
+            .filter(|ev| ev.version == setup.version)
+            .find(|ev| matches!(ev.kind, EventKind::Completed { .. }))
+            .expect("should have a Completed event for volume at setup.version");
+
+        // The fallback path (`start.elapsed()`) must still produce Some(Duration(_)).
+        assert!(
+            matches!(completed.payload, Some(EventPayload::Duration(_))),
+            "Completed event must carry a Duration payload via the start.elapsed() fallback; \
+             got: {:?}",
+            completed.payload
         );
     }
 }
