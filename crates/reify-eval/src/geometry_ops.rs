@@ -2549,6 +2549,117 @@ mod tests {
 
     // ── validate_pattern_count upper-bound tests ──────────────────────────────
 
+    // ── Shell face index validation tests ────────────────────────────────────
+
+    #[test]
+    fn compile_geometry_op_shell_non_numeric_face_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_0 is a String value — should trigger a non-numeric diagnostic
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                (
+                    "face_0".into(),
+                    reify_types::CompiledExpr::literal(
+                        reify_types::Value::String("oops".into()),
+                        reify_types::Type::String,
+                    ),
+                ),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Shell op itself should still succeed (non-numeric face is skipped)
+        assert!(
+            result.is_some(),
+            "Shell should return Some even when face_0 is non-numeric, got {:?}",
+            result
+        );
+        // The bad face should produce a diagnostic
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("face_0")
+                    && (d.message.contains("non-numeric") || d.message.contains("non-finite"))
+            }),
+            "expected a Warning mentioning 'face_0' and 'non-numeric'/'non-finite', got: {:?}",
+            diagnostics
+        );
+        // The resulting faces_to_remove should be empty (bad face skipped)
+        match result.unwrap() {
+            reify_types::GeometryOp::Shell { faces_to_remove, .. } => {
+                assert!(
+                    faces_to_remove.is_empty(),
+                    "faces_to_remove should be empty when face_0 is non-numeric, got {:?}",
+                    faces_to_remove
+                );
+            }
+            other => panic!("expected GeometryOp::Shell, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_shell_bool_face_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_1 is a Bool value — should trigger a non-numeric diagnostic
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                (
+                    "face_1".into(),
+                    reify_types::CompiledExpr::literal(
+                        reify_types::Value::Bool(true),
+                        reify_types::Type::Bool,
+                    ),
+                ),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_some(),
+            "Shell should return Some even when face_1 is Bool, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("face_1")
+                    && (d.message.contains("non-numeric") || d.message.contains("non-finite"))
+            }),
+            "expected a Warning mentioning 'face_1', got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ── validate_pattern_count upper-bound tests ──────────────────────────────
+
     #[test]
     fn validate_pattern_count_rejects_huge_count() {
         let step_handles = vec![GeometryHandleId(42)];
