@@ -39443,11 +39443,11 @@
         "description": "Task 1868 added `param enabled : Bool = true` (line ~135) to examples/integration_full_v01.ri — a cross-cutting fixture used by 4+ test files (integration_full_v01.rs, m11_full_integration.rs, cli_integration_smoke.rs, incremental_integration.rs) — solely to provide a non-Scalar surface for the new edit_param/edit_check Bool TypeKindMismatch regression tests. Review suggests reusing an already-present non-Scalar cell to avoid fixture coupling: the fixture already declares an Enum `grade`, Range/List-typed params, etc. Evaluate: can the Bool-specific tests be retargeted to `grade` (Enum) or another existing non-Scalar cell? If yes, retarget tests and revert the `enabled` fixture addition. If no (e.g. Bool semantics are specifically tested), add a brief rationale comment near the new param explaining why a new cell was required and document which tests depend on it (comment already partially does this). No existing assertion is broken today — counts use `>=` lower bounds — but tighter future assertions could be perturbed. Source: task 1868 reviewer_comprehensive suggestion S3.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:40:54.950Z",
+        "updatedAt": "2026-04-16T22:53:33.493Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/incremental_integration.rs",
@@ -39494,7 +39494,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T22:53:32.989Z",
+      "lastModified": "2026-04-16T22:53:33.493Z",
       "taskCount": 1884,
       "completedCount": 1613,
       "tags": [
