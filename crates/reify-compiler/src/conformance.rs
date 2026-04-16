@@ -513,7 +513,11 @@ pub(crate) fn collect_all_requirements(
                     name.clone(),
                     (let_decl.content_hash, trait_name.to_string()),
                 );
-                // Fall through to insert into seen_defaults and push.
+                // Let dedup/conflict is fully handled by seen_let_hashes.
+                // Push the default and skip the seen_defaults composite-key path —
+                // the Type::Real sentinel there is redundant and confusing.
+                defaults.push(default.clone());
+                continue;
             }
 
             // Extract type and kind-tag for composite-key dedup.
