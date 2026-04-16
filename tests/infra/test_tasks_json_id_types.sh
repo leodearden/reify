@@ -3,8 +3,9 @@
 # must be a JSON string matching ^[0-9]+$.
 #
 # Task 1887: normalize subtask IDs to digit-strings.
-# TOP-LEVEL IDs:  already digit-strings — Check 1 passes immediately.
-# SUBTASK IDs:    integers prior to fix — Check 2 fails until step-2 impl.
+# TOP-LEVEL IDs:  already digit-strings — Check 1 passes.
+# SUBTASK IDs:    were integers before this PR; Check 2 was RED then and is
+#                 GREEN now that all 8 subtask ids were normalized to digit-strings.
 
 set -euo pipefail
 
@@ -27,6 +28,12 @@ assert "tasks.json exists at .taskmaster/tasks/tasks.json" \
 assert "jq is available on PATH" \
     bash -c "command -v jq >/dev/null 2>&1"
 
+# Verify jq can actually parse the file; this fails loudly so subsequent
+# pipe-based assertions (which use `! jq ... | grep`) can't silently pass
+# on an empty stream if jq were to error out on a corrupt/missing file.
+assert "tasks.json is valid JSON (jq empty)" \
+    jq empty "$TASKS_JSON"
+
 # -- Check 1: top-level task ids are digit-strings ----------------------------
 echo ""
 echo "--- Check 1: top-level task ids are digit-strings ---"
@@ -44,7 +51,6 @@ echo ""
 echo "--- Check 2: subtask ids are digit-strings ---"
 
 # Verify no subtask id has JSON type "number".
-# FAILS (RED) until step-2 converts the 8 integer subtask ids to strings.
 assert "all subtask ids have JSON type string (not number)" \
     bash -c "! jq -r '.master.tasks[].subtasks[]?.id | type' '$TASKS_JSON' | grep -q 'number'"
 
