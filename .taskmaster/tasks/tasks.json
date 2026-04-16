@@ -36801,11 +36801,11 @@
         "description": "In crates/reify-compiler/src/geometry.rs (~line 457), the loft fallback maps ALL non-geometry profiles to the same GeomRef::Step(step_offset). For a loft with N non-geometry args, every profile references the same step, which is semantically meaningless (loft requires distinct cross-sections). The old code emitted a per-argument diagnostic; the new code silently falls back.\n\nFix either: (a) emit a diagnostic per non-geometry loft argument while still using step_offset (preserving user feedback), or (b) use GeomRef::Step(step_offset + i) per profile to maintain index uniqueness in the fallback, consistent with the sweep path fallback pattern at line 605.\n\nNote: Task 1732 covers the related but distinct Step(0)→Step(step_offset) fix.\n\nmemory_hints: search \"loft fallback GeomRef step_offset per-profile\", search \"compile_geometry_call loft non-geometry profiles\", get_entity \"compile_geometry_call\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-16T06:34:17.472Z",
+        "updatedAt": "2026-04-16T22:03:12.452Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
@@ -39240,7 +39240,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T22:03:09.048Z",
+      "lastModified": "2026-04-16T22:03:12.453Z",
       "taskCount": 1873,
       "completedCount": 1605,
       "tags": [
