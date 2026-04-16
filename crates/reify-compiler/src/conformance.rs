@@ -509,10 +509,16 @@ pub(crate) fn collect_all_requirements(
                     // Same name already seen (same or different hash) → skip.
                     continue;
                 }
-                seen_let_hashes.insert(
-                    name.clone(),
-                    (let_decl.content_hash, trait_name.to_string()),
-                );
+                // Only record the hash when the structure does NOT override this name.
+                // When overridden, conflict diagnostics are suppressed and the default
+                // is filtered at injection time (conformance.rs ~line 327), so
+                // hash-recording is unnecessary and would block dedup for other traits.
+                if !structure_members.contains_key(name.as_str()) {
+                    seen_let_hashes.insert(
+                        name.clone(),
+                        (let_decl.content_hash, trait_name.to_string()),
+                    );
+                }
                 // Let dedup/conflict is fully handled by seen_let_hashes.
                 // Push the default and skip the seen_defaults composite-key path —
                 // the Type::Real sentinel there is redundant and confusing.
