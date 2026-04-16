@@ -38449,7 +38449,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T02:20:31.679Z"
+        "updatedAt": "2026-04-16T02:20:31.679Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "ValueCellId consistency compiler test assertions arm ordering diamond",
+              "value cell id test assertions self-rejection specificity compiler"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
+        }
       },
       {
         "id": 1842,
