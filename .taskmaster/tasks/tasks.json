@@ -38625,11 +38625,11 @@
         "description": "The tests in crates/reify-eval/src/concurrent.rs (lines 463-530) only verify struct construction and field access for ConcurrentNodeResult and ConcurrentEditResult. The four Engine methods (prepare_concurrent_edit, rollback_concurrent_edit, apply_concurrent_edit, resolve_concurrent_edit) — which contain the actual logic — have no unit tests.\n\nThe rollback ID restoration logic and the two-wave resolution propagation are particularly subtle and untested at this level. Add integration-level tests that exercise the prepare → resolve → apply pipeline, and specifically test rollback behavior (verifying IDs are restored and cache nodes return to Final state). These may require test helpers for Engine construction.\n\nmemory_hints:\n- search: \"concurrent edit test\" \"Engine test helper\"\n- entity: Engine, ConcurrentEditSetup, ConcurrentEditResult",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T06:34:20.497Z",
+        "updatedAt": "2026-04-16T20:27:00.054Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests/concurrent.rs"
@@ -38684,11 +38684,11 @@
         "description": "Two diagnostic message accuracy improvements in the Shell face-index validation block in `crates/reify-eval/src/geometry_ops.rs` (lines ~252-280):\n\n1. **`None` arm message is misleading (line 255)**: The message says \"non-numeric/non-finite\" but `as_f64()` returns `None` only for non-numeric types (String, Bool, List, etc.). Non-finite values (NaN, ±Infinity) return `Some(...)` and are caught by the next match arm. Change the message from \"non-numeric/non-finite\" to just \"non-numeric\".\n\n2. **Combined guard conflates two distinct error states (line 259)**: The guard `!f.is_finite() || f < 0.0` produces message \"negative or non-finite\" for both cases. For NaN, mentioning \"negative\" is misleading. For -1.0, mentioning \"non-finite\" is misleading. Split into two separate match arms:\n   - `Some(f) if !f.is_finite() => { /* \"non-finite (NaN/Infinity)\" diagnostic */ }`\n   - `Some(f) if f < 0.0 => { /* \"negative\" diagnostic */ }`\n\nmemory_hints:\n- search: \"Shell face index validation geometry_ops\"\n- entity: geometry_ops, compile_geometry_op",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T06:34:21.330Z",
+        "updatedAt": "2026-04-16T20:27:00.142Z",
         "metadata": {
           "files": [
             "crates/reify-eval/src/geometry_ops.rs"
@@ -38829,7 +38829,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T20:26:59.914Z",
+      "lastModified": "2026-04-16T20:27:00.142Z",
       "taskCount": 1855,
       "completedCount": 1591,
       "tags": [
