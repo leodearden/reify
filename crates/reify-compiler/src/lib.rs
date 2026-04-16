@@ -1912,9 +1912,10 @@ structure S {
             for (i, profile) in profiles.iter().enumerate() {
                 assert_eq!(
                     *profile,
-                    GeomRef::Step(5),
-                    "loft fallback profile[{}] should be GeomRef::Step(step_offset=5), got {:?}",
+                    GeomRef::Step(5 + i),
+                    "loft fallback profile[{}] should be GeomRef::Step(step_offset+i={}), got {:?}",
                     i,
+                    5 + i,
                     profile
                 );
             }
@@ -2040,9 +2041,10 @@ structure S {
             for (i, profile) in profiles.iter().enumerate() {
                 assert_eq!(
                     *profile,
-                    GeomRef::Step(1),
-                    "loft profile[{}] inside union should be Step(1) not Step(0), got {:?}",
+                    GeomRef::Step(1 + i),
+                    "loft profile[{}] inside union should be Step({}) not Step(0), got {:?}",
                     i,
+                    1 + i,
                     profile
                 );
             }

@@ -459,7 +459,7 @@ pub(crate) fn compile_geometry_call(
                         "loft() argument {} must be a geometry expression",
                         i + 1
                     )));
-                    GeomRef::Step(step_offset)
+                    GeomRef::Step(step_offset + i)
                 };
                 profiles.push(r);
             }
