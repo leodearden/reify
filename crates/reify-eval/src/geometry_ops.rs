@@ -972,18 +972,45 @@ mod tests {
                 args,
             };
 
+            // Pin the observable contract: each missing required arg
+            // must (a) return None and (b) emit exactly one warning
+            // diagnostic naming the omitted arg and the 'Revolve' op.
+            // This matches the per-arg contract exercised for `ox` in
+            // `compile_geometry_op_sweep_revolve_missing_ox_emits_diagnostic`.
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
             let result = compile_geometry_op(
                 &op,
                 &values,
                 &step_handles,
                 &[],
                 &HashMap::new(),
-                &mut Vec::new(),
+                &mut diagnostics,
             );
             assert!(
                 result.is_none(),
                 "missing '{omit}' should return None, got {:?}",
                 result
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "missing '{omit}' should emit exactly one diagnostic, got: {:?}",
+                diagnostics
+            );
+            assert_eq!(
+                diagnostics[0].severity,
+                reify_types::Severity::Warning,
+                "missing '{omit}' should emit a Warning severity"
+            );
+            assert!(
+                diagnostics[0].message.contains(omit),
+                "diagnostic for missing '{omit}' should mention '{omit}', got: {}",
+                diagnostics[0].message
+            );
+            assert!(
+                diagnostics[0].message.contains("Revolve"),
+                "diagnostic for missing '{omit}' should mention 'Revolve', got: {}",
+                diagnostics[0].message
             );
         }
     }
