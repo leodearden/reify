@@ -36296,19 +36296,13 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "GeomRef",
-              "geometry.rs",
-              "loft",
-              "sweep"
-            ],
+            "entities": [],
             "queries": [
-              "GeomRef::Step(0) loft sweep error-path fallback fix",
-              "compile_geometry_call geometry argument resolution task 1715",
-              "geometry step index tracking compile_geometry_op"
+              "GeomRef Step zero loft sweep error path fallback geometry",
+              "geometry reference step index error handling loft sweep"
             ]
           },
-          "_causation_id": "a6a69c0f-4d18-428a-aeb5-931c6a57d9d3"
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         }
       },
       {
