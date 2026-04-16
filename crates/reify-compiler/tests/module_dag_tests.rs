@@ -692,17 +692,16 @@ fn compile_module_multi_import_prelude() {
 /// Creates a three-module cycle: cherry -> apple -> banana -> cherry.
 /// Module names are chosen so alphabetical order (apple, banana, cherry)
 /// DIFFERS from DFS traversal order (cherry, apple, banana).  This ensures
-/// `sort_unstable()` on `in_progress` is the only thing that can produce the
-/// observed sorted output — the test genuinely fails without the sort fix.
+/// IndexSet insertion-order is the source of determinism, not alphabetical sorting.
 ///
 /// Compiles twice (with independent `ModuleDag` instances) and asserts:
 /// (a) both runs produce an error mentioning "circular" or "cycle",
 /// (b) the error messages are identical between runs, and
-/// (c) the module names appear in sorted alphabetical order within the message
-///     ("apple" before "banana" before "cherry").
+/// (c) the module names appear in DFS traversal order within the message
+///     ("cherry" before "apple" before "banana").
 ///
-/// Without the HashSet-to-sorted-Vec fix (step-10), the iteration order of
-/// `in_progress` is hash-order-dependent and may fail the sorted-order assertion.
+/// IndexSet preserves insertion order (= DFS traversal order), so the message
+/// reads "cherry -> apple -> banana -> cherry" — showing the actual import chain.
 #[test]
 fn circular_import_error_message_deterministic() {
     let _tmp = tempfile::tempdir().unwrap();
@@ -732,7 +731,7 @@ fn circular_import_error_message_deterministic() {
     let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
 
     // First compilation — DFS visits cherry, apple, banana, then detects cherry again.
-    // in_progress = {cherry, apple, banana}; sorted = [apple, banana, cherry].
+    // in_progress = [cherry, apple, banana] (insertion order); message: cherry -> apple -> banana -> cherry.
     let mut dag1 = ModuleDag::new();
     let result1 = dag1.compile_module("cherry", &resolver);
     assert!(result1.is_err(), "expected error for 3-cycle (first run)");
@@ -765,24 +764,23 @@ fn circular_import_error_message_deterministic() {
         "circular-import error messages must be identical across compilations"
     );
 
-    // (c) Module names must appear in sorted alphabetical order within the message.
-    // Alphabetical: apple < banana < cherry.  DFS order is cherry < apple < banana,
-    // so this assertion fails without sort_unstable().
+    // (c) Module names must appear in DFS traversal order within the message.
+    // DFS order: cherry < apple < banana (cherry is the entry, then apple, then banana).
+    // The message should read "cherry -> apple -> banana -> cherry".
+    // cherry appears twice (start and end of the arrow chain); take the first occurrence.
+    let cherry_pos = msg1.find("cherry").expect("'cherry' must appear in error");
     let apple_pos = msg1.find("apple").expect("'apple' must appear in error");
     let banana_pos = msg1.find("banana").expect("'banana' must appear in error");
-    // cherry appears twice (sorted list + triggered-by suffix); take the first occurrence.
-    let cherry_pos = msg1.find("cherry").expect("'cherry' must appear in error");
+    assert!(
+        cherry_pos < apple_pos,
+        "expected 'cherry' before 'apple' (DFS traversal order), got: {}",
+        msg1
+    );
     assert!(
         apple_pos < banana_pos,
-        "expected 'apple' before 'banana' in sorted cycle, got: {}",
+        "expected 'apple' before 'banana' (DFS traversal order), got: {}",
         msg1
     );
-    assert!(
-        banana_pos < cherry_pos,
-        "expected 'banana' before 'cherry' in sorted cycle, got: {}",
-        msg1
-    );
-
 }
 
 // ── amendment (task-1392): compile_project multi-import prelude path ──────────
@@ -981,5 +979,71 @@ fn private_unit_not_exported_through_import_prelude() {
         errors2.is_empty(),
         "positive control (pub unit): expected zero errors but got: {:#?}",
         errors2
+    );
+}
+
+// ── step-2 (task-1833): cycle_error_excludes_non_cycle_ancestors ─────────────
+
+/// Validates that cycle detection excludes non-cycle ancestors from the error
+/// message, showing only the modules that are part of the actual cycle.
+///
+/// Creates a 4-module graph: d -> a -> b -> a
+///   - d is an ancestor that triggers the DFS, but is NOT part of the cycle
+///   - a -> b -> a is the actual cycle
+///
+/// The error message should show exactly "a -> b -> a" without mentioning "d".
+/// IndexSet::get_index_of finds where 'a' starts in in_progress ([d, a, b]),
+/// then slices from that index to exclude the non-cycle ancestor.
+#[test]
+fn cycle_error_excludes_non_cycle_ancestors() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // d imports a (DFS entry; d is NOT in the cycle)
+    fs::write(
+        dir.join("d.ri"),
+        "import a\nstructure D { param v: Scalar = 4mm }",
+    )
+    .unwrap();
+
+    // a imports b
+    fs::write(
+        dir.join("a.ri"),
+        "import b\nstructure A { param v: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    // b imports a (closes the cycle: a -> b -> a)
+    fs::write(
+        dir.join("b.ri"),
+        "import a\nstructure B { param v: Scalar = 2mm }",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("d", &resolver);
+    assert!(result.is_err(), "expected error for cycle a->b->a triggered via d");
+
+    let msg = result
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // (a) error mentions circular/cycle
+    assert!(
+        msg.contains("circular") || msg.contains("cycle"),
+        "error should mention circular dependency, got: {}",
+        msg
+    );
+
+    // (b) message is exactly the cycle chain — this positive assertion proves 'd'
+    // is absent without fragile per-pattern negative checks.
+    assert_eq!(
+        msg,
+        "circular dependency detected: a -> b -> a",
+        "message should contain exactly the cycle, not non-cycle ancestors"
     );
 }

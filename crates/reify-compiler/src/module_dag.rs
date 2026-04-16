@@ -3,8 +3,10 @@
 //! Provides `ModuleResolver` for mapping import paths to filesystem paths,
 //! and `ModuleDag` for building and traversing the module dependency graph.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use indexmap::IndexSet;
 
 use reify_types::Diagnostic;
 
@@ -108,7 +110,9 @@ pub struct ModuleDag {
     /// Post-order traversal (leaves first) — topological sort.
     pub topo_order: Vec<String>,
     /// Modules currently being compiled (for cycle detection).
-    in_progress: HashSet<String>,
+    /// IndexSet preserves insertion order (= DFS traversal order), enabling
+    /// the cycle error to show the actual import chain.
+    in_progress: IndexSet<String>,
 }
 
 impl Default for ModuleDag {
@@ -122,7 +126,7 @@ impl ModuleDag {
         Self {
             modules: HashMap::new(),
             topo_order: Vec::new(),
-            in_progress: HashSet::new(),
+            in_progress: IndexSet::new(),
         }
     }
 
@@ -140,13 +144,20 @@ impl ModuleDag {
         }
 
         // Cycle detection
-        if self.in_progress.contains(module_path) {
-            let mut cycle: Vec<&str> = self.in_progress.iter().map(|s| s.as_str()).collect();
-            cycle.sort_unstable();
+        if let Some(cycle_start) = self.in_progress.get_index_of(module_path) {
+            // in_progress is ordered by DFS insertion, so slicing from cycle_start
+            // gives only the cycle members, excluding any non-cycle ancestors.
+            // Appending module_path at the end closes the cycle visually.
+            let chain: Vec<&str> = self.in_progress[cycle_start..]
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            let mut arrow_chain = chain.join(" -> ");
+            arrow_chain.push_str(" -> ");
+            arrow_chain.push_str(module_path);
             return Err(vec![Diagnostic::error(format!(
-                "circular dependency detected among: {} (triggered by re-import of {})",
-                cycle.join(", "),
-                module_path,
+                "circular dependency detected: {}",
+                arrow_chain,
             ))]);
         }
 
@@ -200,8 +211,10 @@ impl ModuleDag {
             Ok(crate::compile_with_prelude_refs(&parsed, &preludes))
         })();
 
-        // Always remove from in-progress, whether the inner block succeeded or failed
-        self.in_progress.remove(module_path);
+        // Always remove from in-progress, whether the inner block succeeded or failed.
+        // shift_remove preserves insertion order of remaining elements, which matters
+        // for the cycle error message in sibling-import scenarios.
+        self.in_progress.shift_remove(module_path);
 
         // Propagate error after cleanup
         let compiled = result?;
