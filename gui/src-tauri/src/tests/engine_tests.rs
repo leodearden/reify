@@ -3153,3 +3153,47 @@ fn commit_state_populates_parsed_cache() {
     });
     assert!(has_bracket, "parsed cache should contain the Bracket structure declaration");
 }
+
+/// Fresh session returns None from line_offsets_cache_for_test.
+/// After load_from_source with a multi-line source, returns Some with the
+/// correct newline byte positions.
+#[test]
+fn commit_state_populates_line_offsets_cache() {
+    use crate::engine::build_line_offsets;
+
+    // Fresh session → None
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+    assert!(
+        session.line_offsets_cache_for_test().is_none(),
+        "fresh session: line_offsets_cache should be None"
+    );
+
+    // Source with exactly 2 newlines:
+    // "structure A {}\nstructure B {}\nstructure C {}"
+    // - "structure A {}" = 14 chars → '\n' at byte 14
+    // - "structure B {}" = 14 chars → '\n' at byte 29
+    let source = "structure A {}\nstructure B {}\nstructure C {}";
+    let checker2 = SimpleConstraintChecker;
+    let mut session2 = EngineSession::new(Box::new(checker2), None);
+    session2
+        .load_from_source(source, "test_offsets")
+        .expect("load should succeed");
+
+    let cached = session2
+        .line_offsets_cache_for_test()
+        .expect("after load, line_offsets_cache should be Some");
+
+    let expected = build_line_offsets(source);
+    assert_eq!(
+        cached,
+        expected.as_slice(),
+        "cached line offsets should match build_line_offsets(source)"
+    );
+    // Verify the specific positions we computed manually.
+    assert_eq!(
+        cached,
+        &[14usize, 29usize],
+        "newlines should be at bytes 14 and 29"
+    );
+}
