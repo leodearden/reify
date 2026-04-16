@@ -39356,11 +39356,11 @@
         "description": "`openMenu` attaches a fresh `document.addEventListener('click', ..., { once: true })` every time the menu opens. Right-clicking a second row (contextmenu, not click) leaves the prior listener registered; the next left click runs two closures. The `onCleanup(() => setMenu(null))` does not remove the document listener, leaking it on unmount before any click.",
         "details": "Scope: gui/src/panels/DesignTree.tsx:42-51\n\nEither (a) track the current listener in a local variable and remove it before attaching a new one and inside `onCleanup`, or (b) install a single long-lived document listener that no-ops when `menu()` is null. Additionally add Escape-key dismissal for the menu.\n\nAdd a test that opens the menu on row A, then on row B (via contextmenu), then issues a click, and asserts setMenu was called only once (or asserts no stale listener exists).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:25:01.397Z",
+        "updatedAt": "2026-04-16T23:13:29.031Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/DesignTree.test.tsx",
@@ -39554,7 +39554,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T23:13:26.204Z",
+      "lastModified": "2026-04-16T23:13:29.032Z",
       "taskCount": 1887,
       "completedCount": 1619,
       "tags": [
