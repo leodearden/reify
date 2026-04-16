@@ -1,0 +1,67 @@
+.tree {
+  outline: none;
+  overflow: auto;
+  height: 100%;
+  font-size: 13px;
+  color: var(--reify-text, #ddd);
+  background: var(--reify-surface, #1e1e1e);
+}
+
+.nodeWrapper {
+  user-select: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.row:hover {
+  background: var(--reify-surface-hover, #2a2a2a);
+}
+
+.chevron {
+  background: none;
+  border: none;
+  color: var(--reify-text-muted, #888);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.chevronPlaceholder {
+  display: inline-block;
+  width: 16px;
+}
+
+.name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.typeName {
+  color: var(--reify-text-muted, #888);
+  font-size: 11px;
+}
+
+.eyeIcon {
+  background: none;
+  border: none;
+  color: var(--reify-text, #ddd);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.eyeIcon:hover {
+  opacity: 1;
+}

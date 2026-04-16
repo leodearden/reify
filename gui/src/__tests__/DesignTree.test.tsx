@@ -179,22 +179,17 @@ describe('DesignTree — context menu', () => {
 
   it('"Show only this" calls showOnly(path, true)', () => {
     const nodes = [
-      makeNode({
-        entity_path: 'Root',
-        children: [
-          makeNode({ entity_path: 'Root.A' }),
-          makeNode({ entity_path: 'Root.B' }),
-        ],
-      }),
+      makeNode({ entity_path: 'A' }),
+      makeNode({ entity_path: 'B' }),
     ];
     const store = makeStore(nodes);
     render(() => <DesignTree tree={nodes} viewStateStore={store} />);
-    fireEvent.contextMenu(screen.getByTestId('tree-row-Root.A'));
+    fireEvent.contextMenu(screen.getByTestId('tree-row-A'));
     const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
     // show-only is button index 3
     fireEvent.click(buttons[3]);
-    expect(store.state.explicit['Root.A']).toBe('show');
-    expect(store.state.explicit['Root.B']).toBe('hidden');
+    expect(store.state.explicit['A']).toBe('show');
+    expect(store.state.explicit['B']).toBe('hidden');
   });
 
   it('menu dismisses on subsequent document click', async () => {
