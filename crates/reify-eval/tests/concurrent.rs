@@ -859,6 +859,8 @@ fn apply_concurrent_edit_persists_resolved_params_to_param_overrides() {
 
 /// step-13: resolve_concurrent_edit skips the solver when the dirty cone from the
 /// changed cell does NOT include any constraint that references the auto param.
+/// This exercises the `constraints_dirty` guard inside `resolve_concurrent_edit`,
+/// which short-circuits the solver invocation when no relevant constraint is dirty.
 ///
 /// Template: auto x (length), constraint 0: x > 2mm (no param ref), param a (mm(3.0)),
 /// let b = a*2. Changing `a` dirties b but NOT constraint 0 (which only reads x,
@@ -933,7 +935,7 @@ fn resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty(
         captured.lock().unwrap().len(),
         1,
         "solver should have been called exactly once (cold eval), but was called {} times \
-         — the constraints_dirty guard at concurrent.rs:369-371 is not firing",
+         — the constraints_dirty guard inside resolve_concurrent_edit is not firing",
         captured.lock().unwrap().len()
     );
 
