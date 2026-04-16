@@ -126,6 +126,17 @@ fn test_assert_list_of_struct_ref_wrong_name_panics() {
     assert_list_of_struct_ref(&ty, "Foo", "");
 }
 
+#[test]
+#[should_panic(expected = "ctx:")]
+fn test_assert_list_of_struct_ref_label_in_panic() {
+    // Calling with a non-List type and a non-empty label should produce a panic
+    // message that includes the label prefix.  This exercises the `prefix` formatting
+    // path (lines 48-52) together with the outer `other =>` panic branch (line 64),
+    // producing "ctx: expected List type, got: Bool".
+    let ty = reify_types::Type::Bool;
+    assert_list_of_struct_ref(&ty, "Foo", "ctx:");
+}
+
 // ─── step-1: self.param resolves to correct ValueRef ───
 
 #[test]
