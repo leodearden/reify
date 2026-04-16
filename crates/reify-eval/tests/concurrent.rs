@@ -661,6 +661,94 @@ fn rollback_restores_every_pending_node_to_final() {
     );
 }
 
+/// step-9: Three consecutive prepare/rollback cycles do not leak version/snapshot IDs.
+///
+/// After each rollback, the engine's internal counters are restored so the next
+/// prepare would reuse the same IDs. After three failed cycles, edit_param
+/// should produce the same snapshot_id/version that the FIRST prepare allocated
+/// (not some gap-inflated value).
+#[test]
+fn rollback_multiple_cycles_reuse_ids_no_gaps() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold eval to establish baseline snapshot.
+    let _initial = engine.eval(&module);
+
+    let e = "Bracket";
+    let width_id = ValueCellId::new(e, "width");
+
+    // Capture the snapshot id/version from the cold eval.
+    let cold_id = engine.snapshot().unwrap().id;
+    let cold_version = engine.snapshot().unwrap().version;
+
+    // Track the first prepare's allocated ids for later comparison.
+    let mut first_snapshot_id = None;
+    let mut first_version = None;
+
+    // Three prepare/rollback cycles — none should leak IDs.
+    for i in 0..3usize {
+        // Before each prepare the snapshot should still be the cold-eval snapshot.
+        assert_eq!(
+            engine.snapshot().unwrap().id,
+            cold_id,
+            "cycle {}: snapshot id should be cold-eval id before prepare",
+            i
+        );
+        assert_eq!(
+            engine.snapshot().unwrap().version,
+            cold_version,
+            "cycle {}: snapshot version should be cold-eval version before prepare",
+            i
+        );
+
+        let setup = engine
+            .prepare_concurrent_edit(width_id.clone(), Value::length(0.1))
+            .expect("prepare_concurrent_edit should succeed");
+
+        if i == 0 {
+            first_snapshot_id = Some(setup.snapshot_id);
+            first_version = Some(setup.version);
+        }
+
+        // Rollback: counters restored to pre-prepare values.
+        engine.rollback_concurrent_edit(&setup);
+
+        // After rollback the snapshot is unchanged.
+        assert_eq!(
+            engine.snapshot().unwrap().id,
+            cold_id,
+            "cycle {}: snapshot id should be restored after rollback",
+            i
+        );
+        assert_eq!(
+            engine.snapshot().unwrap().version,
+            cold_version,
+            "cycle {}: snapshot version should be restored after rollback",
+            i
+        );
+    }
+
+    // After three failed cycles, a committed edit_param should reuse the first
+    // prepare's ids — no gaps leaked by the three rollbacks.
+    let _seq_result = engine
+        .edit_param(width_id.clone(), Value::length(0.1))
+        .expect("edit_param should succeed");
+
+    let post_snap = engine.snapshot().unwrap();
+    assert_eq!(
+        post_snap.id,
+        first_snapshot_id.unwrap(),
+        "edit_param after 3 rollback cycles should produce the same snapshot_id as the first prepare"
+    );
+    assert_eq!(
+        post_snap.version,
+        first_version.unwrap(),
+        "edit_param after 3 rollback cycles should produce the same version as the first prepare"
+    );
+}
+
 /// step-9: apply_concurrent_edit uses eval_duration from ConcurrentNodeResult
 /// in the journal Completed event payload, rather than measuring apply-loop time.
 ///
