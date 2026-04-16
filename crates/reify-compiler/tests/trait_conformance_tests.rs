@@ -9,7 +9,12 @@ use reify_types::*;
 
 /// Assert that `template.value_cells` contains exactly one cell whose member name equals
 /// `member`. Prints `context` in the failure message for easy diagnosis.
-fn assert_single_value_cell(template: &TopologyTemplate, member: &str, context: &str) {
+/// Returns a reference to the matched cell so callers can inspect its properties.
+fn assert_single_value_cell<'a>(
+    template: &'a TopologyTemplate,
+    member: &str,
+    context: &str,
+) -> &'a ValueCellDecl {
     let cells: Vec<_> = template
         .value_cells
         .iter()
@@ -24,6 +29,7 @@ fn assert_single_value_cell(template: &TopologyTemplate, member: &str, context: 
         cells.len(),
         cells
     );
+    cells[0]
 }
 
 /// Step 1: Compile a trait declaration produces CompiledTrait in CompiledModule.trait_defs.
@@ -615,7 +621,8 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via both B->D and C->D paths; must appear exactly once.
-    assert_single_value_cell(&template, "x", "diamond_satisfies_once");
+    let x_cell = assert_single_value_cell(&template, "x", "diamond_satisfies_once");
+    assert_eq!(x_cell.cell_type, Type::length(), "diamond_satisfies_once: x must be Length");
 }
 
 /// Task-189 step-3: Missing member in deep diamond produces exactly 1 error.
@@ -793,7 +800,8 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // d comes from trait D, reachable via both B->D and C->D; must appear exactly once.
-    assert_single_value_cell(&template, "d", "diamond_default_from_D_once");
+    let d_cell = assert_single_value_cell(&template, "d", "diamond_default_from_D_once");
+    assert_eq!(d_cell.cell_type, Type::length(), "diamond_default_from_D_once: d must be Length");
 }
 
 /// Task-189 step-11: Let default from D injected exactly once in deep diamond.
@@ -878,10 +886,21 @@ structure def S : A {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // x comes from D, reachable via B->E->D and C->D; must appear exactly once.
-    assert_single_value_cell(&template, "x", "deep_diamond_A_B_E_D_C_D");
+    let x_cell = assert_single_value_cell(&template, "x", "deep_diamond_A_B_E_D_C_D");
 
     // y comes from E, reachable via one path (B->E); must also appear exactly once.
-    assert_single_value_cell(&template, "y", "deep_diamond_A_B_E_D_C_D");
+    let y_cell = assert_single_value_cell(&template, "y", "deep_diamond_A_B_E_D_C_D");
+
+    assert_eq!(
+        x_cell.cell_type,
+        Type::length(),
+        "deep_diamond x cell_type mismatch"
+    );
+    assert_eq!(
+        y_cell.cell_type,
+        Type::length(),
+        "deep_diamond y cell_type mismatch"
+    );
 }
 
 /// Task-384 step-1: Diamond with conflicting param types produces exactly 1 error.
@@ -910,7 +929,7 @@ structure def S : A {
 }
 "#;
 
-    let (_, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
     let errors: Vec<_> = diagnostics
         .iter()
@@ -945,6 +964,9 @@ structure def S : A {
         !errors[0].labels[0].span.is_empty(),
         "expected non-empty span on conflict diagnostic label"
     );
+
+    // Even with a type conflict error, dedup must still produce exactly one cell for 'x'.
+    assert_single_value_cell(&template, "x", "diamond_type_conflict");
 }
 
 /// Step 21b: Trait with constraint and param — both injected correctly.
