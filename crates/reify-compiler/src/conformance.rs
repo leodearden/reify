@@ -385,34 +385,31 @@ pub(crate) enum DefaultKindTag {
 /// the recursive function signature stays within Clippy's argument-count limit.
 /// `MergeContext::new()` initialises all fields to empty; callers create one
 /// instance per structure and read `requirements` / `defaults` after the loop.
+///
+/// `requirements` and `defaults` are `pub` because `check_trait_conformance`
+/// consumes them after the collection loop. The 5 tracking maps are private —
+/// only `collect_all_requirements` should mutate them.
+#[derive(Default)]
 pub(crate) struct MergeContext {
     /// Accumulated requirements collected across all visited traits.
     pub requirements: Vec<TraitRequirement>,
     /// Accumulated defaults collected across all visited traits.
     pub defaults: Vec<TraitDefault>,
     /// Trait names already visited — prevents double-processing diamond patterns.
-    pub visited: HashSet<String>,
+    visited: HashSet<String>,
     /// Maps member name → (type, originating trait) for requirement conflict reporting.
-    pub seen_names: HashMap<String, (Type, String)>,
+    seen_names: HashMap<String, (Type, String)>,
     /// Composite-key dedup for Param/Constraint defaults: (name, DefaultKindTag) → (type, trait).
-    pub seen_defaults: HashMap<(String, DefaultKindTag), (Type, String)>,
+    seen_defaults: HashMap<(String, DefaultKindTag), (Type, String)>,
     /// Content-hash dedup for Let defaults: name → (hash, originating trait).
-    pub seen_let_hashes: HashMap<String, (ContentHash, String)>,
+    seen_let_hashes: HashMap<String, (ContentHash, String)>,
     /// Let binding names that already have a conflict diagnostic (emit at most 1 per name).
-    pub seen_let_conflict_names: HashSet<String>,
+    seen_let_conflict_names: HashSet<String>,
 }
 
 impl MergeContext {
     pub fn new() -> Self {
-        Self {
-            requirements: Vec::new(),
-            defaults: Vec::new(),
-            visited: HashSet::new(),
-            seen_names: HashMap::new(),
-            seen_defaults: HashMap::new(),
-            seen_let_hashes: HashMap::new(),
-            seen_let_conflict_names: HashSet::new(),
-        }
+        Self::default()
     }
 }
 
@@ -517,8 +514,12 @@ pub(crate) fn collect_all_requirements(
                 }
                 // Only record the hash when the structure does NOT override this name.
                 // When overridden, conflict diagnostics are suppressed and the default
-                // is filtered at injection time (conformance.rs ~line 327), so
-                // hash-recording is unnecessary and would block dedup for other traits.
+                // is filtered at injection time (~line 327), so hash-recording is
+                // unnecessary.  As a side-effect, when multiple traits provide
+                // `let x = <different>` and the structure overrides `x`, each trait's
+                // default is pushed into `ctx.defaults` without dedup — producing
+                // redundant entries.  This is harmless: the injection loop re-checks
+                // `structure_members.contains_key(name)` and discards all of them.
                 if !structure_members.contains_key(name.as_str()) {
                     ctx.seen_let_hashes.insert(
                         name.clone(),
@@ -533,11 +534,17 @@ pub(crate) fn collect_all_requirements(
             }
 
             // Extract type and kind-tag for composite-key dedup.
-            // Param, Let, and Constraint each get their own (name, kind) slot so they
+            // Param and Constraint each get their own (name, kind) slot so they
             // never interfere with each other's dedup or conflict detection.
+            // Note: Let defaults always `continue` above and never reach this match.
             let (default_type, kind_tag) = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => (cell_type.clone(), DefaultKindTag::Param),
-                DefaultKind::Let(_) => (Type::Real, DefaultKindTag::Let),
+                DefaultKind::Let(_) => {
+                    // Unreachable: all Let defaults are handled by the early
+                    // `if let DefaultKind::Let(let_decl)` block above, which always
+                    // exits via `continue`.
+                    unreachable!("Let defaults must be handled by the seen_let_hashes block above")
+                }
                 DefaultKind::Constraint(_) => (Type::Bool, DefaultKindTag::Constraint),
             };
 
