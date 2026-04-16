@@ -38423,10 +38423,11 @@
         "description": "Boolean op regression tests (lib.rs:2317-2356) only cover union and union_all. There are no tests for intersection, difference, or intersection_all. A typo in the BooleanOp mapping (e.g., swapping Intersection and Difference) would not be caught.\n\nAdd at minimum:\n1. compile_boolean_op_difference_via_compile — difference is the only non-commutative boolean op, making it the most important to verify correct operand ordering (left vs right).\n2. compile_boolean_op_intersection_all_via_compile — covers the _all fold path for a non-union op.\n\nmemory_hints:\n- search: \"boolean op compile test union intersection difference\"\n- entity: compile_boolean_op, BooleanOp",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T02:21:23.129Z"
       },
       {
         "id": "1844",
@@ -38442,7 +38443,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:21:22.672Z",
+      "lastModified": "2026-04-16T02:21:23.130Z",
       "taskCount": 1839,
       "completedCount": 1570,
       "tags": [
