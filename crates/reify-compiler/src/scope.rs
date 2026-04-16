@@ -36,8 +36,8 @@ pub(crate) struct CompilationScope<'u> {
     /// Inner map is BTreeMap so iteration order is lexicographic — this makes bare
     /// collection-sub identifier resolution (expr.rs: members.iter().next()) deterministic.
     pub(crate) sub_member_types: HashMap<String, BTreeMap<String, Type>>,
-    /// Whether the current structure has at least one geometry declaration (realize block).
-    /// Used to gate @face/@edge selectors at compile time.
+    /// Whether the current structure has at least one geometry-producing let binding
+    /// (e.g., `let shape = box(...)`). Used to gate @face/@edge selectors at compile time.
     pub(crate) has_geometry: bool,
 }
 
