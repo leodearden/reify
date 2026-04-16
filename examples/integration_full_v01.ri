@@ -128,11 +128,6 @@ structure def Assembly : Physical + Locatable {
     param height    : Length = 300mm
     param width     : Length = 150mm
     param clearance : Length = 500mil
-    // NOTE: `enabled` is a Bool-typed param intentionally added to provide a
-    // regression-lock test surface for edit_param/edit_check TypeKindMismatch
-    // checks in crates/reify-eval/tests/incremental_integration.rs
-    // (see edit_param_bool_cell_wrong_value_kind / edit_check_bool_cell_wrong_value_kind).
-    param enabled   : Bool   = true
 
     // ── Auto params ───────────────────────────────────────────────────────
     param load_auto : Real   = auto
