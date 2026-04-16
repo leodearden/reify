@@ -38594,11 +38594,11 @@
         "description": "Two related improvements to assert_single_value_cell in trait_conformance_tests.rs (from task 1845 review):\n\n1. **#[must_use] attribute:** Add `#[must_use = \"inspect the returned cell or use `let _ =` to explicitly discard\"]` to `assert_single_value_cell` (line ~13) to prevent future callers from accidentally ignoring the return value. Currently 4 of 5 call sites use the return; the one that doesn't (line 969) should either use it or explicitly discard with `let _ =`.\n\n2. **Assert cell type in diamond_type_conflict_produces_error:** At line 969, capture the return value of `assert_single_value_cell` and assert on `x_cell.cell_type` to document and lock down the compiler's conflict-resolution behavior (which type survives when Length vs Angle conflict).\n\nMemory hints: search \"assert_single_value_cell ValueCellDecl diamond_type_conflict cell_type\", entities: assert_single_value_cell, diamond_type_conflict_produces_error",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T02:38:38.083Z"
+        "updatedAt": "2026-04-16T02:47:37.294Z"
       },
       {
         "id": "1850",
@@ -38632,9 +38632,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T02:46:03.790Z",
+      "lastModified": "2026-04-16T02:47:37.295Z",
       "taskCount": 1846,
-      "completedCount": 1579,
+      "completedCount": 1580,
       "tags": [
         "master"
       ]
