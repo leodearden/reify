@@ -1150,3 +1150,17 @@ pub(crate) fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<
         .collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn solid_resolves_to_geometry() {
+        assert_eq!(
+            resolve_type_name("Solid"),
+            Some(Type::Geometry),
+            "\"Solid\" should resolve to Type::Geometry as a surface-syntax alias"
+        );
+    }
+}
+
