@@ -29,6 +29,32 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
     compiled
 }
 
+// ─── step-5: Solid-typed param must NOT emit a ValueCellDecl ─────────────────
+
+/// After the pre-pass extension (step-4), scope registers `g` as Type::Geometry.
+/// The main Param loop must also skip ValueCellDecl construction so that `g`
+/// appears nowhere in `template.value_cells`.
+/// Expect failure until the main-loop early-continue (step-6) is implemented.
+#[test]
+fn solid_param_has_no_value_cell() {
+    let source = r#"structure def Widget {
+    param g : Solid = cylinder(10mm, 20mm)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template not found");
+
+    // The geometry param must NOT produce a scalar ValueCellDecl.
+    assert!(
+        !template.value_cells.iter().any(|c| c.id.member == "g"),
+        "ValueCellDecl for 'g' must not exist; Solid-typed params with geometry \
+         defaults should be lowered as realizations only"
+    );
+}
+
 // ─── step-3: Solid-typed param should lower to a realization ─────────────────
 
 /// `param g : Solid = cylinder(10mm, 20mm)` must:
