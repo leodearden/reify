@@ -229,3 +229,63 @@ fn meta_access_in_constraint_context() {
         other => panic!("expected BinOp at top level of constraint, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// step-1 (task-388): empty meta block + access gives 'no key' (not 'no meta block')
+// ---------------------------------------------------------------------------
+
+#[test]
+fn empty_meta_block_access_gives_no_key_error() {
+    let source = r#"
+        structure def Bracket {
+            meta {}
+            let x : String = meta.foo
+        }
+    "#;
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected at least one error");
+    assert!(
+        errors.iter().any(|d| d.message.contains("no key")),
+        "expected 'no key' error for empty meta block access, got: {:?}",
+        errors
+    );
+    assert!(
+        !errors.iter().any(|d| d.message.contains("no meta block")),
+        "should NOT produce 'no meta block' error when meta {{}} is present, got: {:?}",
+        errors
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-2 (task-388): empty meta block without access compiles cleanly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn empty_meta_block_stored_in_template() {
+    let source = r#"
+        structure def Bracket {
+            meta {}
+            param width : Length = 10mm
+        }
+    "#;
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "empty meta block should compile without errors, got: {:?}",
+        errors
+    );
+    assert!(
+        template.meta.is_empty(),
+        "template.meta should be empty for an empty meta block"
+    );
+}
