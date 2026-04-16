@@ -241,3 +241,36 @@ structure S : ProvidesLength + ProvidesArea {
         error_msg
     );
 }
+
+// ── task 1834 step-1: annotation-vs-expression cross-check emits diagnostic ──
+
+/// Trait with `let x : Length = 5.0` injected into a structure: the annotation
+/// says Length, but 5.0 evaluates to Real — they are not compatible via
+/// `implicitly_converts_to`, so conformance must emit an error diagnostic whose
+/// message mentions "type mismatch".
+///
+/// Before task 1834 this was silent: the cell_type was taken from the compiled
+/// expression (Real), so the annotation had no observable effect.
+#[test]
+fn annotated_let_expr_type_mismatch_emits_diagnostic() {
+    let source = r#"
+trait HasX {
+    let x : Length = 5.0
+}
+structure S : HasX {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected a diagnostic for annotation/expression type mismatch, got none"
+    );
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("type mismatch"),
+        "diagnostic should mention 'type mismatch', got: {}",
+        error_msg
+    );
+}
+
