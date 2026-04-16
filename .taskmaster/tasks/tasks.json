@@ -38279,7 +38279,15 @@
             "crates/reify-eval/tests/chamfer_e2e.rs",
             "crates/reify-eval/tests/fillet_e2e.rs",
             "crates/reify-test-support/src/helpers.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "chamfer fillet e2e modify pipeline test helper boilerplate reify",
+              "shared test helper extraction chamfer fillet geometry tests"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         }
       },
       {
