@@ -1200,3 +1200,55 @@ structure def S : HasParamAndConstraint {
         template.constraints.len()
     );
 }
+
+/// Three traits each define `let x : Real = <different_expr>`.
+/// Structure implements all three — three-way let conflict should produce
+/// exactly ONE error diagnostic (not N-1 = 2).
+///
+/// Currently (before step-2 fix) each subsequent trait collision emits a
+/// fresh diagnostic against the first-seen trait, producing 2 errors.
+/// After adding `seen_let_conflict_names`, only the first collision is emitted.
+#[test]
+fn three_way_let_conflict_emits_single_diagnostic() {
+    let source = r#"
+trait TraitX {
+    let x : Real = 1.0
+}
+
+trait TraitY {
+    let x : Real = 2.0
+}
+
+trait TraitZ {
+    let x : Real = 3.0
+}
+
+structure def S : TraitX + TraitY + TraitZ {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "expected at least 1 conflict diagnostic for three-way let conflict"
+    );
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 conflict diagnostic (not N-1=2) for three-way let conflict, \
+         got {}: {:?}",
+        errors.len(),
+        errors
+    );
+    assert!(
+        errors[0].message.contains("conflicting"),
+        "error should mention 'conflicting', got: {}",
+        errors[0].message
+    );
+}
