@@ -668,8 +668,8 @@ impl EngineSession {
     /// is tracked as follow-up work.
     pub fn get_containing_definition(&self, line: u32, col: u32) -> Option<DefInfo> {
         // Documented contract: zero line or column is out-of-range → None.
-        // Without this guard, line_col_to_byte_offset returns 0 for zero inputs,
-        // which would incorrectly match any definition starting at byte 0.
+        // Without this guard, line_col_to_byte_offset_with_offsets returns 0 for
+        // zero inputs, which would incorrectly match any definition starting at byte 0.
         if line == 0 || col == 0 {
             return None;
         }
@@ -1393,9 +1393,6 @@ pub(crate) fn offset_to_line_col_fast(
 /// `line_offsets` must be the result of [`build_line_offsets`] for the same
 /// `source`.  Both `line` and `col` are 1-based and count **Unicode codepoints**.
 ///
-/// This is the primitive; [`line_col_to_byte_offset`] is a thin wrapper that
-/// builds the offset table internally.
-///
 /// - If `line` or `col` is 0, returns 0 as a safe fallback.
 /// - If `line` exceeds the number of lines, returns `source.len()`.
 /// - If `col` exceeds the line length, clamps to the end of the line.
@@ -1436,5 +1433,3 @@ pub(crate) fn line_col_to_byte_offset_with_offsets(
             .map(|(i, _)| i)
             .unwrap_or(line_text.len())
 }
-
-
