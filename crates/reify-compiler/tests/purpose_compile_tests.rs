@@ -406,9 +406,10 @@ purpose check(subject : Widget) {
         !errors.is_empty(),
         "expected an error for `self` used in purpose scope, but got none"
     );
-    let has_self_error = errors
-        .iter()
-        .any(|d| d.message.contains("self") || d.message.to_lowercase().contains("unresolved"));
+    let has_self_error = errors.iter().any(|d| {
+        let lower = d.message.to_lowercase();
+        lower.contains("self") || lower.contains("unresolved")
+    });
     assert!(
         has_self_error,
         "expected an error mentioning 'self' or 'unresolved', got: {:?}",

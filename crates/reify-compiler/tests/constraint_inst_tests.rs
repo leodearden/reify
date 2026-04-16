@@ -19,6 +19,24 @@ fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
+/// Assert that `expr` is a `ValueRef` with the given member name.
+///
+/// Panics with a descriptive message if the expression is not a `ValueRef` or
+/// if the member name does not match `expected_member`.
+fn assert_value_ref(expr: &CompiledExpr, expected_member: &str) {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => assert_eq!(
+            id.member, expected_member,
+            "expected ValueRef with member '{}', got '{}'",
+            expected_member, id.member
+        ),
+        other => panic!(
+            "expected ValueRef({}) but got {:?}",
+            expected_member, other
+        ),
+    }
+}
+
 // ── Step 7: basic single-arg instantiation ───────────────────────────────────
 
 /// Constraint def with single param, structure with one instantiation.
@@ -449,24 +467,26 @@ structure S {
             }
             // then_branch: x < 100mm  →  BinOp(Lt, ValueRef(S.width), Literal)
             match &then_branch.kind {
-                CompiledExprKind::BinOp { op, left, .. } => {
+                CompiledExprKind::BinOp { op, left, right } => {
                     assert_eq!(*op, BinOp::Lt, "then_branch op should be Lt");
+                    assert_value_ref(left, "width");
                     assert!(
-                        matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "width"),
-                        "then_branch left should be ValueRef(S.width), got {:?}",
-                        left.kind
+                        matches!(&right.kind, CompiledExprKind::Literal(_)),
+                        "then_branch right should be Literal (100mm), got {:?}",
+                        right.kind
                     );
                 }
                 other => panic!("expected BinOp for then_branch, got {:?}", other),
             }
             // else_branch: x > 0mm  →  BinOp(Gt, ValueRef(S.width), Literal)
             match &else_branch.kind {
-                CompiledExprKind::BinOp { op, left, .. } => {
+                CompiledExprKind::BinOp { op, left, right } => {
                     assert_eq!(*op, BinOp::Gt, "else_branch op should be Gt");
+                    assert_value_ref(left, "width");
                     assert!(
-                        matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "width"),
-                        "else_branch left should be ValueRef(S.width), got {:?}",
-                        left.kind
+                        matches!(&right.kind, CompiledExprKind::Literal(_)),
+                        "else_branch right should be Literal (0mm), got {:?}",
+                        right.kind
                     );
                 }
                 other => panic!("expected BinOp for else_branch, got {:?}", other),
@@ -518,25 +538,56 @@ structure S {
                 "discriminant should be ValueRef(S.quality), got {:?}",
                 discriminant.kind
             );
-            // Two arms: Standard and Premium
+            // Two arms: Standard (x < 100mm) and Premium (x < 10mm).
+            // Index explicitly so a swap or duplication of arm bodies is caught.
             assert_eq!(arms.len(), 2, "expected 2 match arms");
-            // Each arm body should have x substituted with ValueRef(S.size)
-            for arm in arms {
-                match &arm.body.kind {
-                    CompiledExprKind::BinOp { op, left, .. } => {
-                        assert_eq!(*op, BinOp::Lt, "arm body op should be Lt");
-                        assert!(
-                            matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "size"),
-                            "arm body left should be ValueRef(S.size) for arm {:?}, got {:?}",
-                            arm.patterns,
-                            left.kind
-                        );
-                    }
-                    other => panic!(
-                        "expected BinOp in arm {:?} body, got {:?}",
-                        arm.patterns, other
-                    ),
+
+            // arms[0]: Standard => x < 100mm
+            assert_eq!(
+                arms[0].patterns,
+                vec!["Standard".to_string()],
+                "first arm should be Standard"
+            );
+            match &arms[0].body.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Lt, "Standard arm op should be Lt");
+                    assert_value_ref(left, "size");
+                    // Right should be Literal(100mm); 100mm = 0.1 m in SI.
+                    assert!(
+                        matches!(
+                            &right.kind,
+                            CompiledExprKind::Literal(Value::Scalar { si_value, .. })
+                            if (si_value - 0.1_f64).abs() < 1e-9
+                        ),
+                        "Standard arm right should be Literal(100mm = 0.1 SI), got {:?}",
+                        right.kind
+                    );
                 }
+                other => panic!("expected BinOp in Standard arm body, got {:?}", other),
+            }
+
+            // arms[1]: Premium => x < 10mm
+            assert_eq!(
+                arms[1].patterns,
+                vec!["Premium".to_string()],
+                "second arm should be Premium"
+            );
+            match &arms[1].body.kind {
+                CompiledExprKind::BinOp { op, left, right } => {
+                    assert_eq!(*op, BinOp::Lt, "Premium arm op should be Lt");
+                    assert_value_ref(left, "size");
+                    // Right should be Literal(10mm); 10mm = 0.01 m in SI.
+                    assert!(
+                        matches!(
+                            &right.kind,
+                            CompiledExprKind::Literal(Value::Scalar { si_value, .. })
+                            if (si_value - 0.01_f64).abs() < 1e-9
+                        ),
+                        "Premium arm right should be Literal(10mm = 0.01 SI), got {:?}",
+                        right.kind
+                    );
+                }
+                other => panic!("expected BinOp in Premium arm body, got {:?}", other),
             }
         }
         other => panic!("expected Match constraint expr, got {:?}", other),
