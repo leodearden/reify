@@ -1337,9 +1337,10 @@ structure def S : TraitA + TraitB {
     );
 
     // NOTE: with_default installs a thread-local subscriber; DEBUG events emitted
-    // on other threads spawned by the compile path would be missed. Switch to
-    // set_global_default in a std::sync::Once if the compile path ever emits
-    // from worker threads.
+    // on other threads spawned by the compile path would be missed. This test
+    // relies on compile_first_template (defined in this same test module) running
+    // the compile pipeline on the calling thread — if that ever dispatches to
+    // rayon/spawned tasks, switch to set_global_default in a std::sync::Once.
     // Run the compilation under the scoped subscriber so we capture any DEBUG
     // events from reify_compiler::conformance targets.
     let _ = tracing::subscriber::with_default(subscriber, || compile_first_template(source));
@@ -1351,8 +1352,8 @@ structure def S : TraitA + TraitB {
     assert_eq!(
         debug,
         1,
-        "expected exactly 1 DEBUG event from reify_compiler target when two traits \
-         supply the same-named default (second register_if_absent returns false), got {}",
+        "expected exactly 1 DEBUG event from reify_compiler::conformance target when two \
+         traits supply the same-named default (second register_if_absent returns false), got {}",
         debug
     );
 }
