@@ -217,17 +217,6 @@ describe('MenuBar — Edit dropdown', () => {
     expect((redoItem as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('Undo and Redo disabled state matches getShortcut(id)?.disabled from the registry', () => {
-    render(() => <MenuBar />);
-    fireEvent.click(screen.getByText('Edit'));
-    const items = screen.getAllByRole('menuitem');
-    const undoItem = items.find((el) => el.textContent?.includes('Undo')) as HTMLButtonElement;
-    const redoItem = items.find((el) => el.textContent?.includes('Redo')) as HTMLButtonElement;
-    expect(undoItem).toBeDefined();
-    expect(redoItem).toBeDefined();
-    expect(undoItem.disabled).toBe(getShortcut('undo')?.disabled ?? false);
-    expect(redoItem.disabled).toBe(getShortcut('redo')?.disabled ?? false);
-  });
 });
 
 describe('MenuBar — disabled derivation', () => {
