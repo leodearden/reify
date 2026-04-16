@@ -2670,6 +2670,141 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compile_geometry_op_shell_negative_face_index_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_0 = -1.0 — would wrap to usize::MAX without the guard
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                ("face_0".into(), literal_f64(-1.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_some(),
+            "Shell should return Some even when face_0 is negative, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("face_0")
+                    && (d.message.contains("negative") || d.message.contains("non-finite"))
+            }),
+            "expected a Warning mentioning 'face_0' and 'negative'/'non-finite', got: {:?}",
+            diagnostics
+        );
+        match result.unwrap() {
+            reify_types::GeometryOp::Shell { faces_to_remove, .. } => {
+                assert!(
+                    faces_to_remove.is_empty(),
+                    "faces_to_remove should be empty when face_0 is -1.0, got {:?}",
+                    faces_to_remove
+                );
+            }
+            other => panic!("expected GeometryOp::Shell, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_shell_nan_face_index_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_0 = NaN — non-finite
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                ("face_0".into(), literal_f64(f64::NAN)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_some(), "Shell with NaN face_0 should return Some, got {:?}", result);
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("face_0")
+                    && (d.message.contains("negative") || d.message.contains("non-finite"))
+            }),
+            "expected a Warning for NaN face_0, got: {:?}",
+            diagnostics
+        );
+        match result.unwrap() {
+            reify_types::GeometryOp::Shell { faces_to_remove, .. } => {
+                assert!(
+                    faces_to_remove.is_empty(),
+                    "faces_to_remove should be empty for NaN face_0, got {:?}",
+                    faces_to_remove
+                );
+            }
+            other => panic!("expected GeometryOp::Shell, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_shell_infinity_face_index_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_0 = +Infinity — non-finite
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                ("face_0".into(), literal_f64(f64::INFINITY)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_some(), "Shell with INFINITY face_0 should return Some, got {:?}", result);
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("face_0")
+                    && (d.message.contains("negative") || d.message.contains("non-finite"))
+            }),
+            "expected a Warning for INFINITY face_0, got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── validate_pattern_count upper-bound tests ──────────────────────────────
 
     #[test]
