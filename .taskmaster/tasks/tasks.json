@@ -37927,7 +37927,18 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T21:10:11.281Z"
+        "updatedAt": "2026-04-15T21:10:11.281Z",
+        "metadata": {
+          "files": [
+            "gui/src/viewport/meshManager.ts",
+            "gui/src/viewport/Viewport.tsx",
+            "gui/src/__tests__/viewport/meshManager.test.ts"
+          ],
+          "modules": [
+            "gui/src/viewport",
+            "gui/src/__tests__/viewport"
+          ]
+        }
       },
       {
         "id": 1813,
