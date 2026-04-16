@@ -39117,11 +39117,11 @@
         "description": "Reviewer flagged that `resolve_concurrent_edit` (crates/reify-eval/src/concurrent.rs:305-327) now combines a `debug_assert!(empty)` with a `.clear()` call on the same invariant, yielding split-profile semantics: debug builds panic loudly on stale input, while release builds silently absorb it via `.clear()`. Two consequences:\n\n1. **Behaviour under test differs from behaviour shipped.** The `should_panic` tests in tests/concurrent.rs:583-640 are gated `#[cfg(debug_assertions)]`, so release builds exercise only the \"empty in, empty out\" path — the `.clear()` calls are effectively untested after the previous defensive-clear test was removed.\n\n2. **Spec is ambiguous.** \"Callers must pass empty buckets\" (enforced by debug_assert) contradicts \"we defensively clear for you\" (provided by .clear()). Pick one:\n\n   - **Option A — trust the contract:** drop the `.clear()` calls. Optionally replace with one `assert!` if you want a runtime guard in both profiles. Docstring already says callers MUST pass empty buckets; this makes the contract load-bearing.\n   - **Option B — defensive-clear is policy:** drop the `debug_assert` calls and restore/add a `#[cfg(not(debug_assertions))]` test that pre-populates `resolved_params`/`diagnostics` and asserts `resolve_concurrent_edit` wipes them. Docstring becomes \"buckets will be cleared on entry\".\n\nChoose one path and update code + tests + docstring consistently. Avoid leaving the split-profile semantics unless a release-mode integration test is also added.\n\nmemory_hints:\n- search: \"resolve_concurrent_edit contract\" \"ConcurrentEditResult buckets\"\n- entity: Engine, ConcurrentEditResult\n\nspawned_from: 1855",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-16T21:37:17.980Z",
+        "updatedAt": "2026-04-16T22:28:15.308Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/concurrent.rs",
@@ -39393,7 +39393,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T22:28:13.022Z",
+      "lastModified": "2026-04-16T22:28:15.308Z",
       "taskCount": 1879,
       "completedCount": 1610,
       "tags": [
