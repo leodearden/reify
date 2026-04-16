@@ -476,6 +476,9 @@ pub(crate) fn collect_all_requirements(
     for default in &compiled_trait.defaults {
         if default.name.is_none() {
             // Unnamed defaults (e.g., unlabeled constraints) — always push.
+            // Dedup is implicit: the `visited` set (checked above before recursing into
+            // each trait) prevents re-processing the same trait, so each unnamed default
+            // is encountered at most once regardless of how many paths lead to that trait.
             defaults.push(default.clone());
         } else if let Some(name) = &default.name {
             // For let bindings: use content_hash comparison to distinguish same
