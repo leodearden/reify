@@ -213,3 +213,56 @@ fn solid_param_referenced_by_downstream_boolean_op() {
         out_realization.operations.len()
     );
 }
+
+// ─── coverage: Solid param default as Ident alias ─────────────────────────────
+
+/// Exercises the Ident branch of `is_geometry_let` at `geometry.rs:16` (task 1878).
+///
+/// When a `Solid`-typed param (`g`) has as its default an Ident (`a`) that names
+/// a geometry let defined earlier in the same structure, the ordered first-pass
+/// (`entity.rs:305-350`) must insert `a` into `known_geometry_lets` before `g`
+/// is visited, allowing `is_geometry_let(Ident("a"), ..., known_geometry_lets)`
+/// to return `true` via the Ident match arm.  Both `a` and `g` are then
+/// recorded in the `geometry_lets` map (third pass) and lowered as realizations.
+///
+/// Regression guard: if the Ident branch of `is_geometry_let` regresses, `g`
+/// will not be added to `known_geometry_lets` and will not be lowered as a
+/// realization — either a ValueCellDecl will appear for `g` or the realization
+/// count will drop to 1.
+#[test]
+fn solid_param_default_aliasing_geometry_let_is_realization() {
+    let source = r#"structure def W2 {
+    let a = cylinder(10mm, 20mm)
+    param g : Solid = a
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "W2")
+        .expect("W2 template not found");
+
+    // (a) No scalar ValueCellDecls — both `a` and `g` are geometry members.
+    assert!(
+        template.value_cells.is_empty(),
+        "expected no ValueCellDecls (both a and g are geometry); got: {:#?}",
+        template.value_cells
+    );
+
+    // (b) Exactly 2 realizations: one for `a`, one for `g`.
+    assert_eq!(
+        template.realizations.len(),
+        2,
+        "expected 2 RealizationDecls (a and g), got {}",
+        template.realizations.len()
+    );
+
+    // (c) Both realizations carry at least one compiled geometry op.
+    for (i, realization) in template.realizations.iter().enumerate() {
+        assert!(
+            !realization.operations.is_empty(),
+            "realization at index {} has no operations — likely Ident-alias branch regressed",
+            i
+        );
+    }
+}
