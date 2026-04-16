@@ -38756,11 +38756,11 @@
         "description": "Two small test assertion improvements identified during task 385 review:\n\n1. **trait_merge_tests.rs: three_way_let_conflict_emits_single_diagnostic** (line ~1232-1251) — The test verifies count==1 and message contains 'conflicting', but does not assert which two trait names appear in the diagnostic. Existing two-way tests check for both trait names. Add assertion like `assert!(errors[0].message.contains(\"TraitX\") && errors[0].message.contains(\"TraitY\"))` to catch regressions that name wrong traits.\n\n2. **trait_merge_eval.rs: multi_trait_constraints_partial_violation** (line ~154-218) — This test checks for Satisfied/Violated constraint results but does not call `assert_no_eval_errors(&result)` after `engine.check(&compiled)`. The adjacent step-15 test (`let_from_trait_evaluated`) was updated with this guard; step-16 should match for consistency. Import `reify_test_support::assert_no_eval_errors` (already present in the file).\n\nMemory hints: search \"three_way_let_conflict_emits_single_diagnostic assert_no_eval_errors trait merge tests\", entities: trait_merge_tests, trait_merge_eval",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T11:41:35.430Z",
+        "updatedAt": "2026-04-16T20:27:04.866Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/src/conformance/trait_merge_tests.rs",
@@ -38829,7 +38829,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T20:27:04.626Z",
+      "lastModified": "2026-04-16T20:27:04.866Z",
       "taskCount": 1855,
       "completedCount": 1591,
       "tags": [
