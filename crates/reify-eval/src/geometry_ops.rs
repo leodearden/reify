@@ -937,6 +937,54 @@ mod tests {
     }
 
     #[test]
+    fn compile_geometry_op_revolve_missing_each_required_arg_returns_none() {
+        // Table-driven coverage for the remaining 6 required Revolve args
+        // that the canonical `ox`-only test above doesn't exercise. Revolve
+        // reads seven f64 args (ax, ay, az, angle, ox, oy, oz) via f64_arg?;
+        // omitting any of them must yield None (not silently treat as 0.0).
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // All seven required args with valid default values, in one canonical order.
+        let full_args: Vec<(&'static str, reify_types::CompiledExpr)> = vec![
+            ("oy", literal_f64(0.0)),
+            ("oz", literal_f64(0.0)),
+            ("ax", literal_f64(0.0)),
+            ("ay", literal_f64(0.0)),
+            ("az", literal_f64(1.0)),
+            ("angle", literal_f64(std::f64::consts::PI)),
+        ];
+
+        for omit in ["oy", "oz", "ax", "ay", "az", "angle"] {
+            let args: Vec<(String, reify_types::CompiledExpr)> = full_args
+                .iter()
+                .filter(|(name, _)| *name != omit)
+                .map(|(name, expr)| ((*name).into(), expr.clone()))
+                .collect();
+
+            let op = CompiledGeometryOp::Sweep {
+                kind: SweepKind::Revolve,
+                profiles: vec![GeomRef::Step(0)],
+                args,
+            };
+
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &mut Vec::new(),
+            );
+            assert!(
+                result.is_none(),
+                "missing '{omit}' should return None, got {:?}",
+                result
+            );
+        }
+    }
+
+    #[test]
     fn compile_geometry_op_extrude_missing_distance_returns_none() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
