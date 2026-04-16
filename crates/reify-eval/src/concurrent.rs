@@ -285,14 +285,13 @@ impl Engine {
     ///
     /// Mutates `self.cache` via `record_evaluation()` for resolved auto params
     /// and propagated let bindings. Does NOT write to `self.param_overrides` —
-    /// that happens in `apply_concurrent_edit()`. The returned tuple must be
-    /// assigned to `result.resolved_params` / `result.diagnostics` by the caller
-    /// before calling `apply_concurrent_edit()`.
+    /// that happens in `apply_concurrent_edit()`. Assigns resolved values and
+    /// diagnostics directly onto `result.resolved_params` / `result.diagnostics`.
     pub fn resolve_concurrent_edit(
         &mut self,
         setup: &ConcurrentEditSetup,
         result: &mut ConcurrentEditResult,
-    ) -> (HashMap<ValueCellId, reify_types::Value>, Vec<Diagnostic>) {
+    ) {
         let mut resolved_params = HashMap::new();
         let mut diagnostics = Vec::new();
 
@@ -456,7 +455,8 @@ impl Engine {
             }
         }
 
-        (resolved_params, diagnostics)
+        result.resolved_params = resolved_params;
+        result.diagnostics = diagnostics;
     }
 }
 

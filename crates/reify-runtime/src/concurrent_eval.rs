@@ -503,11 +503,8 @@ pub async fn edit_param_concurrent(
             // Resolution phase: run solver synchronously after concurrent
             // value evaluation completes. NLopt is single-threaded, so this
             // sequential step is architecturally correct.
-            let (resolved_params, diagnostics) =
-                engine.resolve_concurrent_edit(&setup, &mut result);
-
-            result.resolved_params = resolved_params;
-            result.diagnostics = diagnostics;
+            // Populates result.resolved_params and result.diagnostics in-place.
+            engine.resolve_concurrent_edit(&setup, &mut result);
 
             Ok((setup, result))
         }
