@@ -923,6 +923,42 @@ mod tests {
         assert_eq!(info.decl_name, "S");
     }
 
+    #[test]
+    fn find_member_decl_param_only_in_else_branch() {
+        // Covers the else-only-branch lookup path explicitly: a where-block
+        // whose `else` contains the only occurrence of a named `param`.
+        let source = r#"structure S {
+    param cond : Bool = true
+    where cond {
+        param only_when_true : Scalar = 1mm
+    } else {
+        param only_in_else : Scalar = 7mm
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("only_in_else", None)
+            .expect("only_in_else declared only in else branch should be found");
+        assert_eq!(info.name, "only_in_else");
+        assert_eq!(info.kind, ValueCellKind::Param);
+        assert_eq!(
+            *info.cell_type,
+            Type::length(),
+            "only_in_else should have length type"
+        );
+        let expected_start = source.find("param only_in_else").unwrap() as u32;
+        let expected_end = (source.find("7mm").unwrap() + "7mm".len()) as u32;
+        assert_eq!(
+            info.span.start, expected_start,
+            "span.start should point at 'param only_in_else'"
+        );
+        assert_eq!(
+            info.span.end, expected_end,
+            "span.end should end after '7mm'"
+        );
+        assert_eq!(info.decl_name, "S");
+    }
+
     // --- decl_name field tests ---
 
     #[test]
