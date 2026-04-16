@@ -99,5 +99,37 @@ assert "valid fixture: script exits zero" \
 assert "valid fixture: PASS line for subtask-count guard" \
     grep -q 'PASS: tasks.json has at least one subtask' "$_chk2_happy_out"
 
+# ==============================================================================
+# Check 1 guards: top-level task count
+# ==============================================================================
+echo ""
+echo "--- Check 1 guard: structural presence ---"
+
+# (a) Structural: the source script must contain the top-level-task-count guard
+# jq expression.  Fails RED until step-4 adds the symmetric guard.
+assert "test_tasks_json_id_types.sh contains top-level-task-count jq expression" \
+    grep -qF '[.master.tasks[]] | length' "$TARGET"
+
+echo ""
+echo "--- Check 1 guard: behavioral (empty tasks -> rc != 0) ---"
+
+# (b) Behavioral: a tasks.json with an empty top-level tasks array must cause
+# the script to fail (rc != 0) and emit a FAIL line for the top-level-task-count
+# guard.  The rc check will pass incidentally after step-2 (Check 2's subtask
+# guard fires first on zero tasks), but the FAIL-line check remains RED until
+# step-4 inserts the Check 1 guard and its assertion description appears.
+_chk1_dir=$(mk_fixture_dir)
+printf '{"master":{"tasks":[]}}\n' \
+    > "$_chk1_dir/.taskmaster/tasks/tasks.json"
+_chk1_rc=0
+_chk1_out="$_meta_tmpdir/chk1_empty.out"
+bash "$_chk1_dir/tests/infra/test_tasks_json_id_types.sh" > "$_chk1_out" 2>&1 || _chk1_rc=$?
+
+assert "empty tasks fixture: script exits non-zero" \
+    test "$_chk1_rc" -ne 0
+
+assert "empty tasks fixture: FAIL line for top-level-task-count guard" \
+    grep -q 'FAIL: tasks.json has at least one top-level task' "$_chk1_out"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
