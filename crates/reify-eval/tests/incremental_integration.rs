@@ -902,6 +902,8 @@ fn edit_check_wrong_value_kind() {
 #[test]
 fn edit_param_enum_cell_wrong_value_kind() {
     let (mut engine, _initial) = make_eval_engine();
+    // `grade` is a let-binding (not a param), but edit_param acts on any ValueCell
+    // regardless of kind — the TypeKindMismatch path is reached the same way.
     let grade_id = ValueCellId::new("Assembly", "grade");
     // Value::Int is the wrong variant for a Type::Enum("Grade") cell.
     let err = engine
@@ -922,6 +924,9 @@ fn edit_param_enum_cell_wrong_value_kind() {
 #[test]
 fn edit_check_enum_cell_wrong_value_kind() {
     let (mut engine, _initial) = make_eval_engine();
+    // `grade` is a let-binding (not a param), but edit_check delegates to edit_param
+    // which acts on any ValueCell regardless of kind — the TypeKindMismatch path
+    // is reached the same way.
     let grade_id = ValueCellId::new("Assembly", "grade");
     // Value::Int is the wrong variant for a Type::Enum("Grade") cell.
     let err = engine
