@@ -7,7 +7,7 @@ use std::fs;
 
 use reify_compiler::module_dag::{ModuleResolver, compile_project};
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::parse_and_compile;
+use reify_test_support::{parse_and_compile, parse_and_compile_with_stdlib};
 use reify_types::{ExportFormat, Satisfaction, ValueCellId};
 
 // ── Step 1: trait_implementing_structure ─────────────────────────────
@@ -1269,14 +1269,20 @@ fn user_fn_safety_factor() {
 
 // ── geometry_flange_with_pattern ────────────────────────────────────
 
-/// Parse m5_geometry_flange.ri with cylinder + circular_pattern through the
-/// full build pipeline with OCCT kernel. This extends existing geometry test
-/// by adding circular_pattern (the existing test only has a single cylinder).
+/// Parse m5_geometry_flange.ri through the full build pipeline with OCCT kernel.
+/// BoltFlange uses the stdlib `Rigid` trait and designates its CSG result via
+/// `param geometry : Solid = difference(body, holes)`.
 ///
 /// Verify:
-/// - BoltFlange template has realizations for geometry lets
+/// - BoltFlange declares the `Rigid` trait bound
+/// - At least 4 realizations: body cylinder, translate(hole), circular_pattern, difference
+/// - `geometry` is NOT emitted as a scalar value cell (it is a Solid-typed param
+///   lowered to a realization)
 /// - Build produces valid STEP output with ISO-10303-21 header
 /// - All constraints satisfied
+///
+/// Expect failure until `examples/m5_geometry_flange.ri` is rewritten (step-10):
+/// the current example has no `: Rigid` bound and no `param geometry : Solid`.
 #[test]
 fn geometry_flange_with_pattern() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -1286,7 +1292,8 @@ fn geometry_flange_with_pattern() {
     let source = std::fs::read_to_string("../../examples/m5_geometry_flange.ri")
         .expect("examples/m5_geometry_flange.ri should exist");
 
-    let compiled = parse_and_compile(&source);
+    // Use stdlib so Rigid/Physical/Material trait definitions are in scope.
+    let compiled = parse_and_compile_with_stdlib(&source);
 
     // Should have a BoltFlange template
     let flange = compiled
@@ -1295,16 +1302,26 @@ fn geometry_flange_with_pattern() {
         .find(|t| t.name == "BoltFlange")
         .expect("should have a BoltFlange template");
 
-    // Verify geometry let bindings produced realizations
+    // (b) BoltFlange must declare conformance to `Rigid`.
     assert!(
-        !flange.realizations.is_empty(),
-        "BoltFlange should have realization declarations from geometry lets"
+        flange.trait_bounds.contains(&"Rigid".to_string()),
+        "BoltFlange must declare `: Rigid` trait bound, got: {:?}",
+        flange.trait_bounds
     );
-    // Should have at least 3 realizations (body cylinder + hole cylinder + holes circular_pattern)
+
+    // (c) At least 4 realizations: body + translate(hole) + circular_pattern + difference(geometry)
     assert!(
-        flange.realizations.len() >= 3,
-        "expected at least 3 realizations (body cylinder + hole cylinder + circular_pattern), got {}",
+        flange.realizations.len() >= 4,
+        "expected at least 4 realizations (body + hole + circular_pattern + geometry/difference), got {}",
         flange.realizations.len()
+    );
+
+    // (d) `geometry` must NOT appear as a scalar value cell — it is a Solid-typed param
+    // lowered to a RealizationDecl, not a ValueCellDecl.
+    assert!(
+        !flange.value_cells.iter().any(|c| c.id.member == "geometry"),
+        "`geometry` must not be a ValueCellDecl; Solid-typed params with geometry defaults \
+         should be lowered as realizations"
     );
 
     // Build with real constraint checker and OCCT kernel
