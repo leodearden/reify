@@ -1047,3 +1047,63 @@ fn cycle_error_excludes_non_cycle_ancestors() {
         "message should contain exactly the cycle, not non-cycle ancestors"
     );
 }
+
+// ── step-1 (task-1852): cycle_error_preserves_dfs_traversal_order ────────────
+
+/// Validates that the cycle error message reflects DFS traversal order (as
+/// preserved by IndexSet) and NOT alphabetical order.
+///
+/// Creates a 3-module cycle: zebra -> middle -> alpha -> zebra
+///   - Alphabetical order: alpha, middle, zebra
+///   - DFS traversal order: zebra, middle, alpha  (i.e. reversed)
+///
+/// An alphabetically-sorted (or HashSet-backed) implementation cannot produce
+/// the expected message "zebra -> middle -> alpha -> zebra", so this test
+/// serves as a direct regression guard for the IndexSet guarantee introduced
+/// in task-1833.
+#[test]
+fn cycle_error_preserves_dfs_traversal_order() {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+
+    // zebra imports middle (DFS entry point)
+    fs::write(
+        dir.join("zebra.ri"),
+        "import middle\nstructure Zebra { param v: Scalar = 3mm }",
+    )
+    .unwrap();
+
+    // middle imports alpha
+    fs::write(
+        dir.join("middle.ri"),
+        "import alpha\nstructure Middle { param v: Scalar = 2mm }",
+    )
+    .unwrap();
+
+    // alpha imports zebra (closes the cycle: zebra -> middle -> alpha -> zebra)
+    fs::write(
+        dir.join("alpha.ri"),
+        "import zebra\nstructure Alpha { param v: Scalar = 1mm }",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("zebra", &resolver);
+    assert!(result.is_err(), "expected error for cycle zebra->middle->alpha->zebra");
+
+    let msg = result
+        .unwrap_err()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    // DFS traversal order (zebra, middle, alpha) — NOT alphabetical (alpha, middle, zebra).
+    // If IndexSet is replaced with HashSet or BTreeSet this assertion will fail.
+    assert_eq!(
+        msg,
+        "circular dependency detected: zebra -> middle -> alpha -> zebra",
+        "message must reflect DFS insertion order, not alphabetical order"
+    );
+}
