@@ -785,10 +785,11 @@ fn rollback_multiple_cycles_reuse_ids_no_gaps() {
 /// The `param_overrides` commit loop inside `apply_concurrent_edit` writes solved
 /// auto-param values into the engine's param_overrides map. We verify this by asserting:
 /// (a) The snapshot immediately after apply carries x = mm(20.0).
-/// (b) A subsequent engine.eval() seeds x from param_overrides (mm(20.0)) before
-///     calling the solver (call 3 → mm(99.0)), meaning the values returned by eval
-///     start from the override, not Undef.  We assert x is non-Undef after the
-///     second eval rather than a specific value, because the solver may overwrite it.
+/// (b) A subsequent engine.eval() returns x == mm(99.0) exactly. Solver call 3 returns
+///     Solved(mm(99.0)), and the resolution phase in eval() writes this to values.
+///     Asserting the exact value (0.099 SI) is stronger than the previous check of
+///     `Value::Scalar { .. }` — it pins the solver result and would catch bugs where
+///     the wrong solver call is dispatched or where x is an incorrect scalar.
 #[test]
 fn apply_concurrent_edit_persists_resolved_params_to_param_overrides() {
     let x_id = ValueCellId::new("S", "x");
@@ -833,15 +834,14 @@ fn apply_concurrent_edit_persists_resolved_params_to_param_overrides() {
         snap_x
     );
 
-    // (b) A subsequent eval() should succeed and x should be present (non-Undef).
-    //     param_overrides seeds x so the solver receives mm(20.0) as a starting point
-    //     and call 3 → mm(99.0) replaces it.  Either way x must be present.
+    // (b) A subsequent eval() must return x == mm(99.0) exactly (solver call 3).
+    //     Asserting the exact SI value (0.099) is stronger than the previous check of
+    //     `Value::Scalar { .. }` and would catch bugs where x resolves to a wrong scalar.
     let second = engine.eval(&module);
     let second_x = second.values.get(&x_id).expect("x must be in second eval values");
-    // x should be a Scalar (not Undef), regardless of which solver result was used.
     assert!(
-        matches!(second_x, Value::Scalar { .. }),
-        "expected x to be a Scalar after second eval (param_overrides was seeded), got {:?}",
+        matches!(second_x, Value::Scalar { si_value, .. } if (*si_value - 0.099).abs() < 1e-10),
+        "expected second eval x == mm(99.0) = 0.099 SI (solver call 3), got {:?}",
         second_x
     );
 }
