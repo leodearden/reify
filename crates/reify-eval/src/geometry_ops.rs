@@ -928,11 +928,33 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(
             result.is_none(),
             "expected None for missing 'ox' arg, got {:?}",
             result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "missing 'ox' should emit exactly one diagnostic, got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "missing 'ox' should emit a Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("ox"),
+            "diagnostic for missing 'ox' should mention 'ox', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Revolve"),
+            "diagnostic for missing 'ox' should mention 'Revolve', got: {}",
+            diagnostics[0].message
         );
     }
 
