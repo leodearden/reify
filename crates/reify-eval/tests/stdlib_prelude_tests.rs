@@ -154,6 +154,88 @@ structure S {
     );
 }
 
+// ─── step-3: Eval idempotency (caching regression) ───────────────────
+
+/// Regression guard: calling `eval()` twice on the same engine with the
+/// same module must produce identical results. This guards against a
+/// regression where `self.functions` could accumulate prelude functions
+/// across calls (e.g., if `eval()` appended instead of replacing).
+///
+/// A user-defined `symmetric_tolerance` with the same signature as the
+/// prelude function (addition body) is used. The prelude version would
+/// also return 7mm, so any ordering shift from accumulation would be
+/// visible if it changed the number of functions found or their types.
+/// Both calls must return 0.007 m (7mm = 5mm + 2mm).
+#[test]
+fn eval_is_idempotent_for_prelude_functions() {
+    let source = r#"
+fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {
+    nominal + deviation
+}
+
+structure S {
+    let v : Length = symmetric_tolerance(5mm, 2mm)
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    // First eval
+    let result1 = engine.eval(&compiled);
+    let eval_errors1 = collect_errors(&result1.diagnostics);
+    assert!(
+        eval_errors1.is_empty(),
+        "first eval: no error diagnostics expected, got: {:?}",
+        eval_errors1
+    );
+    let cell_id = ValueCellId::new("S", "v");
+    let v1 = result1
+        .values
+        .get(&cell_id)
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| panic!("S.v missing or non-numeric on first eval"));
+
+    // Second eval on same engine
+    let result2 = engine.eval(&compiled);
+    let eval_errors2 = collect_errors(&result2.diagnostics);
+    assert!(
+        eval_errors2.is_empty(),
+        "second eval: no error diagnostics expected, got: {:?}",
+        eval_errors2
+    );
+    let v2 = result2
+        .values
+        .get(&cell_id)
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| panic!("S.v missing or non-numeric on second eval"));
+
+    assert!(
+        (v1 - v2).abs() < 1e-9,
+        "eval() must be idempotent: first={} second={} (differ by {})",
+        v1,
+        v2,
+        (v1 - v2).abs()
+    );
+    // User impl (addition, matching prelude): 5mm + 2mm = 7mm = 0.007 m
+    assert!(
+        (v1 - 0.007).abs() < 1e-9,
+        "symmetric_tolerance(5mm, 2mm) should be 0.007 m (7mm), got {}",
+        v1
+    );
+}
+
 // ─── step-9: End-to-end prelude pipeline ─────────────────────────────
 
 /// Full pipeline: .ri source → compile_with_prelude → Engine::eval.
