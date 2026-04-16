@@ -51,6 +51,13 @@ pub struct EngineSession {
     /// automatically invalidated when a new module is loaded (via `commit_state`
     /// which clears the map) or when the template's content hash changes.
     def_preview_cache: HashMap<(String, ContentHash), GuiState>,
+    /// Cached parse result for the currently-loaded source.
+    ///
+    /// Populated by `commit_state` immediately after a successful parse+compile+check
+    /// cycle.  Set to `None` until the first load; overwritten (not appended) on
+    /// every subsequent `commit_state` call.  Used by `get_containing_definition`
+    /// to avoid re-parsing the source on every cursor/hover event.
+    parsed_cache: Option<reify_syntax::ParsedModule>,
 }
 
 /// Build the normalized source-map key for a module name: `"{name}.ri"`.
@@ -77,6 +84,7 @@ impl EngineSession {
             last_check: None,
             module_name: None,
             def_preview_cache: HashMap::new(),
+            parsed_cache: None,
         }
     }
 
@@ -117,7 +125,7 @@ impl EngineSession {
         let check_result = self.engine.check(&compiled);
 
         // Atomically commit all state after check() succeeds.
-        self.commit_state(compiled, check_result, module_name, source);
+        self.commit_state(parsed, compiled, check_result, module_name, source);
 
         self.build_gui_state()
     }
@@ -214,7 +222,7 @@ impl EngineSession {
         let check_result = self.engine.check(&compiled);
 
         // Atomically commit all state after check() succeeds.
-        self.commit_state(compiled, check_result, module_name, content);
+        self.commit_state(parsed, compiled, check_result, module_name, content);
 
         self.build_gui_state()
     }
@@ -232,6 +240,7 @@ impl EngineSession {
     /// drifting apart.
     fn commit_state(
         &mut self,
+        parsed: reify_syntax::ParsedModule,
         compiled: CompiledModule,
         check_result: CheckResult,
         module_name: &str,
@@ -245,6 +254,10 @@ impl EngineSession {
         self.last_check = Some(check_result);
         // Invalidate def preview cache — new module may have different content hashes.
         self.def_preview_cache.clear();
+        // Cache the parse result so get_containing_definition can avoid re-parsing
+        // on every cursor/hover call.  Unconditionally overwrites any prior value
+        // (never appends) — this is an invalidation, not an accumulation.
+        self.parsed_cache = Some(parsed);
     }
 
     /// Export geometry to a file.
@@ -979,6 +992,15 @@ impl EngineSession {
     /// - `get_diagnostics_debug_asserts_when_source_map_broken` (debug-build loud path)
     pub(crate) fn break_source_map_for_test(&mut self) {
         self.source_map.clear();
+    }
+
+    /// Return a reference to the cached `ParsedModule`, or `None` if no module
+    /// has been loaded yet.
+    ///
+    /// Intended only for tests that need to inspect cache state without widening
+    /// the production API.
+    pub(crate) fn parsed_cache_for_test(&self) -> Option<&reify_syntax::ParsedModule> {
+        self.parsed_cache.as_ref()
     }
 }
 
