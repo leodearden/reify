@@ -97,6 +97,34 @@ pub(crate) fn eval_all_args_to_f64(
         .collect()
 }
 
+/// Validate and convert a pattern count from f64 to usize.
+///
+/// Rejects non-positive values, non-integers, and values exceeding
+/// a reasonable upper bound. Returns `None` with a diagnostic when
+/// the count is invalid.
+fn validate_pattern_count(
+    raw: f64,
+    arg_name: &str,
+    kind_label: impl std::fmt::Debug,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<usize> {
+    if raw < 1.0 {
+        diagnostics.push(Diagnostic::warning(format!(
+            "pattern {:?} dropped: {}={} is less than 1 (must be a positive integer)",
+            kind_label, arg_name, raw
+        )));
+        return None;
+    }
+    if raw != raw.floor() {
+        diagnostics.push(Diagnostic::warning(format!(
+            "pattern {:?} dropped: {}={} is not an integer",
+            kind_label, arg_name, raw
+        )));
+        return None;
+    }
+    Some(raw as usize)
+}
+
 /// Compile a CompiledGeometryOp into a GeometryOp by evaluating expressions.
 /// Translate a compiled geometry operation into a runtime `GeometryOp`.
 ///
@@ -124,6 +152,33 @@ pub(crate) fn compile_geometry_op(
 ) -> Option<reify_types::GeometryOp> {
     use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 
+    // Helper: resolve a GeomRef to a handle. GeomRef::Sub(name) currently
+    // resolves to the most recent step handle (last()), ignoring the name.
+    // This is approximate — proper name-based sub-reference resolution is
+    // not yet implemented. A diagnostic is emitted so callers are aware.
+    let resolve_geom_ref = |r: &GeomRef,
+                            step_handles: &[GeometryHandleId],
+                            diagnostics: &mut Vec<Diagnostic>|
+     -> Option<GeometryHandleId> {
+        match r {
+            GeomRef::Step(idx) => step_handles
+                .get(*idx)
+                .copied()
+                .filter(|h| *h != GeometryHandleId::INVALID),
+            GeomRef::Sub(name) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "GeomRef::Sub('{}') resolved to most recent step handle \
+                     (name-based sub-reference resolution not yet implemented)",
+                    name
+                )));
+                step_handles
+                    .last()
+                    .copied()
+                    .filter(|h| *h != GeometryHandleId::INVALID)
+            }
+        }
+    };
+
     match op {
         CompiledGeometryOp::Primitive { kind, args } => {
             let mut eval_arg = |name: &str| -> Option<reify_types::Value> {
@@ -146,14 +201,8 @@ pub(crate) fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Boolean { op, left, right } => {
-            let resolve_ref = |r: &GeomRef| -> Option<GeometryHandleId> {
-                match r {
-                    GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID),
-                    GeomRef::Sub(_name) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID),
-                }
-            };
-            let left_id = resolve_ref(left)?;
-            let right_id = resolve_ref(right)?;
+            let left_id = resolve_geom_ref(left, step_handles, diagnostics)?;
+            let right_id = resolve_geom_ref(right, step_handles, diagnostics)?;
             match op {
                 BooleanOp::Union => Some(reify_types::GeometryOp::Union {
                     left: left_id,
@@ -170,10 +219,7 @@ pub(crate) fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Modify { kind, target, args } => {
-            let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-            };
+            let target_id = resolve_geom_ref(target, step_handles, diagnostics)?;
             let mut eval_arg = |name: &str| -> Option<reify_types::Value> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
             };
@@ -232,10 +278,7 @@ pub(crate) fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
-            let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-            };
+            let target_id = resolve_geom_ref(target, step_handles, diagnostics)?;
             let mut f64_arg = |name: &str| {
                 eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
             };
@@ -262,13 +305,23 @@ pub(crate) fn compile_geometry_op(
                 }),
                 reify_compiler::TransformKind::Scale => {
                     let factor = f64_arg("factor")?;
-                    // Reject negative scale: OCCT SetScale with negative factor
+                    // Reject non-positive scale: OCCT SetScale with negative factor
                     // produces inside-out geometry (point-symmetry), not mirroring.
+                    // Zero factor produces degenerate (zero-volume) geometry which
+                    // can crash or misbehave in downstream OCCT operations.
                     if factor < 0.0 {
                         diagnostics.push(Diagnostic::warning(format!(
-                            "scale dropped: factor={} is negative (must be non-negative)",
+                            "scale dropped: factor={} is negative (must be positive)",
                             factor
                         )));
+                        return None;
+                    }
+                    if factor == 0.0 {
+                        diagnostics.push(Diagnostic::warning(
+                            "scale dropped: factor=0 produces degenerate \
+                             (zero-volume) geometry (must be > 0)"
+                                .to_string(),
+                        ));
                         return None;
                     }
                     Some(reify_types::GeometryOp::Scale {
@@ -298,18 +351,15 @@ pub(crate) fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {
-            // Pattern operations resolve target via step index
-            let target_id = match target {
-                GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-                GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-            };
+            let target_id = resolve_geom_ref(target, step_handles, diagnostics)?;
             match kind {
                 reify_compiler::PatternKind::Linear => {
                     let mut f64_arg = |name: &str| {
                         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     };
                     let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
-                    let count = f64_arg("count")? as usize;
+                    let count_raw = f64_arg("count")?;
+                    let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
                     let spacing = eval_named_arg("spacing", kind, args, values, functions, meta_map, diagnostics)?;
                     Some(reify_types::GeometryOp::LinearPattern {
                         target: target_id,
@@ -324,7 +374,8 @@ pub(crate) fn compile_geometry_op(
                     };
                     let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
                     let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
-                    let count = f64_arg("count")? as usize;
+                    let count_raw = f64_arg("count")?;
+                    let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
                     let raw_angle = eval_named_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
                     // CAD convention: a bare numeric angle (no unit suffix) is
                     // interpreted as degrees and converted to radians.  Values
@@ -367,13 +418,15 @@ pub(crate) fn compile_geometry_op(
                         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     };
                     let direction1 = [f64_arg("dx1")?, f64_arg("dy1")?, f64_arg("dz1")?];
-                    let count1 = f64_arg("count1")? as usize;
+                    let count1_raw = f64_arg("count1")?;
+                    let count1 = validate_pattern_count(count1_raw, "count1", kind, diagnostics)?;
                     let spacing1 = eval_named_arg("spacing1", kind, args, values, functions, meta_map, diagnostics)?;
                     let mut f64_arg = |name: &str| {
                         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     };
                     let direction2 = [f64_arg("dx2")?, f64_arg("dy2")?, f64_arg("dz2")?];
-                    let count2 = f64_arg("count2")? as usize;
+                    let count2_raw = f64_arg("count2")?;
+                    let count2 = validate_pattern_count(count2_raw, "count2", kind, diagnostics)?;
                     let spacing2 = eval_named_arg("spacing2", kind, args, values, functions, meta_map, diagnostics)?;
                     Some(reify_types::GeometryOp::LinearPattern2D {
                         target: target_id,
@@ -424,20 +477,15 @@ pub(crate) fn compile_geometry_op(
                     // Resolve each profile GeomRef to a handle via step_handles
                     let resolved: Option<Vec<GeometryHandleId>> = profiles
                         .iter()
-                        .map(|r| match r {
-                            GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID),
-                            GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID),
-                        })
+                        .map(|r| resolve_geom_ref(r, step_handles, diagnostics))
                         .collect();
                     Some(reify_types::GeometryOp::Loft {
                         profiles: resolved?,
                     })
                 }
                 reify_compiler::SweepKind::Extrude => {
-                    let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-                    };
+                    let profile_handle =
+                        resolve_geom_ref(profiles.first()?, step_handles, diagnostics)?;
                     let distance = eval_named_arg(
                         "distance",
                         kind,
@@ -470,10 +518,8 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::SweepKind::Revolve => {
-                    let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-                    };
+                    let profile_handle =
+                        resolve_geom_ref(profiles.first()?, step_handles, diagnostics)?;
                     let mut f64_arg = |name: &str| {
                         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     };
@@ -515,16 +561,10 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::SweepKind::Sweep => {
-                    // Resolve profile GeomRef (first entry in profiles) to a handle
-                    let profile_handle = match profiles.first()? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-                    };
-                    // Resolve path GeomRef (second entry in profiles) to a handle
-                    let path_handle = match profiles.get(1)? {
-                        GeomRef::Step(idx) => step_handles.get(*idx).copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-                        GeomRef::Sub(_) => step_handles.last().copied().filter(|h| *h != GeometryHandleId::INVALID)?,
-                    };
+                    let profile_handle =
+                        resolve_geom_ref(profiles.first()?, step_handles, diagnostics)?;
+                    let path_handle =
+                        resolve_geom_ref(profiles.get(1)?, step_handles, diagnostics)?;
                     Some(reify_types::GeometryOp::Sweep {
                         profile: profile_handle,
                         path: path_handle,
@@ -1145,6 +1185,37 @@ mod tests {
                     && d.message.contains("negative")
             }),
             "expected a Warning mentioning 'scale dropped' and 'negative', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_scale_zero_factor_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Scale,
+            target: GeomRef::Step(0),
+            args: vec![("factor".into(), literal_f64(0.0))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
+        assert!(result.is_none(), "zero scale factor should return None (degenerate geometry)");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for zero scale factor, got: {:?}",
+            diagnostics
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("scale dropped")
+                    && d.message.contains("degenerate")
+            }),
+            "expected a Warning mentioning 'scale dropped' and 'degenerate', got: {:?}",
             diagnostics
         );
     }

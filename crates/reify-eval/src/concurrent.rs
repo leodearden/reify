@@ -243,7 +243,8 @@ impl Engine {
 
         // Commit solver-resolved auto param values to engine state.
         // These were computed by resolve_concurrent_edit but must only
-        // be persisted here so that resolve remains side-effect-free.
+        // be persisted here so that resolve does not write to param_overrides.
+        // Note: resolve *does* mutate engine cache state via record_evaluation().
         for (id, val) in &result.resolved_params {
             self.param_overrides.insert(id.clone(), val.clone());
         }
@@ -279,6 +280,14 @@ impl Engine {
     /// (NLopt is single-threaded), which is architecturally clean: concurrent
     /// evaluation handles parallelizable value nodes, then the solver runs
     /// sequentially with all values finalized.
+    ///
+    /// # Side effects
+    ///
+    /// Mutates `self.cache` via `record_evaluation()` for resolved auto params
+    /// and propagated let bindings. Does NOT write to `self.param_overrides` —
+    /// that happens in `apply_concurrent_edit()`. The returned tuple must be
+    /// assigned to `result.resolved_params` / `result.diagnostics` by the caller
+    /// before calling `apply_concurrent_edit()`.
     pub fn resolve_concurrent_edit(
         &mut self,
         setup: &ConcurrentEditSetup,
@@ -455,30 +464,67 @@ impl Engine {
 mod tests {
     use super::*;
 
-    /// Compile-time assertion: ConcurrentEditSetup is accessible from this module.
+    /// Verify ConcurrentNodeResult can be constructed and fields accessed.
     #[test]
-    fn concurrent_edit_setup_accessible() {
-        let _: fn() -> String = || {
-            format!("{}", std::mem::size_of::<ConcurrentEditSetup>());
-            String::new()
+    fn concurrent_node_result_construction_and_field_access() {
+        let node_id = NodeId::Value(ValueCellId::new("E", "x"));
+        let result = ConcurrentNodeResult {
+            node: node_id.clone(),
+            value: Value::Real(42.0),
+            determinacy: DeterminacyState::Determined,
+            trace: DependencyTrace::default(),
+            outcome: EvalOutcome::Changed,
         };
+        assert_eq!(result.node, node_id);
+        assert_eq!(result.value, Value::Real(42.0));
+        assert_eq!(result.determinacy, DeterminacyState::Determined);
+        assert!(matches!(result.outcome, EvalOutcome::Changed));
     }
 
-    /// Compile-time assertion: ConcurrentNodeResult is accessible from this module.
+    /// Verify ConcurrentEditResult can be constructed with known values
+    /// and all fields are accessible.
     #[test]
-    fn concurrent_node_result_accessible() {
-        let _: fn() -> String = || {
-            format!("{}", std::mem::size_of::<ConcurrentNodeResult>());
-            String::new()
+    fn concurrent_edit_result_construction_and_field_access() {
+        let result = ConcurrentEditResult {
+            values: ValueMap::new(),
+            snapshot_values: PersistentMap::new(),
+            node_results: vec![],
+            actual_eval_set: vec![],
+            skipped: HashSet::new(),
+            resolved_params: HashMap::new(),
+            diagnostics: vec![],
         };
+        assert!(result.values.is_empty());
+        assert!(result.node_results.is_empty());
+        assert!(result.actual_eval_set.is_empty());
+        assert!(result.skipped.is_empty());
+        assert!(result.resolved_params.is_empty());
+        assert!(result.diagnostics.is_empty());
     }
 
-    /// Compile-time assertion: ConcurrentEditResult is accessible from this module.
+    /// Verify ConcurrentEditResult round-trips node results correctly.
     #[test]
-    fn concurrent_edit_result_accessible() {
-        let _: fn() -> String = || {
-            format!("{}", std::mem::size_of::<ConcurrentEditResult>());
-            String::new()
+    fn concurrent_edit_result_with_node_results() {
+        let node_id = NodeId::Value(ValueCellId::new("E", "y"));
+        let node_result = ConcurrentNodeResult {
+            node: node_id.clone(),
+            value: Value::Real(7.0),
+            determinacy: DeterminacyState::Determined,
+            trace: DependencyTrace::default(),
+            outcome: EvalOutcome::Unchanged,
         };
+        let result = ConcurrentEditResult {
+            values: ValueMap::new(),
+            snapshot_values: PersistentMap::new(),
+            node_results: vec![node_result],
+            actual_eval_set: vec![node_id.clone()],
+            skipped: HashSet::new(),
+            resolved_params: HashMap::new(),
+            diagnostics: vec![],
+        };
+        assert_eq!(result.node_results.len(), 1);
+        assert_eq!(result.node_results[0].node, node_id);
+        assert_eq!(result.node_results[0].value, Value::Real(7.0));
+        assert_eq!(result.actual_eval_set.len(), 1);
     }
 }
