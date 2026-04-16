@@ -4,7 +4,7 @@
  */
 import { createSignal, onMount, onCleanup, Show, For } from 'solid-js';
 import type { Component } from 'solid-js';
-import { shortcutKey } from '../shortcuts';
+import { shortcutKey, type ShortcutId } from '../shortcuts';
 import styles from './MenuBar.module.css';
 
 export interface MenuBarProps {
@@ -21,7 +21,7 @@ type MenuId = 'file' | 'edit' | 'view' | 'help';
 
 type MenuItemDef = {
   label: string;
-  shortcutId: string;
+  shortcutId: ShortcutId;
   action?: keyof MenuBarProps;
   disabled?: boolean;
 };

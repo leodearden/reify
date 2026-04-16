@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SHORTCUTS, getShortcut, shortcutKey, matchesEvent, type KeyBinding } from '../shortcuts';
+import { SHORTCUTS, getShortcut, shortcutKey, matchesEvent, type KeyBinding, type ShortcutId } from '../shortcuts';
 
 describe('shortcuts', () => {
   it('SHORTCUTS array contains entries for all expected shortcut ids', () => {
@@ -96,7 +96,7 @@ describe('shortcuts', () => {
   });
 
   it('all non-disabled shortcuts with keys do NOT have disabled set to true', () => {
-    const activeIds = SHORTCUTS.filter((s) => !s.disabled && s.key).map((s) => s.id);
+    const activeIds = SHORTCUTS.filter((s) => !s.disabled && s.key).map((s) => s.id as ShortcutId);
     for (const id of activeIds) {
       const entry = getShortcut(id);
       expect(entry).toBeDefined();

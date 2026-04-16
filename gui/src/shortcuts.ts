@@ -57,7 +57,12 @@ export interface ShortcutDef {
   bind?: KeyBinding;
 }
 
-export const SHORTCUTS: ShortcutDef[] = [
+// Private const with literal id types preserved for ShortcutId derivation.
+// Using `as const satisfies` validates structural shape against ShortcutDef while
+// keeping narrowed literal types. The exported SHORTCUTS is widened back to
+// `readonly ShortcutDef[]` so callers can access optional fields (disabled, bind)
+// without hitting discriminated-union narrowing errors.
+const _SHORTCUTS_DEF = [
   // shift: false on Ctrl-only bindings prevents them from firing on Ctrl+Shift+<letter>,
   // which produces an uppercase key that the case-insensitive comparison would otherwise
   // accept. This restores the behavior of the original per-key equality checks.
@@ -73,30 +78,22 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'toggleChat', key: 'Ctrl+J',       description: 'Toggle chat panel',    bind: { key: 'j', ctrl: true, shift: false } },
   { id: 'reload',     key: 'Ctrl+Shift+R', description: 'Reload changed files', bind: { key: 'r', ctrl: true, shift: true } },
   { id: 'help',       key: '?',            description: 'Toggle this help',     bind: { key: '?', ctrl: false, alt: false } },
-];
+] as const satisfies readonly ShortcutDef[];
 
 /**
- * Union of all valid shortcut IDs.
- * Consumed by useKeyboardShortcuts to give compile-time safety to its
- * ID→callback map. Must be kept in sync with the SHORTCUTS array.
+ * Union of all valid shortcut IDs, derived from the shortcut definitions so the two
+ * cannot drift. Consumed by useKeyboardShortcuts to give compile-time safety to its
+ * ID→callback map.
  */
-export type ShortcutId =
-  | 'open'
-  | 'save'
-  | 'export'
-  | 'undo'
-  | 'redo'
-  | 'reEvaluate'
-  | 'fitToView'
-  | 'toggleChat'
-  | 'reload'
-  | 'help';
+export type ShortcutId = typeof _SHORTCUTS_DEF[number]['id'];
+
+export const SHORTCUTS: readonly ShortcutDef[] = _SHORTCUTS_DEF;
 
 /**
  * Look up a shortcut definition by id.
  * Returns `undefined` if no entry with that id exists.
  */
-export function getShortcut(id: string): ShortcutDef | undefined {
+export function getShortcut(id: ShortcutId): ShortcutDef | undefined {
   return SHORTCUTS.find((s) => s.id === id);
 }
 
@@ -104,6 +101,6 @@ export function getShortcut(id: string): ShortcutDef | undefined {
  * Returns the display key string for a shortcut id.
  * Returns an empty string if the id is not found or has no key.
  */
-export function shortcutKey(id: string): string {
+export function shortcutKey(id: ShortcutId): string {
   return getShortcut(id)?.key ?? '';
 }
