@@ -496,6 +496,38 @@ mod tests {
         super::assert_no_eval_errors(&result);
     }
 
+    /// assert_no_check_errors should not panic when the CheckResult has no diagnostics.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_assert_no_check_errors_passes_on_clean_result() {
+        use reify_types::ValueMap;
+        use std::collections::HashMap;
+        let result = reify_eval::CheckResult {
+            values: ValueMap::new(),
+            constraint_results: vec![],
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+        };
+        super::assert_no_check_errors(&result);
+    }
+
+    /// assert_no_check_errors should panic (with message containing "check errors")
+    /// when the CheckResult contains at least one Error-severity diagnostic.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    #[should_panic(expected = "check errors")]
+    fn test_assert_no_check_errors_panics_on_error_diagnostic() {
+        use reify_types::{Diagnostic, ValueMap};
+        use std::collections::HashMap;
+        let result = reify_eval::CheckResult {
+            values: ValueMap::new(),
+            constraint_results: vec![],
+            diagnostics: vec![Diagnostic::error("something went wrong")],
+            resolved_params: HashMap::new(),
+        };
+        super::assert_no_check_errors(&result);
+    }
+
     /// assert_no_eval_errors should not panic when the result has only warnings
     /// (no Error-severity diagnostics).
     #[cfg(feature = "eval-helpers")]
