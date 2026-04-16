@@ -39509,15 +39509,16 @@
         "description": "Two small polish items for the new `trait_merge_name_conflict_emits_debug_event` test in crates/reify-compiler/tests/trait_merge_tests.rs (~line 1310):\n\n(1) **Narrow target_prefix** (~line 1329): The builder currently uses `.target_prefix(\"reify_compiler\")`, so the exact-count `assert_eq!(debug, 1, ...)` at ~line 1347 will break on any unrelated future DEBUG emission anywhere in the `reify_compiler::*` crate. Change to `.target_prefix(\"reify_compiler::conformance\")` so the invariant is localised to the conformance module that owns the emission under test.\n\n(2) **Document thread-local subscriber assumption** (~line 1341): `tracing::subscriber::with_default` installs the subscriber only on the current thread. If `compile_first_template` ever dispatches work to rayon/spawned tasks, the DEBUG emission would be missed silently and the `assert_eq!(debug, 1)` would fire with `0`, producing a confusing failure. The compile path is single-threaded today, so this is theoretical, but add a short comment above the `with_default` call, e.g.:\n\n    // NOTE: with_default is thread-local; relies on compile_first_template\n    // being single-threaded. If the compile path ever goes multi-threaded,\n    // switch to set_global_default in a std::sync::Once.\n\nBoth changes are localised to this one test function; no production code changes.\n\nmemory_hints:\n- search: \"trait_merge_name_conflict_emits_debug_event CountingSubscriberBuilder\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T22:56:10.851Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T22:56:09.082Z",
+      "lastModified": "2026-04-16T22:56:10.851Z",
       "taskCount": 1886,
       "completedCount": 1614,
       "tags": [
