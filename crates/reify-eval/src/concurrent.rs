@@ -305,10 +305,15 @@ impl Engine {
         setup: &ConcurrentEditSetup,
         result: &mut ConcurrentEditResult,
     ) {
-        // Callers must pass a fresh ConcurrentEditResult: these buckets are the
-        // method's outputs, not its inputs. The debug_assert guards catch accidental
-        // double-calls during development; the .clear() calls remain as a
-        // release-build safety net (debug_assert compiles out in release).
+        // Chosen approach (belt-and-suspenders): callers MUST pass a fresh
+        // ConcurrentEditResult with empty resolved_params and diagnostics —
+        // these are output buckets, not input/accumulator fields.
+        // In debug/test builds the debug_assert guards enforce this contract
+        // loudly (double-call or reuse is immediately visible). In release
+        // builds the .clear() calls keep behaviour defined: a buggy caller
+        // gets clean outputs rather than stale data leaking into the result.
+        // The asymmetry is intentional — strict signalling in dev, graceful
+        // degradation in production.
         debug_assert!(
             result.resolved_params.is_empty(),
             "resolve_concurrent_edit: resolved_params must be empty on entry (double-call?)"

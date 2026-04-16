@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use reify_eval::cache::{EvalOutcome, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::journal::{EventKind, EventPayload};
-use reify_eval::{ConcurrentEditResult, ConcurrentNodeResult, Engine};
+use reify_eval::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult, Engine};
 use reify_test_support::mocks::{MockConstraintChecker, MultiCallSpyConstraintSolver, SequencedMockConstraintSolver};
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, binop, bracket_compiled_module, gt, literal, mm, value_ref};
 use reify_types::{
@@ -521,19 +521,14 @@ fn resolve_concurrent_edit_second_wave_updates_dependent_let_binding() {
     drop(a_id); // suppress unused-variable lint
 }
 
-/// Verifies that `resolve_concurrent_edit` panics in debug builds when
-/// `result.resolved_params` is not empty on entry.
+/// Returns an `(Engine, ConcurrentEditSetup)` for a minimal N-template:
+///   `param a` (default 3 mm), `let b = a * 2` — no solver, no constraints.
 ///
-/// Callers must pass a fresh `ConcurrentEditResult`; pre-populating
-/// `resolved_params` indicates a double-call or incorrect usage. The
-/// `debug_assert!` guard catches this during development.
-#[cfg(debug_assertions)]
-#[test]
-#[should_panic(expected = "resolved_params must be empty")]
-fn resolve_concurrent_edit_panics_on_prepopulated_resolved_params() {
-    // Simple module: param a, let b = a * 2 (no autos, no constraints)
+/// Shared setup for `resolve_concurrent_edit_panics_*` and the fresh-input
+/// no-op test so the engine/module/prepare boilerplate is not repeated in
+/// every test body.
+fn setup_minimal_concurrent_edit() -> (Engine, ConcurrentEditSetup) {
     let a_id = ValueCellId::new("N", "a");
-    let b_id = ValueCellId::new("N", "b");
     let template = TopologyTemplateBuilder::new("N")
         .param("N", "a", Type::length(), Some(literal(mm(3.0))))
         .let_binding(
@@ -551,13 +546,55 @@ fn resolve_concurrent_edit_panics_on_prepopulated_resolved_params() {
     let _cold = engine.eval(&module);
 
     let setup = engine
-        .prepare_concurrent_edit(a_id.clone(), mm(5.0))
+        .prepare_concurrent_edit(a_id, mm(5.0))
         .expect("prepare_concurrent_edit should succeed");
 
+    (engine, setup)
+}
+
+/// Verifies that `resolve_concurrent_edit` does not panic and leaves both
+/// output buckets empty when called with a fresh `ConcurrentEditResult`
+/// and an Engine that has no constraint solver.
+///
+/// The no-solver short-circuit returns immediately without populating
+/// `resolved_params` or `diagnostics`. This documents the happy-path
+/// contract: callers pass empty buckets and receive empty buckets back.
+#[test]
+fn resolve_concurrent_edit_without_solver_is_noop_fresh_input() {
+    let (mut engine, setup) = setup_minimal_concurrent_edit();
+
+    let mut result = ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: vec![],
+        actual_eval_set: setup.eval_set.clone(),
+        skipped: HashSet::new(),
+        resolved_params: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+
+    // Should not panic and should not populate either output bucket.
+    engine.resolve_concurrent_edit(&setup, &mut result);
+
+    assert!(result.resolved_params.is_empty(), "no solver => no resolved params");
+    assert!(result.diagnostics.is_empty(), "no solver => no diagnostics");
+}
+
+/// Verifies that `resolve_concurrent_edit` panics in debug builds when
+/// `result.resolved_params` is not empty on entry.
+///
+/// Callers must pass a fresh `ConcurrentEditResult`; pre-populating
+/// `resolved_params` indicates a double-call or incorrect usage. The
+/// `debug_assert!` guard catches this during development.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "resolved_params must be empty")]
+fn resolve_concurrent_edit_panics_on_prepopulated_resolved_params() {
+    let (mut engine, setup) = setup_minimal_concurrent_edit();
+
     // Pre-populate resolved_params with one stale entry; diagnostics is empty.
-    let bogus_id = ValueCellId::new("N", "bogus");
     let mut stale_resolved: HashMap<ValueCellId, Value> = HashMap::new();
-    stale_resolved.insert(bogus_id.clone(), mm(99.0));
+    stale_resolved.insert(ValueCellId::new("N", "bogus"), mm(99.0));
 
     let mut result = ConcurrentEditResult {
         values: setup.values.clone(),
@@ -571,7 +608,6 @@ fn resolve_concurrent_edit_panics_on_prepopulated_resolved_params() {
 
     // Must panic on the first debug_assert (resolved_params not empty).
     engine.resolve_concurrent_edit(&setup, &mut result);
-    drop((b_id, bogus_id)); // suppress unused-variable lint
 }
 
 /// Verifies that `resolve_concurrent_edit` panics in debug builds when
@@ -583,28 +619,7 @@ fn resolve_concurrent_edit_panics_on_prepopulated_resolved_params() {
 #[test]
 #[should_panic(expected = "diagnostics must be empty")]
 fn resolve_concurrent_edit_panics_on_prepopulated_diagnostics() {
-    // Same minimal module as above.
-    let a_id = ValueCellId::new("N", "a");
-    let b_id = ValueCellId::new("N", "b");
-    let template = TopologyTemplateBuilder::new("N")
-        .param("N", "a", Type::length(), Some(literal(mm(3.0))))
-        .let_binding(
-            "N",
-            "b",
-            Type::length(),
-            binop(BinOp::Mul, value_ref("N", "a"), literal(Value::Real(2.0))),
-        )
-        .build();
-    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-        .template(template)
-        .build();
-
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-    let _cold = engine.eval(&module);
-
-    let setup = engine
-        .prepare_concurrent_edit(a_id.clone(), mm(5.0))
-        .expect("prepare_concurrent_edit should succeed");
+    let (mut engine, setup) = setup_minimal_concurrent_edit();
 
     // resolved_params is empty (first debug_assert passes),
     // diagnostics has one stale warning (second debug_assert fires).
@@ -622,7 +637,6 @@ fn resolve_concurrent_edit_panics_on_prepopulated_diagnostics() {
 
     // Must panic on the second debug_assert (diagnostics not empty).
     engine.resolve_concurrent_edit(&setup, &mut result);
-    drop(b_id); // suppress unused-variable lint
 }
 
 /// step-7: rollback_concurrent_edit restores ALL eval_set nodes to Final, not just
