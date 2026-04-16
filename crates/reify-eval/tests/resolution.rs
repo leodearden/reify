@@ -2094,3 +2094,72 @@ fn strict_auto_non_unique_emits_error_diagnostic() {
         error_diag.severity
     );
 }
+
+/// step-3: resolve_concurrent_edit populates result.resolved_params and
+/// result.diagnostics directly on the ConcurrentEditResult, without the
+/// caller needing to capture a return value and manually re-assign.
+///
+/// This test calls resolve_concurrent_edit and then checks the fields on
+/// `result` directly. It is designed to fail until step-4 changes the
+/// method to assign onto `result` instead of returning a tuple.
+#[test]
+fn resolve_concurrent_edit_populates_result_in_place() {
+    use std::collections::HashSet;
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let limit_id = ValueCellId::new("S", "limit");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    let solver = MockConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "thickness", Type::length())
+        .param("S", "limit", Type::length(), Some(literal(mm(2.0))))
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), value_ref("S", "limit")),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    engine.eval(&module);
+
+    let setup = engine
+        .prepare_concurrent_edit(limit_id.clone(), mm(3.0))
+        .unwrap();
+
+    let mut result = ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: Vec::new(),
+        actual_eval_set: Vec::new(),
+        skipped: HashSet::new(),
+        resolved_params: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+
+    // Call resolve WITHOUT capturing the return value — the new API returns ().
+    // result.resolved_params and result.diagnostics must be populated in-place.
+    engine.resolve_concurrent_edit(&setup, &mut result);
+
+    // resolved_params must be populated directly (not via return-value re-assignment).
+    assert!(
+        !result.resolved_params.is_empty(),
+        "resolved_params should be populated directly on the result"
+    );
+    assert_eq!(
+        result.resolved_params.get(&thickness_id),
+        Some(&mm(5.0)),
+        "resolved_params should contain the solver's thickness value"
+    );
+}
