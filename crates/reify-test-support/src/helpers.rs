@@ -874,4 +874,53 @@ mod tests {
         let diags = vec![Diagnostic::info("informational note")];
         super::assert_no_diagnostics(&diags, "guard compile");
     }
+
+    // ── run_modify_pipeline ───────────────────────────────────────────────
+
+    /// run_modify_pipeline with Chamfer kind returns 2 ops:
+    ///   ops[0].op is GeometryOp::Box (the implicit 20×20×20mm box primitive)
+    ///   ops[1].op is GeometryOp::Chamfer with target=ops[0].result_handle and
+    ///   distance≈0.003 m (3 mm in SI).
+    ///
+    /// This test fails before step-2 because run_modify_pipeline does not exist.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn test_run_modify_pipeline_chamfer_returns_two_ops() {
+        use crate::mocks::GeometryOpRecord;
+        use crate::values::mm;
+        use reify_compiler::ModifyKind;
+        use reify_types::{GeometryOp, Type};
+
+        let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+        let args = vec![("distance".to_string(), mm_literal(3.0))];
+        let ops: Vec<GeometryOpRecord> = super::run_modify_pipeline(ModifyKind::Chamfer, args);
+
+        assert_eq!(ops.len(), 2, "expected 2 ops, got {}", ops.len());
+
+        // op[0] must be a Box primitive
+        assert!(
+            matches!(ops[0].op, GeometryOp::Box { .. }),
+            "ops[0] should be GeometryOp::Box, got {:?}",
+            ops[0].op
+        );
+
+        // op[1] must be Chamfer with the correct target handle and ~0.003 m distance
+        let target_handle = ops[0].result_handle;
+        match &ops[1].op {
+            GeometryOp::Chamfer { target, distance } => {
+                assert_eq!(
+                    target, target_handle,
+                    "Chamfer target should be handle from op 0 ({:?}), got {:?}",
+                    target_handle, target
+                );
+                let dist_si = distance.as_f64().expect("distance should be numeric");
+                assert!(
+                    (dist_si - 0.003).abs() < 1e-9,
+                    "Chamfer distance should be 0.003 m (3 mm SI), got {}",
+                    dist_si
+                );
+            }
+            other => panic!("ops[1] should be GeometryOp::Chamfer, got {:?}", other),
+        }
+    }
 }
