@@ -52,3 +52,26 @@ pub(crate) fn resolve_builtin_constant(name: &str) -> Option<CompiledExpr> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guard: every name in `BUILTIN_NAMES` must resolve via
+    /// `resolve_builtin_constant`. If this test fails, a name was added to
+    /// `BUILTIN_NAMES` (the hint source-of-truth) without a corresponding
+    /// match arm in `resolve_builtin_constant`, which would cause the hint
+    /// system to suggest a name that also fails to resolve.
+    #[test]
+    fn builtin_names_covers_all_constants() {
+        for &name in BUILTIN_NAMES {
+            assert!(
+                resolve_builtin_constant(name).is_some(),
+                "BUILTIN_NAMES contains {:?} but resolve_builtin_constant({:?}) returned None — \
+                 add a match arm for this name",
+                name,
+                name,
+            );
+        }
+    }
+}
