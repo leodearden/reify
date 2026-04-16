@@ -586,6 +586,81 @@ fn resolve_concurrent_edit_without_solver_is_noop() {
     drop((b_id, bogus_id)); // suppress unused-variable lint
 }
 
+/// step-7: rollback_concurrent_edit restores ALL eval_set nodes to Final, not just
+/// the ones that individual existing tests inspect (volume and C1 only).
+///
+/// After rollback, for every node in setup.eval_set that has a cache entry:
+/// - freshness must be Final
+/// - result_hash must equal the pre-prepare hash (rollback did not corrupt content)
+#[test]
+fn rollback_restores_every_pending_node_to_final() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold eval to populate cache with Final entries.
+    let _initial = engine.eval(&module);
+
+    let e = "Bracket";
+    let width_id = ValueCellId::new(e, "width");
+
+    // Capture pre-prepare result_hashes for every cached node.
+    // We capture them BEFORE prepare so we can compare after rollback.
+    // We'll snapshot the full cache by interrogating it for each node
+    // in the eval_set after prepare (which is the same set that will be Pending).
+
+    // prepare_concurrent_edit: width changes → dirties {volume, C1, R0}
+    let setup = engine
+        .prepare_concurrent_edit(width_id.clone(), Value::length(0.1))
+        .expect("prepare_concurrent_edit should succeed");
+
+    // Collect pre-prepare hashes from previous_hashes in setup.
+    // setup.previous_hashes contains content hashes captured before prepare
+    // marked nodes as Pending.
+    let pre_hashes = setup.previous_hashes.clone();
+
+    // After prepare, every node in eval_set with a cache entry should be Pending.
+    for node_id in &setup.eval_set {
+        if let Some(entry) = engine.cache_store().get(node_id) {
+            assert!(
+                matches!(entry.freshness, Freshness::Pending { .. }),
+                "node {:?} should be Pending after prepare, got {:?}",
+                node_id, entry.freshness
+            );
+        }
+    }
+
+    // Rollback the concurrent edit.
+    engine.rollback_concurrent_edit(&setup);
+
+    // Every node in eval_set with a cache entry must now be Final with original hash.
+    for node_id in &setup.eval_set {
+        if let Some(entry) = engine.cache_store().get(node_id) {
+            assert_eq!(
+                entry.freshness,
+                Freshness::Final,
+                "node {:?} should be Final after rollback, got {:?}",
+                node_id, entry.freshness
+            );
+            // Hash must be preserved (rollback did not touch the value).
+            if let Some(&pre_hash) = pre_hashes.get(node_id) {
+                assert_eq!(
+                    entry.result_hash, pre_hash,
+                    "node {:?} result_hash should be unchanged after rollback",
+                    node_id
+                );
+            }
+        }
+    }
+
+    // Sanity: we examined at least one node (the volume value cell is always cached).
+    let volume_node = NodeId::Value(ValueCellId::new(e, "volume"));
+    assert!(
+        setup.eval_set.contains(&volume_node),
+        "eval_set should contain volume (sanity check)"
+    );
+}
+
 /// step-9: apply_concurrent_edit uses eval_duration from ConcurrentNodeResult
 /// in the journal Completed event payload, rather than measuring apply-loop time.
 ///
