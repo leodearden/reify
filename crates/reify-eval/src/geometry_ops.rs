@@ -242,23 +242,33 @@ pub(crate) fn compile_geometry_op(
                 reify_compiler::ModifyKind::Shell => {
                     let thickness = eval_arg("thickness")?;
                     // Collect face indices from face_0, face_1, ...
-                    // Non-numeric, negative, or non-finite values are skipped with a diagnostic.
+                    // Non-numeric values (String, Bool, List, etc.) are skipped with a diagnostic.
+                    // Non-finite (NaN, ±Infinity) and negative numeric values are also skipped.
                     let mut faces_to_remove: Vec<usize> = Vec::new();
                     for (name, expr) in args.iter().filter(|(n, _)| n.starts_with("face_")) {
                         let val = reify_expr::eval_expr(
                             expr,
                             &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
                         );
+                        // Arm ordering matters: -Infinity satisfies both !is_finite() AND < 0.0;
+                        // the non-finite arm must come first so -Infinity is classified as
+                        // non-finite rather than negative.
                         match val.as_f64() {
                             None => {
                                 diagnostics.push(Diagnostic::warning(format!(
-                                    "Shell face index '{}' is non-numeric/non-finite — skipped",
+                                    "Shell face index '{}' is non-numeric — skipped",
                                     name
                                 )));
                             }
-                            Some(f) if !f.is_finite() || f < 0.0 => {
+                            Some(f) if !f.is_finite() => {
                                 diagnostics.push(Diagnostic::warning(format!(
-                                    "Shell face index '{}' is negative or non-finite ({}) — skipped",
+                                    "Shell face index '{}' is non-finite ({}) — skipped",
+                                    name, f
+                                )));
+                            }
+                            Some(f) if f < 0.0 => {
+                                diagnostics.push(Diagnostic::warning(format!(
+                                    "Shell face index '{}' is negative ({}) — skipped",
                                     name, f
                                 )));
                             }
@@ -2610,14 +2620,16 @@ mod tests {
             "Shell should return Some even when face_0 is non-numeric, got {:?}",
             result
         );
-        // The bad face should produce a diagnostic
+        // The bad face should produce a diagnostic mentioning 'non-numeric'
+        // (precision assertion — that it does NOT say 'non-finite' — lives in the dedicated
+        // compile_geometry_op_shell_string_face_diagnostic_excludes_non_finite test)
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("face_0")
-                    && (d.message.contains("non-numeric") || d.message.contains("non-finite"))
+                    && d.message.contains("non-numeric")
             }),
-            "expected a Warning mentioning 'face_0' and 'non-numeric'/'non-finite', got: {:?}",
+            "expected a Warning mentioning 'face_0' and 'non-numeric', got: {:?}",
             diagnostics
         );
         // The resulting faces_to_remove should be empty (bad face skipped)
@@ -2673,9 +2685,10 @@ mod tests {
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("face_1")
-                    && (d.message.contains("non-numeric") || d.message.contains("non-finite"))
+                    && d.message.contains("non-numeric")
+                    && !d.message.contains("non-finite")
             }),
-            "expected a Warning mentioning 'face_1', got: {:?}",
+            "expected a Warning mentioning 'face_1' and 'non-numeric' (not 'non-finite'), got: {:?}",
             diagnostics
         );
     }
@@ -2714,9 +2727,10 @@ mod tests {
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("face_0")
-                    && (d.message.contains("negative") || d.message.contains("non-finite"))
+                    && d.message.contains("negative")
+                    && !d.message.contains("non-finite")
             }),
-            "expected a Warning mentioning 'face_0' and 'negative'/'non-finite', got: {:?}",
+            "expected a Warning mentioning 'face_0' and 'negative' (not 'non-finite'), got: {:?}",
             diagnostics
         );
         match result.unwrap() {
@@ -2761,9 +2775,10 @@ mod tests {
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("face_0")
-                    && (d.message.contains("negative") || d.message.contains("non-finite"))
+                    && d.message.contains("non-finite")
+                    && !d.message.contains("negative")
             }),
-            "expected a Warning for NaN face_0, got: {:?}",
+            "expected a Warning mentioning 'non-finite' (not 'negative') for NaN face_0, got: {:?}",
             diagnostics
         );
         match result.unwrap() {
@@ -2808,9 +2823,10 @@ mod tests {
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_types::Severity::Warning)
                     && d.message.contains("face_0")
-                    && (d.message.contains("negative") || d.message.contains("non-finite"))
+                    && d.message.contains("non-finite")
+                    && !d.message.contains("negative")
             }),
-            "expected a Warning for INFINITY face_0, got: {:?}",
+            "expected a Warning mentioning 'non-finite' (not 'negative') for INFINITY face_0, got: {:?}",
             diagnostics
         );
     }
@@ -2951,6 +2967,212 @@ mod tests {
             }
             other => panic!("expected GeometryOp::Shell, got {:?}", other),
         }
+    }
+
+    // ── Shell face index diagnostic precision tests ───────────────────────────
+
+    #[test]
+    fn compile_geometry_op_shell_string_face_diagnostic_excludes_non_finite() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_0 is a String — as_f64() returns None (non-numeric type, NOT non-finite)
+        // Diagnostic should say 'non-numeric' only, NOT 'non-finite'
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                (
+                    "face_0".into(),
+                    reify_types::CompiledExpr::literal(
+                        reify_types::Value::String("bad".into()),
+                        reify_types::Type::String,
+                    ),
+                ),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_some(), "Shell should return Some even when face_0 is String, got {:?}", result);
+        let face_0_warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
+            .collect();
+        assert_eq!(
+            face_0_warnings.len(),
+            1,
+            "expected exactly one Warning mentioning 'face_0', got: {:?}",
+            face_0_warnings
+        );
+        let diag = face_0_warnings[0];
+        assert!(
+            diag.message.contains("non-numeric"),
+            "diagnostic should mention 'non-numeric', got: {:?}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("non-finite"),
+            "diagnostic should NOT mention 'non-finite' for a non-numeric type, got: {:?}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_shell_nan_face_diagnostic_excludes_negative() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_0 = NaN — non-finite value; diagnostic should say 'non-finite', NOT 'negative'
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                ("face_0".into(), literal_f64(f64::NAN)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_some(), "Shell with NaN face_0 should return Some, got {:?}", result);
+        let face_0_warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
+            .collect();
+        assert_eq!(
+            face_0_warnings.len(),
+            1,
+            "expected exactly one Warning mentioning 'face_0', got: {:?}",
+            face_0_warnings
+        );
+        let diag = face_0_warnings[0];
+        assert!(
+            diag.message.contains("non-finite"),
+            "NaN diagnostic should mention 'non-finite', got: {:?}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("negative"),
+            "NaN diagnostic should NOT mention 'negative', got: {:?}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_shell_negative_face_diagnostic_excludes_non_finite() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_0 = -1.0 — negative value; diagnostic should say 'negative', NOT 'non-finite'
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                ("face_0".into(), literal_f64(-1.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_some(), "Shell with -1.0 face_0 should return Some, got {:?}", result);
+        let face_0_warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
+            .collect();
+        assert_eq!(
+            face_0_warnings.len(),
+            1,
+            "expected exactly one Warning mentioning 'face_0', got: {:?}",
+            face_0_warnings
+        );
+        let diag = face_0_warnings[0];
+        assert!(
+            diag.message.contains("negative"),
+            "negative face diagnostic should mention 'negative', got: {:?}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("non-finite"),
+            "negative face diagnostic should NOT mention 'non-finite', got: {:?}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_shell_neg_infinity_face_diagnostic_says_non_finite() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // face_0 = -Infinity — satisfies both !is_finite() and < 0.0; should be classified
+        // as 'non-finite' (not 'negative'), so the is_finite() arm must come first.
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.002)),
+                ("face_0".into(), literal_f64(f64::NEG_INFINITY)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_some(), "Shell with -Infinity face_0 should return Some, got {:?}", result);
+        let face_0_warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_types::Severity::Warning) && d.message.contains("face_0"))
+            .collect();
+        assert_eq!(
+            face_0_warnings.len(),
+            1,
+            "expected exactly one Warning mentioning 'face_0', got: {:?}",
+            face_0_warnings
+        );
+        let diag = face_0_warnings[0];
+        assert!(
+            diag.message.contains("non-finite"),
+            "-Infinity diagnostic should mention 'non-finite', got: {:?}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("negative"),
+            "-Infinity diagnostic should NOT mention 'negative' (it is non-finite, not negative), got: {:?}",
+            diag.message
+        );
     }
 
     // ── validate_pattern_count upper-bound tests ──────────────────────────────
