@@ -542,6 +542,34 @@ pub(crate) fn compile_with_prelude_refs(
         }
     }
 
+    // Build a resolution function list for use in field/entity/purpose compilation.
+    // Includes user functions first (for shadowing priority), then appends prelude
+    // functions whose (name, arity, param_types) triple is not already covered by a
+    // user function. This allows a user function with one arity to coexist with a
+    // prelude function of the same name but different arity: calls resolve to whichever
+    // signature matches the call site. If the user defines an identical signature, the
+    // prelude version is excluded (user function shadows it, first-match-wins in the
+    // overload resolver). `functions` (user-only) remains the output for CompiledModule.
+    let resolution_functions: Vec<CompiledFunction> = {
+        let mut res = functions.clone();
+        for module in prelude {
+            for f in &module.functions {
+                let shadowed = res.iter().any(|uf| {
+                    uf.name == f.name
+                        && uf.params.len() == f.params.len()
+                        && uf.params
+                            .iter()
+                            .zip(f.params.iter())
+                            .all(|((_, ut), (_, ft))| ut == ft)
+                });
+                if !shadowed {
+                    res.push(f.clone());
+                }
+            }
+        }
+        res
+    };
+
     // 2. Traits (depend on resolution_enums for enum type resolution in params)
     let mut trait_defs = Vec::new();
     for trait_decl in &trait_refs {
@@ -592,7 +620,7 @@ pub(crate) fn compile_with_prelude_refs(
         let compiled = compile_field(
             field_def,
             &resolution_enums,
-            &functions,
+            &resolution_functions,
             &alias_registry,
             &mut diagnostics,
         );
@@ -666,7 +694,7 @@ pub(crate) fn compile_with_prelude_refs(
                         &entity_ref,
                         EntityKind::Structure,
                         &resolution_enums,
-                        &functions,
+                        &resolution_functions,
                         &trait_registry,
                         &field_registry,
                         &constraint_def_registry,
@@ -715,7 +743,7 @@ pub(crate) fn compile_with_prelude_refs(
                         &entity_ref,
                         EntityKind::Occurrence,
                         &resolution_enums,
-                        &functions,
+                        &resolution_functions,
                         &trait_registry,
                         &field_registry,
                         &constraint_def_registry,
@@ -878,7 +906,7 @@ pub(crate) fn compile_with_prelude_refs(
                 let compiled = compile_purpose(
                     purpose_def,
                     &resolution_enums,
-                    &functions,
+                    &resolution_functions,
                     &purpose_template_registry,
                     &unit_registry,
                     &mut diagnostics,

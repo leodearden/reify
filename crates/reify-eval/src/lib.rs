@@ -834,6 +834,13 @@ impl Engine {
         // takes precedence and shadows the prelude implementation. The compiler's
         // duplicate-function check only compares user functions against each other, not against
         // the prelude, so user code may freely redefine prelude signatures without diagnostics.
+        //
+        // COEXISTENCE COROLLARY: a user function whose (name, arity, param types) triple
+        // differs from all prelude functions does NOT shadow those prelude functions — both
+        // remain independently callable. The compiler includes non-shadowed prelude functions
+        // in its overload resolution so each call site is resolved to whichever signature
+        // matches the arguments, regardless of whether the user also defines a same-named
+        // function with a different arity or param types.
         self.functions = module.functions.clone();
         // Extend with pre-flattened prelude functions (cached once at Engine construction).
         self.functions.extend(self.prelude_functions.iter().cloned());
