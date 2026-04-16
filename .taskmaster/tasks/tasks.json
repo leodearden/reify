@@ -39062,7 +39062,9 @@
         "details": "<info added on 2026-04-16T21:53:18.712Z>\nAdd a comment explaining the rationale for boxing `expected: Box<Type>` and `got: Box<Value>` in `EngineError::TypeKindMismatch` to maintain a bounded discriminant size due to the large size of the `Value` enum. Consider aligning `DimensionMismatch` to use `Box` for consistency or provide a brief explanation for the current inconsistency.\n\nRewrite the misleading comment regarding `Value::GeometryHandle` to correctly indicate that the extension point requiring review is the addition of new `Type` variants, which can silently fall into default-reject without a compile error.\n</info added on 2026-04-16T21:53:18.712Z>",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "1868"
+        ],
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-16T21:24:12.023Z",
