@@ -50,6 +50,13 @@ assert "all top-level task ids match ^[0-9]+\$" \
 echo ""
 echo "--- Check 2: subtask ids are digit-strings ---"
 
+# Guard against the silent-pass hole (esc-1887-53): if subtasks[]? produces an
+# empty stream (all subtask arrays are missing/empty), the pipe-based type and
+# pattern checks trivially pass on empty input.  Assert a non-zero count first
+# so any such degenerate state fails loudly.
+assert "tasks.json has at least one subtask" \
+    bash -c "[ \"\$(jq '[.master.tasks[].subtasks[]?] | length' '$TASKS_JSON')\" -gt 0 ]"
+
 # Verify no subtask id has JSON type "number".
 assert "all subtask ids have JSON type string (not number)" \
     bash -c "! jq -r '.master.tasks[].subtasks[]?.id | type' '$TASKS_JSON' | grep -q 'number'"
