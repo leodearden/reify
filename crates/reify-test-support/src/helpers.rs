@@ -375,6 +375,92 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
     );
 }
 
+/// Run a full geometry pipeline for a given [`reify_compiler::ModifyKind`].
+///
+/// Creates a module with 2 compiled ops:
+///
+/// - Op 0: `Box` primitive at 20 mm × 20 mm × 20 mm
+/// - Op 1: `Modify` with `kind`, `target: GeomRef::Step(0)`, and `modify_args`
+///
+/// Runs the `Engine` with a fresh `MockConstraintChecker` and `MockGeometryKernel`,
+/// then asserts:
+///
+/// - No error diagnostics were produced
+/// - `result.geometry_output` is `Some` (geometry was emitted)
+///
+/// Returns the [`reify_eval::BuildResult`] and the recorded
+/// [`crate::mocks::GeometryOpRecord`]s as owned values.
+///
+/// # Example
+///
+/// ```ignore
+/// let (result, ops) = run_modify_pipeline(
+///     ModifyKind::Chamfer,
+///     vec![("distance".into(), CompiledExpr::literal(mm(3.0), Type::length()))],
+/// );
+/// assert_eq!(ops.len(), 2);
+/// assert!(matches!(ops[1].op, GeometryOp::Chamfer { .. }));
+/// ```
+///
+/// # Panics
+///
+/// Panics if the build produces error diagnostics or no geometry output.
+#[cfg(feature = "eval-helpers")]
+pub fn run_modify_pipeline(
+    kind: reify_compiler::ModifyKind,
+    modify_args: Vec<(String, reify_types::CompiledExpr)>,
+) -> (reify_eval::BuildResult, Vec<crate::mocks::GeometryOpRecord>) {
+    use crate::mocks::MockGeometryKernel;
+    use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind};
+    use reify_types::{ExportFormat, Type};
+
+    let mm_literal =
+        |v: f64| reify_types::CompiledExpr::literal(crate::values::mm(v), Type::length());
+
+    let entity_name = format!("Test{kind:?}");
+
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(20.0)),
+            ("height".into(), mm_literal(20.0)),
+            ("depth".into(), mm_literal(20.0)),
+        ],
+    };
+
+    let modify_op = CompiledGeometryOp::Modify {
+        kind,
+        target: GeomRef::Step(0),
+        args: modify_args,
+    };
+
+    let template = crate::builders::TopologyTemplateBuilder::new(&entity_name)
+        .realization(&entity_name, 0, vec![box_op, modify_op])
+        .build();
+
+    let module = crate::builders::CompiledModuleBuilder::new(
+        reify_types::ModulePath::single(&format!("test_{}", entity_name.to_lowercase())),
+    )
+    .template(template)
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert_no_error_diagnostics(&result.diagnostics, "run_modify_pipeline");
+    assert!(
+        result.geometry_output.is_some(),
+        "engine should produce geometry output"
+    );
+
+    let ops = ops_ref.lock().unwrap().clone();
+    (result, ops)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
