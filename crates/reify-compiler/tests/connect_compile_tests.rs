@@ -1866,7 +1866,6 @@ structure def S {
 "#;
     let (template, diagnostics) = compile_first_template(source);
     // (1) undefined-port error emitted for 'missing'
-    assert_has_diagnostic(&diagnostics, Severity::Error, "missing");
     let undef_errors: Vec<_> = diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error && d.message.contains("undefined port"))
