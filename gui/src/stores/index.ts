@@ -9,3 +9,6 @@ export type { EngineState } from './engineStore';
 
 export { createClaudeStore } from './claudeStore';
 export type { ClaudeState, SessionStatus, ToolCallInfo, AssistantMessage, SystemMessage, MessageContext, UserMessage } from './claudeStore';
+
+export { createViewStateStore } from './viewStateStore';
+export type { ViewState } from './viewStateStore';
