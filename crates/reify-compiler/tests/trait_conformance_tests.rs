@@ -10,6 +10,7 @@ use reify_types::*;
 /// Assert that `template.value_cells` contains exactly one cell whose member name equals
 /// `member`. Prints `context` in the failure message for easy diagnosis.
 /// Returns a reference to the matched cell so callers can inspect its properties.
+#[must_use = "inspect the returned cell or use `let _ =` to explicitly discard"]
 fn assert_single_value_cell<'a>(
     template: &'a TopologyTemplate,
     member: &str,
@@ -966,7 +967,12 @@ structure def S : A {
     );
 
     // Even with a type conflict error, dedup must still produce exactly one cell for 'x'.
-    assert_single_value_cell(&template, "x", "diamond_type_conflict");
+    let x_cell = assert_single_value_cell(&template, "x", "diamond_type_conflict");
+    assert_eq!(
+        x_cell.cell_type,
+        Type::length(),
+        "diamond_type_conflict: x cell_type should be Length (structure's own declaration wins)"
+    );
 }
 
 /// Step 21b: Trait with constraint and param — both injected correctly.
