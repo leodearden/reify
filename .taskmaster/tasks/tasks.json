@@ -39090,15 +39090,16 @@
         "description": "Two small follow-ups from the task 1855 review (reviewer_comprehensive):\n\n1. **Fragile hardcoded line number in comment** (crates/reify-eval/src/concurrent.rs:134-136). The comment currently reads \"new_snapshot_values already contains the updated cell (inserted at line ~123), so copying all entries here covers it — no duplicate insert needed.\" The `~123` pointer will silently drift as the file changes and the compiler will not catch it. Restore landmark-style phrasing: \"new_snapshot_values already contains the updated cell (inserted above via new_snapshot_values.insert), so copying all entries here covers it — no duplicate insert needed.\" Describe the landmark, not the line.\n\n2. **Tighten `resolve_concurrent_edit_without_solver_is_noop_fresh_input`** (crates/reify-eval/tests/concurrent.rs:555-580). The \"no-op\" claim in the test name is verified only by empty output buckets, which would also hold for a trivially-returning solver. Since the point of the test is to exercise the short-circuit path where the solver branch is skipped, either:\n   - wire in a spy solver and assert `solver.recorded_calls().is_empty()` (stronger), or\n   - add a comment explaining the Engine is deliberately constructed with `None` so the `if let Some(ref solver)` branch cannot be entered (cheapest option, clarifies intent without new infra).\n\nBoth are low-cost hygiene fixes — bundle them in a single commit.\n\nmemory_hints:\n- search: \"resolve_concurrent_edit noop test\" \"prepare_concurrent_edit comment\"\n- entity: Engine, ConcurrentEditSetup\n\nspawned_from: 1855",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T21:34:22.852Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T21:34:07.774Z",
+      "lastModified": "2026-04-16T21:34:22.852Z",
       "taskCount": 1866,
       "completedCount": 1602,
       "tags": [
