@@ -665,8 +665,10 @@ fn rollback_restores_every_pending_node_to_final() {
     engine.rollback_concurrent_edit(&setup);
 
     // Every node in eval_set with a cache entry must now be Final with original hash.
+    let mut examined_count = 0usize;
     for node_id in &setup.eval_set {
         if let Some(entry) = engine.cache_store().get(node_id) {
+            examined_count += 1;
             assert_eq!(
                 entry.freshness,
                 Freshness::Final,
@@ -683,6 +685,15 @@ fn rollback_restores_every_pending_node_to_final() {
             }
         }
     }
+    assert!(
+        examined_count >= 1,
+        "expected to examine at least 1 cached node after rollback (volume is always cached), \
+         got {}; test would pass vacuously if cache were empty. \
+         Note: eval_set contains 3 nodes (volume, C1, R0) but only value cells \
+         (NodeId::Value) have entries in the value cache; constraint and realization \
+         nodes are not cached as value cells",
+        examined_count
+    );
 
     // Sanity: we examined at least one node (the volume value cell is always cached).
     let volume_node = NodeId::Value(ValueCellId::new(e, "volume"));
