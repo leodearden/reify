@@ -330,9 +330,11 @@ structure S : HasX {
 #[test]
 fn annotated_let_compatible_expr_no_diagnostic() {
     // Exact match: Real annotation, Real expression.
+    // `5.5` is a fractional literal → `Type::Real` (whole-number `.0` literals
+    // are typed as `Int` by the compiler and would trip the cross-check).
     let real_source = r#"
 trait HasR {
-    let x : Real = 5.0
+    let x : Real = 5.5
 }
 structure S : HasR {
 }
@@ -341,7 +343,7 @@ structure S : HasR {
     let real_errors = errors_only(&real_module);
     assert!(
         real_errors.is_empty(),
-        "let x : Real = 5.0 (exact Real) should not emit any errors, got: {:?}",
+        "let x : Real = 5.5 (exact Real) should not emit any errors, got: {:?}",
         real_errors
     );
 

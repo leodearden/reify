@@ -352,7 +352,10 @@ pub(crate) fn check_trait_conformance(
                     });
                 }
             }
-            DefaultKind::Let { let_decl, .. } => {
+            DefaultKind::Let {
+                cell_type,
+                let_decl,
+            } => {
                 let name = default
                     .name
                     .as_deref()
@@ -366,11 +369,35 @@ pub(crate) fn check_trait_conformance(
                     let compiled_expr =
                         compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
 
+                    // Cross-check the expression type against the let's annotation.
+                    // The annotation captures user intent; any drift here is an error,
+                    // mirroring the requirement-vs-member check at ~line 173 (same
+                    // `implicitly_converts_to` relation, same `Diagnostic::error` shape).
+                    if let Some(annotation_ty) = cell_type
+                        && !implicitly_converts_to(&compiled_expr.result_type, annotation_ty)
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "type mismatch for trait let '{}': annotation expects {}, expression evaluates to {}",
+                                name, annotation_ty, compiled_expr.result_type
+                            ))
+                            .with_label(DiagnosticLabel::new(default.span, "type mismatch")),
+                        );
+                    }
+
+                    // Annotation is authoritative on the injected cell when present
+                    // (matches the scope pre-registration that already uses the
+                    // annotation via `.unwrap_or`). Fall back to the inferred
+                    // expression type only when there is no annotation.
+                    let injected_cell_type = cell_type
+                        .clone()
+                        .unwrap_or_else(|| compiled_expr.result_type.clone());
+
                     value_cells.push(ValueCellDecl {
                         id: cell_id,
                         kind: ValueCellKind::Let,
                         visibility: Visibility::Private,
-                        cell_type: compiled_expr.result_type.clone(),
+                        cell_type: injected_cell_type,
                         default_expr: Some(compiled_expr),
                         solver_hints: Vec::new(),
                         span: default.span,
