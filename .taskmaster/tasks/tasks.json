@@ -38558,11 +38558,11 @@
         "description": "Two improvements to `run_modify_pipeline` in `crates/reify-test-support/src/helpers.rs`:\n\n1. **Simplify unit tests (lines 960-1045):** The two verbose tests (`test_run_modify_pipeline_chamfer_returns_two_ops` and `test_run_modify_pipeline_fillet_returns_two_ops`) are near-identical to the e2e tests in `chamfer_e2e.rs` and `fillet_e2e.rs`, duplicating ~50 lines of assertion logic each. Since the e2e tests already exercise `run_modify_pipeline` end-to-end with identical assertions, these helper-level tests add little incremental coverage. Replace both with a single parameterized smoke test that checks `ops.len() == 2` and matches `ops[1].op` variant against the expected `ModifyKind`, without re-checking numeric values already covered by the e2e tests.\n\n2. **Add geometry_output assertion (lines 436-439):** The helper asserts no `Severity::Error` diagnostics but ignores the build result's `geometry_output`. Add `assert!(result.geometry_output.is_some(), \"engine should produce geometry output\")` to catch potential regressions in the engine's geometry pipeline.\n\n## memory_hints\n- search: \"run_modify_pipeline test helper reify-test-support\"\n- get_entity: \"helpers.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T02:38:34.573Z"
+        "updatedAt": "2026-04-16T03:16:16.065Z"
       },
       {
         "id": 1847,
@@ -38681,7 +38681,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T03:14:38.148Z"
+        "updatedAt": "2026-04-16T03:14:38.148Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/concurrent.rs",
+            "crates/reify-eval/tests/concurrent.rs",
+            "crates/reify-eval/tests/resolution.rs"
+          ]
+        }
       },
       {
         "id": 1856,
@@ -38708,15 +38715,14 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T03:14:38.148Z",
-      "taskCount": 1850,
-      "completedCount": 1587,
+      "lastModified": "2026-04-16T03:16:16.097Z",
+      "taskCount": 1852,
+      "completedCount": 1588,
       "tags": [
         "master"
       ],
-      "created": "2026-04-16T03:15:20.560Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-16T03:16:08.175Z"
+      "created": "2026-04-16T03:16:16.780Z",
+      "description": "Tasks for master context"
     }
   }
 }
