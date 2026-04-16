@@ -5,6 +5,38 @@
  * both MenuBar (for hotkey annotations) and KeyboardHelp (for the overlay).
  */
 
+/**
+ * Structured keyboard binding with tri-state modifier fields.
+ * - true  → modifier MUST be held
+ * - false → modifier MUST NOT be held
+ * - undefined → don't care (modifier state is ignored)
+ */
+export interface KeyBinding {
+  /** The KeyboardEvent.key value to match */
+  key: string;
+  ctrl?: boolean;
+  shift?: boolean;
+  alt?: boolean;
+}
+
+/**
+ * Returns true if the given KeyboardEvent matches the binding.
+ *
+ * Key comparison is case-insensitive for single-character keys.
+ * Modifier fields use tri-state semantics: true/false enforce the state,
+ * undefined means don't care.
+ */
+export function matchesEvent(bind: KeyBinding, event: KeyboardEvent): boolean {
+  const isSingleChar = bind.key.length === 1;
+  const bindKey = isSingleChar ? bind.key.toLowerCase() : bind.key;
+  const eventKey = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  if (bindKey !== eventKey) return false;
+  if (bind.ctrl !== undefined && bind.ctrl !== event.ctrlKey) return false;
+  if (bind.shift !== undefined && bind.shift !== event.shiftKey) return false;
+  if (bind.alt !== undefined && bind.alt !== event.altKey) return false;
+  return true;
+}
+
 export interface ShortcutDef {
   /** Unique identifier for the shortcut */
   id: string;
