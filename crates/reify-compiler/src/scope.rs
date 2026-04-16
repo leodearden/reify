@@ -24,6 +24,8 @@ pub(crate) struct CompilationScope<'u> {
     pub(crate) sub_structure_traits: HashMap<String, Vec<String>>,
     /// Meta block entries for the current entity: key → value.
     pub(crate) meta_entries: HashMap<String, String>,
+    /// Whether the entity declared a `meta { }` block (even if empty).
+    pub(crate) has_meta_block: bool,
     /// Reference to the active unit registry.
     /// Set by compile_entity/compile_purpose. None for scopes that don't need it (functions, fields).
     pub(crate) unit_registry: Option<&'u UnitRegistry>,
@@ -52,6 +54,7 @@ impl<'u> CompilationScope<'u> {
             sub_component_types: HashMap::new(),
             sub_structure_traits: HashMap::new(),
             meta_entries: HashMap::new(),
+            has_meta_block: false,
             unit_registry: None,
             is_entity_scope: false,
             sub_member_types: HashMap::new(),

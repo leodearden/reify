@@ -866,7 +866,7 @@ pub(crate) fn compile_expr_guarded(
             if let reify_syntax::ExprKind::Ident(name) = &object.kind
                 && name == "meta"
             {
-                if scope.meta_entries.is_empty() {
+                if !scope.has_meta_block {
                     diagnostics.push(
                         Diagnostic::error("entity has no meta block".to_string())
                             .with_label(DiagnosticLabel::new(expr.span, "no meta block")),
