@@ -9,7 +9,7 @@ use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 
 /// Parse `source`, assert no parse errors, compile, assert no compile errors.
 /// Returns the compiled module.
-fn parse_compile_check(source: &str) -> reify_compiler::CompiledModule {
+fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
 
@@ -44,7 +44,7 @@ structure def S : Safe {
     param x : Length = 5mm
 }
 "#;
-    let compiled = parse_compile_check(source);
+    let compiled = parse_and_compile(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -84,7 +84,7 @@ structure def S : Bounded {
     param x : Length = 5mm
 }
 "#;
-    let compiled = parse_compile_check(source);
+    let compiled = parse_and_compile(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -132,7 +132,7 @@ structure def S : A + B {
     param x : Length = 5mm
 }
 "#;
-    let compiled = parse_compile_check(source);
+    let compiled = parse_and_compile(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -171,7 +171,7 @@ trait WithComputed {
 structure def S : WithComputed {
 }
 "#;
-    let compiled = parse_compile_check(source);
+    let compiled = parse_and_compile(source);
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
