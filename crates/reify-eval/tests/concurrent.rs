@@ -355,6 +355,22 @@ fn make_two_call_solver(
     ])
 }
 
+/// Helper: construct a "no-op" ConcurrentEditResult seeded from setup with
+/// empty node_results, skipped, resolved_params, and diagnostics. Used by
+/// tests that exercise resolve_concurrent_edit / apply_concurrent_edit
+/// without simulating scheduler-produced node results.
+fn empty_result_from_setup(setup: &ConcurrentEditSetup) -> ConcurrentEditResult {
+    ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: vec![],
+        actual_eval_set: setup.eval_set.clone(),
+        skipped: HashSet::new(),
+        resolved_params: HashMap::new(),
+        diagnostics: Vec::new(),
+    }
+}
+
 /// step-1: Full prepare → resolve → apply pipeline re-resolves auto param.
 ///
 /// Module: param a (mm(3.0)), auto x, let y = x*2, constraint x > a.
