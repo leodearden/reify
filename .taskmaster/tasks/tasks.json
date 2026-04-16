@@ -38684,11 +38684,11 @@
         "description": "Two diagnostic message accuracy improvements in the Shell face-index validation block in `crates/reify-eval/src/geometry_ops.rs` (lines ~252-280):\n\n1. **`None` arm message is misleading (line 255)**: The message says \"non-numeric/non-finite\" but `as_f64()` returns `None` only for non-numeric types (String, Bool, List, etc.). Non-finite values (NaN, ±Infinity) return `Some(...)` and are caught by the next match arm. Change the message from \"non-numeric/non-finite\" to just \"non-numeric\".\n\n2. **Combined guard conflates two distinct error states (line 259)**: The guard `!f.is_finite() || f < 0.0` produces message \"negative or non-finite\" for both cases. For NaN, mentioning \"negative\" is misleading. For -1.0, mentioning \"non-finite\" is misleading. Split into two separate match arms:\n   - `Some(f) if !f.is_finite() => { /* \"non-finite (NaN/Infinity)\" diagnostic */ }`\n   - `Some(f) if f < 0.0 => { /* \"negative\" diagnostic */ }`\n\nmemory_hints:\n- search: \"Shell face index validation geometry_ops\"\n- entity: geometry_ops, compile_geometry_op",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T06:34:17.784Z",
+        "updatedAt": "2026-04-16T06:34:21.330Z",
         "metadata": {
           "files": [
             "crates/reify-eval/src/geometry_ops.rs"
@@ -38817,7 +38817,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T06:34:20.497Z",
+      "lastModified": "2026-04-16T06:34:21.331Z",
       "taskCount": 1855,
       "completedCount": 1591,
       "tags": [
