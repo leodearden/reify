@@ -212,6 +212,10 @@ impl Engine {
     ) {
         // Record cache entries and journal events for each evaluated node
         for node_result in &result.node_results {
+            // Use Instant::now() as the apply-time timestamp for ordering.
+            // The Duration payload comes from node_result.eval_duration (the actual
+            // expression evaluation time measured by the concurrent adapter), falling
+            // back to apply-loop elapsed time only when eval_duration is absent.
             let start = Instant::now();
             self.journal.record(EvalEvent {
                 timestamp: start,
@@ -231,6 +235,9 @@ impl Engine {
                 trace,
             );
 
+            let duration = node_result
+                .eval_duration
+                .unwrap_or_else(|| start.elapsed());
             self.journal.record(EvalEvent {
                 timestamp: Instant::now(),
                 node_id: node_result.node.clone(),
@@ -238,7 +245,7 @@ impl Engine {
                     outcome: node_result.outcome,
                 },
                 version: setup.version,
-                payload: Some(EventPayload::Duration(start.elapsed())),
+                payload: Some(EventPayload::Duration(duration)),
             });
         }
 
