@@ -1025,6 +1025,39 @@ describe('meshManager', () => {
       expect((manager as any).getGhostMeshes().has('orphan')).toBe(false);
     });
 
+    it('(s) hidden visibilityMap entry is pruned on removal so entity re-arrives as show', () => {
+      // Analogous to test (q) but for the 'hidden' state.
+      // Phase 1: pre-set hidden, entity arrives hidden (no scene.add or ghostGroup.add).
+      // Phase 2: sync({}) removes the mesh — removeMesh() deletes the visibilityMap entry,
+      //          and the orphan-prune pass handles any residual pre-sets.
+      // Phase 3: entity re-arrives — because the hidden entry was pruned, it should arrive
+      //          as 'show' (added to scene, not ghost group).
+      const scene = new Scene();
+      const manager = createMeshManager(scene);
+
+      // Pre-set hidden before the entity has ever arrived
+      (manager as any).setVisibility('hidden-orphan', 'hidden');
+
+      // Entity arrives for the first time: should be hidden (not added to scene or ghost group)
+      manager.sync({ 'hidden-orphan': makeMeshData('hidden-orphan') });
+      expect(mockSceneAdd).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'hidden-orphan' }));
+      expect(mockGroupAdd).not.toHaveBeenCalled();
+
+      // Sync with empty set — mesh is removed (removeMesh deletes visibilityMap entry),
+      // and the orphan-prune loop confirms no stale pre-set remains.
+      manager.sync({});
+
+      vi.clearAllMocks();
+
+      // Re-arrive: because the hidden entry was pruned, entity must be added to scene as 'show'
+      manager.sync({ 'hidden-orphan': makeMeshData('hidden-orphan') });
+
+      expect(mockSceneAdd).toHaveBeenCalledTimes(1);
+      expect(mockGroupAdd).not.toHaveBeenCalled();
+      expect(manager.getSceneMeshes().has('hidden-orphan')).toBe(true);
+      expect((manager as any).getGhostMeshes().has('hidden-orphan')).toBe(false);
+    });
+
     it('(r) getGhostMeshes returns a copy — external mutation does not affect internal state', () => {
       // S2: getGhostMeshes must return a defensive copy so callers cannot accidentally
       // mutate the internal ghostMeshMap.
