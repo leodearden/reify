@@ -46,48 +46,42 @@ describe('DesignTreeContextMenu', () => {
   it('clicking "Show this and children" calls onAction with show-cascade and entityPath', () => {
     const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
-    const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
-    fireEvent.click(buttons[0]);
+    fireEvent.click(screen.getByTestId('ctx-show-cascade'));
     expect(onAction).toHaveBeenCalledWith('show-cascade', 'Root.A');
   });
 
   it('clicking "Ghost this and children" calls onAction with ghost-cascade', () => {
     const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
-    const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
-    fireEvent.click(buttons[1]);
+    fireEvent.click(screen.getByTestId('ctx-ghost-cascade'));
     expect(onAction).toHaveBeenCalledWith('ghost-cascade', 'Root.A');
   });
 
   it('clicking "Hide this and children" calls onAction with hide-cascade', () => {
     const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
-    const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
-    fireEvent.click(buttons[2]);
+    fireEvent.click(screen.getByTestId('ctx-hide-cascade'));
     expect(onAction).toHaveBeenCalledWith('hide-cascade', 'Root.A');
   });
 
   it('clicking "Show only this" calls onAction with show-only', () => {
     const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
-    const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
-    fireEvent.click(buttons[3]);
+    fireEvent.click(screen.getByTestId('ctx-show-only'));
     expect(onAction).toHaveBeenCalledWith('show-only', 'Root.A');
   });
 
   it('clicking "Reset to default" calls onAction with reset', () => {
     const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
-    const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
-    fireEvent.click(buttons[4]);
+    fireEvent.click(screen.getByTestId('ctx-reset'));
     expect(onAction).toHaveBeenCalledWith('reset', 'Root.A');
   });
 
   it('clicking "Show only this (no cascade)" calls onAction with show-only-no-cascade', () => {
     const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
-    const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
-    fireEvent.click(buttons[5]);
+    fireEvent.click(screen.getByTestId('ctx-show-only-no-cascade'));
     expect(onAction).toHaveBeenCalledWith('show-only-no-cascade', 'Root.A');
   });
 });
