@@ -916,12 +916,7 @@ mod tests {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
 
-        // All seven required args with valid default values, in one canonical order.
-        // Each iteration filters out one arg by name and tests the full contract.
-        // Note: when `oy`/`oz` are omitted, `ox` is still present in full_args —
-        // if it were also missing, the eval would short-circuit on `ox` (which evals
-        // before `oy`/`oz` in ax→ay→az→angle→ox→oy→oz order) and not on the named
-        // omitted arg. The `ox` omit iteration itself is covered by this loop.
+        // Each iteration omits exactly one named arg; all other required args remain present so that f64_arg? short-circuits on (and diagnoses) only the omitted arg under test.
         let full_args: Vec<(&'static str, reify_types::CompiledExpr)> = vec![
             ("ox", literal_f64(0.0)),
             ("oy", literal_f64(0.0)),
