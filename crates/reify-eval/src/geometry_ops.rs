@@ -242,7 +242,8 @@ pub(crate) fn compile_geometry_op(
                 reify_compiler::ModifyKind::Shell => {
                     let thickness = eval_arg("thickness")?;
                     // Collect face indices from face_0, face_1, ...
-                    // Non-numeric, negative, or non-finite values are skipped with a diagnostic.
+                    // Non-numeric values (String, Bool, List, etc.) are skipped with a diagnostic.
+                    // Non-finite (NaN, ±Infinity) and negative numeric values are also skipped.
                     let mut faces_to_remove: Vec<usize> = Vec::new();
                     for (name, expr) in args.iter().filter(|(n, _)| n.starts_with("face_")) {
                         let val = reify_expr::eval_expr(
@@ -252,7 +253,7 @@ pub(crate) fn compile_geometry_op(
                         match val.as_f64() {
                             None => {
                                 diagnostics.push(Diagnostic::warning(format!(
-                                    "Shell face index '{}' is non-numeric/non-finite — skipped",
+                                    "Shell face index '{}' is non-numeric — skipped",
                                     name
                                 )));
                             }
