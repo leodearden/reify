@@ -4,7 +4,7 @@
  */
 import { createSignal, onMount, onCleanup, Show, For } from 'solid-js';
 import type { Component } from 'solid-js';
-import { shortcutKey, type ShortcutId } from '../shortcuts';
+import { getShortcut, shortcutKey, type ShortcutId } from '../shortcuts';
 import styles from './MenuBar.module.css';
 
 export interface MenuBarProps {
@@ -23,7 +23,6 @@ type MenuItemDef = {
   label: string;
   shortcutId: ShortcutId;
   action?: keyof MenuBarProps;
-  disabled?: boolean;
 };
 
 type MenuDef = {
@@ -46,8 +45,8 @@ const MENU_DEFS: MenuDef[] = [
     id: 'edit',
     label: 'Edit',
     items: [
-      { label: 'Undo', shortcutId: 'undo', disabled: true },
-      { label: 'Redo', shortcutId: 'redo', disabled: true },
+      { label: 'Undo', shortcutId: 'undo' },
+      { label: 'Redo', shortcutId: 'redo' },
     ],
   },
   {
@@ -134,17 +133,20 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
             <Show when={openMenu() === menu.id}>
               <div class={styles.dropdown} role="menu">
                 <For each={menu.items}>
-                  {(item) => (
-                    <button
-                      class={item.disabled ? `${styles.item} ${styles.itemDisabled}` : styles.item}
-                      role="menuitem"
-                      disabled={item.disabled}
-                      onClick={() => handleItemClick(item.action ? props[item.action] : undefined)}
-                    >
-                      <span>{item.label}</span>
-                      <span class={styles.shortcut}>{shortcutKey(item.shortcutId)}</span>
-                    </button>
-                  )}
+                  {(item) => {
+                    const isDisabled = getShortcut(item.shortcutId)?.disabled ?? false;
+                    return (
+                      <button
+                        class={isDisabled ? `${styles.item} ${styles.itemDisabled}` : styles.item}
+                        role="menuitem"
+                        disabled={isDisabled}
+                        onClick={() => handleItemClick(item.action ? props[item.action] : undefined)}
+                      >
+                        <span>{item.label}</span>
+                        <span class={styles.shortcut}>{shortcutKey(item.shortcutId)}</span>
+                      </button>
+                    );
+                  }}
                 </For>
               </div>
             </Show>
