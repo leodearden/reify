@@ -527,6 +527,7 @@ fn resolve_concurrent_edit_second_wave_updates_dependent_let_binding() {
 /// Callers must pass a fresh `ConcurrentEditResult`; pre-populating
 /// `resolved_params` indicates a double-call or incorrect usage. The
 /// `debug_assert!` guard catches this during development.
+#[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "resolved_params must be empty")]
 fn resolve_concurrent_edit_panics_on_prepopulated_resolved_params() {
@@ -578,6 +579,7 @@ fn resolve_concurrent_edit_panics_on_prepopulated_resolved_params() {
 ///
 /// Only `diagnostics` is pre-populated here so the `resolved_params`
 /// debug_assert passes and the `diagnostics` debug_assert is the one that fires.
+#[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "diagnostics must be empty")]
 fn resolve_concurrent_edit_panics_on_prepopulated_diagnostics() {
