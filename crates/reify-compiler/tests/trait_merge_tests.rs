@@ -1336,9 +1336,10 @@ structure def S : TraitA + TraitB {
             .expect("DEBUG counter registered"),
     );
 
-    // NOTE: with_default is thread-local; relies on compile_first_template
-    // being single-threaded. If the compile path ever goes multi-threaded,
-    // switch to set_global_default in a std::sync::Once.
+    // NOTE: with_default installs a thread-local subscriber; DEBUG events emitted
+    // on other threads spawned by the compile path would be missed. Switch to
+    // set_global_default in a std::sync::Once if the compile path ever emits
+    // from worker threads.
     // Run the compilation under the scoped subscriber so we capture any DEBUG
     // events from reify_compiler::conformance targets.
     let _ = tracing::subscriber::with_default(subscriber, || compile_first_template(source));
