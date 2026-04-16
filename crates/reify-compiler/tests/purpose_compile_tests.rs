@@ -408,11 +408,11 @@ purpose check(subject : Widget) {
     );
     let has_self_error = errors.iter().any(|d| {
         let lower = d.message.to_lowercase();
-        lower.contains("self") || lower.contains("unresolved")
+        lower.contains("unresolved name: self")
     });
     assert!(
         has_self_error,
-        "expected an error mentioning 'self' or 'unresolved', got: {:?}",
+        "expected an error containing 'unresolved name: self', got: {:?}",
         errors
     );
 }
