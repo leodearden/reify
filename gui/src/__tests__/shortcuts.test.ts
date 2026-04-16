@@ -50,6 +50,7 @@ describe('shortcuts', () => {
   });
 
   it('getShortcut for unknown id returns undefined', () => {
+    // @ts-expect-error - unknown id must be rejected by ShortcutId narrowing
     expect(getShortcut('nonexistent-id')).toBeUndefined();
   });
 
@@ -78,6 +79,7 @@ describe('shortcuts', () => {
   });
 
   it('shortcutKey for unknown id returns empty string', () => {
+    // @ts-expect-error - unknown id must be rejected by ShortcutId narrowing
     expect(shortcutKey('nonexistent-id')).toBe('');
   });
 
