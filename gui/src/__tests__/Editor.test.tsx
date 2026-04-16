@@ -160,7 +160,7 @@ describe('Editor doc change handling', () => {
     // Mid-session: close the only file, setting activeFile back to null
     store.closeFile(file1.path);
 
-    // When the debounce fires, the guard (if path) must prevent the call
+    // When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call.
     vi.advanceTimersByTime(300);
     expect(updateSpy).not.toHaveBeenCalled();
   });
