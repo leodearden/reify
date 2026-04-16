@@ -214,13 +214,8 @@ pub(crate) fn check_trait_conformance(
                     // compiled in the partial scope visible so far (structure
                     // members + already-registered defaults).  Cache the
                     // compiled_expr so the injection loop can reuse it.
-                    let compiled_expr = compile_expr(
-                        &let_decl.value,
-                        scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
-                    );
+                    let compiled_expr =
+                        compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
                     let inferred_ty = compiled_expr.result_type.clone();
                     inferred_let_exprs.insert(name.clone(), compiled_expr);
                     inferred_ty
@@ -262,7 +257,8 @@ pub(crate) fn check_trait_conformance(
     // The final `Type::Real` fallback is reached only when inference itself failed
     // (the expression errored out and left no cached result), and matches the pre-fix
     // behavior as a safety net for that pathological case.
-    let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = ctx.defaults
+    let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = ctx
+        .defaults
         .iter()
         .filter_map(|d| {
             let name = d.name.as_deref()?;
@@ -318,9 +314,7 @@ pub(crate) fn check_trait_conformance(
                         // because `HashMap<(String, K), V>` has no `Borrow` impl for `(&str, K)`.
                         // Requirement counts are small in practice so this is not a hot path; if it
                         // ever becomes one, switch to a two-level map `HashMap<String, HashMap<K, V>>`.
-                        match available_defaults
-                            .get(&(req.name.clone(), required_default_kind))
-                        {
+                        match available_defaults.get(&(req.name.clone(), required_default_kind)) {
                             Some(default_type)
                                 if implicitly_converts_to(default_type, expected_type) =>
                             {
@@ -334,10 +328,9 @@ pub(crate) fn check_trait_conformance(
                                          requirement expects {}, available default has {}",
                                         req.name, expected_type, default_type
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        structure.span,
-                                        "type mismatch",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(structure.span, "type mismatch"),
+                                    ),
                                 );
                             }
                             None => {
@@ -349,10 +342,9 @@ pub(crate) fn check_trait_conformance(
                                         "missing required member '{}' (expected type: {})",
                                         req.name, expected_type
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        structure.span,
-                                        "required by trait",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(structure.span, "required by trait"),
+                                    ),
                                 );
                             }
                         }
@@ -463,9 +455,10 @@ pub(crate) fn check_trait_conformance(
                     }
 
                     // Annotation is authoritative on the injected cell when present
-                    // (matches the scope pre-registration that already uses the
-                    // annotation via `.unwrap_or`). Fall back to the inferred
-                    // expression type only when there is no annotation.
+                    // (matches the scope pre-registration at ~line 167 which also
+                    // prefers the annotation over the inferred expression type).
+                    // Fall back to the inferred expression type only when there
+                    // is no annotation.
                     let injected_cell_type = cell_type
                         .clone()
                         .unwrap_or_else(|| compiled_expr.result_type.clone());
@@ -660,7 +653,10 @@ pub(crate) fn collect_all_requirements(
                             ))
                             .with_label(DiagnosticLabel::new(
                                 span,
-                                format!("conflict between '{}' and '{}'", existing_trait, trait_name),
+                                format!(
+                                    "conflict between '{}' and '{}'",
+                                    existing_trait, trait_name
+                                ),
                             )),
                         );
                     }
@@ -729,9 +725,9 @@ pub(crate) fn collect_all_requirements(
                 // Same (name, kind) already seen → skip (deduplicate).
                 continue;
             }
-            ctx.seen_defaults.insert(key, (default_type, trait_name.to_string()));
+            ctx.seen_defaults
+                .insert(key, (default_type, trait_name.to_string()));
             ctx.defaults.push(default.clone());
         }
     }
 }
-

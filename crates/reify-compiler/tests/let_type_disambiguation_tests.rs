@@ -523,4 +523,3 @@ structure S : MutualLets {
     // else: compilation succeeded — inference worked out despite iteration order.
     //       A future topological pass would reliably reach this branch.
 }
-
