@@ -1330,16 +1330,24 @@ structure def S : TraitA + TraitB {
         .count_level(tracing::Level::DEBUG)
         .build();
 
-    let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
+    let debug_count = std::sync::Arc::clone(
+        counters
+            .get(&tracing::Level::DEBUG)
+            .expect("DEBUG counter registered"),
+    );
 
     // Run the compilation under the scoped subscriber so we capture any DEBUG
     // events from reify_compiler::* targets.
     let _ = tracing::subscriber::with_default(subscriber, || compile_first_template(source));
 
     let debug = debug_count.load(Ordering::Relaxed);
-    assert!(
-        debug >= 1,
-        "expected at least 1 DEBUG event from reify_compiler target when two traits \
+    // Assert exactly 1 event: the fixture has one cross-kind collision (let x vs param x),
+    // which fires the tracing::debug! path exactly once. Equality also guards against
+    // accidental over-emission if additional debug sites are added to the same path.
+    assert_eq!(
+        debug,
+        1,
+        "expected exactly 1 DEBUG event from reify_compiler target when two traits \
          supply the same-named default (second register_if_absent returns false), got {}",
         debug
     );

@@ -266,6 +266,10 @@ pub(crate) fn check_trait_conformance(
                 DefaultKind::Let { cell_type, .. } => cell_type.clone().unwrap_or(Type::Real),
                 DefaultKind::Constraint(_) => continue,
             };
+            // `ty` is cloned here so we retain the value for the debug event on
+            // the cold conflict path (`!was_new`). `register_if_absent` consumes its
+            // argument, so we cannot borrow `ty` after the call without the clone.
+            // This is a compile-time-only path; the clone cost is negligible.
             let was_new = scope.register_if_absent(name, ty.clone());
             // First-seen type wins. When was_new is false a prior default already
             // owns this name — the incoming type is silently dropped. Emit a debug
