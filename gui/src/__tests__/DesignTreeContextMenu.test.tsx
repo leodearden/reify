@@ -8,7 +8,7 @@ describe('DesignTreeContextMenu', () => {
     entityPath: 'Root.A',
     x: 100,
     y: 200,
-    onAction: vi.fn<[MenuAction, string], void>(),
+    onAction: vi.fn<(action: MenuAction, path: string) => void>(),
   };
 
   it('renders with data-testid="design-tree-context-menu"', () => {
@@ -44,7 +44,7 @@ describe('DesignTreeContextMenu', () => {
   });
 
   it('clicking "Show this and children" calls onAction with show-cascade and entityPath', () => {
-    const onAction = vi.fn<[MenuAction, string], void>();
+    const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
     const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
     fireEvent.click(buttons[0]);
@@ -52,7 +52,7 @@ describe('DesignTreeContextMenu', () => {
   });
 
   it('clicking "Ghost this and children" calls onAction with ghost-cascade', () => {
-    const onAction = vi.fn<[MenuAction, string], void>();
+    const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
     const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
     fireEvent.click(buttons[1]);
@@ -60,7 +60,7 @@ describe('DesignTreeContextMenu', () => {
   });
 
   it('clicking "Hide this and children" calls onAction with hide-cascade', () => {
-    const onAction = vi.fn<[MenuAction, string], void>();
+    const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
     const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
     fireEvent.click(buttons[2]);
@@ -68,7 +68,7 @@ describe('DesignTreeContextMenu', () => {
   });
 
   it('clicking "Show only this" calls onAction with show-only', () => {
-    const onAction = vi.fn<[MenuAction, string], void>();
+    const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
     const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
     fireEvent.click(buttons[3]);
@@ -76,7 +76,7 @@ describe('DesignTreeContextMenu', () => {
   });
 
   it('clicking "Reset to default" calls onAction with reset', () => {
-    const onAction = vi.fn<[MenuAction, string], void>();
+    const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
     const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
     fireEvent.click(buttons[4]);
@@ -84,7 +84,7 @@ describe('DesignTreeContextMenu', () => {
   });
 
   it('clicking "Show only this (no cascade)" calls onAction with show-only-no-cascade', () => {
-    const onAction = vi.fn<[MenuAction, string], void>();
+    const onAction = vi.fn<(action: MenuAction, path: string) => void>();
     render(() => <DesignTreeContextMenu {...defaultProps} onAction={onAction} />);
     const buttons = screen.getByTestId('design-tree-context-menu').querySelectorAll('button');
     fireEvent.click(buttons[5]);
