@@ -157,3 +157,59 @@ fn solid_param_compiles_as_realization() {
         template.realizations.len()
     );
 }
+
+// ─── coverage: Solid param as boolean-op operand ──────────────────────────────
+
+/// Exercises the `geometry_lets` map-building block (task 1878 / `entity.rs:1240-1246`)
+/// and the Ident-lookup block in `compile_geometry_call` (`geometry.rs:65-87`).
+///
+/// When a `Solid`-typed param (`g`) is used as an operand in a downstream boolean
+/// op (`difference(g, other)`), the third-pass `geometry_lets` map must have
+/// recorded `g`'s initializer expression so that `compile_geometry_call` can
+/// resolve the `Ident("g")` and inline the underlying cylinder ops.  The result
+/// is a single realization for `out` that contains the cylinder sub-op, the
+/// sphere sub-op, and the difference op itself — at least 3 ops total.
+///
+/// Regression guard: if the `geometry_lets` map plumbing regresses (e.g. Solid
+/// params are no longer inserted at `entity.rs:1240-1246`), `out` would not
+/// resolve `g` and would emit a degenerate single-op or error realization.
+#[test]
+fn solid_param_referenced_by_downstream_boolean_op() {
+    let source = r#"structure def W1 {
+    param g : Solid = cylinder(10mm, 20mm)
+    let other = sphere(15mm)
+    let out = difference(g, other)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "W1")
+        .expect("W1 template not found");
+
+    // (a) No scalar ValueCellDecls — g, other, and out are all geometry members.
+    assert!(
+        template.value_cells.is_empty(),
+        "expected no ValueCellDecls (all three members are geometry); got: {:#?}",
+        template.value_cells
+    );
+
+    // (b) Exactly 3 realizations: g, other, out.
+    assert_eq!(
+        template.realizations.len(),
+        3,
+        "expected 3 RealizationDecls (g, other, out), got {}",
+        template.realizations.len()
+    );
+
+    // (c) The `out` realization (index 2) must have >= 3 ops, proving that
+    //     difference(g, other) inlined the resolved primitives via the
+    //     geometry_lets map rather than emitting a degenerate single-op realization.
+    let out_realization = &template.realizations[2];
+    assert!(
+        out_realization.operations.len() >= 3,
+        "expected `out` realization to have >= 3 ops (cylinder + sphere + difference); \
+         got {} — likely geometry_lets map plumbing regressed",
+        out_realization.operations.len()
+    );
+}
