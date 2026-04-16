@@ -864,3 +864,20 @@ fn edit_param_wrong_value_kind() {
         "expected EngineError::TypeKindMismatch, got {err:?}"
     );
 }
+
+/// edit_check Assembly.height (Type::Scalar[LENGTH]) with Value::Bool(true)
+/// should return Err(EngineError::TypeKindMismatch { .. }) (delegates to edit_param via ?).
+/// This is a regression-lock guaranteeing the delegation path propagates the new error variant.
+#[test]
+fn edit_check_wrong_value_kind() {
+    let (mut engine, _initial) = make_eval_engine();
+    let height_id = ValueCellId::new("Assembly", "height");
+    // Value::Bool is the wrong variant for a Type::Scalar cell.
+    let err = engine
+        .edit_check(height_id, Value::Bool(true))
+        .expect_err("edit_check with wrong value kind should return Err");
+    assert!(
+        matches!(err, reify_eval::EngineError::TypeKindMismatch { .. }),
+        "expected EngineError::TypeKindMismatch, got {err:?}"
+    );
+}
