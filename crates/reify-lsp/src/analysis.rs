@@ -909,9 +909,11 @@ mod tests {
         );
         // Exact byte-position assertions: span must start at the 'l' in
         // 'let fallback' and end immediately after the RHS literal '2'.
+        // Using "= 2".len() (instead of + 1) makes the literal width
+        // explicit and keeps the assertion resilient if the literal is
+        // ever widened (e.g. "= 22") during a future edit.
         let expected_start = source.find("let fallback").unwrap() as u32;
-        let two_pos = source.find("= 2").unwrap() + "= ".len();
-        let expected_end = (two_pos + 1) as u32; // end is just after the '2'
+        let expected_end = (source.find("= 2").unwrap() + "= 2".len()) as u32;
         assert_eq!(
             info.span.start, expected_start,
             "span.start should point at 'let fallback'"
