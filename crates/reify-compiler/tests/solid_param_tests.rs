@@ -4,7 +4,7 @@
 //! realization (like a geometry let) rather than a scalar ValueCellDecl.
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, PrimitiveKind, ValueCellKind};
-use reify_types::{Severity, Type};
+use reify_types::{RealizationNodeId, Severity, Type};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -192,7 +192,21 @@ fn solid_param_referenced_by_downstream_boolean_op() {
     //     proving that difference(g, other) inlined the resolved primitives via the
     //     geometry_lets map rather than emitting a degenerate single-op realization.
     //     Lowering is deterministic; == 3 catches silent regressions that duplicate ops.
+    //     If future lowering legitimately adds helper ops (e.g., transforms or bounds),
+    //     update this count intentionally — that should be a deliberate, reviewable change.
     let out_realization = &template.realizations[2]; // realizations emitted in source order: [0]=g, [1]=other, [2]=out
+
+    // Ordering invariant: realizations[2] must carry source-order index 2 (the `out` node,
+    // assigned by realization_index in entity.rs).  If emission order ever changes, this
+    // assertion surfaces the root cause (an ordering shift) rather than producing a
+    // misleading "expected 3 ops" failure.
+    assert_eq!(
+        out_realization.id,
+        RealizationNodeId::new("W1", 2),
+        "expected realizations[2] to be W1#realization[2] (source-order `out` node); \
+         emission order may have changed — update the [0]=g,[1]=other,[2]=out comment \
+         and this assertion accordingly"
+    );
     assert_eq!(
         out_realization.operations.len(),
         3,
