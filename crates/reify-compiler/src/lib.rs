@@ -1934,8 +1934,11 @@ structure S {
         // loft() with 3 literal-number args (not geometry expressions).
         // When step_offset=5:
         //   - The fallback GeomRef for profile i is GeomRef::Step(5 + i) — unique per
-        //     profile, matching sweep()'s convention (profile=step_offset, path=step_offset+1).
-        //   - Each non-geometry arg emits a Diagnostic::error naming the argument number.
+        //     profile, preserving loft's "distinct cross-sections" semantics in the
+        //     fallback (consistent with sweep()'s profile=step_offset, path=step_offset+1
+        //     convention applied per profile).
+        //   - The fallback is silent: no per-argument diagnostic is emitted, matching
+        //     the geom_ref convention used by extrude/revolve/translate/etc.
         //   - Ops are still produced (fallback refs allow compilation to continue).
         let expr = reify_syntax::Expr {
             kind: reify_syntax::ExprKind::FunctionCall {
@@ -1998,30 +2001,19 @@ structure S {
             other => panic!("expected Sweep(Loft), got {:?}", other),
         }
 
-        // one diagnostic per non-geometry arg
-        assert_eq!(
-            diagnostics.len(),
-            3,
-            "expected 3 diagnostics (one per arg), got: {:?}",
-            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        // No per-argument geometry-expression diagnostics should be emitted by the
+        // loft fallback path — silent fallback matches the geom_ref convention.
+        let geom_expr_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("must be a geometry expression"))
+            .collect();
+        assert!(
+            geom_expr_diags.is_empty(),
+            "expected silent fallback (no per-arg diagnostics), got: {:?}",
+            geom_expr_diags
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
-        for (i, diag) in diagnostics.iter().enumerate() {
-            let arg_num = i + 1;
-            assert!(
-                diag.message.contains("must be a geometry expression"),
-                "diagnostic {} should contain 'must be a geometry expression', got: {:?}",
-                i,
-                diag.message
-            );
-            // Match 'argument N' exactly to avoid false positives from other numbers
-            // in the message (e.g. "argument 1" should not match on "argument 10").
-            assert!(
-                diag.message.contains(&format!("argument {}", arg_num)),
-                "diagnostic {} should reference 'argument {}', got: {:?}",
-                i,
-                arg_num,
-                diag.message
-            );
-        }
     }
 }

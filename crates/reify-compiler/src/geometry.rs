@@ -299,13 +299,14 @@ pub(crate) fn compile_geometry_call(
 
     // Helper: look up resolved geometry ref or fall back to step_offset.
     // Used by single-geometry-arg functions (extrude, revolve, revolve_full,
-    // translate, rotate, etc.).  These functions intentionally emit no
-    // diagnostic when the profile arg is non-geometry: their callers are
-    // responsible for providing a geometry expression, and the silent fallback
-    // keeps compilation from short-circuiting while still producing an op for
-    // downstream analysis.  The variadic sweep() and loft() functions handle
-    // their geometry args differently — they emit a per-argument diagnostic so
-    // users get a precise numbered error for each bad argument.
+    // translate, rotate, etc.) and by loft (which calls the equivalent
+    // step_offset+i form inline to preserve per-profile index uniqueness).
+    // These functions intentionally emit no diagnostic when the geometry arg
+    // is non-geometry: their callers are responsible for providing a geometry
+    // expression, and the silent fallback keeps compilation from
+    // short-circuiting while still producing an op for downstream analysis.
+    // sweep() is the exception — it emits per-argument diagnostics with span
+    // labels so users get a precise numbered error for each bad argument.
     let geom_ref = |idx: usize| -> GeomRef {
         geom_refs.get(&idx).cloned().unwrap_or(GeomRef::Step(step_offset))
     };
@@ -458,25 +459,16 @@ pub(crate) fn compile_geometry_call(
             }
             let mut profiles = Vec::with_capacity(args.len());
             for i in 0..args.len() {
-                // Emit a per-argument diagnostic when an arg is not a geometry
-                // expression, then fall back to GeomRef::Step(step_offset + i) so
-                // the op is still produced (matching sweep's diagnostic-with-fallback
-                // pattern).
-                let r = if let Some(r) = geom_refs.get(&i).cloned() {
-                    r
-                } else {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "loft() argument {} must be a geometry expression",
-                            i + 1
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            args[i].span,
-                            "not a geometry expression",
-                        )),
-                    );
-                    GeomRef::Step(step_offset + i)
-                };
+                // Silently fall back to GeomRef::Step(step_offset + i) per profile
+                // when an arg is not a geometry expression. This matches the
+                // single-geom-arg geom_ref() convention while preserving per-profile
+                // index uniqueness (loft requires distinct cross-sections, so each
+                // fallback profile needs a distinct step index for downstream
+                // analysis).
+                let r = geom_refs
+                    .get(&i)
+                    .cloned()
+                    .unwrap_or(GeomRef::Step(step_offset + i));
                 profiles.push(r);
             }
             let loft_args: Vec<(String, CompiledExpr)> = compiled_args
@@ -604,9 +596,11 @@ pub(crate) fn compile_geometry_call(
                 );
                 return None;
             }
-            // Both sweep() and loft() emit per-argument diagnostics when an arg is
-            // not a geometry expression, then fall back to GeomRef::Step so the op
-            // is still produced for downstream analysis.
+            // sweep() emits per-argument diagnostics when an arg is not a geometry
+            // expression, then falls back to GeomRef::Step so the op is still
+            // produced for downstream analysis.  (loft() differs: it falls back
+            // silently per profile to preserve index uniqueness without
+            // duplicating the type-check error category at each profile slot.)
             let profile = if let Some(r) = geom_refs.get(&0).cloned() {
                 r
             } else {

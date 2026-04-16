@@ -382,13 +382,18 @@ fn loft_one_profile_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// task-1752: loft_non_geometry_profiles_emit_diagnostics
+// task-1752: loft_non_geometry_profiles_silent_fallback
 // ---------------------------------------------------------------------------
 
 #[test]
-fn loft_non_geometry_profiles_emit_diagnostics() {
+fn loft_non_geometry_profiles_silent_fallback() {
     // Compiling loft(x, y) where x and y are scalar params (not geometry)
-    // should emit an error diagnostic per non-geometry argument.
+    // should silently fall back per profile (no diagnostic emitted), matching
+    // the geom_ref convention used by extrude/revolve/translate/etc.
+    // The op is still produced (with distinct GeomRef::Step indices per
+    // profile, so loft's "distinct cross-sections" semantics are preserved
+    // for downstream analysis), and no per-argument geometry-expression
+    // error is added.
     let source = r#"structure S {
     param x: Scalar = 5
     param y: Scalar = 10
@@ -397,58 +402,26 @@ fn loft_non_geometry_profiles_emit_diagnostics() {
     let parsed = reify_syntax::parse(source, ModulePath::single("test_loft_diag"));
     let compiled = reify_compiler::compile(&parsed);
 
-    // Filter specifically for per-argument geometry diagnostics so the count is
-    // exact (== 2 for the two scalar args) regardless of any other error
-    // diagnostics that might be present in the pipeline.
+    // No per-argument geometry-expression diagnostics should be emitted by
+    // the loft fallback path. Filter by message content so the assertion is
+    // robust to unrelated diagnostics elsewhere in the pipeline.
     let geom_expr_diags: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| {
             d.severity == Severity::Error
                 && d.message.contains("must be a geometry expression")
+                && d.message.contains("loft()")
         })
         .collect();
-    assert_eq!(
-        geom_expr_diags.len(),
-        2,
-        "expected exactly 2 per-argument diagnostics (one per non-geometry arg), got: {:?}",
-        compiled
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-    let has_loft_msg = geom_expr_diags.iter().any(|d| d.message.contains("loft()"));
     assert!(
-        has_loft_msg,
-        "expected diagnostic mentioning 'loft()', got: {:?}",
+        geom_expr_diags.is_empty(),
+        "expected loft() to silently fall back for non-geometry args (no per-arg \
+         diagnostics), got: {:?}",
         geom_expr_diags
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
-    );
-
-    // Verify per-argument numbering: diagnostics must reference both "argument 1"
-    // and "argument 2" (order-independent), so a future ordering or duplication
-    // regression is caught at the integration level as well as the unit level.
-    let arg_numbers: std::collections::HashSet<u32> = geom_expr_diags
-        .iter()
-        .filter_map(|d| {
-            // Extract the digit that follows "argument " in the message.
-            let prefix = "argument ";
-            d.message.find(prefix).and_then(|pos| {
-                d.message[pos + prefix.len()..]
-                    .chars()
-                    .next()
-                    .and_then(|c| c.to_digit(10))
-            })
-        })
-        .collect();
-    assert_eq!(
-        arg_numbers,
-        [1u32, 2u32].iter().cloned().collect::<std::collections::HashSet<_>>(),
-        "expected diagnostics to reference argument numbers {{1, 2}}, got: {:?}",
-        arg_numbers
     );
 }
 
