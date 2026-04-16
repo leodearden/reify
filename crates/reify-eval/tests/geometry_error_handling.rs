@@ -1987,3 +1987,59 @@ fn build_all_ops_fail_diagnostic_emitted_after_refactor() {
             .collect::<Vec<_>>()
     );
 }
+
+/// Regression guard (compile-None path mirror of
+/// `build_all_ops_fail_diagnostic_emitted_after_refactor`): when total_ops > 0
+/// but all ops fail at the `compile_geometry_op` stage (returning None before
+/// kernel.execute is ever called), build() should still return
+/// geometry_output=None AND emit 'all geometry operations failed'.
+///
+/// Covers lib.rs lines 2880-2886: compile_geometry_op returns None →
+/// GeometryHandleId::INVALID is pushed as sentinel, had_failure=true, and
+/// realization handles are truncated (lines 2890-2891). The `if total_ops > 0`
+/// diagnostic emission guard at lines 2896-2904 must be reached via this path
+/// too — not only via the kernel-execute-failure path exercised by
+/// `build_all_ops_fail_diagnostic_emitted_after_refactor`.
+///
+/// Uses a standard MockGeometryKernel (not FailingMockGeometryKernel) so that
+/// if kernel.execute were incorrectly called the test would succeed for the
+/// wrong reason — the sole op must fail during compilation, not execution.
+#[test]
+fn build_all_ops_fail_compile_path_diagnostic_emitted_after_refactor() {
+    // Boolean(Union, Step(0), Step(1)) — step_handles is empty when op 0 is
+    // processed, so compile_geometry_op cannot resolve the references and
+    // returns None. kernel.execute is never called.
+    let union_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    };
+
+    let module =
+        build_module_with_ops("test_compile_fail_regression", Some(vec![union_op]));
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new(); // execute() must NOT be called
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output=None when all ops fail to compile, got Some({} bytes)",
+        result.geometry_output.as_ref().map_or(0, |v| v.len())
+    );
+
+    let has_summary = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("all geometry operations failed"));
+    assert!(
+        has_summary,
+        "expected 'all geometry operations failed' diagnostic when total_ops>0 \
+         and all ops fail at compile stage (compile-None path), got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
