@@ -1190,12 +1190,39 @@ structure def S : HasParamAndConstraint {
         "the Param 'x' should have a default expression (= 1.0)"
     );
 
-    // At least 1 constraint injected (the `x > 0` from HasParamAndConstraint).
-    assert!(
-        template.constraints.len() >= 1,
-        "expected at least 1 constraint injected from HasParamAndConstraint, got {}",
+    // Exactly 1 constraint injected (the `x > 0` from HasParamAndConstraint).
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "expected exactly 1 constraint injected from HasParamAndConstraint, got {}",
         template.constraints.len()
     );
+
+    // Structural assertion: the constraint expression must be `x > 0`.
+    match &template.constraints[0].expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            assert_eq!(*op, BinOp::Gt, "constraint operator should be Gt (>)");
+            assert!(
+                matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "x"),
+                "left operand should be ValueRef with member 'x', got {:?}",
+                left.kind
+            );
+            let right_is_zero = match &right.kind {
+                CompiledExprKind::Literal(Value::Int(v)) => *v == 0,
+                CompiledExprKind::Literal(Value::Real(v)) => v.abs() < 1e-9,
+                _ => false,
+            };
+            assert!(
+                right_is_zero,
+                "right operand should be Literal(0), got {:?}",
+                right.kind
+            );
+        }
+        other => panic!(
+            "expected BinOp for constraint x > 0, got {:?}",
+            other
+        ),
+    }
 }
 
 /// Three traits each define `let x : Real = <different_expr>`.
