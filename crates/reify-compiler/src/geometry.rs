@@ -594,7 +594,7 @@ pub(crate) fn compile_geometry_call(
                 diagnostics.push(Diagnostic::error(
                     "sweep() profile (argument 1) must be a geometry expression".to_string(),
                 ));
-                GeomRef::Step(0)
+                GeomRef::Step(step_offset)
             };
             let path = if let Some(r) = geom_refs.get(&1).cloned() {
                 r
