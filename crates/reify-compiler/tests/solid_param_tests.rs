@@ -29,6 +29,21 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
     compiled
 }
 
+/// Like `compile_no_errors` but returns the `CompiledModule` without asserting
+/// that diagnostics are absent.  Used by pin-down tests that intentionally
+/// inspect whatever diagnostic behavior the compiler currently exhibits, so
+/// that any future change to that behavior becomes a deliberate, reviewable
+/// test update rather than a silent semantic drift.
+fn compile_allowing_errors(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_solid_param"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    reify_compiler::compile(&parsed)
+}
+
 // ─── step-5: Solid-typed param must NOT emit a ValueCellDecl ─────────────────
 
 /// After the pre-pass extension (step-4), scope registers `g` as Type::Geometry.
