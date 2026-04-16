@@ -10,6 +10,7 @@ use reify_types::*;
 /// Assert that `template.value_cells` contains exactly one cell whose member name equals
 /// `member`. Prints `context` in the failure message for easy diagnosis.
 /// Returns a reference to the matched cell so callers can inspect its properties.
+#[must_use = "inspect the returned cell or use `let _ =` to explicitly discard"]
 fn assert_single_value_cell<'a>(
     template: &'a TopologyTemplate,
     member: &str,
