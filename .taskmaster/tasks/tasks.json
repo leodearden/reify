@@ -39052,7 +39052,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T21:19:17.449Z"
+        "updatedAt": "2026-04-16T21:19:17.449Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/lib.rs"
+          ]
+        }
       }
     ],
     "metadata": {
