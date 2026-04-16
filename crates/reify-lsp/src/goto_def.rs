@@ -214,6 +214,22 @@ mod tests {
         Url::parse("file:///test.ri").unwrap()
     }
 
+    /// Test helper: return the character count of the Nth line of `source`.
+    ///
+    /// Every declaration in these tests is single-line with `range.end`
+    /// pinned to the end of that line. Computing the expected end from
+    /// the source keeps assertions self-consistent if the declaration
+    /// text ever changes (e.g. renaming a param or widening a literal),
+    /// avoiding manual recompute of hard-coded character offsets.
+    fn line_end_char(source: &str, line: u32) -> u32 {
+        source
+            .lines()
+            .nth(line as usize)
+            .expect("line index out of range in test source")
+            .chars()
+            .count() as u32
+    }
+
     // --- step-7: go-to-definition tests ---
 
     #[test]
@@ -233,8 +249,9 @@ mod tests {
         );
         assert_eq!(loc.range.end.line, 3, "declaration should be single-line");
         assert_eq!(
-            loc.range.end.character, 33,
-            "end should cover full 'param thickness: Scalar = 5mm' (29 chars after indent)"
+            loc.range.end.character,
+            line_end_char(source, 3),
+            "end should cover full 'param thickness: Scalar = 5mm'"
         );
     }
 
@@ -257,8 +274,9 @@ mod tests {
         );
         assert_eq!(loc.range.end.line, 1, "declaration should be single-line");
         assert_eq!(
-            loc.range.end.character, 30,
-            "end should cover full 'param width: Scalar = 80mm' (26 chars after indent)"
+            loc.range.end.character,
+            line_end_char(source, 1),
+            "end should cover full 'param width: Scalar = 80mm'"
         );
     }
 
@@ -279,8 +297,9 @@ mod tests {
         );
         assert_eq!(loc.range.end.line, 7, "declaration should be single-line");
         assert_eq!(
-            loc.range.end.character, 43,
-            "end should cover full 'let volume = width * height * thickness' (39 chars after indent)"
+            loc.range.end.character,
+            line_end_char(source, 7),
+            "end should cover full 'let volume = width * height * thickness'"
         );
     }
 
@@ -301,8 +320,9 @@ mod tests {
         );
         assert_eq!(loc.range.end.line, 1, "declaration should be single-line");
         assert_eq!(
-            loc.range.end.character, 33,
-            "end should cover full 'param diameter: Scalar = 10mm' (29 chars after indent)"
+            loc.range.end.character,
+            line_end_char(source, 1),
+            "end should cover full 'param diameter: Scalar = 10mm'"
         );
     }
 
@@ -323,8 +343,9 @@ mod tests {
         );
         assert_eq!(loc.range.end.line, 2, "declaration should be single-line");
         assert_eq!(
-            loc.range.end.character, 29,
-            "end should cover full 'let radius = diameter / 2' (25 chars after indent)"
+            loc.range.end.character,
+            line_end_char(source, 2),
+            "end should cover full 'let radius = diameter / 2'"
         );
     }
 
@@ -370,11 +391,11 @@ mod tests {
             loc.range.start.character, 8,
             "param keyword starts after 8-space indent"
         );
-        // Assert range.end covers the full declaration:
-        // "        param guarded_x : Scalar = 5mm" → 30 chars after indent, end at (3, 8+30=38)
+        // Assert range.end covers the full declaration line.
         assert_eq!(loc.range.end.line, 3, "declaration should be single-line");
         assert_eq!(
-            loc.range.end.character, 38,
+            loc.range.end.character,
+            line_end_char(source, 3),
             "end should cover full 'param guarded_x : Scalar = 5mm'"
         );
     }
@@ -397,11 +418,11 @@ mod tests {
             loc.range.start.character, 8,
             "let keyword starts after 8-space indent"
         );
-        // Assert range.end covers the full declaration:
-        // "        let fallback = 10" → 17 chars after indent, end at (5, 8+17=25)
+        // Assert range.end covers the full declaration line.
         assert_eq!(loc.range.end.line, 5, "declaration should be single-line");
         assert_eq!(
-            loc.range.end.character, 25,
+            loc.range.end.character,
+            line_end_char(source, 5),
             "end should cover full 'let fallback = 10'"
         );
     }
@@ -432,8 +453,9 @@ mod tests {
         );
         assert_eq!(loc.range.end.line, 4, "declaration should be single-line");
         assert_eq!(
-            loc.range.end.character, 24,
-            "end should cover full 'param x: Bool = true' (20 chars after indent)"
+            loc.range.end.character,
+            line_end_char(source, 4),
+            "end should cover full 'param x: Bool = true'"
         );
     }
 
@@ -461,8 +483,9 @@ mod tests {
         );
         assert_eq!(loc.range.end.line, 4, "declaration should be single-line");
         assert_eq!(
-            loc.range.end.character, 33,
-            "end should cover full 'param diameter: Scalar = 20mm' (29 chars after indent)"
+            loc.range.end.character,
+            line_end_char(source, 4),
+            "end should cover full 'param diameter: Scalar = 20mm'"
         );
     }
 
@@ -528,8 +551,9 @@ mod tests {
         );
         assert_eq!(loc.range.end.line, 5, "declaration should be single-line");
         assert_eq!(
-            loc.range.end.character, 26,
-            "end should cover full 'param y: Scalar = 20mm' (22 chars after indent)"
+            loc.range.end.character,
+            line_end_char(source, 5),
+            "end should cover full 'param y: Scalar = 20mm'"
         );
     }
 
@@ -631,8 +655,9 @@ mod tests {
         );
         assert_eq!(loc.range.end.line, 4, "declaration should be single-line");
         assert_eq!(
-            loc.range.end.character, 26,
-            "end should cover full 'param x: Scalar = 10mm' (22 chars after indent)"
+            loc.range.end.character,
+            line_end_char(source, 4),
+            "end should cover full 'param x: Scalar = 10mm'"
         );
     }
 
