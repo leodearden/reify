@@ -38572,6 +38572,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1848,
+        "title": "concurrent.rs cleanup: resolve API fragility, redundant insert, misleading timestamps",
+        "description": "Three cleanup items in crates/reify-eval/src/concurrent.rs identified during review of task 1810:\n\n1. **resolve_concurrent_edit split-mutation pattern** (lines 291-459): Method takes `&mut ConcurrentEditResult` and directly mutates result.values and result.snapshot_values, but returns `(resolved_params, diagnostics)` as a tuple that the caller must manually assign back. This hybrid mutation pattern is fragile — a caller that forgets re-assignment silently loses resolver output. Either assign resolved_params and diagnostics directly onto `result` inside the method (making it fully &mut), or return a separate ResolutionOutcome struct and don't mutate result at all.\n\n2. **Redundant values.insert** (line 134): The loop at lines 130-132 iterates new_snapshot_values (which already has the updated cell from line 117-119) and copies all values into the `values` map. The subsequent `values.insert(cell.clone(), new_value)` at line 134 overwrites with the same value. Remove line 134 and the comment on line 133.\n\n3. **Misleading journal timestamps** (lines 207-237): apply_concurrent_edit records journal Started/Completed events with `Instant::now()` from the apply phase, not from the actual concurrent evaluation. The Duration payload measures apply-loop time, not actual node evaluation time. Consider adding actual start/end timestamps or Duration to ConcurrentNodeResult so journal events reflect real evaluation timing, or document clearly that timestamps reflect apply-time.\n\nmemory_hints:\n- search: \"resolve_concurrent_edit API\" \"concurrent edit journal\"\n- entity: Engine, ConcurrentEditResult",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -38584,7 +38595,7 @@
       ],
       "created": "2026-04-16T02:37:39.114Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-16T02:37:39.133Z"
+      "updated": "2026-04-16T02:38:03.222Z"
     }
   }
 }
