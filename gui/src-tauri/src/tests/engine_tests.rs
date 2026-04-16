@@ -3123,21 +3123,20 @@ fn all_new_commands_callable_on_bracket_fixture() {
 /// After load_from_source, returns Some with the Bracket declaration present.
 #[test]
 fn commit_state_populates_parsed_cache() {
-    // Fresh session → None
     let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    // Before load → None.
     assert!(
         session.parsed_cache_for_test().is_none(),
         "fresh session: parsed_cache should be None"
     );
 
-    // After load → Some with at least one declaration
-    let checker2 = SimpleConstraintChecker;
-    let mut session2 = EngineSession::new(Box::new(checker2), None);
-    session2
+    // After load → Some with at least one declaration.
+    session
         .load_from_source(bracket_source(), "bracket")
         .expect("load should succeed");
-    let cached = session2
+    let cached = session
         .parsed_cache_for_test()
         .expect("after load, parsed_cache should be Some");
     assert!(
@@ -3161,26 +3160,26 @@ fn commit_state_populates_parsed_cache() {
 fn commit_state_populates_line_offsets_cache() {
     use crate::engine::build_line_offsets;
 
-    // Fresh session → None
-    let checker = SimpleConstraintChecker;
-    let session = EngineSession::new(Box::new(checker), None);
-    assert!(
-        session.line_offsets_cache_for_test().is_none(),
-        "fresh session: line_offsets_cache should be None"
-    );
-
     // Source with exactly 2 newlines:
     // "structure A {}\nstructure B {}\nstructure C {}"
     // - "structure A {}" = 14 chars → '\n' at byte 14
     // - "structure B {}" = 14 chars → '\n' at byte 29
     let source = "structure A {}\nstructure B {}\nstructure C {}";
-    let checker2 = SimpleConstraintChecker;
-    let mut session2 = EngineSession::new(Box::new(checker2), None);
-    session2
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    // Before load → None.
+    assert!(
+        session.line_offsets_cache_for_test().is_none(),
+        "fresh session: line_offsets_cache should be None"
+    );
+
+    // After load → Some with the correct newline positions.
+    session
         .load_from_source(source, "test_offsets")
         .expect("load should succeed");
 
-    let cached = session2
+    let cached = session
         .line_offsets_cache_for_test()
         .expect("after load, line_offsets_cache should be Some");
 
@@ -3238,19 +3237,12 @@ fn commit_state_refreshes_caches_on_update_source() {
         .expect("line_offsets_cache should be Some after update")
         .len();
 
-    assert!(
-        decl_count_2 > decl_count_1,
-        "parsed_cache should reflect more declarations after update ({} → {})",
-        decl_count_1,
-        decl_count_2
-    );
-    assert!(
-        offsets_len_2 > offsets_len_1,
-        "line_offsets_cache should have more entries after update ({} → {})",
-        offsets_len_1,
-        offsets_len_2
-    );
-    // source2 has exactly one '\n'.
+    // Pin exact values — this falsifies both get_or_insert and append bugs.
+    // source1: 1 structure, 0 newlines.
+    assert_eq!(decl_count_1, 1, "source1 should have exactly 1 declaration");
+    assert_eq!(offsets_len_1, 0, "source1 has no newlines");
+    // source2: 2 structures, 1 newline.
+    assert_eq!(decl_count_2, 2, "source2 should have exactly 2 declarations");
     assert_eq!(offsets_len_2, 1, "source2 has exactly 1 newline");
 }
 
@@ -3290,5 +3282,46 @@ fn get_containing_definition_reads_from_parsed_cache() {
         after.is_none(),
         "after stripping parsed_cache, get_containing_definition should return None \
          (proves the method reads from cache, not re-parsing source)"
+    );
+}
+
+/// Proves that get_containing_definition reads from line_offsets_cache rather than
+/// recomputing build_line_offsets(source) on every call.
+///
+/// Strategy: load bracket_source, confirm position (2, 1) maps into the Bracket
+/// definition (baseline), then inject a deliberately empty line-offset table.
+/// With the bogus empty table, line_col_to_byte_offset_with_offsets returns
+/// source.len() for any line ≥ 2 (because there are no recorded newlines), which
+/// puts the byte offset past the Bracket span → None.  If the old path still
+/// called build_line_offsets(source) internally, the correct offsets would be
+/// recomputed and (2, 1) would still return Some — so None proves cache use.
+#[test]
+fn get_containing_definition_reads_from_line_offsets_cache() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+
+    // Baseline: line 2 is inside the Bracket structure.
+    let before = session.get_containing_definition(2, 1);
+    assert!(
+        before.is_some(),
+        "baseline: get_containing_definition(2,1) should return Some \
+         (line 2 is inside the Bracket structure)"
+    );
+
+    // Inject an empty (bogus) line-offset table.
+    // With no newlines recorded, line_col_to_byte_offset_with_offsets maps
+    // (line=2, col=1) to source.len(), which falls past the Bracket span end.
+    session.override_line_offsets_cache_for_test(vec![]);
+
+    // Now (2,1) must return None — if the source were re-scanned the correct
+    // offsets would be recovered and the method would still return Some.
+    let after = session.get_containing_definition(2, 1);
+    assert!(
+        after.is_none(),
+        "after injecting empty line_offsets_cache, get_containing_definition(2,1) \
+         should return None (proves the method uses the cached table)"
     );
 }

@@ -664,6 +664,8 @@ impl EngineSession {
     /// Although each call is now cheap, callers dispatching on mouse-move or
     /// cursor events should debounce (~16–50 ms) to avoid unnecessary Mutex lock
     /// traffic on the `EngineSession` in `commands.rs`.
+    /// Implementing the debounce in `commands.rs::get_containing_definition_impl`
+    /// is tracked as follow-up work.
     pub fn get_containing_definition(&self, line: u32, col: u32) -> Option<DefInfo> {
         // Documented contract: zero line or column is out-of-range → None.
         // Without this guard, line_col_to_byte_offset returns 0 for zero inputs,
@@ -673,10 +675,19 @@ impl EngineSession {
         }
         let (_key, source) = self.resolve_source()?;
 
-        // Read the cached parse result and line-offset table.  Both are populated
-        // eagerly in commit_state, so they are Some whenever compiled is Some (i.e.
-        // whenever resolve_source() succeeds).  Guard defensively against None to
-        // avoid panicking if the invariant is somehow broken.
+        // Both caches must be Some whenever compiled is Some (i.e., whenever
+        // resolve_source() succeeds), because commit_state populates them eagerly.
+        // This assert fires in debug builds if a new mutation site forgets to
+        // populate the caches, surfacing stale-state bugs before they manifest as
+        // silent wrong-position returns in release builds.
+        debug_assert!(
+            self.parsed_cache.is_some() && self.line_offsets_cache.is_some(),
+            "cache invariant broken: parsed_cache and line_offsets_cache must be Some \
+             whenever compiled is Some (i.e., whenever resolve_source succeeds)"
+        );
+
+        // Read the cached parse result and line-offset table.  Guard defensively
+        // against None (shouldn't occur, but avoids a panic in release builds).
         let parsed = self.parsed_cache.as_ref()?;
         let line_offsets = self.line_offsets_cache.as_deref()?;
 
@@ -1041,6 +1052,15 @@ impl EngineSession {
     /// the source text.
     pub(crate) fn override_parsed_cache_for_test(&mut self, parsed: reify_syntax::ParsedModule) {
         self.parsed_cache = Some(parsed);
+    }
+
+    /// Replace the cached line-offset table with `offsets`, for testing purposes.
+    ///
+    /// Used by `get_containing_definition_reads_from_line_offsets_cache` to inject
+    /// a deliberately wrong newline table and verify that `get_containing_definition`
+    /// uses the cached table rather than recomputing it from the source text.
+    pub(crate) fn override_line_offsets_cache_for_test(&mut self, offsets: Vec<usize>) {
+        self.line_offsets_cache = Some(offsets);
     }
 }
 
@@ -1417,21 +1437,4 @@ pub(crate) fn line_col_to_byte_offset_with_offsets(
             .unwrap_or(line_text.len())
 }
 
-/// Convert a 1-based `(line, col)` pair to a byte offset into `source`.
-///
-/// Both `line` and `col` are 1-based and count **Unicode codepoints** (matching
-/// the semantics of [`offset_to_line_col_fast`], the inverse operation).
-///
-/// This is a convenience wrapper around [`line_col_to_byte_offset_with_offsets`]
-/// that builds the newline table internally.  Prefer the `_with_offsets` variant
-/// when the table is already cached (e.g., inside `get_containing_definition`).
-///
-/// - If `line` or `col` is 0, returns 0 as a safe fallback.
-/// - If `line` exceeds the number of lines, returns `source.len()`.
-/// - If `col` exceeds the line length, clamps to the end of the line.
-#[allow(dead_code)]
-pub(crate) fn line_col_to_byte_offset(source: &str, line: u32, col: u32) -> usize {
-    let line_offsets = build_line_offsets(source);
-    line_col_to_byte_offset_with_offsets(source, line, col, &line_offsets)
-}
 
