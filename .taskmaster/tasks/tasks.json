@@ -37883,7 +37883,15 @@
             "crates/reify-eval/src/geometry_ops.rs",
             "crates/reify-eval/src/lib.rs",
             "crates/reify-eval/src/unfold.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "geometry_ops concurrent-edit module extraction reify-eval lib.rs refactor",
+              "module extraction reify eval library structure"
+            ]
+          },
+          "_causation_id": "78e2f0c6-9223-4507-9c31-b6f34f91c7d8"
         }
       },
       {
