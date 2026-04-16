@@ -383,6 +383,212 @@ describe('viewStateStore — showOnly', () => {
   });
 });
 
+describe('viewStateStore — getAllEffective', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            trait_geometry: true,
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+            ],
+          }),
+          makeNode({ entity_path: 'Root.B', kind: 'structure' }),
+        ],
+      }),
+    ];
+  }
+
+  it('returns Record covering every node with their resolved effective state', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      const all = store.getAllEffective();
+      expect(Object.keys(all)).toHaveLength(4);
+      expect(all['Root']).toBe('show');
+      expect(all['Root.A']).toBe('show');
+      expect(all['Root.A.a1']).toBe('show');
+      expect(all['Root.B']).toBe('show');
+      dispose();
+    });
+  });
+
+  it('after setVisibility(hidden, cascade=true) every descendant appears as hidden', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.setVisibility('Root.A', 'hidden', true);
+      const all = store.getAllEffective();
+      expect(all['Root.A']).toBe('hidden');
+      expect(all['Root.A.a1']).toBe('hidden');
+      // sibling B unaffected
+      expect(all['Root.B']).toBe('show');
+      dispose();
+    });
+  });
+
+  it('sibling with trait_geometry=true appears as show when no explicit set', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.setVisibility('Root.A', 'hidden', true);
+      const all = store.getAllEffective();
+      // Root.A has trait_geometry but is hidden by explicit
+      expect(all['Root.A']).toBe('hidden');
+      // Root.B has no explicit and no trait_geometry → default 'show'
+      expect(all['Root.B']).toBe('show');
+      dispose();
+    });
+  });
+});
+
+describe('viewStateStore — cycleCascading', () => {
+  function makeTree() {
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+            ],
+          }),
+        ],
+      }),
+    ];
+  }
+
+  it('show → ghost', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      // Root.A default effective is 'show'
+      store.cycleCascading('Root.A');
+      expect(store.state.explicit['Root.A']).toBe('ghost');
+      dispose();
+    });
+  });
+
+  it('ghost → hidden', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.setVisibility('Root.A', 'ghost', false);
+      store.cycleCascading('Root.A');
+      expect(store.state.explicit['Root.A']).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('hidden → show', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      store.setVisibility('Root.A', 'hidden', false);
+      store.cycleCascading('Root.A');
+      expect(store.state.explicit['Root.A']).toBe('show');
+      dispose();
+    });
+  });
+
+  it('cycle cascades — descendants explicit becomes null', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      // Prime a1 with explicit
+      store.setVisibility('Root.A.a1', 'hidden', false);
+      // Cycle Root.A from show → ghost with cascade
+      store.cycleCascading('Root.A');
+      expect(store.state.explicit['Root.A']).toBe('ghost');
+      expect(store.state.explicit['Root.A.a1']).toBeNull();
+      // a1 inherits ghost from Root.A
+      expect(store.getEffectiveVisibility('Root.A.a1')).toBe('ghost');
+      dispose();
+    });
+  });
+});
+
+describe('viewStateStore — hasOverride', () => {
+  function makeTree() {
+    // Root(show-by-default) > A(explicit='hidden') > a1(explicit=null)
+    return [
+      makeNode({
+        entity_path: 'Root',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Root.A.a1', kind: 'param' }),
+            ],
+          }),
+        ],
+      }),
+    ];
+  }
+
+  it('explicit=null → false', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      expect(store.hasOverride('Root.A.a1')).toBe(false);
+      dispose();
+    });
+  });
+
+  it('root node has no explicit → false', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      expect(store.hasOverride('Root')).toBe(false);
+      dispose();
+    });
+  });
+
+  it('explicit differs from would-inherit → true', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      // Root default is 'show', A's parent (Root) effective is 'show'
+      // Setting A to 'hidden' means A differs from parent's effective 'show'
+      store.setVisibility('Root.A', 'hidden', false);
+      expect(store.hasOverride('Root.A')).toBe(true);
+      dispose();
+    });
+  });
+
+  it('explicit matches would-inherit → false', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      // Root default is 'show'; set A to 'show' (same as would-inherit)
+      store.setVisibility('Root.A', 'show', false);
+      expect(store.hasOverride('Root.A')).toBe(false);
+      dispose();
+    });
+  });
+
+  it('a1 with explicit=null after cascade clear → false', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree(makeTree());
+      // Set A to hidden cascade — a1's explicit cleared to null
+      store.setVisibility('Root.A', 'hidden', true);
+      expect(store.hasOverride('Root.A.a1')).toBe(false);
+      dispose();
+    });
+  });
+});
+
 describe('viewStateStore — skeleton', () => {
   it('has empty explicit map on creation', () => {
     createRoot((dispose) => {
