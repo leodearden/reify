@@ -314,15 +314,13 @@ fn lowercase_tau_no_hint() {
 
 #[test]
 fn user_defined_pi_caps_in_scope_no_hint() {
+    // The assert!(errors.is_empty()) below is sufficient: if errors is empty,
+    // the subsequent "did you mean" scan over an empty Vec is a no-op.
+    // Pattern follows lowercase_pi_no_hint and lowercase_tau_no_hint.
     let src = "structure S {\n  let Pi = 42\n  let x = Pi\n}";
     let compiled = compile_source(src);
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "expected no errors when user defines 'Pi' and uses it, got: {:?}", errors);
-    assert!(
-        !errors.iter().any(|d| d.message.contains("did you mean")),
-        "expected NO 'did you mean' hint when 'Pi' is in scope, got: {:?}",
-        errors
-    );
 }
 
 // ─── step-7: pi works under #no_prelude ─────────────────────────────────────

@@ -37,6 +37,22 @@ fn assert_value_ref(expr: &CompiledExpr, expected_member: &str) {
     }
 }
 
+/// Extract the `ValueCellId` from a `ValueRef` expression.
+///
+/// Returns a reference to the `ValueCellId` inside the expression, panicking
+/// with a descriptive message (including `label`) if the expression is not a
+/// `ValueRef`.  Used for cross-branch consistency assertions where all
+/// references to the same parameter must resolve to the same `ValueCellId`.
+fn extract_value_ref_id<'a>(expr: &'a CompiledExpr, label: &str) -> &'a ValueCellId {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(id) => id,
+        other => panic!(
+            "extract_value_ref_id({}): expected ValueRef but got {:?}",
+            label, other
+        ),
+    }
+}
+
 // ── Step 7: basic single-arg instantiation ───────────────────────────────────
 
 /// Constraint def with single param, structure with one instantiation.
@@ -491,6 +507,38 @@ structure S {
                 }
                 other => panic!("expected BinOp for else_branch, got {:?}", other),
             }
+
+            // Cross-branch ValueCellId consistency: all three references to
+            // parameter `x` (substituted to `width`) must resolve to the
+            // *same* ValueCellId (entity + member).  A bug that produces
+            // different entity prefixes across branches (e.g. 'S' vs 'S2')
+            // would be invisible to the per-branch member-name checks above.
+            let condition_width_id = match &condition.kind {
+                CompiledExprKind::BinOp { left, .. } => {
+                    extract_value_ref_id(left, "condition.left")
+                }
+                other => panic!("expected BinOp for condition, got {:?}", other),
+            };
+            let then_width_id = match &then_branch.kind {
+                CompiledExprKind::BinOp { left, .. } => {
+                    extract_value_ref_id(left, "then_branch.left")
+                }
+                other => panic!("expected BinOp for then_branch, got {:?}", other),
+            };
+            let else_width_id = match &else_branch.kind {
+                CompiledExprKind::BinOp { left, .. } => {
+                    extract_value_ref_id(left, "else_branch.left")
+                }
+                other => panic!("expected BinOp for else_branch, got {:?}", other),
+            };
+            assert_eq!(
+                condition_width_id, then_width_id,
+                "condition and then_branch must reference the same ValueCellId for param x"
+            );
+            assert_eq!(
+                condition_width_id, else_width_id,
+                "condition and else_branch must reference the same ValueCellId for param x"
+            );
         }
         other => panic!(
             "expected Conditional constraint expr, got {:?}",
@@ -539,7 +587,8 @@ structure S {
                 discriminant.kind
             );
             // Two arms: Standard (x < 100mm) and Premium (x < 10mm).
-            // Index explicitly so a swap or duplication of arm bodies is caught.
+            // Arms are emitted in source order by the compiler; tests index
+            // by position to detect body swaps or duplication.
             assert_eq!(arms.len(), 2, "expected 2 match arms");
 
             // arms[0]: Standard => x < 100mm

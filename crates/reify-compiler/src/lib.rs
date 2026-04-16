@@ -836,6 +836,15 @@ pub(crate) fn compile_with_prelude_refs(
 mod tests {
     use super::*;
 
+    /// Convenience helper: build a bare number-literal expression.
+    /// Used by multiple tests to construct non-geometry arguments.
+    fn num_lit(v: f64) -> reify_syntax::Expr {
+        reify_syntax::Expr {
+            kind: reify_syntax::ExprKind::NumberLiteral(v),
+            span: reify_types::SourceSpan::new(0, 1),
+        }
+    }
+
     #[test]
     fn entity_kind_display() {
         assert_eq!(EntityKind::Structure.to_string(), "structure");
@@ -2067,7 +2076,7 @@ structure S {
         }
     }
 
-    // --- Bug fix tests: GeomRef::Step(0) fallback hardcoding (task-612) ---
+    // --- Bug fix tests: GeomRef::Step(0) fallback hardcoding (task-612/task-1732) ---
 
     #[test]
     fn sweep_non_geom_profile_fallback_uses_step_offset() {
@@ -2188,6 +2197,52 @@ structure S {
                 }
             }
             other => panic!("expected Sweep(Loft), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn loft_nested_in_union_correct_step_refs() {
+        // End-to-end regression: loft nested inside union gets step_offset=1
+        // (after the box op at index 0).  After the fix, loft profiles reference
+        // Step(1) not Step(0).  p is a scalar param — not a geometry ref — so the
+        // silent fallback fires and we can observe the corrected step index.
+        let source = r#"structure S {
+    param p: Scalar = 5mm
+    let result = union(box(10mm, 10mm, 10mm), loft(p, p))
+}"#;
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_loft_union"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = compile(&parsed);
+        let template = &compiled.templates[0];
+        assert_eq!(template.realizations.len(), 1, "expected 1 realization");
+        // ops layout: [0]=box, [1]=loft, [2]=Boolean(Union, Step(0), Step(1))
+        let ops = &template.realizations[0].operations;
+        assert_eq!(ops.len(), 3, "expected 3 ops (box + loft + union), got {}", ops.len());
+        // ops[0] must be the Box primitive.
+        assert!(
+            matches!(&ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+            "expected ops[0] to be a Box primitive, got {:?}",
+            ops[0]
+        );
+        // The loft op is at index 1.
+        if let CompiledGeometryOp::Sweep { kind, profiles, .. } = &ops[1] {
+            assert_eq!(*kind, SweepKind::Loft, "expected Loft kind at ops[1]");
+            for (i, profile) in profiles.iter().enumerate() {
+                assert_eq!(
+                    *profile,
+                    GeomRef::Step(1 + i),
+                    "loft profile[{}] inside union should be Step({}) not Step(0), got {:?}",
+                    i,
+                    1 + i,
+                    profile
+                );
+            }
+        } else {
+            panic!("expected Sweep(Loft) at ops[1], got {:?}", ops[1]);
         }
     }
 
