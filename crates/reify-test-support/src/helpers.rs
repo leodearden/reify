@@ -4,7 +4,7 @@ use reify_compiler::TopologyTemplate;
 use reify_types::{Diagnostic, ModulePath, Severity};
 
 #[cfg(feature = "eval-helpers")]
-use crate::mocks::MockConstraintChecker;
+use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
 /// geometry kernel. Suitable for tests that only need to evaluate logic
@@ -406,11 +406,11 @@ pub fn assert_no_diagnostics(diagnostics: &[Diagnostic], context: &str) {
 ///
 /// Panics if the build produces error diagnostics or no geometry output.
 #[cfg(feature = "eval-helpers")]
+#[track_caller]
 pub fn run_modify_pipeline(
     kind: reify_compiler::ModifyKind,
     modify_args: Vec<(String, reify_types::CompiledExpr)>,
 ) -> (reify_eval::BuildResult, Vec<crate::mocks::GeometryOpRecord>) {
-    use crate::mocks::MockGeometryKernel;
     use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind};
     use reify_types::{ExportFormat, Type};
 
@@ -1005,6 +1005,29 @@ mod tests {
         assert!(
             matches!(ops[1].op, GeometryOp::Fillet { .. }),
             "expected ops[1].op to be GeometryOp::Fillet, got {:?}",
+            ops[1].op
+        );
+
+        // Shell: expect 2 ops, ops[1] is GeometryOp::Shell
+        // Shell only requires a `thickness` length arg; face indices are optional.
+        // Draft and Thicken are not included here: Draft requires a plane handle
+        // resolved from `step_handles.last()` (which in a 2-op pipeline is the Box
+        // handle — valid, but the arg shape differs), and Thicken shares the same
+        // structure as Shell without the face-list complexity.  Shell provides
+        // sufficient additional coverage of the dispatch path.
+        let (_result, ops) = super::run_modify_pipeline(
+            ModifyKind::Shell,
+            vec![("thickness".into(), mm_literal(2.0))],
+        );
+        assert_eq!(
+            ops.len(),
+            2,
+            "expected 2 ops for Shell pipeline, got {}",
+            ops.len()
+        );
+        assert!(
+            matches!(ops[1].op, GeometryOp::Shell { .. }),
+            "expected ops[1].op to be GeometryOp::Shell, got {:?}",
             ops[1].op
         );
     }
