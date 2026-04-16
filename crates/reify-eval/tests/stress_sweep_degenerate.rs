@@ -382,6 +382,60 @@ fn loft_one_profile_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// task-1752: loft_non_geometry_profiles_emit_diagnostics
+// ---------------------------------------------------------------------------
+
+#[test]
+fn loft_non_geometry_profiles_emit_diagnostics() {
+    // Compiling loft(x, y) where x and y are scalar params (not geometry)
+    // should emit an error diagnostic per non-geometry argument.
+    let source = r#"structure S {
+    param x: Scalar = 5
+    param y: Scalar = 10
+    let result = loft(x, y)
+}"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_loft_diag"));
+    let compiled = reify_compiler::compile(&parsed);
+
+    let error_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        error_diags.len() >= 2,
+        "expected at least 2 error diagnostics (one per non-geometry arg), got: {:?}",
+        error_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let has_geom_expr_msg = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("must be a geometry expression"));
+    assert!(
+        has_geom_expr_msg,
+        "expected diagnostic containing 'must be a geometry expression', got: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let has_loft_msg = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("loft()"));
+    assert!(
+        has_loft_msg,
+        "expected diagnostic mentioning 'loft()', got: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // step-21/22: self_intersecting_path_sweep — kernel failure diagnostic
 // ---------------------------------------------------------------------------
 
