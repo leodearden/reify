@@ -38635,10 +38635,11 @@
         "description": "Task 1833 replaced the HashSet used for `in_progress` in `compile_module` (module_dag.rs) with an `IndexSet` from the `indexmap` crate, so that cycle detection error messages show the actual DFS import chain order rather than a sorted or non-deterministic list.\n\nHowever, no focused unit test was added to make this ordering guarantee directly verifiable in isolation. The change is only validated indirectly through any end-to-end tests that happen to hit a circular import.\n\nAdd a unit test in module_dag.rs (or its test module) that:\n1. Constructs a circular import chain (e.g., a → b → c → a)\n2. Calls compile_module (or the relevant cycle-detection path)\n3. Asserts the resulting error message contains the modules in DFS traversal order (not alphabetically sorted)\n\nThis test makes the IndexSet ordering guarantee directly observable and guards against future regressions if the data structure is changed again.\n\nmemory_hints:\n- search: \\\"module_dag cycle detection in_progress HashSet IndexSet compile_module\\\"\n- entity: module_dag",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-16T03:01:22.018Z"
       },
       {
         "id": "1853",
@@ -38654,7 +38655,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-16T03:00:55.296Z",
+      "lastModified": "2026-04-16T03:01:22.018Z",
       "taskCount": 1848,
       "completedCount": 1583,
       "tags": [
