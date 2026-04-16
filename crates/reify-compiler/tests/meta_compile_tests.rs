@@ -194,6 +194,11 @@ fn duplicate_meta_key_error() {
         "expected 'duplicate meta key' error, got: {:?}",
         errors
     );
+    assert!(
+        errors[0].labels.iter().any(|l| l.message.contains("'a'")),
+        "label should name the duplicate key 'a', got labels: {:?}",
+        errors[0].labels
+    );
 
     // First occurrence should be kept; second (duplicate) should be discarded.
     assert_eq!(
@@ -236,6 +241,23 @@ fn duplicate_meta_key_multiple_duplicates() {
     assert!(
         errors.iter().all(|d| d.message.contains("duplicate meta key")),
         "all errors should be 'duplicate meta key' errors, got: {:?}",
+        errors
+    );
+    // Each duplicated key should have its own error message naming the key.
+    assert!(
+        errors.iter().any(|d| d.message.contains("'x'")),
+        "expected an error mentioning key 'x', got: {:?}",
+        errors
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("'y'")),
+        "expected an error mentioning key 'y', got: {:?}",
+        errors
+    );
+    // All label texts should mention "duplicate key" (not just the static fallback).
+    assert!(
+        errors.iter().all(|d| d.labels.iter().any(|l| l.message.contains("duplicate key"))),
+        "all error labels should contain 'duplicate key', got: {:?}",
         errors
     );
 
