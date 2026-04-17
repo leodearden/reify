@@ -21207,7 +21207,7 @@
         "testStrategy": "Ensure that the .catch() block correctly handles RangeError and that the bounds check prevents out-of-bounds access.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Add .catch() to handle RangeError",
             "description": "Implement a .catch() block in the requestDefinition promise chain to handle stale document RangeError.",
             "dependencies": [],
@@ -21217,7 +21217,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add bounds check after isConnected guard",
             "description": "Implement a bounds check `if (line+1 > view.state.doc.lines) return;` after the isConnected guard.",
             "dependencies": [],
@@ -33766,7 +33766,7 @@
         "testStrategy": "1. Verify the existence of make_analytical_field. 2. Test run_dim_metadata_test to ensure it correctly uses make_analytical_field with the new source parameter. 3. Validate memory_hints integration by checking execution context behavior.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Verify existence of make_analytical_field",
             "description": "Check if make_analytical_field is implemented in the codebase.",
             "dependencies": [],
@@ -33777,7 +33777,7 @@
             "updatedAt": "2026-04-13T23:43:38.636Z"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add memory_hints for execution context",
             "description": "Integrate memory_hints to improve execution context handling.",
             "dependencies": [],
@@ -35322,7 +35322,7 @@
         "testStrategy": "Ensure that the 'Fillet' needle is correctly restored by running tests that check for missing geometry arguments. Verify the generalized assert_rejected_at_compile by testing both scenarios: with None and Some(f) options, ensuring correct behavior in each case.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Restore 'Fillet' needle",
             "description": "Add 'Fillet' back to warning_needles in build_modify_missing_arg_no_kernel_error and update the doc comment.",
             "dependencies": [],
@@ -35332,7 +35332,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Generalize assert_rejected_at_compile",
             "description": "Modify the helper to accept Option for primitive check.",
             "dependencies": [],
@@ -38285,7 +38285,7 @@
         "testStrategy": "1. Verify that the updated comment in Editor.test.tsx:163 accurately describes the behavior by reviewing the code logic. 2. Ensure the waitFor pattern in App.test.tsx:~1340 is correctly implemented by running the test and confirming it passes consistently.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Update misleading comment in Editor.test.tsx",
             "description": "Change the comment at Editor.test.tsx:163 to correctly describe the debounce timer mechanism.",
             "dependencies": [],
@@ -38295,7 +38295,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add defensive waitFor in App.test.tsx",
             "description": "Add await waitFor(() => expect(capturedEditorStore).toBeTruthy()) in App.test.tsx:~1340.",
             "dependencies": [],
@@ -39844,7 +39844,7 @@
         "description": "examples/integration_full_v01.ri lines 336–349 contain placeholder literal constraints (`constraint 1mm > 0mm`, `constraint 2mm > 1mm`, `minimize 1mm`) inside the `purpose mfg_ready(subject)` and `purpose weight_target(part)` bodies, with an in-file comment:\n\n    // Follow-up: replace with `constraint determined(subject.mass)` etc. once reflective\n    // `subject.param` access in purpose bodies is implemented (tracked as a follow-up task).\n\nReflective subject.param access is implemented per tasks #258 (compiler), #259 (evaluator), and #1638 (filter members: geometric_params, material_params, sub_entities, ports, constraints — all done). The example's blocker is gone; the placeholder is now actively misleading because:\n\n(a) Reviewers encountering the file read the comment and assume the feature is missing.\n(b) The example no longer exercises the real purpose-body reflective machinery, so it doesn't demonstrate the intended integration surface.\n\nFix:\n1. Replace `constraint 1mm > 0mm` etc. in `mfg_ready` with real constraints that exercise reflective filters, e.g. `for p in subject.geometric_params { constraint determined(p) }` or the closest syntax supported by tasks #258/#259/#1638.\n2. Similarly for `weight_target` — `minimize subject.mass` or equivalent.\n3. Remove the \"Follow-up: replace with …\" comment.\n4. If any reflective filter behaviour is still missing, keep a scoped placeholder and file a precise follow-up instead of the generic one.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -39862,7 +39862,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T01:47:55.453Z"
+        "updatedAt": "2026-04-17T03:19:58.717Z"
       },
       {
         "id": "1904",
@@ -39962,9 +39962,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T03:19:08.541Z",
+      "lastModified": "2026-04-17T03:19:58.717Z",
       "taskCount": 1904,
-      "completedCount": 1639,
+      "completedCount": 1640,
       "tags": [
         "master"
       ]
