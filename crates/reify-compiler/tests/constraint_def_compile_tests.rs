@@ -196,6 +196,25 @@ structure S {
         }
         other => panic!("expected BinOp, got {:?}", other),
     }
+
+    // Second constraint: x <= hi → d <= 100mm
+    // Left operand should be ValueRef(S.d), op should be Le
+    match &tmpl.constraints[1].expr.kind {
+        CompiledExprKind::BinOp { op, left, .. } => {
+            assert_eq!(*op, BinOp::Le, "second constraint should be Le (<=)");
+            match &left.kind {
+                CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(
+                        id.member, "d",
+                        "left of second constraint should be ValueRef(d), got {}",
+                        id.member
+                    );
+                }
+                other => panic!("left of second constraint should be ValueRef, got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp for second constraint, got {:?}", other),
+    }
 }
 
 // ── Test 5: multiple defs in same module coexist ─────────────────────────────
@@ -584,16 +603,18 @@ fn pub_constraint_def_parsed() {
     );
 }
 
-// ── Test 13 (BONUS): type mismatch — Bool where Length expected ───────────────
+// ── Test 13: type mismatch — Bool where Length expected (ignored pending task 875) ───
 
-/// Documents current behavior when a Bool literal is passed where a Length param
-/// is expected. The compiler currently defers type checking to compile_expr, so
-/// this test verifies that *some* diagnostic is produced (from compile_expr).
+/// Documents the expected behavior once param-level type checking is implemented:
+/// passing a Bool literal where a Length param is expected must produce at least one
+/// error-level diagnostic mentioning "type" or "mismatch".
 ///
-/// If no diagnostic is produced, that indicates a known gap: constraint instantiation
-/// does not perform param-level type checking. The test is marked to flag this case
-/// so it can be addressed in a follow-up task.
+/// Currently ignored because the compiler defers type checking to compile_expr and
+/// does not yet detect Bool-for-Length mismatches at the constraint instantiation
+/// level. Remove the `#[ignore]` attribute once param-level type checking (task 875)
+/// is implemented — the test will then pass without modification.
 #[test]
+#[ignore = "type-check gap: Bool passed where Length expected is not yet rejected (see task 875)"]
 fn type_mismatch_bool_for_length() {
     let source = r#"
 constraint def MinWall {
@@ -605,28 +626,24 @@ structure S {
 }
 "#;
     let module = compile_source(source);
-
-    // Document current behavior: we check whether a diagnostic is produced.
-    // If compile_expr catches the type error (Bool != Length), we get at least one error.
-    // If no diagnostic is produced, the test still passes but we print a note.
-    if module.diagnostics.is_empty() {
-        // Known gap: no diagnostic produced for Bool-for-Length type mismatch.
-        // This is acceptable current behavior — constraint instantiation defers type
-        // checking to compile_expr, which may not catch all type mismatches.
-        // Follow-up task: add param-level type checking in the constraint instantiation path.
-        eprintln!(
-            "NOTE: no diagnostic produced for Bool-for-Length type mismatch in constraint arg. \
-             This is a known gap — see task 199 design notes."
-        );
-    } else {
-        // A diagnostic was produced — verify it's an error.
-        let errors = error_diags(&module.diagnostics);
-        assert!(
-            !errors.is_empty(),
-            "expected error-level diagnostic for Bool-for-Length mismatch, got only: {:?}",
-            module.diagnostics
-        );
-    }
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        !errors.is_empty(),
+        "expected an error-level diagnostic for Bool-for-Length type mismatch, \
+         got no diagnostics at all"
+    );
+    let has_type_or_mismatch = errors
+        .iter()
+        .any(|d| {
+            d.message.to_lowercase().contains("type")
+                || d.message.to_lowercase().contains("mismatch")
+        });
+    assert!(
+        has_type_or_mismatch,
+        "expected error mentioning 'type' or 'mismatch' for Bool-for-Length mismatch, \
+         got: {:?}",
+        errors
+    );
 }
 
 // ── Test 14: constraint_defs field reflects all local definitions (pub + non-pub) ──
