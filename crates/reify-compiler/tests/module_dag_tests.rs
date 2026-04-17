@@ -477,10 +477,9 @@ fn compile_project_detects_cross_module_unit_collision() {
         dup_diag.message
     );
 
-    // (c) Exactly one label with a non-empty span — the user-module branch
-    // emits only the duplicate decl span and omits the original's
-    // SourceSpan::empty(0) to avoid a misleading byte-0 label.
-    common::assert_single_non_empty_label(dup_diag);
+    // (c) Two labels: labels[0] is the user's in-file dup decl span;
+    // labels[1] is the prelude sentinel with provenance in its message.
+    common::assert_prelude_collision_labels(dup_diag);
 }
 
 // ── step-3 (task-1575): compile_project-level stdlib unit collision mentions stdlib ───
