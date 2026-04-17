@@ -268,5 +268,44 @@ assert "tasks-not-list top-level value emits WARN on stderr" \
 assert "tasks-not-list top-level value WARN mentions bad_key" \
     bash -c "python3 '$VALIDATOR' '$WARN_TASKS_NOT_LIST' 2>&1 | grep -q 'bad_key'"
 
+# -- Multi-tag --check-subtasks support --------------------------------------
+echo ""
+echo "--- Test: multi-tag --check-subtasks support ---"
+
+# (a) master has valid subtasks, feature-x has a subtask with a numeric id.
+#     Without --check-subtasks: passes (default-off preserved).
+#     With --check-subtasks: fails and stderr mentions 'feature-x' so the tag
+#     is identifiable in the subtask error output.
+MULTI_TAG_BAD_SUBTASK_FX="$TMPDIR_FIXTURES/multi_tag_bad_subtask_fx.json"
+cat >"$MULTI_TAG_BAD_SUBTASK_FX" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[],"subtasks":[{"id":"1","dependencies":[]}]}]},"feature-x":{"tasks":[{"id":"2","dependencies":[],"subtasks":[{"id":99,"dependencies":[]}]}]}}
+EOF
+
+assert "multi-tag bad subtask (feature-x) passes without --check-subtasks" \
+    python3 "$VALIDATOR" "$MULTI_TAG_BAD_SUBTASK_FX"
+
+assert "multi-tag bad subtask (feature-x) fails with --check-subtasks" \
+    bash -c "! python3 '$VALIDATOR' --check-subtasks '$MULTI_TAG_BAD_SUBTASK_FX'"
+
+assert "multi-tag bad subtask error mentions 'feature-x' tag name" \
+    bash -c "python3 '$VALIDATOR' --check-subtasks '$MULTI_TAG_BAD_SUBTASK_FX' 2>&1 | grep -q 'feature-x'"
+
+# (b) feature-x has a subtask with an orphan dep "999" (not a sibling subtask
+#     id or parent task id).  With --check-subtasks: fails and stderr mentions
+#     'feature-x' and '999' or 'orphan'.
+MULTI_TAG_SUBTASK_ORPHAN_FX="$TMPDIR_FIXTURES/multi_tag_subtask_orphan_fx.json"
+cat >"$MULTI_TAG_SUBTASK_ORPHAN_FX" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[]}]},"feature-x":{"tasks":[{"id":"2","dependencies":[],"subtasks":[{"id":"1","dependencies":["999"]}]}]}}
+EOF
+
+assert "multi-tag subtask orphan dep fails with --check-subtasks" \
+    bash -c "! python3 '$VALIDATOR' --check-subtasks '$MULTI_TAG_SUBTASK_ORPHAN_FX'"
+
+assert "multi-tag subtask orphan dep error mentions 'feature-x' tag name" \
+    bash -c "python3 '$VALIDATOR' --check-subtasks '$MULTI_TAG_SUBTASK_ORPHAN_FX' 2>&1 | grep -q 'feature-x'"
+
+assert "multi-tag subtask orphan dep error mentions '999' or 'orphan'" \
+    bash -c "python3 '$VALIDATOR' --check-subtasks '$MULTI_TAG_SUBTASK_ORPHAN_FX' 2>&1 | grep -qE '999|orphan'"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
