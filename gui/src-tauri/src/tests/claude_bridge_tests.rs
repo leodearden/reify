@@ -578,6 +578,7 @@ async fn from_parts_with_mcp_threads_selection_into_tool_result() {
     // Pre-populate selection with concrete values
     let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
         selected_entity: Some("Bracket".to_string()),
+        selected_entities: vec![],
         hovered_entity: Some("Bracket.width".to_string()),
     }));
     let _handle = SidecarHandle::from_parts_with_mcp(
