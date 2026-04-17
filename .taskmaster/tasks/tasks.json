@@ -36912,11 +36912,11 @@
         "description": "Two small robustness improvements for the INVALID sentinel pattern introduced in task 612:\n\n1. **INVALID handle hash guard** (crates/reify-types/src/geometry.rs:17): The INVALID sentinel (u64::MAX) has no compile-time enforcement. If it accidentally reaches content_hash() or the caching layer, it produces a valid-looking hash causing subtle cache corruption. Add: `debug_assert_ne!(self.0, u64::MAX, \"INVALID handle must not be hashed\");` in content_hash().\n\n2. **Saturating subtraction in rollback** (crates/reify-eval/src/lib.rs ~line 3128): The rollback condition `step_handles.len() - handle_start < realization.operations.len()` performs unsigned subtraction. If a bug causes step_handles to be truncated below handle_start, this would underflow. Rewrite defensively: `if had_failure || (step_handles.len().saturating_sub(handle_start)) < realization.operations.len()`\n\nmemory_hints: search \"INVALID sentinel GeometryHandle content_hash\", search \"step_handles rollback saturating_sub\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:20:15.444Z",
+        "updatedAt": "2026-04-17T05:44:36.156Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -38939,7 +38939,7 @@
         "description": "Three improvements from task 385 review:\n\n1. conformance.rs:517-530 — When structure overrides a let-binding name, populate seen_let_hashes so 3+ traits providing same `let x` don't produce O(N) redundant entries. Bookkeeping consistency.\n\n2. trait_merge_tests.rs:1232-1251 (three_way_let_conflict_emits_single_diagnostic) — Assert errors[0].message contains both conflicting trait names (TraitX, TraitY), matching two-way conflict tests.\n\n3. trait_merge_eval.rs:154-218 (multi_trait_constraints_partial_violation) — Add assert_no_eval_errors(&result) for consistency with step-15 sibling test.\n\nFiles: crates/reify-compiler/src/conformance.rs, crates/reify-compiler/src/conformance/trait_merge_tests.rs, crates/reify-eval/tests/trait_merge_eval.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -38954,7 +38954,8 @@
             "crates/reify-compiler/src/conformance",
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-17T05:38:36.358Z"
       },
       {
         "id": "1860",
@@ -39729,11 +39730,11 @@
         "description": "The 300ms debounce interval is hardcoded in Editor.tsx (lines 146, 155) and duplicated across four assertions in gui/src/__tests__/editor-perf.test.tsx (lines ~95, 107, 149, 179). If the debounce is ever tuned, the tests will break in multiple places and the error messages will not point to the root cause. Fix: export a named constant `EDITOR_DEBOUNCE_MS = 300` from gui/src/editor/Editor.tsx, import it in the test file, and use it in all setTimeout call sites and test assertions.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T02:51:01.320Z",
+        "updatedAt": "2026-04-17T05:39:58.648Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/Editor.test.tsx",
@@ -40294,7 +40295,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:32:31.594Z",
+      "lastModified": "2026-04-17T05:44:36.156Z",
       "taskCount": 1921,
       "completedCount": 1651,
       "tags": [

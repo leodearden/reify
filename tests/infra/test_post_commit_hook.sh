@@ -203,20 +203,92 @@ assert "already-normalized: HEAD sha unchanged after re-running hook" \
     test "$_norm_sha" = "$_norm_sha_after"
 
 # ==============================================================================
-# Check 5: python3-MISSING is a loud failure (ERROR: + marker + non-zero exit)
+# Check 5: MERGE COMMIT — hook normalizes IDs introduced via merge
 # ==============================================================================
+# The hook uses `git diff-tree -m` so that merge commits are diffed against
+# each parent.  Without -m, git diff-tree emits no output for merges and the
+# hook would silently skip normalization of IDs introduced on the merged branch.
+#
+# Setup:
+#   - initial commit on default branch (no tasks.json)
+#   - 'side' branch: add tasks.json with numeric subtask id (committed --no-verify,
+#     so the hook does NOT fire on this commit — numeric IDs survive into the merge)
+#   - default branch: add an unrelated file to give the merge two real parents
+#   - git merge --no-ff side  → merge commit; post-commit hook fires
+#
+# Regression: removing -m from the hook would cause Assert A below to FAIL
+# (tasks.json in HEAD would retain numeric IDs because the merge commit would
+# not appear in git diff-tree output without the -m flag).
 echo ""
-echo "--- Check 5: python3-missing is a loud failure ---"
+echo "--- Check 5: merge commit — IDs normalized via -m flag ---"
 
 mk_repo_fixture _repo5
+
+# Initial commit on the default branch (no tasks.json).
+echo "init" > "$_repo5/README.md"
+git -C "$_repo5" add README.md
+git -C "$_repo5" commit --no-verify -m "initial" -q
+
+# Capture the default branch name now that HEAD is detached no more.
+_main_branch5="$(git -C "$_repo5" rev-parse --abbrev-ref HEAD)"
+
+# Create a side branch and commit tasks.json with numeric IDs.
+# Use --no-verify so the post-commit hook does NOT fire on this commit — we
+# want numeric IDs to survive into the merge and be normalized only by the
+# hook on the merge commit itself.
+git -C "$_repo5" checkout -b side -q
 mkdir -p "$_repo5/.taskmaster/tasks"
 cat > "$_repo5/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":"10","subtasks":[{"id":77}]}]}}
+JSON
+git -C "$_repo5" add .taskmaster/tasks/tasks.json
+git -C "$_repo5" commit --no-verify -m "chore(tasks): add tasks with numeric subtask id" -q
+
+# Switch back to default branch and add an unrelated file so the merge has
+# two real parents (prevents fast-forward even with --no-ff).
+git -C "$_repo5" checkout "$_main_branch5" -q
+echo "other" > "$_repo5/other.txt"
+git -C "$_repo5" add other.txt
+git -C "$_repo5" commit --no-verify -m "docs: add other file" -q
+
+# Perform the merge.  --no-ff forces a merge commit.  The post-commit hook
+# fires automatically after git creates the merge commit.
+# Note: --no-verify on git-merge only suppresses pre-commit/commit-msg hooks;
+# the post-commit hook still fires — that is the behaviour being tested.
+git -C "$_repo5" merge --no-edit --no-ff side -q >/dev/null 2>&1
+
+# Assert A: tasks.json in HEAD has normalized (string) subtask ids.
+# Without -m in the hook, diff-tree emits no output for the merge commit and
+# the hook exits early without normalizing — this assert would FAIL.
+assert "merge commit: numeric subtask id normalized in HEAD after merge" \
+    bash -c "! git -C '$_repo5' show HEAD:.taskmaster/tasks/tasks.json \
+             | jq -r '.master.tasks[].subtasks[].id | type' | grep -q 'number'"
+
+# Assert B: HEAD is a merge commit (has two parents) — proves the merge path
+# was exercised and not a fast-forward or regular commit.
+assert "merge commit: HEAD is a merge commit (has two parents)" \
+    bash -c "[ \"\$(git -C '$_repo5' log --format='%P' -1 \
+             | tr ' ' '\n' | grep -c .)\" = '2' ]"
+
+# ==============================================================================
+# Check 6: python3-MISSING is a loud failure (ERROR: + marker + non-zero exit)
+# ==============================================================================
+# Task 1916 replaced the old silent fallback (exit 0 on python3-missing) with
+# a loud failure: the hook now exits non-zero, logs ERROR: to stderr, and
+# writes .git/NORMALIZE_FAILED so a broken normalize step surfaces at the
+# next `git status` rather than being hidden until the post-rebase verify gate.
+echo ""
+echo "--- Check 6: python3-missing is a loud failure ---"
+
+mk_repo_fixture _repo6py
+mkdir -p "$_repo6py/.taskmaster/tasks"
+cat > "$_repo6py/.taskmaster/tasks/tasks.json" <<'JSON'
 {"master":{"tasks":[{"id":1,"subtasks":[]}]}}
 JSON
 
 # Set up a numeric-ID commit so the hook has work to do.
-git -C "$_repo5" add .taskmaster/tasks/tasks.json
-git -C "$_repo5" commit --no-verify -m "chore(tasks): numeric ids" -q
+git -C "$_repo6py" add .taskmaster/tasks/tasks.json
+git -C "$_repo6py" commit --no-verify -m "chore(tasks): numeric ids" -q
 
 # Build a PATH where python3 is absent but standard tools remain.
 #
@@ -229,58 +301,61 @@ git -C "$_repo5" commit --no-verify -m "chore(tasks): numeric ids" -q
 # Instead we build a symlink stub for common tools and use it as the sole
 # PATH.  The list covers coreutils the hook and git helpers may call; extend
 # it if the hook gains new dependencies.
-_stub5="$(mktemp -d -p "$_tmpdir")"
-for _bin5 in git grep date bash sh env printf cut tr awk sed cat wc; do
-    _loc5="$(command -v "$_bin5" 2>/dev/null || true)"
-    [ -n "$_loc5" ] && ln -sf "$_loc5" "$_stub5/$_bin5"
+_stub6py="$(mktemp -d -p "$_tmpdir")"
+for _bin6py in git grep date bash sh env printf cut tr awk sed cat wc; do
+    _loc6py="$(command -v "$_bin6py" 2>/dev/null || true)"
+    [ -n "$_loc6py" ] && ln -sf "$_loc6py" "$_stub6py/$_bin6py"
 done
 # GIT_EXEC_PATH ensures git can reach its built-in sub-commands (e.g.
 # git-diff-tree in /usr/lib/git-core) even when that directory is not
 # listed in the stub PATH.
-_git_exec_path5="$(git --exec-path 2>/dev/null || true)"
+_git_exec_path6py="$(git --exec-path 2>/dev/null || true)"
 
-_stderr5="$_tmpdir/stderr5.txt"
-_hook5_exit=0
-(cd "$_repo5" && GIT_EXEC_PATH="$_git_exec_path5" PATH="$_stub5" \
-    bash hooks/post-commit 2>"$_stderr5") || _hook5_exit=$?
+_stderr6py="$_tmpdir/stderr6py.txt"
+_hook6py_exit=0
+(cd "$_repo6py" && GIT_EXEC_PATH="$_git_exec_path6py" PATH="$_stub6py" \
+    bash hooks/post-commit 2>"$_stderr6py") || _hook6py_exit=$?
 
 assert "python3-missing: hook exits non-zero" \
-    test "$_hook5_exit" -ne 0
+    test "$_hook6py_exit" -ne 0
 assert "python3-missing: stderr contains ERROR:" \
-    grep -q "ERROR:" "$_stderr5"
+    grep -q "ERROR:" "$_stderr6py"
 assert "python3-missing: .git/NORMALIZE_FAILED marker file exists" \
-    test -f "$_repo5/.git/NORMALIZE_FAILED"
+    test -f "$_repo6py/.git/NORMALIZE_FAILED"
 
 # ==============================================================================
-# Check 6: normalizer-CRASH is a loud failure (ERROR: + marker + non-zero exit)
+# Check 7: normalizer-CRASH is a loud failure (ERROR: + marker + non-zero exit)
 # ==============================================================================
+# Symmetric to Check 6: when python3 is present but the normalizer script
+# itself exits non-zero, the hook must still surface that loudly.  This
+# replaces the prior silent '|| { ... exit 0 }' behaviour.
 echo ""
-echo "--- Check 6: normalizer-crash is a loud failure ---"
+echo "--- Check 7: normalizer-crash is a loud failure ---"
 
-mk_repo_fixture _repo6
-mkdir -p "$_repo6/.taskmaster/tasks"
-cat > "$_repo6/.taskmaster/tasks/tasks.json" <<'JSON'
+mk_repo_fixture _repo7
+mkdir -p "$_repo7/.taskmaster/tasks"
+cat > "$_repo7/.taskmaster/tasks/tasks.json" <<'JSON'
 {"master":{"tasks":[{"id":1,"subtasks":[]}]}}
 JSON
 
 # Set up a numeric-ID commit.
-git -C "$_repo6" add .taskmaster/tasks/tasks.json
-git -C "$_repo6" commit --no-verify -m "chore(tasks): numeric ids" -q
+git -C "$_repo7" add .taskmaster/tasks/tasks.json
+git -C "$_repo7" commit --no-verify -m "chore(tasks): numeric ids" -q
 
 # Replace the normalizer with a stub that always exits non-zero.
-printf '#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n' > "$_repo6/scripts/normalize_tasks_json.py"
-chmod +x "$_repo6/scripts/normalize_tasks_json.py"
+printf '#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n' > "$_repo7/scripts/normalize_tasks_json.py"
+chmod +x "$_repo7/scripts/normalize_tasks_json.py"
 
-_stderr6="$_tmpdir/stderr6.txt"
-_hook6_exit=0
-(cd "$_repo6" && bash hooks/post-commit 2>"$_stderr6") || _hook6_exit=$?
+_stderr7="$_tmpdir/stderr7.txt"
+_hook7_exit=0
+(cd "$_repo7" && bash hooks/post-commit 2>"$_stderr7") || _hook7_exit=$?
 
 assert "normalizer-crash: hook exits non-zero" \
-    test "$_hook6_exit" -ne 0
+    test "$_hook7_exit" -ne 0
 assert "normalizer-crash: stderr contains ERROR:" \
-    grep -q "ERROR:" "$_stderr6"
+    grep -q "ERROR:" "$_stderr7"
 assert "normalizer-crash: .git/NORMALIZE_FAILED marker file exists" \
-    test -f "$_repo6/.git/NORMALIZE_FAILED"
+    test -f "$_repo7/.git/NORMALIZE_FAILED"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
