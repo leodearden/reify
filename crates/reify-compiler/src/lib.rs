@@ -329,8 +329,9 @@ pub(crate) fn compile_with_prelude_refs(
                         }
                         Some(m) => {
                             // Original was seeded from a user module — name that module.
-                            // Emit a single-label diagnostic (original span is empty(0),
-                            // so omit it to avoid a misleading byte-0 label).
+                            // Emit a two-label diagnostic: primary is the user's
+                            // duplicate decl; secondary is the prelude sentinel
+                            // carrying provenance text.
                             diagnostics.push(
                                 Diagnostic::error(format!(
                                     "duplicate unit declaration '{}' — already defined in module '{}'",
@@ -339,6 +340,10 @@ pub(crate) fn compile_with_prelude_refs(
                                 .with_label(DiagnosticLabel::new(
                                     dup_entry.span,
                                     format!("duplicate of unit from '{}'", m),
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    original.span,
+                                    format!("defined in module '{}' prelude", m),
                                 )),
                             );
                         }
