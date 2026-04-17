@@ -40277,7 +40277,14 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:22:18.451Z"
+        "updatedAt": "2026-04-17T05:22:18.451Z",
+        "metadata": {
+          "modules": [
+            "gui/src/__tests__/editor-perf.test.tsx",
+            "gui/src/__tests__/test-utils.test.ts",
+            "gui/src/__tests__/test-utils.ts"
+          ]
+        }
       }
     ],
     "metadata": {
@@ -40287,7 +40294,9 @@
       "completedCount": 1651,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T05:26:37.393Z",
+      "description": "Tasks for master context"
     }
   }
 }
