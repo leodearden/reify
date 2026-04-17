@@ -18,6 +18,26 @@ pub(crate) fn is_geometry_let(
     }
 }
 
+/// Returns `true` if a param with the given type and default expression is a
+/// Solid-typed geometry param — i.e. its type is `Type::Geometry` and its
+/// default expression is a geometry call or a reference to a geometry let.
+///
+/// This predicate is the single source of truth for the "Solid param with
+/// geometry-call default" check, which must be consistent across four sites:
+/// entity.rs pre-pass, entity.rs main Param loop, guards.rs
+/// `register_guarded_names`, and guards.rs `compile_guarded_members`.
+pub(crate) fn is_solid_geometry_param(
+    ty: &reify_types::Type,
+    default: Option<&reify_syntax::Expr>,
+    functions: &[CompiledFunction],
+    known: &HashSet<&str>,
+) -> bool {
+    ty == &reify_types::Type::Geometry
+        && default
+            .map(|e| is_geometry_let(e, functions, known))
+            .unwrap_or(false)
+}
+
 /// Returns the arg indices that are geometry refs for each non-boolean geometry function.
 /// Empty slice means no geometry args (primitives, curves).
 /// Boolean ops are excluded — they handle geometry args with their own recursive block.
