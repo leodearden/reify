@@ -715,13 +715,22 @@ const SRC_PATH = join(__dirname, '../stores/viewStateStore.ts');
 const src = readFileSync(SRC_PATH, 'utf-8');
 
 describe('viewStateStore — source comments', () => {
+  const GUARD_REGEX = /-{5,}\n\s*\/\/ Mutations\n\s*\/\/ -{5,}/;
+
   it('section header uses bare // Mutations form without stale "stubs" phrasing', () => {
     // Guard against re-introduction of the historical scaffolding comment
     // "Mutations (stubs — fully implemented in later steps)".
     // The regex anchors against surrounding divider lines to avoid false positives
     // from incidental occurrences of '// Mutations' elsewhere in the file.
     expect(src).not.toContain('stubs — fully implemented in later steps');
-    expect(src).toMatch(/-{5,}\n\s*\/\/ Mutations\n\s*\/\/ -{5,}/);
+    expect(src).toMatch(GUARD_REGEX);
+  });
+
+  it('anchored guard rejects source with divider header but no setVisibility function', () => {
+    const synthetic = '// ---------\n  // Mutations\n  // ---------\n\n  // nothing here\n';
+    const syntheticWithFn = '// ---------\n  // Mutations\n  // ---------\n\n  function setVisibility(path: string) {}\n';
+    expect(GUARD_REGEX.test(synthetic)).toBe(false);
+    expect(GUARD_REGEX.test(syntheticWithFn)).toBe(true);
   });
 });
 
