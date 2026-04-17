@@ -40316,6 +40316,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-17T05:46:21.488Z"
+      },
+      {
+        "id": "1929",
+        "title": "Log release-mode warning on duplicate template names in get_entity_tree",
+        "description": "In gui/src-tauri/src/engine.rs `get_entity_tree` (around lines 496-504), the template-name uniqueness invariant is currently enforced only via `debug_assert!`. In release builds, duplicates silently fall back to first-match behavior via `build_sub_node`'s lookup, which could produce silently inconsistent entity trees if a future refactor breaks the compiler's well-formed-module guarantee. Add a release-mode `tracing::warn!` on first duplicate detection so misbehaviour surfaces in logs. Source: reviewer_comprehensive on task 1783 (optional hardening).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -40325,7 +40336,10 @@
       "completedCount": 1652,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T05:47:07.040Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-17T05:47:07.127Z"
     }
   }
 }
