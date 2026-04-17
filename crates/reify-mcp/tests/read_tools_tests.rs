@@ -415,6 +415,7 @@ fn get_selection_returns_selected_and_hovered() {
         selection: SelectionInfo {
             selected_entity: Some("bracket/body".to_string()),
             hovered_entity: Some("bracket/fillet1".to_string()),
+            selected_entities: vec![],
         },
         ..Default::default()
     };
@@ -438,6 +439,31 @@ fn get_selection_returns_nulls_when_nothing_selected() {
 
     assert!(result["selected_entity"].is_null());
     assert!(result["hovered_entity"].is_null());
+    // selected_entities defaults to an empty JSON array
+    assert_eq!(result["selected_entities"], serde_json::json!([]));
+}
+
+#[test]
+fn get_selection_returns_selected_entities_list() {
+    let registry = setup_registry();
+    let ctx = MockToolContext {
+        selection: SelectionInfo {
+            selected_entity: Some("a".to_string()),
+            hovered_entity: None,
+            selected_entities: vec!["a".to_string(), "b".to_string()],
+        },
+        ..Default::default()
+    };
+
+    let result = registry
+        .call_tool("reify_get_selection", serde_json::json!({}), &ctx)
+        .expect("should succeed");
+
+    assert_eq!(result["selected_entity"], "a");
+    assert_eq!(
+        result["selected_entities"],
+        serde_json::json!(["a", "b"])
+    );
 }
 
 // === reify_get_source_location ===
