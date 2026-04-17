@@ -106,3 +106,27 @@ fn linear_pattern_arg_count_diagnostic_has_span_label() {
     assert!(!first.labels.is_empty(), "expected at least one label on linear_pattern arg-count diagnostic");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span on linear_pattern arg-count label");
 }
+
+// ── circular_pattern() ─────────────────────────────────────────────────
+
+#[test]
+fn circular_pattern_arg_count_diagnostic_has_span_label() {
+    // circular_pattern() expects 9 arguments — passing 2 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let p = circular_pattern(box(10mm, 10mm, 10mm), 1.0)
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("circular_pattern() expects 9 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'circular_pattern() expects 9 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on circular_pattern arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on circular_pattern arg-count label");
+}
