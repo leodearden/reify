@@ -1304,36 +1304,35 @@ pub(crate) fn compile_entity(
                 }
             }
             // Recurse into guarded groups to emit realizations for guarded
-            // Solid-typed params (registered in known_geometry_lets by
-            // register_guarded_names). Guarded geometry lets do NOT emit
-            // realizations here — that is a separate, unimplemented feature.
+            // Solid-typed params at any nesting depth (registered in
+            // known_geometry_lets by register_guarded_names). Guarded geometry
+            // lets do NOT emit realizations here — that is a separate,
+            // unimplemented feature.
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                for gm in g.members.iter().chain(g.else_members.iter()) {
-                    if let reify_syntax::MemberDecl::Param(param) = gm
-                        && known_geometry_lets.contains(param.name.as_str())
-                        && let Some(default_expr) = &param.default
-                        && let Some(ops) = compile_geometry_call(
-                            default_expr,
-                            &scope,
-                            enum_defs,
-                            functions,
-                            diagnostics,
-                            0,
-                            &geometry_lets,
-                            &mut HashSet::new(),
-                        )
-                    {
-                        realizations.push(RealizationDecl {
-                            id: RealizationNodeId::new(
-                                entity_name,
-                                realization_index,
-                            ),
-                            operations: ops,
-                            span: SourceSpan::new(0, 0),
-                        });
-                        realization_index += 1;
-                    }
-                }
+                emit_guarded_geometry_realizations(
+                    &g.members,
+                    entity_name,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    &known_geometry_lets,
+                    &geometry_lets,
+                    &mut realizations,
+                    &mut realization_index,
+                    diagnostics,
+                );
+                emit_guarded_geometry_realizations(
+                    &g.else_members,
+                    entity_name,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    &known_geometry_lets,
+                    &geometry_lets,
+                    &mut realizations,
+                    &mut realization_index,
+                    diagnostics,
+                );
             }
             _ => {}
         }
@@ -1745,6 +1744,85 @@ fn collect_geometry_exprs<'a>(
             reify_syntax::MemberDecl::GuardedGroup(g) => {
                 collect_geometry_exprs(&g.members, known, functions, out);
                 collect_geometry_exprs(&g.else_members, known, functions, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Recursively emit `RealizationDecl`s for Solid-typed geometry params inside
+/// guarded groups at any nesting depth.
+///
+/// This is the recursive counterpart to the `GuardedGroup` arm of the third-pass
+/// main loop in `compile_entity`. It handles Params (whose names are in
+/// `known_geometry_lets`) and descends into nested GuardedGroup members.
+///
+/// Intentionally does NOT handle Lets — guarded geometry lets do not emit
+/// realizations (that is a separate, unimplemented feature; see the existing
+/// comment in the GuardedGroup arm of the third-pass loop).
+#[allow(clippy::too_many_arguments)]
+fn emit_guarded_geometry_realizations(
+    members: &[reify_syntax::MemberDecl],
+    entity_name: &str,
+    scope: &CompilationScope,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    known_geometry_lets: &HashSet<&str>,
+    geometry_lets: &HashMap<&str, &reify_syntax::Expr>,
+    realizations: &mut Vec<RealizationDecl>,
+    realization_index: &mut u32,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for m in members {
+        match m {
+            reify_syntax::MemberDecl::Param(param)
+                if known_geometry_lets.contains(param.name.as_str()) =>
+            {
+                if let Some(default_expr) = &param.default
+                    && let Some(ops) = compile_geometry_call(
+                        default_expr,
+                        scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        0,
+                        geometry_lets,
+                        &mut HashSet::new(),
+                    )
+                {
+                    realizations.push(RealizationDecl {
+                        id: RealizationNodeId::new(entity_name, *realization_index),
+                        operations: ops,
+                        span: SourceSpan::new(0, 0),
+                    });
+                    *realization_index += 1;
+                }
+            }
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                emit_guarded_geometry_realizations(
+                    &g.members,
+                    entity_name,
+                    scope,
+                    enum_defs,
+                    functions,
+                    known_geometry_lets,
+                    geometry_lets,
+                    realizations,
+                    realization_index,
+                    diagnostics,
+                );
+                emit_guarded_geometry_realizations(
+                    &g.else_members,
+                    entity_name,
+                    scope,
+                    enum_defs,
+                    functions,
+                    known_geometry_lets,
+                    geometry_lets,
+                    realizations,
+                    realization_index,
+                    diagnostics,
+                );
             }
             _ => {}
         }
