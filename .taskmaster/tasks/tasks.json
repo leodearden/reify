@@ -39841,11 +39841,11 @@
         "description": "Three specific pieces of reflective-purpose plumbing remain unimplemented despite tasks #258/#259/#1638 being marked done: (a) Type::StructureRef member-access branch in crates/reify-compiler/src/expr.rs MemberAccess compilation so that subject.mass, subject.params, subject.geometric_params, etc. resolve against the bound entity's TopologyTemplate; (b) filter-kind branches (geometric_params, material_params, sub_entities, ports, constraints) in the resolved_queries loop in crates/reify-compiler/src/traits.rs:337-357; (c) runtime expansion of `forall p in subject.<query>: predicate(p)` in crates/reify-eval/src/lib.rs activate_purpose by iterating ResolvedSchemaQuery.resolved_ids and materializing one constraint per resolved ValueCellId (with entity remapping). Until these are done, examples/integration_full_v01.ri mfg_ready and weight_target purposes carry literal placeholder constraints instead of reflective ones.",
         "details": "## Missing pieces\n\n### (a) Type::StructureRef member-access compilation (reify-compiler/src/expr.rs ~line 994)\nCurrently every MemberAccess node whose object is a Type::StructureRef purpose parameter raises `error: member access not yet supported`. Need to add a branch that:\n- Looks up the bound entity's TopologyTemplate from the compiled program's entity registry\n- Resolves the field name (mass, params, geometric_params, material_params, sub_entities, ports, constraints) against the template's schema\n- Returns the appropriate ValueCellId or ResolvedSchemaQuery\n\n### (b) Filter-kind branches in resolved_queries loop (reify-compiler/src/traits.rs:337-357)\nThe loop currently builds only a single \"params\" query. Need to add branches for:\n- geometric_params\n- material_params  \n- sub_entities\n- ports\n- constraints\nEach branch should build a ResolvedSchemaQuery with the appropriate filter predicate.\n\n### (c) Runtime forall expansion (reify-eval/src/lib.rs activate_purpose)\nThe activate_purpose function never iterates ResolvedSchemaQuery.resolved_ids to expand quantifiers at runtime. Need to:\n- Detect `forall p in subject.<query>: predicate(p)` constraints\n- Iterate the ResolvedSchemaQuery.resolved_ids for the bound entity\n- Materialize one constraint per resolved ValueCellId (with entity remapping from purpose param to bound entity)\n\n## Target syntax (from examples/integration_full_v01.ri)\nOnce implemented, mfg_ready purpose should use:\n```\nconstraint forall p in subject.geometric_params: determined(p)\nconstraint forall p in subject.params: determined(p)\n```\nAnd weight_target should use:\n```\nminimize subject.mass\nconstraint determined(subject.mass)\n```\n\n## Context\n- crates/reify-eval/tests/purpose_activation.rs:15-19 documents this explicitly\n- examples/m5_purpose.ri fails to compile for these exact reasons\n- examples/integration_full_v01.ri mfg_ready and weight_target currently use literal placeholders\n\n## memory_hints\n- search: \"reflective purpose subject.param member access\"\n- search: \"resolved_queries filter_kind geometric_params\"\n- get_entity: \"MemberAccess\"\n- get_entity: \"ResolvedSchemaQuery\"",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T01:17:31.778Z",
+        "updatedAt": "2026-04-17T01:18:20.140Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -39858,9 +39858,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T01:17:49.027Z",
+      "lastModified": "2026-04-17T01:18:20.140Z",
       "taskCount": 1899,
-      "completedCount": 1631,
+      "completedCount": 1632,
       "tags": [
         "master"
       ]
