@@ -39843,7 +39843,13 @@
           ],
           "modules": [
             "examples"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Replace placeholder constraints in integration_full_v01.ri purposes with reflective subject.param access"
+            ]
+          }
         },
         "updatedAt": "2026-04-17T01:42:23.648Z"
       },
@@ -39873,11 +39879,11 @@
         "description": "The taskmaster auto-commit writer currently emits subtask `id` fields as JSON numbers in .taskmaster/tasks/tasks.json, violating the convention established by Task 1887 and enforced by tests/infra/test_tasks_json_id_types.sh (Check 2: \"all subtask ids have JSON type string\"). This caused every post-merge verify to fail; see escalations esc-438-97 and esc-438-99 for context. Memory hints: search \"Task 1887 subtask id digit-string convention\" and \"taskmaster writer auto-commit\".",
         "details": "Root cause: the taskmaster MCP server (or its proxy in fused-memory) serializes subtask `id` fields as integers when writing tasks.json. Top-level task IDs are already written as digit-strings — the inconsistency is only in the subtask writer.\n\nRepro (any worktree after a taskmaster write):\n  jq -r '.master.tasks[].subtasks[]?.id | type' .taskmaster/tasks/tasks.json | sort -u\n  # Observed: number\n  # Expected: string\n\nFix location (candidates):\n- Taskmaster source (if vendored) — the function that serializes subtask dicts\n- fused-memory's add_subtask / update_task / set_task_status proxy layer, which could coerce ids to strings before write\n\nAcceptance:\n- After any taskmaster write (add_task, add_subtask, set_task_status, update_task), subtask ids in tasks.json are JSON strings matching ^[0-9]+$.\n- tests/infra/test_tasks_json_id_types.sh passes green.\n- A one-off normalization of main's tasks.json was applied in task/438 (commit e5b8bc29a) as a short-term unblocker; verify it is not reverted after the first post-fix write.\n\nPriority: high — blocks every task's post-merge verify.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-17T01:19:16.866Z"
+        "updatedAt": "2026-04-17T01:44:14.570Z"
       },
       {
         "id": "1906",
@@ -39894,9 +39900,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T01:42:23.652Z",
+      "lastModified": "2026-04-17T01:44:14.612Z",
       "taskCount": 1901,
-      "completedCount": 1635,
+      "completedCount": 1636,
       "tags": [
         "master"
       ]
