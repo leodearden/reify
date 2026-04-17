@@ -874,11 +874,23 @@ fn build_preview_gui_state(
 /// compiler's Tarjan SCC pass), this function emits an empty `children` vec for
 /// that sub node rather than recursing — preventing infinite recursion for
 /// self-referential and mutually-recursive structure definitions.
+///
+/// # Preconditions
+/// Caller must ensure `compiled.templates` has no duplicate names — the compiler
+/// guarantees this for well-formed modules; a debug-only assertion fires if violated.
 pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
     compiled: &reify_compiler::CompiledModule,
 ) -> EntityTreeNode {
+    debug_assert!(
+        {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            compiled.templates.iter().all(|t| seen.insert(t.name.as_str()))
+        },
+        "template names must be unique within a compiled module"
+    );
+
     let kind = match template.entity_kind {
         EntityKind::Structure => "structure",
         EntityKind::Occurrence => "occurrence",
