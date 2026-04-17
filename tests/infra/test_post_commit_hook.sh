@@ -202,5 +202,71 @@ _norm_sha_after="$(git -C "$_repo4" rev-parse HEAD)"
 assert "already-normalized: HEAD sha unchanged after re-running hook" \
     test "$_norm_sha" = "$_norm_sha_after"
 
+# ==============================================================================
+# Check 5: python3-MISSING is a loud failure (ERROR: + marker + non-zero exit)
+# ==============================================================================
+echo ""
+echo "--- Check 5: python3-missing is a loud failure ---"
+
+mk_repo_fixture _repo5
+mkdir -p "$_repo5/.taskmaster/tasks"
+cat > "$_repo5/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":1,"subtasks":[]}]}}
+JSON
+
+# Set up a numeric-ID commit so the hook has work to do.
+git -C "$_repo5" add .taskmaster/tasks/tasks.json
+git -C "$_repo5" commit --no-verify -m "chore(tasks): numeric ids" -q
+
+# Build a stub PATH that contains git and grep but NO python3.
+# Using symlinks avoids the problem of python3 sharing /usr/bin with git.
+_stub5="$(mktemp -d -p "$_tmpdir")"
+ln -s "$(command -v git)"  "$_stub5/git"
+ln -s "$(command -v grep)" "$_stub5/grep"
+ln -s "$(command -v date)" "$_stub5/date"
+# Deliberately omit python3 from the stub PATH.
+
+_stderr5="$_tmpdir/stderr5.txt"
+_hook5_exit=0
+(cd "$_repo5" && PATH="$_stub5" bash hooks/post-commit 2>"$_stderr5") || _hook5_exit=$?
+
+assert "python3-missing: hook exits non-zero" \
+    test "$_hook5_exit" -ne 0
+assert "python3-missing: stderr contains ERROR:" \
+    grep -q "ERROR:" "$_stderr5"
+assert "python3-missing: .git/NORMALIZE_FAILED marker file exists" \
+    test -f "$_repo5/.git/NORMALIZE_FAILED"
+
+# ==============================================================================
+# Check 6: normalizer-CRASH is a loud failure (ERROR: + marker + non-zero exit)
+# ==============================================================================
+echo ""
+echo "--- Check 6: normalizer-crash is a loud failure ---"
+
+mk_repo_fixture _repo6
+mkdir -p "$_repo6/.taskmaster/tasks"
+cat > "$_repo6/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":1,"subtasks":[]}]}}
+JSON
+
+# Set up a numeric-ID commit.
+git -C "$_repo6" add .taskmaster/tasks/tasks.json
+git -C "$_repo6" commit --no-verify -m "chore(tasks): numeric ids" -q
+
+# Replace the normalizer with a stub that always exits non-zero.
+printf '#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n' > "$_repo6/scripts/normalize_tasks_json.py"
+chmod +x "$_repo6/scripts/normalize_tasks_json.py"
+
+_stderr6="$_tmpdir/stderr6.txt"
+_hook6_exit=0
+(cd "$_repo6" && bash hooks/post-commit 2>"$_stderr6") || _hook6_exit=$?
+
+assert "normalizer-crash: hook exits non-zero" \
+    test "$_hook6_exit" -ne 0
+assert "normalizer-crash: stderr contains ERROR:" \
+    grep -q "ERROR:" "$_stderr6"
+assert "normalizer-crash: .git/NORMALIZE_FAILED marker file exists" \
+    test -f "$_repo6/.git/NORMALIZE_FAILED"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
