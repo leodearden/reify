@@ -1505,15 +1505,33 @@ fn prelude_unit_collision_diagnostic_mentions_stdlib() {
         dup_diag.message
     );
 
-    // (3) No label should have SourceSpan::empty(0) — the misleading prelude sentinel
+    // (3) Two labels: labels[0] is the user's in-file dup decl span (non-empty,
+    //     not SourceSpan::empty(0)); labels[1] is the prelude sentinel with a
+    //     message containing 'stdlib prelude'.
+    assert_eq!(
+        dup_diag.labels.len(),
+        2,
+        "stdlib collision should emit two labels, got {:?}",
+        dup_diag.labels
+    );
     let empty_span = reify_types::SourceSpan::empty(0);
-    for label in &dup_diag.labels {
-        assert_ne!(
-            label.span, empty_span,
-            "diagnostic label '{}' has SourceSpan::empty(0) — misleading prelude offset",
-            label.message
-        );
-    }
+    assert_ne!(
+        dup_diag.labels[0].span,
+        empty_span,
+        "first label '{}' must not be SourceSpan::empty(0)",
+        dup_diag.labels[0].message
+    );
+    assert!(
+        dup_diag.labels[1].span.is_prelude(),
+        "second label '{}' must have is_prelude() span, got {:?}",
+        dup_diag.labels[1].message,
+        dup_diag.labels[1].span
+    );
+    assert!(
+        dup_diag.labels[1].message.contains("stdlib prelude"),
+        "second label message must contain 'stdlib prelude', got: {:?}",
+        dup_diag.labels[1].message
+    );
 }
 
 // ── step-1 (task-1074): cross-module user unit collision blames source module ───
