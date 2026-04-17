@@ -1136,11 +1136,18 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
-            // Infer result type from collection's element type
-            let result_type = match &compiled_obj.result_type {
-                Type::List(inner) => (**inner).clone(),
-                Type::Map(_, val) => (**val).clone(),
-                _ => Type::Real,
+            // Infer result type from collection's element type.
+            // Anti-cascade guard (task-448): if the object is already
+            // poisoned, propagate Type::Error rather than falling back to
+            // Type::Real.
+            let result_type = if compiled_obj.result_type.is_error() {
+                Type::Error
+            } else {
+                match &compiled_obj.result_type {
+                    Type::List(inner) => (**inner).clone(),
+                    Type::Map(_, val) => (**val).clone(),
+                    _ => Type::Real,
+                }
             };
             CompiledExpr::index_access(compiled_obj, compiled_idx, result_type)
         }
