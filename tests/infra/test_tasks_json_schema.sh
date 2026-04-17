@@ -174,5 +174,49 @@ assert "subtask orphan dep fails with --check-subtasks" \
 assert "subtask orphan dep error mentions '999' or 'orphan'" \
     bash -c "python3 '$VALIDATOR' --check-subtasks '$SUBTASK_ORPHAN_DEP' 2>&1 | grep -qE '999|orphan'"
 
+# -- Multi-tag support --------------------------------------------------------
+echo ""
+echo "--- Test: multi-tag support ---"
+
+# (a) Valid multi-tag fixture: master + feature-x, both with valid tasks.
+#     Should pass even though there are two tags.
+MULTI_TAG_VALID="$TMPDIR_FIXTURES/multi_tag_valid.json"
+cat >"$MULTI_TAG_VALID" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[]}]},"feature-x":{"tasks":[{"id":"2","dependencies":[]}]}}
+EOF
+
+assert "valid multi-tag fixture passes validator" \
+    python3 "$VALIDATOR" "$MULTI_TAG_VALID"
+
+# (b) Multi-tag fixture: feature-x has a numeric id (invariant-1 violation).
+#     Validator should fail and stderr should mention 'feature-x' so the tag
+#     is identifiable in the error output.
+MULTI_TAG_BAD_FX="$TMPDIR_FIXTURES/multi_tag_bad_fx.json"
+cat >"$MULTI_TAG_BAD_FX" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[]}]},"feature-x":{"tasks":[{"id":2,"dependencies":[]}]}}
+EOF
+
+assert "bad id in feature-x tag fails validator" \
+    bash -c "! python3 '$VALIDATOR' '$MULTI_TAG_BAD_FX'"
+
+assert "bad id error mentions 'feature-x' tag name" \
+    bash -c "python3 '$VALIDATOR' '$MULTI_TAG_BAD_FX' 2>&1 | grep -q 'feature-x'"
+
+# (c) Cross-tag dep fails as orphan: master task "2" depends on "99" which
+#     only exists in feature-x.  Tags are independent namespaces — so "99" is
+#     not a valid dep target within master.
+#     Validator should fail and stderr should mention 'master' so the tag is
+#     identifiable in the error output.
+MULTI_TAG_CROSS_DEP="$TMPDIR_FIXTURES/multi_tag_cross_dep.json"
+cat >"$MULTI_TAG_CROSS_DEP" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[]},{"id":"2","dependencies":["99"]}]},"feature-x":{"tasks":[{"id":"99","dependencies":[]}]}}
+EOF
+
+assert "cross-tag orphan dep fails validator" \
+    bash -c "! python3 '$VALIDATOR' '$MULTI_TAG_CROSS_DEP'"
+
+assert "cross-tag orphan dep error mentions 'master' tag name" \
+    bash -c "python3 '$VALIDATOR' '$MULTI_TAG_CROSS_DEP' 2>&1 | grep -q 'master'"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
