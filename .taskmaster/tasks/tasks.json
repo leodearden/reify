@@ -11383,7 +11383,13 @@
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-eval/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib robustness: debug_assert on compile errors, sequential compilation, shadowing docs"
+            ]
+          }
         },
         "updatedAt": "2026-04-17T00:38:00.982Z"
       },
@@ -38193,13 +38199,13 @@
         "description": "In `crates/reify-compiler/src/geometry.rs`, the chamfer arm (line ~881) and fillet arm (line ~902) hardcode `target: GeomRef::Step(0)` directly. Other modifier functions (shell, thicken, draft) use the `geom_ref(0)` closure which resolves let-bound geometry references. This means `let c = chamfer(my_box, 2)` where `my_box` is a let-bound geometry may not resolve the reference correctly.\n\nThe test lists (NO_GEOM_ARG_FUNCTIONS) correctly classify chamfer/fillet as having no geometry args, which matches the current implementation. But the current behavior may be a bug: if chamfer/fillet should support let-bound geometry targets like other modifiers, they should use `geom_ref(0)` and be moved to GEOM_ARG_FUNCTIONS.\n\nInvestigate: (a) whether chamfer/fillet with let-bound geometry targets works correctly today, (b) if not, whether they should use `geom_ref(0)` like shell/thicken/draft, and (c) update the cross-check test lists accordingly. Note: task 1802 addresses DRY extraction of chamfer/fillet/draft/shell/thicken arms — coordinate to avoid conflicts.\n\n## memory_hints\n- search: \"chamfer fillet geometry_arg_indices geom_ref\"\n- search: \"compile_geometry_call modifier functions\"\n- entity: \"geometry_arg_indices\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [
           "1733"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T00:12:47.271Z",
+        "updatedAt": "2026-04-17T00:40:00.042Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
@@ -39698,7 +39704,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T00:38:00.983Z",
+      "lastModified": "2026-04-17T00:40:00.057Z",
       "taskCount": 1895,
       "completedCount": 1630,
       "tags": [
