@@ -403,6 +403,90 @@ describe('selectionStore', () => {
     });
   });
 
+  // --- clearIfRemoved multi-selection (step-15) ---
+  describe('clearIfRemoved — multi-selection', () => {
+    it('removes only the matching path from selectedEntities, leaving others intact', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect, clearIfRemoved } = createSelectionStore();
+        toggleSelect('A');
+        toggleSelect('B');
+        toggleSelect('C');
+        expect(state.selectedEntities).toEqual(['A', 'B', 'C']);
+
+        clearIfRemoved('B');
+        expect(state.selectedEntities).toEqual(['A', 'C']);
+        dispose();
+      });
+    });
+
+    it('updates selectedEntity to new last element after the removed path was the primary', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect, clearIfRemoved } = createSelectionStore();
+        toggleSelect('A');
+        toggleSelect('B');
+        // primary = B (last added)
+        expect(state.selectedEntity).toBe('B');
+
+        clearIfRemoved('B');
+        // B removed → new last = A
+        expect(state.selectedEntity).toBe('A');
+        expect(state.selectedEntities).toEqual(['A']);
+        dispose();
+      });
+    });
+
+    it('sets selectedEntity to null when removing the last item in selectedEntities', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, clearIfRemoved } = createSelectionStore();
+        selectSingle('A');
+        clearIfRemoved('A');
+        expect(state.selectedEntities).toEqual([]);
+        expect(state.selectedEntity).toBeNull();
+        dispose();
+      });
+    });
+
+    it('clears anchorEntity iff it matched the removed path', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, toggleSelect, clearIfRemoved } = createSelectionStore();
+        selectSingle('A'); // sets anchor = A
+        toggleSelect('B'); // adds B; anchor stays A
+        expect(state.anchorEntity).toBe('A');
+
+        clearIfRemoved('A'); // A is anchor and was in selectedEntities
+        expect(state.anchorEntity).toBeNull();
+        dispose();
+      });
+    });
+
+    it('does NOT clear anchorEntity when the removed path does NOT match it', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, toggleSelect, clearIfRemoved } = createSelectionStore();
+        selectSingle('A'); // anchor = A
+        toggleSelect('B');
+        toggleSelect('C');
+        expect(state.anchorEntity).toBe('A');
+
+        clearIfRemoved('C'); // remove C; anchor is still A
+        expect(state.anchorEntity).toBe('A');
+        dispose();
+      });
+    });
+
+    it('does not affect selectedEntities when path is not present', () => {
+      createRoot((dispose) => {
+        const { state, toggleSelect, clearIfRemoved } = createSelectionStore();
+        toggleSelect('A');
+        toggleSelect('B');
+
+        clearIfRemoved('X'); // X not in list
+        expect(state.selectedEntities).toEqual(['A', 'B']);
+        expect(state.selectedEntity).toBe('B');
+        dispose();
+      });
+    });
+  });
+
   // S8: clearIfRemoved — clears stale references to removed entities
   it('clearIfRemoved clears selectedEntity when it matches the removed path', () => {
     createRoot((dispose) => {
