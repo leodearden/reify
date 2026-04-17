@@ -39934,7 +39934,14 @@
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:19:12.124Z"
+        "updatedAt": "2026-04-17T05:19:12.124Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/let_type_disambiguation_tests.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs"
+          ]
+        }
       },
       {
         "id": "1908",
