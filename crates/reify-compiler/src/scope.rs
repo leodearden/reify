@@ -94,18 +94,20 @@ impl<'u> CompilationScope<'u> {
 
     /// Insert `name → (id, ty, None)` only if `name` is not already registered.
     ///
-    /// Returns `true` if the entry was inserted (vacant), `false` if it already
-    /// existed (occupied) and was left unchanged. Unlike `register`, this method
-    /// is guaranteed never to overwrite an existing registration.
-    pub(crate) fn register_if_absent(&mut self, name: &str, ty: Type) -> bool {
+    /// Returns `None` if the entry was inserted (vacant), or `Some(ty)` handing
+    /// back the rejected type if the name was already registered (occupied) —
+    /// callers can log the ignored type on conflict without paying for a clone on
+    /// the hot insertion path. Unlike `register`, this method is guaranteed never
+    /// to overwrite an existing registration.
+    pub(crate) fn register_if_absent(&mut self, name: &str, ty: Type) -> Option<Type> {
         use std::collections::hash_map::Entry;
         match self.names.entry(name.to_string()) {
             Entry::Vacant(e) => {
                 let id = ValueCellId::new(&self.entity_name, name);
                 e.insert((id, ty, None));
-                true
+                None
             }
-            Entry::Occupied(_) => false,
+            Entry::Occupied(_) => Some(ty),
         }
     }
 
