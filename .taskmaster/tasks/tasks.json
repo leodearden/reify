@@ -40201,7 +40201,13 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:15:31.298Z"
+        "updatedAt": "2026-04-17T05:15:31.298Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/tests/expr_error_sentinel_tests.rs"
+          ]
+        }
       },
       {
         "id": "1922",
@@ -40281,7 +40287,9 @@
       "completedCount": 1649,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T05:24:45.946Z",
+      "description": "Tasks for master context"
     }
   }
 }
