@@ -273,6 +273,26 @@ pub(crate) fn compile_with_prelude_refs(
         let module_display = prelude_module.path.to_string();
         for cu in &prelude_module.units {
             if cu.is_pub {
+                // Detect cross-prelude collision before overwriting: if another
+                // prelude module already seeded this unit name, emit a warning.
+                if let Some(existing) = unit_registry.lookup(&cu.name) {
+                    let first_module = existing
+                        .source_module
+                        .as_deref()
+                        .unwrap_or("<unknown>")
+                        .to_string();
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "prelude unit '{}' declared in both '{}' and '{}'; \
+                             last-wins — using definition from '{}'",
+                            cu.name, first_module, module_display, module_display
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            SourceSpan::prelude(),
+                            "cross-prelude collision",
+                        )),
+                    );
+                }
                 unit_registry.seed_prelude_unit(UnitEntry {
                     name: cu.name.clone(),
                     dimension: cu.dimension,
