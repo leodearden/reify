@@ -316,10 +316,13 @@ pub(crate) fn compile_geometry_call(
         // mirror(target, ox, oy, oz, nx, ny, nz)
         "mirror" => {
             if compiled_args.len() != 7 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "mirror() expects 7 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "mirror() expects 7 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
