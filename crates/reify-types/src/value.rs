@@ -6887,6 +6887,49 @@ mod tests {
 
     // ── doc-invariant tests ───────────────────────────────────────────────────
 
+    /// Asserts that `FieldSourceKind::Gradient`'s doc describes provenance
+    /// only, without leaking reify-expr implementation details ("lambda slot",
+    /// "sample handler", "central-difference").  Fails against the current
+    /// doc; passes once step-4 rewrites it.
+    #[test]
+    fn field_source_kind_gradient_doc_describes_provenance_only() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/value.rs");
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+
+        // Slice the region from just before "A field produced by `gradient()`"
+        // up to (but not including) the "    Gradient," token.
+        let start_sentinel = "A field produced by `gradient()`";
+        let end_sentinel = "    Gradient,";
+        let start = source
+            .find(start_sentinel)
+            .unwrap_or_else(|| panic!("sentinel not found in value.rs: {start_sentinel:?}"));
+        let end_offset = source[start..]
+            .find(end_sentinel)
+            .unwrap_or_else(|| panic!("sentinel not found in value.rs after Gradient doc start: {end_sentinel:?}"));
+        let region = &source[start..start + end_offset];
+
+        // (a) Must NOT mention reify-expr implementation internals.
+        assert!(
+            !region.contains("lambda slot"),
+            "Gradient doc must not mention 'lambda slot' (impl detail); region:\n{region}"
+        );
+        assert!(
+            !region.contains("sample handler"),
+            "Gradient doc must not mention 'sample handler' (impl detail); region:\n{region}"
+        );
+        assert!(
+            !region.contains("central-difference"),
+            "Gradient doc must not mention 'central-difference' (impl detail); region:\n{region}"
+        );
+
+        // (b) Must describe provenance — produced by the `gradient()` operator.
+        assert!(
+            region.contains("gradient()"),
+            "Gradient doc must mention gradient() as provenance; region:\n{region}"
+        );
+    }
+
     /// Asserts that `Value::Field.lambda`'s doc comment enumerates all four
     /// valid content kinds and maps every `FieldSourceKind` variant to one of
     /// them.  Fails against the current one-liner; passes once step-2 expands
