@@ -1,5 +1,20 @@
+use reify_types::DiagnosticInfo;
+
 use crate::diff::{StateDelta, delta_to_events, diff_gui_state, push_serialized_event};
 use crate::types::*;
+
+fn sample_diagnostic(severity: &str, message: &str) -> DiagnosticInfo {
+    DiagnosticInfo {
+        file_path: "test.ri".to_string(),
+        line: 1,
+        column: 1,
+        end_line: 1,
+        end_column: 1,
+        severity: severity.to_string(),
+        message: message.to_string(),
+        code: None,
+    }
+}
 
 fn sample_value(cell_id: &str, value: &str) -> ValueData {
     ValueData {
@@ -522,6 +537,67 @@ fn push_serialized_event_pushes_error_and_warns_on_err() {
     assert!(
         payload["error"].is_string() && !payload["error"].as_str().unwrap().is_empty(),
         "error must be a non-empty string"
+    );
+}
+
+/// diff_gui_state: identical tessellation_diagnostics in old and new → delta field is None.
+#[test]
+fn diff_identical_tessellation_diagnostics_returns_none() {
+    let diags = vec![sample_diagnostic("Error", "geometry error: kernel failure")];
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: diags.clone(),
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: diags.clone(),
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert!(
+        delta.changed_tessellation_diagnostics.is_none(),
+        "expected None when diagnostics are identical, got {:?}",
+        delta.changed_tessellation_diagnostics
+    );
+}
+
+/// diff_gui_state: different tessellation_diagnostics → delta field is Some with the new vec.
+#[test]
+fn diff_changed_tessellation_diagnostics_returns_some() {
+    let old_diags = vec![sample_diagnostic("Error", "geometry error: old failure")];
+    let new_diags = vec![
+        sample_diagnostic("Error", "geometry error: new failure"),
+        sample_diagnostic("Warning", "geometry warning: suspect shape"),
+    ];
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: old_diags,
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: new_diags.clone(),
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    let changed = delta
+        .changed_tessellation_diagnostics
+        .as_ref()
+        .expect("expected Some when diagnostics changed, got None");
+    assert_eq!(
+        changed, &new_diags,
+        "delta should carry the new diagnostics vec"
     );
 }
 
