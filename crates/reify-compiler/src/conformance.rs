@@ -1,5 +1,10 @@
 use super::*;
 
+/// Maximum allowed depth for trait refinement chains to prevent stack overflow
+/// from pathologically deep but acyclic hierarchies. Realistic refinement chains
+/// rarely exceed ~10 levels; 128 provides ample headroom.
+const MAX_TRAIT_DEPTH: usize = 128;
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_trait_conformance(
     structure: &EntityDefRef<'_>,
@@ -146,6 +151,7 @@ pub(crate) fn check_trait_conformance(
             &mut ctx,
             &structure_members,
             structure.span,
+            0,
             diagnostics,
         );
     }
@@ -633,16 +639,34 @@ impl MergeContext {
 }
 
 /// Recursively collect all requirements and defaults from a trait and its refinements.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_all_requirements(
     trait_name: &str,
     trait_registry: &HashMap<String, &CompiledTrait>,
     ctx: &mut MergeContext,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
+    depth: usize,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    // IMPORTANT: `visited` MUST be checked (and inserted) BEFORE the depth guard.
+    // In a diamond refinement pattern, a trait reachable via two paths at depth >
+    // MAX_TRAIT_DEPTH would emit duplicate "too deep" diagnostics if the depth guard
+    // fired first (because the visited insert never happened on the first path).
+    // Visited-first ensures the second path short-circuits silently. (Task 403 fix.)
     if !ctx.visited.insert(trait_name.to_string()) {
         return; // Already visited (diamond pattern)
+    }
+
+    if depth > MAX_TRAIT_DEPTH {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "trait refinement chain too deep (exceeded {} levels) at '{}'",
+                MAX_TRAIT_DEPTH, trait_name
+            ))
+            .with_label(DiagnosticLabel::new(span, "trait chain too deep")),
+        );
+        return;
     }
 
     let Some(compiled_trait) = trait_registry.get(trait_name) else {
@@ -661,6 +685,7 @@ pub(crate) fn collect_all_requirements(
             ctx,
             structure_members,
             span,
+            depth + 1,
             diagnostics,
         );
     }
