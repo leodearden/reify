@@ -205,6 +205,17 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
         ));
     }
 
+    // Tessellation diagnostics: emit full list when it changed.
+    if let Some(diags) = &delta.changed_tessellation_diagnostics {
+        push_serialized_event(
+            &mut events,
+            "tessellation-diagnostics",
+            "tessellation-diagnostics",
+            "diagnostics",
+            serde_json::to_value(diags),
+        );
+    }
+
     events
 }
 
