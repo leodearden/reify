@@ -38785,11 +38785,11 @@
         "description": "The shortcuts.test.ts suite verifies that every shortcut with a non-empty display key has a `bind` field, but there is no test verifying the reverse direction: that every shortcut with a `bind` field that should have a callback actually has a corresponding entry in ID_TO_CALLBACK (in useKeyboardShortcuts.ts). If someone adds a new shortcut with a `bind` but forgets to wire it up in ID_TO_CALLBACK, the key press silently does nothing.\n\nAdd a test (in useKeyboardShortcuts.test.ts or shortcuts.test.ts) that asserts: the set of shortcut IDs with `bind` fields, minus the known no-callback IDs (undo, redo, fitToView), equals the set of IDs in ID_TO_CALLBACK. This ensures new bound shortcuts are always wired up.\n\nmemory_hints: search \"ID_TO_CALLBACK ShortcutId bind useKeyboardShortcuts\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T00:49:06.800Z",
+        "updatedAt": "2026-04-17T01:04:45.966Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/useKeyboardShortcuts.test.ts",
@@ -39835,7 +39835,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T01:04:45.706Z",
+      "lastModified": "2026-04-17T01:04:45.966Z",
       "taskCount": 1898,
       "completedCount": 1631,
       "tags": [
