@@ -1,0 +1,84 @@
+//! Anti-cascade tests for `Type::Error` propagation (task-448).
+//!
+//! These tests verify that once a sub-expression is inferred as `Type::Error`
+//! (the poison-value sentinel), consumer sites propagate `Type::Error` rather
+//! than falling back to `Type::Real`. The "member access not yet supported"
+//! stub at `expr.rs:997` is the designated `Type::Error` producer that these
+//! tests exercise (see step-12).
+
+use reify_test_support::compile_source;
+use reify_types::{CompiledExpr, CompiledExprKind, Type};
+
+/// Walk a `CompiledExpr` tree and return the first node whose `result_type`
+/// satisfies the predicate, if any. Used to search for a `Type::Error`-typed
+/// node inside a compiled let binding.
+fn find_node<'a>(
+    expr: &'a CompiledExpr,
+    pred: &impl Fn(&CompiledExpr) -> bool,
+) -> Option<&'a CompiledExpr> {
+    if pred(expr) {
+        return Some(expr);
+    }
+    match &expr.kind {
+        CompiledExprKind::BinOp { left, right, .. } => {
+            find_node(left, pred).or_else(|| find_node(right, pred))
+        }
+        CompiledExprKind::UnOp { operand, .. } => find_node(operand, pred),
+        CompiledExprKind::FunctionCall { args, .. } => {
+            args.iter().find_map(|a| find_node(a, pred))
+        }
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => find_node(condition, pred)
+            .or_else(|| find_node(then_branch, pred))
+            .or_else(|| find_node(else_branch, pred)),
+        CompiledExprKind::MethodCall { object, args, .. } => find_node(object, pred)
+            .or_else(|| args.iter().find_map(|a| find_node(a, pred))),
+        CompiledExprKind::IndexAccess { object, index } => {
+            find_node(object, pred).or_else(|| find_node(index, pred))
+        }
+        _ => None,
+    }
+}
+
+/// Retrieve the compiled `default_expr` of a let binding by name.
+fn get_let_expr<'a>(module: &'a reify_compiler::CompiledModule, name: &str) -> &'a CompiledExpr {
+    let template = module
+        .templates
+        .first()
+        .expect("expected at least one template in module");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == name)
+        .unwrap_or_else(|| panic!("no value cell named '{}'", name));
+    cell.default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("value cell '{}' has no default expr", name))
+}
+
+// ── step-5: member aggregation on error-typed object ────────────────────────
+
+#[test]
+fn member_aggregation_on_error_typed_object_yields_type_error() {
+    // The inner `self.unsupported` triggers the "member access not yet
+    // supported" stub (see expr.rs:997), which must emit Type::Error post-step-12.
+    // The outer `.sum` then hits the aggregation arm (expr.rs:973-990) and,
+    // with the step-6 guard, must propagate Type::Error rather than fall
+    // through to Type::Real.
+    let source = r#"
+structure S {
+    let broken = self.unsupported.sum
+}
+"#;
+    let module = compile_source(source);
+    let expr = get_let_expr(&module, "broken");
+    assert_eq!(
+        expr.result_type,
+        Type::Error,
+        "expected .sum on Type::Error object to propagate Type::Error, got {:?}",
+        expr.result_type,
+    );
+}
