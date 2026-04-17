@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRoot } from 'solid-js';
-import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
+import { useKeyboardShortcuts, ID_TO_CALLBACK } from '../hooks/useKeyboardShortcuts';
+import { SHORTCUTS, type ShortcutId } from '../shortcuts';
 
 describe('useKeyboardShortcuts', () => {
   let dispose: () => void;
@@ -253,6 +254,30 @@ describe('useKeyboardShortcuts', () => {
       expect(onSave).not.toHaveBeenCalled();
     } finally {
       document.body.removeChild(input);
+    }
+  });
+});
+
+describe('ID_TO_CALLBACK wiring invariant', () => {
+  const NO_CALLBACK_IDS = new Set<ShortcutId>([
+    'undo',      // disabled: true — key reserved, no functional callback
+    'redo',      // disabled: true — key reserved, no functional callback
+    'fitToView', // no bind at all — menu-only action
+  ]);
+
+  it('every shortcut with a bind — minus known no-callback IDs — has an ID_TO_CALLBACK entry', () => {
+    const expected = SHORTCUTS
+      .filter((s) => s.bind !== undefined && !NO_CALLBACK_IDS.has(s.id as ShortcutId))
+      .map((s) => s.id)
+      .sort();
+    const actual = Object.keys(ID_TO_CALLBACK).sort();
+    expect(actual).toEqual(expected);
+  });
+
+  it('every ID_TO_CALLBACK key is a shortcut with a bind', () => {
+    for (const id of Object.keys(ID_TO_CALLBACK) as ShortcutId[]) {
+      const shortcut = SHORTCUTS.find((s) => s.id === id);
+      expect(shortcut?.bind, `shortcut "${id}" should have a bind field`).toBeDefined();
     }
   });
 });
