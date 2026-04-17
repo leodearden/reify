@@ -1309,30 +1309,19 @@ pub(crate) fn compile_entity(
             // lets do NOT emit realizations here — that is a separate,
             // unimplemented feature.
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                emit_guarded_geometry_realizations(
-                    &g.members,
+                let mut ctx = GeometryRealizationCtx {
                     entity_name,
-                    &scope,
+                    scope: &scope,
                     enum_defs,
                     functions,
-                    &known_geometry_lets,
-                    &geometry_lets,
-                    &mut realizations,
-                    &mut realization_index,
+                    known_geometry_lets: &known_geometry_lets,
+                    geometry_lets: &geometry_lets,
+                    realizations: &mut realizations,
+                    realization_index: &mut realization_index,
                     diagnostics,
-                );
-                emit_guarded_geometry_realizations(
-                    &g.else_members,
-                    entity_name,
-                    &scope,
-                    enum_defs,
-                    functions,
-                    &known_geometry_lets,
-                    &geometry_lets,
-                    &mut realizations,
-                    &mut realization_index,
-                    diagnostics,
-                );
+                };
+                emit_guarded_geometry_realizations(&g.members, &mut ctx);
+                emit_guarded_geometry_realizations(&g.else_members, &mut ctx);
             }
             _ => {}
         }
@@ -1747,79 +1736,65 @@ fn collect_geometry_exprs<'a>(
     }
 }
 
+/// Context bundle for [`emit_guarded_geometry_realizations`].
+///
+/// Groups the shared read-only and mutable state needed at every nesting
+/// level of the recursive realization emitter, removing the need for a
+/// lengthy argument list.
+struct GeometryRealizationCtx<'a> {
+    entity_name: &'a str,
+    scope: &'a CompilationScope<'a>,
+    enum_defs: &'a [reify_types::EnumDef],
+    functions: &'a [CompiledFunction],
+    known_geometry_lets: &'a HashSet<&'a str>,
+    geometry_lets: &'a HashMap<&'a str, &'a reify_syntax::Expr>,
+    realizations: &'a mut Vec<RealizationDecl>,
+    realization_index: &'a mut u32,
+    diagnostics: &'a mut Vec<Diagnostic>,
+}
+
 /// Recursively emit `RealizationDecl`s for Solid-typed geometry params inside
 /// guarded groups at any nesting depth.
 ///
 /// This is the recursive counterpart to the `GuardedGroup` arm of the third-pass
 /// main loop in `compile_entity`. It handles Params (whose names are in
-/// `known_geometry_lets`) and descends into nested GuardedGroup members.
+/// `ctx.known_geometry_lets`) and descends into nested GuardedGroup members.
 ///
 /// Intentionally does NOT handle Lets — guarded geometry lets do not emit
 /// realizations (that is a separate, unimplemented feature; see the existing
 /// comment in the GuardedGroup arm of the third-pass loop).
-#[allow(clippy::too_many_arguments)]
-fn emit_guarded_geometry_realizations(
-    members: &[reify_syntax::MemberDecl],
-    entity_name: &str,
-    scope: &CompilationScope,
-    enum_defs: &[reify_types::EnumDef],
-    functions: &[CompiledFunction],
-    known_geometry_lets: &HashSet<&str>,
-    geometry_lets: &HashMap<&str, &reify_syntax::Expr>,
-    realizations: &mut Vec<RealizationDecl>,
-    realization_index: &mut u32,
-    diagnostics: &mut Vec<Diagnostic>,
+fn emit_guarded_geometry_realizations<'a>(
+    members: &'a [reify_syntax::MemberDecl],
+    ctx: &mut GeometryRealizationCtx<'a>,
 ) {
     for m in members {
         match m {
             reify_syntax::MemberDecl::Param(param)
-                if known_geometry_lets.contains(param.name.as_str()) =>
+                if ctx.known_geometry_lets.contains(param.name.as_str()) =>
             {
                 if let Some(default_expr) = &param.default
                     && let Some(ops) = compile_geometry_call(
                         default_expr,
-                        scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
+                        ctx.scope,
+                        ctx.enum_defs,
+                        ctx.functions,
+                        ctx.diagnostics,
                         0,
-                        geometry_lets,
+                        ctx.geometry_lets,
                         &mut HashSet::new(),
                     )
                 {
-                    realizations.push(RealizationDecl {
-                        id: RealizationNodeId::new(entity_name, *realization_index),
+                    ctx.realizations.push(RealizationDecl {
+                        id: RealizationNodeId::new(ctx.entity_name, *ctx.realization_index),
                         operations: ops,
                         span: SourceSpan::new(0, 0),
                     });
-                    *realization_index += 1;
+                    *ctx.realization_index += 1;
                 }
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                emit_guarded_geometry_realizations(
-                    &g.members,
-                    entity_name,
-                    scope,
-                    enum_defs,
-                    functions,
-                    known_geometry_lets,
-                    geometry_lets,
-                    realizations,
-                    realization_index,
-                    diagnostics,
-                );
-                emit_guarded_geometry_realizations(
-                    &g.else_members,
-                    entity_name,
-                    scope,
-                    enum_defs,
-                    functions,
-                    known_geometry_lets,
-                    geometry_lets,
-                    realizations,
-                    realization_index,
-                    diagnostics,
-                );
+                emit_guarded_geometry_realizations(&g.members, ctx);
+                emit_guarded_geometry_realizations(&g.else_members, ctx);
             }
             _ => {}
         }

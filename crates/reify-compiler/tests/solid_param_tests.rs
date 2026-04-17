@@ -404,12 +404,15 @@ fn nested_guarded_solid_param_registered_in_geometry_lets() {
         .find(|t| t.name == "X")
         .expect("X template not found");
 
-    // At least one RealizationDecl must be emitted.
-    assert!(
-        template.realizations.len() >= 1,
-        "expected at least 1 RealizationDecl for nested guarded \
-         `param g : Solid = cylinder(...)`, got {}",
-        template.realizations.len()
+    // Exactly one RealizationDecl must be emitted — one geometry param, one
+    // realization. Using `== 1` (not `>= 1`) prevents a future double-emit
+    // if the recursive walk mistakenly visits both members and else_members
+    // of the same guard at the same nesting level.
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 RealizationDecl for nested guarded \
+         `param g : Solid = cylinder(...)`"
     );
 }
 
