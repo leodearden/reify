@@ -11,28 +11,53 @@
 
 use reify_test_support::{compile_source, errors_only};
 
-// ── box() ──────────────────────────────────────────────────────────────
-
-#[test]
-fn box_arg_count_diagnostic_has_span_label() {
-    // box() expects 3 arguments — passing only 2 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let shape = box(10mm, 20mm)
-        }
-    "#;
+/// Compile `source`, locate the first error whose message contains `needle`,
+/// and assert it carries at least one diagnostic label with a non-empty span.
+///
+/// Every test in this file follows the same three-step pattern (find error →
+/// assert label present → assert span non-empty), so centralizing it here
+/// keeps the individual tests one-liners and makes adding future regressions
+/// trivial.
+#[track_caller]
+fn assert_arg_count_label(source: &str, needle: &str) {
     let module = compile_source(source);
     let errors = errors_only(&module);
 
     let first = errors
         .iter()
-        .find(|d| d.message.contains("box() expects 3 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'box() expects 3 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on box arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on box arg-count label");
+        .find(|d| d.message.contains(needle))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected '{}' error, got: {:?}",
+                needle,
+                errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        !first.labels.is_empty(),
+        "expected at least one label on '{}' diagnostic",
+        needle
+    );
+    assert!(
+        !first.labels[0].span.is_empty(),
+        "expected non-empty span on '{}' label",
+        needle
+    );
+}
+
+// ── box() ──────────────────────────────────────────────────────────────
+
+#[test]
+fn box_arg_count_diagnostic_has_span_label() {
+    // box() expects 3 arguments — passing only 2 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let shape = box(10mm, 20mm)
+            }
+        "#,
+        "box() expects 3 arguments",
+    );
 }
 
 // ── cylinder() ─────────────────────────────────────────────────────────
@@ -40,23 +65,14 @@ fn box_arg_count_diagnostic_has_span_label() {
 #[test]
 fn cylinder_arg_count_diagnostic_has_span_label() {
     // cylinder() expects 2 arguments — passing only 1 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let c = cylinder(10mm)
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("cylinder() expects 2 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'cylinder() expects 2 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on cylinder arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on cylinder arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let c = cylinder(10mm)
+            }
+        "#,
+        "cylinder() expects 2 arguments",
+    );
 }
 
 // ── sphere() ───────────────────────────────────────────────────────────
@@ -64,23 +80,14 @@ fn cylinder_arg_count_diagnostic_has_span_label() {
 #[test]
 fn sphere_arg_count_diagnostic_has_span_label() {
     // sphere() expects 1 argument — passing 0 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let s = sphere()
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("sphere() expects 1 argument"))
-        .unwrap_or_else(|| panic!(
-            "expected 'sphere() expects 1 argument' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on sphere arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on sphere arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let s = sphere()
+            }
+        "#,
+        "sphere() expects 1 argument",
+    );
 }
 
 // ── linear_pattern() ───────────────────────────────────────────────────
@@ -88,23 +95,14 @@ fn sphere_arg_count_diagnostic_has_span_label() {
 #[test]
 fn linear_pattern_arg_count_diagnostic_has_span_label() {
     // linear_pattern() expects 6 arguments — passing 1 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let p = linear_pattern(box(10mm, 10mm, 10mm))
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("linear_pattern() expects 6 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'linear_pattern() expects 6 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on linear_pattern arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on linear_pattern arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let p = linear_pattern(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "linear_pattern() expects 6 arguments",
+    );
 }
 
 // ── circular_pattern() ─────────────────────────────────────────────────
@@ -112,23 +110,14 @@ fn linear_pattern_arg_count_diagnostic_has_span_label() {
 #[test]
 fn circular_pattern_arg_count_diagnostic_has_span_label() {
     // circular_pattern() expects 9 arguments — passing 2 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let p = circular_pattern(box(10mm, 10mm, 10mm), 1.0)
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("circular_pattern() expects 9 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'circular_pattern() expects 9 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on circular_pattern arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on circular_pattern arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let p = circular_pattern(box(10mm, 10mm, 10mm), 1.0)
+            }
+        "#,
+        "circular_pattern() expects 9 arguments",
+    );
 }
 
 // ── mirror() ───────────────────────────────────────────────────────────
@@ -136,23 +125,14 @@ fn circular_pattern_arg_count_diagnostic_has_span_label() {
 #[test]
 fn mirror_arg_count_diagnostic_has_span_label() {
     // mirror() expects 7 arguments — passing 2 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let m = mirror(box(10mm, 10mm, 10mm), 1.0)
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("mirror() expects 7 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'mirror() expects 7 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on mirror arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on mirror arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let m = mirror(box(10mm, 10mm, 10mm), 1.0)
+            }
+        "#,
+        "mirror() expects 7 arguments",
+    );
 }
 
 // ── union() / intersection() / difference() ────────────────────────────
@@ -160,67 +140,40 @@ fn mirror_arg_count_diagnostic_has_span_label() {
 #[test]
 fn union_arg_count_diagnostic_has_span_label() {
     // union() expects 2 arguments — passing 1 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let u = union(box(10mm, 10mm, 10mm))
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("union() expects 2 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'union() expects 2 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on union arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on union arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let u = union(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "union() expects 2 arguments",
+    );
 }
 
 #[test]
 fn intersection_arg_count_diagnostic_has_span_label() {
     // intersection() expects 2 arguments — passing 1 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let i = intersection(box(10mm, 10mm, 10mm))
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("intersection() expects 2 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'intersection() expects 2 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on intersection arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on intersection arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let i = intersection(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "intersection() expects 2 arguments",
+    );
 }
 
 #[test]
 fn difference_arg_count_diagnostic_has_span_label() {
     // difference() expects 2 arguments — passing 1 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let d = difference(box(10mm, 10mm, 10mm))
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("difference() expects 2 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'difference() expects 2 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on difference arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on difference arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let d = difference(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "difference() expects 2 arguments",
+    );
 }
 
 // ── union_all() / intersection_all() ───────────────────────────────────
@@ -228,45 +181,27 @@ fn difference_arg_count_diagnostic_has_span_label() {
 #[test]
 fn union_all_arg_count_diagnostic_has_span_label() {
     // union_all() expects at least 2 arguments — passing 1 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let u = union_all(box(10mm, 10mm, 10mm))
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("union_all() expects at least 2 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'union_all() expects at least 2 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on union_all arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on union_all arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let u = union_all(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "union_all() expects at least 2 arguments",
+    );
 }
 
 #[test]
 fn intersection_all_arg_count_diagnostic_has_span_label() {
     // intersection_all() expects at least 2 arguments — passing 1 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let i = intersection_all(box(10mm, 10mm, 10mm))
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("intersection_all() expects at least 2 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'intersection_all() expects at least 2 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on intersection_all arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on intersection_all arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let i = intersection_all(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "intersection_all() expects at least 2 arguments",
+    );
 }
 
 // ── shell() / thicken() / draft() — regression guards ──────────────────
@@ -278,65 +213,38 @@ fn intersection_all_arg_count_diagnostic_has_span_label() {
 #[test]
 fn shell_arg_count_diagnostic_has_span_label() {
     // shell() expects at least 2 arguments — passing 1 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let s = shell(box(10mm, 10mm, 10mm))
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("shell() expects at least 2 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'shell() expects at least 2 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on shell arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on shell arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let s = shell(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "shell() expects at least 2 arguments",
+    );
 }
 
 #[test]
 fn thicken_arg_count_diagnostic_has_span_label() {
     // thicken() expects 2 arguments — passing 1 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let t = thicken(box(10mm, 10mm, 10mm))
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("thicken() expects 2 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'thicken() expects 2 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on thicken arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on thicken arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let t = thicken(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "thicken() expects 2 arguments",
+    );
 }
 
 #[test]
 fn draft_arg_count_diagnostic_has_span_label() {
     // draft() expects 3 arguments — passing 1 should produce a labeled diagnostic
-    let source = r#"
-        structure S {
-            let d = draft(box(10mm, 10mm, 10mm))
-        }
-    "#;
-    let module = compile_source(source);
-    let errors = errors_only(&module);
-
-    let first = errors
-        .iter()
-        .find(|d| d.message.contains("draft() expects 3 arguments"))
-        .unwrap_or_else(|| panic!(
-            "expected 'draft() expects 3 arguments' error, got: {:?}",
-            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-        ));
-    assert!(!first.labels.is_empty(), "expected at least one label on draft arg-count diagnostic");
-    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on draft arg-count label");
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let d = draft(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "draft() expects 3 arguments",
+    );
 }
