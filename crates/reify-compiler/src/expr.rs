@@ -971,6 +971,17 @@ pub(crate) fn compile_expr_guarded(
                 lambda_counter,
             );
             if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
+                // Anti-cascade guard (task-448): if the object is already
+                // poisoned, propagate Type::Error rather than falling back
+                // to Type::Real / List<Real>.
+                if compiled_obj.result_type.is_error() {
+                    return CompiledExpr::method_call(
+                        compiled_obj,
+                        member.clone(),
+                        vec![],
+                        Type::Error,
+                    );
+                }
                 // Infer result type from method and object type
                 let result_type = match member.as_str() {
                     "count" => Type::Int,
