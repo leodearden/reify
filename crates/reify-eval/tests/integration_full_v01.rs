@@ -802,6 +802,80 @@ fn test_runner_all_pass() {
     }
 }
 
+// ── Test 19: purpose follow-up comments are precise ──────────────────────────
+
+/// Assert that the .ri file's purpose comments have been upgraded from the
+/// old generic "tracked as a follow-up task" phrasing to precise scoped
+/// references naming the specific missing plumbing and citing task #1904.
+///
+/// Assertions:
+/// 1. The old generic phrase is absent (regression guard).
+/// 2. The old vague phrase is absent (regression guard).
+/// 3. The precise follow-up task id "task #1904" is present.
+/// 4. The three specific missing pieces are mentioned: member-access
+///    compilation, resolved_queries filter branches, and forall runtime
+///    expansion.
+/// 5. A scoped placeholder comment with task #1904 appears above weight_target.
+/// 6. The target reflective shapes are named: "forall p in subject.geometric_params"
+///    and "minimize subject.mass".
+#[test]
+fn purpose_follow_up_comment_is_precise() {
+    let src = source();
+
+    // 1. Old generic "Follow-up:" sentence must be gone.
+    assert!(
+        !src.contains("Follow-up: replace with `constraint determined(subject.mass)`"),
+        "Old generic follow-up phrase found in .ri — must be replaced with precise task #1904 reference"
+    );
+
+    // 2. Old vague "tracked as a follow-up task" phrase must be gone.
+    assert!(
+        !src.contains("tracked as a follow-up task"),
+        "Vague 'tracked as a follow-up task' phrase found — must be replaced with 'task #1904' reference"
+    );
+
+    // 3. Precise follow-up task id must be present.
+    assert!(
+        src.contains("task #1904"),
+        "Precise follow-up marker 'task #1904' not found in .ri — add scoped placeholder comments"
+    );
+
+    // 4. Three specific missing pieces must be mentioned at least once.
+    assert!(
+        src.contains("member-access") || src.contains("member access"),
+        "No mention of 'member-access' / 'member access' in .ri — scoped comment must name the expr.rs gap"
+    );
+    assert!(
+        src.contains("resolved_queries"),
+        "No mention of 'resolved_queries' in .ri — scoped comment must name the traits.rs filter gap"
+    );
+    assert!(
+        src.contains("forall p in subject"),
+        "No mention of 'forall p in subject' in .ri — scoped comment must show the target shape"
+    );
+
+    // 5. A scoped placeholder comment with task #1904 must appear above weight_target.
+    // We detect this by finding "task #1904" in the text that precedes "weight_target".
+    let weight_target_pos = src
+        .find("purpose weight_target")
+        .expect("'purpose weight_target' must exist in .ri");
+    let before_weight_target = &src[..weight_target_pos];
+    assert!(
+        before_weight_target.contains("task #1904"),
+        "No 'task #1904' reference found before 'purpose weight_target' — add scoped placeholder comment above it"
+    );
+
+    // 6. Target reflective shapes must be named.
+    assert!(
+        src.contains("forall p in subject.geometric_params"),
+        "Target shape 'forall p in subject.geometric_params' not mentioned in .ri scoped comment"
+    );
+    assert!(
+        src.contains("minimize subject.mass"),
+        "Target shape 'minimize subject.mass' not mentioned in .ri scoped comment"
+    );
+}
+
 // ── Test 19: constraint def labels ────────────────────────────────────────────
 
 /// Assembly has 2 InRange invocations × 2 predicates = 4 total constraints,
