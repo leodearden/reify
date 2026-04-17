@@ -340,6 +340,10 @@ describe('median', () => {
     expect(() => median([])).toThrow(/empty/i);
   });
 
+  it('throws when the input contains NaN', () => {
+    expect(() => median([1, NaN, 3])).toThrow(/NaN/i);
+  });
+
   it('returns the single element for a one-element array', () => {
     expect(median([42])).toBe(42);
   });

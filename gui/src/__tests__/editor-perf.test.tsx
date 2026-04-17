@@ -156,7 +156,10 @@ describe('Editor wall-clock latency', () => {
     // view.dispatch on a 10k-line doc costs ~1–5ms (JSDOM, no layout), giving
     // a 3–5× safety margin; the margin holds even under heavy parallelism
     // because the median is dominated by in-process work, not system-load tails.
-    expect(median(perKeystroke)).toBeLessThan(15);
+    //
+    // The second argument surfaces the full sample list in the Vitest failure
+    // message so CI triage does not require a local re-run.
+    expect(median(perKeystroke), `samples=${JSON.stringify(perKeystroke)}`).toBeLessThan(15);
   });
 });
 
