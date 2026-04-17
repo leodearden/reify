@@ -363,5 +363,21 @@ assert "unhashable list id error mentions invariant 1 or expected str" \
 assert "unhashable list id does NOT leak Traceback" \
     bash -c "! python3 '$VALIDATOR' '$UNHASHABLE_ID_LIST' 2>&1 | grep -q 'Traceback'"
 
+# A subtask whose id is a JSON object ({nested:true}).  Same crash path but in
+# _validate_subtasks Counter (line 178).  Must be tested with --check-subtasks.
+UNHASHABLE_SUBTASK_ID="$TMPDIR_FIXTURES/unhashable_subtask_id.json"
+cat >"$UNHASHABLE_SUBTASK_ID" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[],"subtasks":[{"id":{"nested":true},"dependencies":[]}]}]}}
+EOF
+
+assert "unhashable dict subtask id fails validator with --check-subtasks" \
+    bash -c "! python3 '$VALIDATOR' --check-subtasks '$UNHASHABLE_SUBTASK_ID'"
+
+assert "unhashable dict subtask id error mentions invariant 1 or expected str" \
+    bash -c "python3 '$VALIDATOR' --check-subtasks '$UNHASHABLE_SUBTASK_ID' 2>&1 | grep -qiE 'invariant 1|expected str'"
+
+assert "unhashable dict subtask id does NOT leak Traceback" \
+    bash -c "! python3 '$VALIDATOR' --check-subtasks '$UNHASHABLE_SUBTASK_ID' 2>&1 | grep -q 'Traceback'"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
