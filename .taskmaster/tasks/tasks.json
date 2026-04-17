@@ -39674,7 +39674,13 @@
             "queries": [
               "resolution for: In-crate test coverage for unannotated-let → RequirementKind::Let satisfaction path"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
         }
       },
       {
