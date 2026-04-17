@@ -55,6 +55,13 @@ def main() -> None:
         print(f"ERROR: cannot load {args.path}: {exc}", file=sys.stderr)
         sys.exit(1)
 
+    if not isinstance(data, dict):
+        print(
+            f"ERROR: schema: top-level JSON must be an object (dict), got {type(data).__name__}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     errors: list[str] = []
     warnings: list[str] = []
     # Per-tag list of (tag_name, tasks, known_ids) for subtask iteration.
