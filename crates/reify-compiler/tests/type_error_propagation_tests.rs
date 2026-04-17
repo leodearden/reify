@@ -149,9 +149,9 @@ structure S {
 
 #[test]
 fn stub_error_plus_arithmetic_emits_exactly_one_diagnostic() {
-    // `self.unsupported` triggers the "member access not yet supported" stub
-    // at expr.rs:~1008 which emits a single Severity::Error diagnostic.
-    // Post-step-12 the stub returns Type::Error; with the step-4 guard in
+    // `self.unsupported` triggers the "unknown member 'X' on self" stub
+    // at expr.rs:~724 which emits a single Severity::Error diagnostic.
+    // Post-step-12 that stub returns Type::Error; with the step-4 guard in
     // infer_binop_type, the enclosing `+ 5.0` short-circuits to Type::Error
     // instead of falling through to Type::Real and emitting a type-mismatch
     // cascade. The net: exactly ONE error on the whole module.
@@ -176,8 +176,8 @@ structure S {
     // Sanity-check the single error is the stub itself, not some other
     // fallout we're ignoring by accident.
     assert!(
-        errors[0].message.contains("member access not yet supported"),
-        "expected the sole error to be the unsupported-member stub, got: {}",
+        errors[0].message.contains("unknown member"),
+        "expected the sole error to be the unknown-member-on-self stub, got: {}",
         errors[0].message,
     );
 }

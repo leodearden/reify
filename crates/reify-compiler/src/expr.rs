@@ -731,7 +731,10 @@ pub(crate) fn compile_expr_guarded(
                                     "unknown member",
                                 )),
                             );
-                            return CompiledExpr::literal(Value::Undef, Type::Real);
+                            // Anti-cascade (task-448): emit Type::Error so
+                            // downstream operand-level guards can short-circuit
+                            // rather than cascading type-mismatch diagnostics.
+                            return CompiledExpr::literal(Value::Undef, Type::Error);
                         }
                     }
                 }
@@ -1005,7 +1008,11 @@ pub(crate) fn compile_expr_guarded(
                     Diagnostic::error(format!("member access not yet supported: .{}", member))
                         .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
                 );
-                CompiledExpr::literal(Value::Undef, Type::Real)
+                // Anti-cascade (task-448): emit Type::Error so downstream
+                // operand-level guards (infer_binop_type, index access,
+                // aggregation, quantifier) can short-circuit and avoid
+                // cascade diagnostics on top of this stub.
+                CompiledExpr::literal(Value::Undef, Type::Error)
             }
         }
         reify_syntax::ExprKind::ListLiteral(elements) => {
