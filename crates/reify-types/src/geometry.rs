@@ -465,6 +465,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "INVALID handle must not be hashed")]
     fn geometry_handle_id_content_hash_invalid_panics() {
         let _ = GeometryHandleId::INVALID.content_hash();
