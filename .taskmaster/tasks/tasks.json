@@ -8749,7 +8749,13 @@
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
             "crates/reify-compiler/tests/m9_error_cases.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix depth/visited guard ordering in collect_all_requirements"
+            ]
+          }
         }
       },
       {
@@ -9558,7 +9564,7 @@
         "description": "TypeExpr currently conflates named types (where `name` is an identifier like \"Force\") and binary dimensional operators (where `name` is a symbol like \"/\" or \"*\") in a single struct. Downstream phases must inspect `name` for operator characters — a fragile implicit convention. Introduce a `TypeExprKind` enum to make this distinction explicit: `Named { name, type_args }` vs `DimensionalOp { op, left, right }`. Memory hints: search \"TypeExpr dimensional type_alias\" and get_entity \"TypeExpr\", \"TypeAliasDecl\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "144"
         ],
@@ -9577,7 +9583,7 @@
             "crates/reify-compiler/src"
           ]
         },
-        "updatedAt": "2026-04-16T23:25:06.978Z"
+        "updatedAt": "2026-04-17T01:36:50.632Z"
       },
       {
         "id": "439",
@@ -39876,9 +39882,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T01:34:10.860Z",
+      "lastModified": "2026-04-17T01:36:50.632Z",
       "taskCount": 1900,
-      "completedCount": 1634,
+      "completedCount": 1635,
       "tags": [
         "master"
       ]
