@@ -32,7 +32,7 @@ fi
 # -m is required so that merge commits are diffed against each parent; without
 # it, git diff-tree emits no output for merges and normalization would be
 # silently skipped on a merge that introduces numeric IDs.
-if ! git diff-tree -m --root -r --no-commit-id --name-only HEAD | grep -qF '.taskmaster/tasks/tasks.json'; then
+if ! git diff-tree -m --root -r --no-commit-id --name-only HEAD | grep -qFx '.taskmaster/tasks/tasks.json'; then
     exit 0
 fi
 
@@ -44,10 +44,12 @@ python3 "$ROOT/scripts/normalize_tasks_json.py" "$TASKS_JSON" || {
 }
 
 # (6) If the file changed on disk vs HEAD, stage it and amend.
-# --no-verify mirrors the original auto-commit (which also uses --no-verify)
-# so the amendment is consistent with the commit being amended; pre-commit
-# hooks are intentionally skipped here because the only change is int→str ID
-# normalization, which cannot violate any structural invariant.
+# --no-verify skips pre-commit/commit-msg hooks on the amend.  This applies
+# to ALL tasks.json-touching commits, not only auto-commits from the Taskmaster
+# pipeline — a manual edit that happens to touch tasks.json will also have its
+# pre-commit hooks bypassed on the amend.  This is intentional: the only change
+# introduced by the amend is int→str ID normalization, which cannot violate any
+# structural invariant checked by pre-commit.
 if ! git diff --quiet -- "$TASKS_JSON"; then
     git add -- "$TASKS_JSON"
     _REIFY_TASKS_NORMALIZE_AMEND=1 git commit --amend --no-edit --no-verify -q
