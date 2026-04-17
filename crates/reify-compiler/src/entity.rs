@@ -1708,9 +1708,6 @@ pub(crate) enum PendingBoundCheck {
     },
 }
 
-/// Check that type arguments satisfy the bounds on type parameters.
-///
-/// For each type param with bounds, verify that the corresponding type arg
 /// Recursively collect geometry-let and geometry-param initializer expressions
 /// from a slice of `MemberDecl`s into `out`.
 ///
@@ -1829,6 +1826,9 @@ fn emit_guarded_geometry_realizations(
     }
 }
 
+/// Check that type arguments satisfy the bounds on type parameters.
+///
+/// For each type param with bounds, verify that the corresponding type arg
 /// declares conformance to all required traits. Forwarded type params
 /// (Type::TypeParam) are skipped — their bounds are enforced at the concrete
 /// instantiation site.
