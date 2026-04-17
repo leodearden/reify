@@ -1000,3 +1000,70 @@ describe('viewStateStore — setTree pruning', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Integration sanity: generator↔store wiring
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — auto view generators — integration sanity', () => {
+  /**
+   * Realistic tree: Assembly (structure)
+   *   └─ Physical (structure)
+   *        ├─ geometry  (param, trait_geometry=true)  → Default: show
+   *        ├─ body1     (let, SolidBody)               → Default: hidden
+   *        └─ body2     (let, SolidExtrude)            → Default: hidden
+   */
+  function makeRealisticTree() {
+    return [
+      makeNode({
+        entity_path: 'Assembly',
+        kind: 'structure',
+        children: [
+          makeNode({
+            entity_path: 'Assembly.Physical',
+            kind: 'structure',
+            children: [
+              makeNode({ entity_path: 'Assembly.Physical.geometry', kind: 'param', trait_geometry: true }),
+              makeNode({ entity_path: 'Assembly.Physical.body1', kind: 'let', type_name: 'SolidBody' }),
+              makeNode({ entity_path: 'Assembly.Physical.body2', kind: 'let', type_name: 'SolidExtrude' }),
+            ],
+          }),
+        ],
+      }),
+    ];
+  }
+
+  it('end-to-end: geometry shows + intermediates hidden under auto:default; all show under auto:all-geometry; auto:default restores hidden', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const tree = makeRealisticTree();
+
+      // Wire both tree and views together as production code would.
+      store.setTree(tree);
+      store.regenerateAutoViews(tree);
+
+      // (i) geometry param shows under auto:default
+      expect(store.getAllEffective()['Assembly.Physical.geometry']).toBe('show');
+
+      // (ii) let-Solid intermediates are hidden under auto:default
+      expect(store.getAllEffective()['Assembly.Physical.body1']).toBe('hidden');
+      expect(store.getAllEffective()['Assembly.Physical.body2']).toBe('hidden');
+
+      // (iii) after setActiveView('auto:all-geometry') intermediates become visible
+      store.setActiveView('auto:all-geometry');
+      expect(store.state.activeViewId).toBe('auto:all-geometry');
+      expect(store.getAllEffective()['Assembly.Physical.geometry']).toBe('show');
+      expect(store.getAllEffective()['Assembly.Physical.body1']).toBe('show');
+      expect(store.getAllEffective()['Assembly.Physical.body2']).toBe('show');
+
+      // (iv) setActiveView('auto:default') restores intermediates to hidden
+      store.setActiveView('auto:default');
+      expect(store.state.activeViewId).toBe('auto:default');
+      expect(store.getAllEffective()['Assembly.Physical.geometry']).toBe('show');
+      expect(store.getAllEffective()['Assembly.Physical.body1']).toBe('hidden');
+      expect(store.getAllEffective()['Assembly.Physical.body2']).toBe('hidden');
+
+      dispose();
+    });
+  });
+});
