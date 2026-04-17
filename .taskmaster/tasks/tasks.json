@@ -40572,7 +40572,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:11:39.141Z"
+        "updatedAt": "2026-04-17T13:11:39.141Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/lib.rs"
+          ]
+        }
       },
       {
         "id": "1941",
@@ -40606,7 +40611,9 @@
       "completedCount": 1664,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T13:15:40.992Z",
+      "description": "Tasks for master context"
     }
   }
 }
