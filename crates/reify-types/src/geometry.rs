@@ -454,11 +454,19 @@ mod tests {
     fn geometry_handle_id_content_hash_distinct() {
         let h1 = GeometryHandleId(0).content_hash();
         let h2 = GeometryHandleId(1).content_hash();
-        let h3 = GeometryHandleId(u64::MAX).content_hash();
+        // Use u64::MAX - 1 (not INVALID = u64::MAX) to avoid triggering the
+        // debug_assert in content_hash() while still proving distinctness.
+        let h3 = GeometryHandleId(u64::MAX - 1).content_hash();
 
         assert_ne!(h1, h2);
         assert_ne!(h1, h3);
         assert_ne!(h2, h3);
+    }
+
+    #[test]
+    #[should_panic(expected = "INVALID handle must not be hashed")]
+    fn geometry_handle_id_content_hash_invalid_panics() {
+        let _ = GeometryHandleId::INVALID.content_hash();
     }
 
     #[test]
