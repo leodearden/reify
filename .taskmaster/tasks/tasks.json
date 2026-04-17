@@ -40238,23 +40238,21 @@
         "description": "The `viewStateStore — source comments` test in gui/src/__tests__/viewStateStore.test.ts (lines 710-726) asserts on the *text* of a code comment rather than any runtime behavior. It has two reviewer-flagged problems:\n\n1. **Typography-only assertion.** The regex `/-{5,}\\n\\s*\\/\\/ Mutations\\n\\s*\\/\\/ -{5,}/` matches the decorative divider header only; the test still passes even if the mutation functions below it are deleted. It will also spuriously fail if anyone re-styles section headers. Options:\n   - Remove the test (trust code review / the commit that added the neutral header).\n   - Convert it to an ESLint custom rule (behaves like a lint rule, not a unit test).\n   - Anchor the regex to the actual function definition, e.g. `/-{5,}\\n\\s*\\/\\/ Mutations\\n\\s*\\/\\/ -{5,}\\n\\s*\\n\\s*function setVisibility\\(/` so a deletion of the mutations block breaks the guard.\n\n2. **Top-level `readFileSync` breaks suite isolation.** `const src = readFileSync(SRC_PATH, 'utf-8');` runs at module load time. If viewStateStore.ts is renamed/moved, the *entire* test file fails to load and every other test in the suite becomes unreported instead of producing a single localized failure on the guard test. Move `SRC_PATH` and `readFileSync` inside the `it(...)` callback so only this one test fails.\n\nPick option 1.3 (anchor to function) + move readFileSync inside `it`, OR delete the test entirely and accept code review as the guard. Source: review of task 1902 (esc-1902-177).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:21:34.661Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:20:15.444Z",
-      "taskCount": 1919,
+      "lastModified": "2026-04-17T05:21:34.665Z",
+      "taskCount": 1920,
       "completedCount": 1647,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-17T05:21:05.654Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-17T05:21:10.021Z"
+      ]
     }
   }
 }
