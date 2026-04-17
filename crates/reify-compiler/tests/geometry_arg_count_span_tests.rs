@@ -34,3 +34,27 @@ fn box_arg_count_diagnostic_has_span_label() {
     assert!(!first.labels.is_empty(), "expected at least one label on box arg-count diagnostic");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span on box arg-count label");
 }
+
+// ── cylinder() ─────────────────────────────────────────────────────────
+
+#[test]
+fn cylinder_arg_count_diagnostic_has_span_label() {
+    // cylinder() expects 2 arguments — passing only 1 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let c = cylinder(10mm)
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("cylinder() expects 2 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'cylinder() expects 2 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on cylinder arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on cylinder arg-count label");
+}
