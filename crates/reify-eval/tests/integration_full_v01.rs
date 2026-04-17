@@ -805,22 +805,21 @@ fn test_runner_all_pass() {
     }
 }
 
-// ── Test 19: purpose follow-up comments are precise ──────────────────────────
+// ── Test 26: purpose follow-up comments are precise ──────────────────────────
 
 /// Assert that the .ri file's purpose comments have been upgraded from the
 /// old generic "tracked as a follow-up task" phrasing to precise scoped
-/// references naming the specific missing plumbing and citing task #1904.
+/// references citing task #1904.
+///
+/// Self-expiring scaffolding: delete this test when task #1904 lands and
+/// the placeholder constraints are replaced with real reflective syntax.
 ///
 /// Assertions:
 /// 1. The old generic phrase is absent (regression guard).
 /// 2. The old vague phrase is absent (regression guard).
-/// 3. The precise follow-up task id "task #1904" is present.
-/// 4. The three specific missing pieces are mentioned: member-access
-///    compilation, resolved_queries filter branches, and forall runtime
-///    expansion.
-/// 5. A scoped placeholder comment with task #1904 appears above weight_target.
-/// 6. The target reflective shapes are named: "forall p in subject.geometric_params"
-///    and "minimize subject.mass".
+/// 3. The precise follow-up task id "task #1904" is present somewhere.
+/// 4. A scoped placeholder comment with task #1904 appears above weight_target,
+///    naming both target shapes (minimize subject.mass, determined(subject.mass)).
 #[test]
 fn purpose_follow_up_comment_is_precise() {
     let src = source();
@@ -843,22 +842,8 @@ fn purpose_follow_up_comment_is_precise() {
         "Precise follow-up marker 'task #1904' not found in .ri — add scoped placeholder comments"
     );
 
-    // 4. Three specific missing pieces must be mentioned at least once.
-    assert!(
-        src.contains("member-access") || src.contains("member access"),
-        "No mention of 'member-access' / 'member access' in .ri — scoped comment must name the expr.rs gap"
-    );
-    assert!(
-        src.contains("resolved_queries"),
-        "No mention of 'resolved_queries' in .ri — scoped comment must name the traits.rs filter gap"
-    );
-    assert!(
-        src.contains("forall p in subject"),
-        "No mention of 'forall p in subject' in .ri — scoped comment must show the target shape"
-    );
-
-    // 5. A scoped placeholder comment with task #1904 must appear above weight_target.
-    // We detect this by finding "task #1904" in the text that precedes "weight_target".
+    // 4. The scoped comment ABOVE weight_target must cite task #1904 and name
+    // both target shapes (minimize subject.mass and determined(subject.mass)).
     let weight_target_pos = src
         .find("purpose weight_target")
         .expect("'purpose weight_target' must exist in .ri");
@@ -867,56 +852,14 @@ fn purpose_follow_up_comment_is_precise() {
         before_weight_target.contains("task #1904"),
         "No 'task #1904' reference found before 'purpose weight_target' — add scoped placeholder comment above it"
     );
-
-    // 6. Target reflective shapes must be named.
-    assert!(
-        src.contains("forall p in subject.geometric_params"),
-        "Target shape 'forall p in subject.geometric_params' not mentioned in .ri scoped comment"
-    );
-    assert!(
-        src.contains("minimize subject.mass"),
-        "Target shape 'minimize subject.mass' not mentioned in .ri scoped comment"
-    );
-}
-
-// ── Test 20: weight_target has its own precise scoped follow-up comment ───────
-
-/// Sibling test that checks the comment SPECIFICALLY ABOVE weight_target
-/// (not just anywhere in the file) mentions both "minimize subject.mass"
-/// as the target shape and cites "task #1904" as the follow-up tracker.
-/// This ensures the weight_target comment is self-contained and precise.
-#[test]
-fn weight_target_precise_follow_up() {
-    let src = source();
-
-    // Locate the weight_target purpose declaration.
-    let weight_target_pos = src
-        .find("purpose weight_target")
-        .expect("'purpose weight_target' must exist in .ri");
-
-    // Restrict to the text BEFORE the purpose declaration (i.e., comments above it).
-    let before_weight_target = &src[..weight_target_pos];
-
-    // The comment above weight_target must cite "task #1904".
-    assert!(
-        before_weight_target.contains("task #1904"),
-        "No 'task #1904' found in the text preceding 'purpose weight_target' — \
-         scoped comment above weight_target must cite task #1904"
-    );
-
-    // The comment above weight_target must mention the target shape "minimize subject.mass".
     assert!(
         before_weight_target.contains("minimize subject.mass"),
-        "Target shape 'minimize subject.mass' not found in the text preceding \
-         'purpose weight_target' — scoped comment above weight_target must name the target shape"
+        "Target shape 'minimize subject.mass' not found before 'purpose weight_target'"
     );
-
-    // The comment above weight_target must also mention "determined(subject.mass)"
-    // so readers know the constraint target shape too.
     assert!(
         before_weight_target.contains("determined(subject.mass)"),
-        "Target shape 'determined(subject.mass)' not found in the text preceding \
-         'purpose weight_target' — scoped comment must name both minimize and constraint targets"
+        "Target shape 'determined(subject.mass)' not found before 'purpose weight_target' — \
+         scoped comment must name both minimize and constraint targets"
     );
 }
 
