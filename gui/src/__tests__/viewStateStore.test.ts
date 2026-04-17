@@ -715,12 +715,13 @@ const SRC_PATH = join(__dirname, '../stores/viewStateStore.ts');
 const src = readFileSync(SRC_PATH, 'utf-8');
 
 describe('viewStateStore — source comments', () => {
-  it('section header does not contain stale "stubs" phrasing', () => {
+  it('section header uses bare // Mutations form without stale "stubs" phrasing', () => {
+    // Guard against re-introduction of the historical scaffolding comment
+    // "Mutations (stubs — fully implemented in later steps)".
+    // The regex anchors against surrounding divider lines to avoid false positives
+    // from incidental occurrences of '// Mutations' elsewhere in the file.
     expect(src).not.toContain('stubs — fully implemented in later steps');
-  });
-
-  it('section header uses bare // Mutations form', () => {
-    expect(src).toContain('// Mutations');
+    expect(src).toMatch(/-{5,}\n\s*\/\/ Mutations\n\s*\/\/ -{5,}/);
   });
 });
 
