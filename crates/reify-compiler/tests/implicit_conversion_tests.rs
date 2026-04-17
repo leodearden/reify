@@ -560,16 +560,6 @@ fn error_wildcard_implicit_from_error_to_real() {
     );
 }
 
-/// (task-1912 req-b) `implicitly_converts_to(Real, Error) == true`.
-/// Anti-cascade guard: when `to` is the poison sentinel, suppress any
-/// downstream type-mismatch diagnostic.
-#[test]
-fn error_wildcard_implicit_from_real_to_error() {
-    assert!(
-        implicitly_converts_to(&Type::Real, &Type::Error),
-        "implicitly_converts_to(Real, Error) must be true (anti-cascade guard, task-1912)"
-    );
-}
 
 /// `implicitly_converts_to(Error, Int) == true`.
 #[test]
@@ -580,14 +570,6 @@ fn error_wildcard_implicit_error_to_int() {
     );
 }
 
-/// `implicitly_converts_to(Int, Error) == true`.
-#[test]
-fn error_wildcard_implicit_int_to_error() {
-    assert!(
-        implicitly_converts_to(&Type::Int, &Type::Error),
-        "implicitly_converts_to(Int, Error) must be true (anti-cascade guard, task-1912)"
-    );
-}
 
 /// `implicitly_converts_to(Error, Bool) == true`.
 #[test]
@@ -607,20 +589,6 @@ fn error_wildcard_implicit_error_to_string() {
     );
 }
 
-/// `implicitly_converts_to(Error, Error) == true`.
-/// Note: this case is also covered by the identity arm (`from == to`), so it
-/// does NOT discriminate between guard-present and guard-removed. It is kept
-/// for completeness. The actual guard-pinning tests are
-/// `error_wildcard_implicit_from_error_to_real` and
-/// `error_wildcard_implicit_from_real_to_error`, which use types that are not
-/// convertible without the guard (task-1912).
-#[test]
-fn error_wildcard_implicit_error_to_error() {
-    assert!(
-        implicitly_converts_to(&Type::Error, &Type::Error),
-        "implicitly_converts_to(Error, Error) must be true (anti-cascade guard, task-1912)"
-    );
-}
 
 /// `implicitly_converts_to(Error, List<Int>) == true` — compound type.
 #[test]
@@ -632,15 +600,6 @@ fn error_wildcard_implicit_error_to_list() {
     );
 }
 
-/// `implicitly_converts_to(List<Int>, Error) == true` — mirror direction for compound.
-#[test]
-fn error_wildcard_implicit_list_to_error() {
-    let from = Type::List(Box::new(Type::Int));
-    assert!(
-        implicitly_converts_to(&from, &Type::Error),
-        "implicitly_converts_to(List<Int>, Error) must be true (anti-cascade guard, task-1912)"
-    );
-}
 
 /// `implicitly_converts_to(Error, Option<Real>) == true` — compound type.
 #[test]
@@ -661,15 +620,6 @@ fn error_wildcard_implicit_error_to_scalar() {
     );
 }
 
-/// `implicitly_converts_to(Scalar[m], Error) == true` — mirror direction for
-/// shape-carrying type.
-#[test]
-fn error_wildcard_implicit_scalar_to_error() {
-    assert!(
-        implicitly_converts_to(&length_scalar(), &Type::Error),
-        "implicitly_converts_to(Scalar[m], Error) must be true (anti-cascade guard, task-1912)"
-    );
-}
 
 /// `implicitly_converts_to(Error, Vector<3,Real>) == true` — shape-carrying type.
 #[test]
@@ -709,6 +659,60 @@ fn error_wildcard_implicit_error_to_matrix() {
     assert!(
         implicitly_converts_to(&Type::Error, &to),
         "implicitly_converts_to(Error, Matrix<3,3,Real>) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+// ── Consumer-side Error contract: implicitly_converts_to (task-1918) ──────────
+//
+// Task 1918 tightens the error-wildcard contract: `Type::Error` must never appear
+// on the consumer/target side (`to`) of `implicitly_converts_to` — declared
+// annotations always resolve to a concrete type via `resolve_type_with_aliases`.
+//
+// In debug builds a `debug_assert!` fires immediately to catch this bug class.
+// In release builds the existing short-circuit returns `true` as a belt-and-braces
+// cascade-safety net (task-448 rationale preserved).
+//
+// Both build configurations are pinned here:
+//   (a) debug_assertions: the call must panic (caught by #[should_panic])
+//   (b) not(debug_assertions): the call must return true (release short-circuit)
+
+/// Consumer-side contract (debug): `implicitly_converts_to(Real, Error)` panics.
+/// The debug_assert fires because `to=Type::Error` is never legitimate.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "Type::Error")]
+fn error_wildcard_implicit_to_error_debug_panics_real() {
+    let _ = implicitly_converts_to(&Type::Real, &Type::Error);
+}
+
+/// Consumer-side contract (debug): `implicitly_converts_to(Scalar[m], Error)` panics.
+/// Shape-carrying type — the debug_assert fires regardless of the `from` type.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "Type::Error")]
+fn error_wildcard_implicit_to_error_debug_panics_scalar() {
+    let _ = implicitly_converts_to(&length_scalar(), &Type::Error);
+}
+
+/// Consumer-side contract (release): `implicitly_converts_to(Real, Error)` returns true.
+/// Belt-and-braces short-circuit preserves cascade safety in release builds.
+#[cfg(not(debug_assertions))]
+#[test]
+fn error_wildcard_implicit_to_error_release_returns_true_real() {
+    assert!(
+        implicitly_converts_to(&Type::Real, &Type::Error),
+        "implicitly_converts_to(Real, Error) must return true in release (belt-and-braces, task-1918)"
+    );
+}
+
+/// Consumer-side contract (release): `implicitly_converts_to(Scalar[m], Error)` returns true.
+/// Shape-carrying type — belt-and-braces short-circuit still fires in release.
+#[cfg(not(debug_assertions))]
+#[test]
+fn error_wildcard_implicit_to_error_release_returns_true_scalar() {
+    assert!(
+        implicitly_converts_to(&length_scalar(), &Type::Error),
+        "implicitly_converts_to(Scalar[m], Error) must return true in release (belt-and-braces, task-1918)"
     );
 }
 
