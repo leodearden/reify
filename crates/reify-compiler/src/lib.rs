@@ -276,16 +276,14 @@ pub(crate) fn compile_with_prelude_refs(
                 // Detect cross-prelude collision before overwriting: if another
                 // prelude module already seeded this unit name, emit a warning.
                 if let Some(existing) = unit_registry.lookup(&cu.name) {
-                    let first_module = existing
+                    let first_module: &str = existing
                         .source_module
                         .as_deref()
-                        .unwrap_or("<unknown>")
-                        .to_string();
+                        .unwrap_or("<unknown>");
                     diagnostics.push(
                         Diagnostic::warning(format!(
-                            "prelude unit '{}' declared in both '{}' and '{}'; \
-                             last-wins — using definition from '{}'",
-                            cu.name, first_module, module_display, module_display
+                            "prelude unit '{}' declared in both '{}' and '{}'; last-wins",
+                            cu.name, first_module, module_display
                         ))
                         .with_label(DiagnosticLabel::new(
                             SourceSpan::prelude(),

@@ -1838,3 +1838,96 @@ fn prelude_module_unit_collision_emits_warning() {
         bar.factor
     );
 }
+
+// ── amendment (task-765): three-prelude collision — two chained warnings ───────
+
+/// When three prelude modules all export the same unit name, the seeding loop
+/// fires two warnings (one per collision), each naming the pair of modules
+/// involved at that moment (chained last-wins).
+///
+/// Specifically:
+///  - mod_a seeds first (no collision yet)
+///  - mod_b collides with mod_a → warning #1 names "mod_a" and "mod_b"
+///  - mod_c collides with mod_b → warning #2 names "mod_b" and "mod_c"
+///  - Final winner is mod_c (factor 3.0)
+#[test]
+fn three_prelude_collision_emits_two_chained_warnings() {
+    // mod_a: pub unit foo with SI factor 1.0 m
+    let mod_a_parsed = reify_syntax::parse(
+        "pub unit foo : Length = 1.0",
+        ModulePath::single("mod_a"),
+    );
+    assert!(mod_a_parsed.errors.is_empty(), "parse errors in mod_a: {:?}", mod_a_parsed.errors);
+    let mod_a = compile(&mod_a_parsed);
+    assert!(errors_only(&mod_a).is_empty(), "mod_a errors: {:?}", errors_only(&mod_a));
+
+    // mod_b: pub unit foo with SI factor 2.0 m
+    let mod_b_parsed = reify_syntax::parse(
+        "pub unit foo : Length = 2.0",
+        ModulePath::single("mod_b"),
+    );
+    assert!(mod_b_parsed.errors.is_empty(), "parse errors in mod_b: {:?}", mod_b_parsed.errors);
+    let mod_b = compile(&mod_b_parsed);
+    assert!(errors_only(&mod_b).is_empty(), "mod_b errors: {:?}", errors_only(&mod_b));
+
+    // mod_c: pub unit foo with SI factor 3.0 m — final winner
+    let mod_c_parsed = reify_syntax::parse(
+        "pub unit foo : Length = 3.0",
+        ModulePath::single("mod_c"),
+    );
+    assert!(mod_c_parsed.errors.is_empty(), "parse errors in mod_c: {:?}", mod_c_parsed.errors);
+    let mod_c = compile(&mod_c_parsed);
+    assert!(errors_only(&mod_c).is_empty(), "mod_c errors: {:?}", errors_only(&mod_c));
+
+    // User module: references foo (resolved via last-wins to mod_c)
+    let user_parsed = reify_syntax::parse(
+        "unit bar : Length = 1foo",
+        ModulePath::single("user_module"),
+    );
+    assert!(user_parsed.errors.is_empty(), "parse errors in user: {:?}", user_parsed.errors);
+
+    let user_module = compile_with_prelude(&user_parsed, &[mod_a, mod_b, mod_c]);
+
+    // (a) Exactly two Warning diagnostics mentioning 'foo'
+    let warnings: Vec<_> = user_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Warning && d.message.contains("foo"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        2,
+        "expected exactly 2 warnings about 'foo', got: {:?}",
+        warnings
+    );
+
+    // (b) Warning #1 names mod_a and mod_b (the first collision pair)
+    let warn1 = warnings.iter().find(|w| w.message.contains("mod_a") && w.message.contains("mod_b"));
+    assert!(
+        warn1.is_some(),
+        "expected a warning naming both 'mod_a' and 'mod_b', warnings: {:?}",
+        warnings
+    );
+
+    // (c) Warning #2 names mod_b and mod_c (the second collision pair)
+    let warn2 = warnings.iter().find(|w| w.message.contains("mod_b") && w.message.contains("mod_c"));
+    assert!(
+        warn2.is_some(),
+        "expected a warning naming both 'mod_b' and 'mod_c', warnings: {:?}",
+        warnings
+    );
+
+    // No Error-severity diagnostics — user compilation succeeds
+    let errors = errors_only(&user_module);
+    assert!(errors.is_empty(), "user compilation should succeed, got: {:?}", errors);
+
+    // (d) Last-wins: mod_c's foo (factor 3.0) is the final winner
+    let bar = user_module.units.iter().find(|u| u.name == "bar");
+    assert!(bar.is_some(), "'bar' should be compiled successfully");
+    let bar = bar.unwrap();
+    assert!(
+        (bar.factor - 3.0).abs() < common::UNIT_EPSILON,
+        "bar's SI factor should be 3.0 (mod_c's foo wins last-wins), got {}",
+        bar.factor
+    );
+}
