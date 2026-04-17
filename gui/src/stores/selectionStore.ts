@@ -85,6 +85,24 @@ export function createSelectionStore() {
     }
   });
 
+  /**
+   * Shared mutation helper: replaces selectedEntities with a deduped copy of `paths`
+   * and sets selectedEntity to the last element (or null if empty).
+   * Does NOT touch anchorEntity — callers manage anchor independently.
+   */
+  function setEntitiesList(paths: string[]): void {
+    const deduped = Array.from(new Set(paths));
+    batch(() => {
+      setState('selectedEntities', deduped);
+      setState('selectedEntity', deduped.length > 0 ? deduped[deduped.length - 1] : null);
+    });
+  }
+
+  /**
+   * Selects a single entity, replacing any previous selection.
+   * Anchor policy: reset to `path` (or cleared if path is null), making this entity
+   * the new anchor for subsequent Shift+click range-selects.
+   */
   function selectSingle(entityPath: string | null) {
     if (entityPath === null) {
       batch(() => {
@@ -101,6 +119,10 @@ export function createSelectionStore() {
     }
   }
 
+  /**
+   * Clears the entire selection.
+   * Anchor policy: cleared (null), since there is no longer a logical range origin.
+   */
   function clearSelection() {
     batch(() => {
       setState('selectedEntities', []);
@@ -109,22 +131,30 @@ export function createSelectionStore() {
     });
   }
 
+  /**
+   * Replaces the selection with the given ordered list of paths (e.g. a Shift+click range).
+   * Anchor policy: preserved — callers set the anchor before invoking, so subsequent
+   * Shift+clicks extend from the same original anchor (standard file-explorer semantics).
+   */
   function rangeSelect(paths: string[]) {
-    const deduped = Array.from(new Set(paths));
-    batch(() => {
-      setState('selectedEntities', deduped);
-      setState('selectedEntity', deduped.length > 0 ? deduped[deduped.length - 1] : null);
-    });
+    setEntitiesList(paths);
   }
 
+  /**
+   * Replaces the selection with all provided paths (e.g. Ctrl+A select-all).
+   * Anchor policy: preserved — since Ctrl+A selects everything, the anchor position
+   * doesn't meaningfully affect subsequent Shift+clicks.
+   */
   function selectAll(paths: string[]) {
-    const deduped = Array.from(new Set(paths));
-    batch(() => {
-      setState('selectedEntities', deduped);
-      setState('selectedEntity', deduped.length > 0 ? deduped[deduped.length - 1] : null);
-    });
+    setEntitiesList(paths);
   }
 
+  /**
+   * Toggles `entityPath` in the selection: adds it if absent, removes it if present.
+   * Anchor policy: NOT updated — the anchor retains its prior value so Shift+click can
+   * still range-extend from the last selectSingle call. If no anchor has been set yet,
+   * subsequent Shift+clicks fall back to onSelect(path, { shift: true }).
+   */
   function toggleSelect(entityPath: string) {
     batch(() => {
       const current = state.selectedEntities;
