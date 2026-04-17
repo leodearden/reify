@@ -12,16 +12,18 @@ import { vi, expect, type MockInstance } from 'vitest';
  *
  * Throws an Error if `values` is empty — a silent NaN would propagate into
  * assertions and produce a confusing failure far from the actual root cause.
- * Also throws if any element is NaN — the sort comparator returns NaN for NaN
- * inputs, producing a nondeterministic order and a NaN result that would fail
- * `toBeLessThan` with a misleading message.
+ * Also throws if any element is non-finite (NaN, +Infinity, or -Infinity) —
+ * `Number.isFinite` subsumes the narrower `Number.isNaN` check and rejects all
+ * three cases with a single guard. A non-finite sort result is nondeterministic
+ * and would propagate into `toBeLessThan` with a misleading message such as
+ * "expected Infinity to be less than 15".
  */
 export function median(values: number[]): number {
   if (values.length === 0) {
     throw new Error('median: input array is empty');
   }
-  if (values.some(Number.isNaN)) {
-    throw new Error('median: input contains NaN');
+  if (values.some(v => !Number.isFinite(v))) {
+    throw new Error('median: input contains non-finite value');
   }
   const sorted = [...values].sort((a, b) => a - b);
   const n = sorted.length;
