@@ -41,8 +41,8 @@
 //! no "type mismatch for trait let" cascade.  This scenario directly exercises
 //! the wildcard call-site that task-1936 targets.
 
-use reify_test_support::compile_source;
-use reify_types::{Diagnostic, Severity};
+use reify_test_support::{compile_source, errors_only};
+use reify_types::Diagnostic;
 
 // ── Shared assertion helper ───────────────────────────────────────────────────
 
@@ -56,11 +56,7 @@ use reify_types::{Diagnostic, Severity};
 /// (c) At least one `Severity::Error` diagnostic contains `"unknown member"` —
 ///     the specific root-cause producer diagnostic from `expr.rs` is present.
 fn assert_poisoned_conformance_invariant(module: &reify_compiler::CompiledModule) {
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = errors_only(module);
 
     // (a) At least one Severity::Error must be present.
     assert!(
@@ -155,8 +151,11 @@ structure def S : HasX {}
 /// searching for the cascade message, a Warning-severity offender would be
 /// invisible and the test would silently pass — the invariant inverted.
 #[test]
-#[should_panic(expected = "type mismatch for trait")]
+#[should_panic(expected = "unexpected 'type mismatch for trait' cascade")]
 fn helper_flags_cascade_at_warning_severity() {
+    // compile_source is the only public constructor for CompiledModule in tests;
+    // diagnostics are immediately overwritten with synthetic entries so the
+    // actual compilation result is irrelevant.
     let mut module = compile_source("structure def Dummy {}");
     module.diagnostics = vec![
         Diagnostic::error("unknown member 'unsupported' in scope S"),
