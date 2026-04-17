@@ -592,10 +592,13 @@ pub(crate) fn compile_with_prelude_refs(
             if let Some(prev_path) = prelude_source.get(&cd.name) {
                 if *prev_path != module_path_str {
                     // Two different imported modules export the same constraint def name.
-                    // Emit a warning so authors know one import silently shadows the other.
+                    // The first-imported module wins; emit a warning that names the winner
+                    // (prev_path) before the loser (module_path_str) so users know which
+                    // import is retained and which is silently discarded.
                     diagnostics.push(Diagnostic::warning(format!(
-                        "constraint def '{}' imported from '{}' shadows definition from '{}'",
-                        cd.name, module_path_str, prev_path
+                        "constraint def '{}' from '{}' shadows '{}' from '{}' \
+                         (first-imported definition wins)",
+                        cd.name, prev_path, cd.name, module_path_str
                     )));
                 }
                 // First-import wins: do not overwrite the existing registry entry.
