@@ -6,6 +6,7 @@ import type {
   ConstraintData,
   EvaluationStatus,
   GuiState,
+  DiagnosticInfo,
 } from '../types';
 import {
   onMeshUpdate,
@@ -15,6 +16,7 @@ import {
   onMeshRemoved,
   onValueRemoved,
   onConstraintRemoved,
+  onTessellationDiagnostics,
 } from '../bridge';
 
 export interface EngineState {
@@ -22,6 +24,7 @@ export interface EngineState {
   values: Record<string, ValueData>;
   constraints: Record<string, ConstraintData>;
   evalStatus: EvaluationStatus;
+  tessellationDiagnostics: DiagnosticInfo[];
 }
 
 export interface EngineStoreOptions {
@@ -34,6 +37,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     values: {},
     constraints: {},
     evalStatus: { phase: 'idle' },
+    tessellationDiagnostics: [],
   });
 
   function initFromState(guiState: GuiState) {
@@ -52,7 +56,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       constraints[c.node_id] = c;
     }
 
-    setState({ meshes, values, constraints });
+    setState({ meshes, values, constraints, tessellationDiagnostics: guiState.tessellation_diagnostics });
   }
 
   function applyMeshUpdate(mesh: MeshData) {
@@ -94,6 +98,10 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('evalStatus', status);
   }
 
+  function setTessellationDiagnostics(diags: DiagnosticInfo[]) {
+    setState('tessellationDiagnostics', diags);
+  }
+
   async function subscribeToEvents(): Promise<() => void> {
     const results = await Promise.allSettled([
       onMeshUpdate(applyMeshUpdate),
@@ -103,6 +111,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       onMeshRemoved(removeMesh),
       onValueRemoved(removeValue),
       onConstraintRemoved(removeConstraint),
+      onTessellationDiagnostics(setTessellationDiagnostics),
     ]);
 
     const unlisteners: (() => void)[] = [];
@@ -131,6 +140,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     removeValue,
     removeConstraint,
     setEvalStatus,
+    setTessellationDiagnostics,
     subscribeToEvents,
   };
 }

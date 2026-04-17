@@ -44,6 +44,9 @@ const mockOnTessellationDiagnostics = vi.mocked(onTessellationDiagnostics);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: all subscriptions succeed with a no-op unlisten function.
+  // Tests that need specific behaviour can override individual mocks.
+  mockOnTessellationDiagnostics.mockResolvedValue(vi.fn());
 });
 
 const sampleMesh: MeshData = {
