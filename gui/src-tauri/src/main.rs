@@ -272,6 +272,7 @@ fn update_selection(
     state: tauri::State<'_, AppState>,
     selected_entity: Option<String>,
     hovered_entity: Option<String>,
+    selected_entities: Option<Vec<String>>,
 ) -> Result<(), String> {
     let mut sel = state
         .selection
@@ -279,6 +280,7 @@ fn update_selection(
         .map_err(|e| format!("Selection lock poisoned: {}", e))?;
     sel.selected_entity = selected_entity;
     sel.hovered_entity = hovered_entity;
+    sel.selected_entities = selected_entities.unwrap_or_default();
     Ok(())
 }
 
