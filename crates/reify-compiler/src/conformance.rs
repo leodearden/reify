@@ -165,50 +165,45 @@ pub(crate) fn check_trait_conformance(
     }
 
     // Cache of compiled expressions for unannotated let defaults, keyed by
-    // default name.  Populated by Pass 2 below and drained by the injection
-    // loop (task 1834 step-9) to avoid double-compilation of the same
-    // expression.  Also consumed by the `available_defaults` builder
-    // (task 1834 step-8) so unannotated let defaults contribute their
-    // *inferred* type to requirement-matching, instead of the previous
-    // `Type::Real` fallback.
+    // default name.  Populated by the pre-register pass below and drained by
+    // the injection loop (task 1834 step-9) to avoid double-compilation of
+    // the same expression.  Also consumed by the `available_defaults` builder
+    // (task 1834 step-8) so unannotated let defaults contribute their *inferred*
+    // type to requirement-matching, instead of the previous `Type::Real` fallback.
     //
-    // TWO-PASS PRE-REGISTER DESIGN (task 1834 amendment — reviewer_comprehensive
-    // behavior_regression fix):
-    //   Pass 1 — register every *annotated* default (Param + Let with
-    //     `Some(cell_type)`) into the scope.  No expression compilation
-    //     happens here, so ordering within `ctx.defaults` does not matter
-    //     for the annotated types made visible to Pass 2.
-    //   Pass 2 — for each *unannotated* Let (`cell_type: None`), compile
-    //     the expression against the fully-populated annotated scope from
-    //     Pass 1, cache the compiled_expr in `inferred_let_exprs`, and
-    //     register the inferred `result_type`.
-    //
-    // The split restores the pre-1834 tolerance for forward references to
-    // any *annotated* member: before this amendment, Pass 1+2 were a single
-    // pass that walked `ctx.defaults` in source order, so an unannotated
-    // `let a = b + 1mm` appearing before `let b : Length = 2mm` would compile
-    // against a scope that did not yet contain `b` — a silent regression
-    // vs. the pre-1834 code, which registered every annotated type up front.
-    // Both passes run BEFORE `available_defaults` is built so Pass 2's
-    // inference results feed the requirement-matching lookup below.
-    //
-    // DESIGN LIMITATION (acknowledged simplification): Pass 2 still walks
-    // `ctx.defaults` in source order.  Two *unannotated* lets that
-    // forward-reference each other — e.g., `let a = b + 1mm` where
-    // `let b = 5mm` is *also* unannotated — will fail inference for the
-    // forward-referencing binding (`b` is not in scope when `a`'s
-    // expression is compiled), yielding an `unresolved name` diagnostic.
-    // Annotating *either* binding unblocks the case because annotated
-    // types are registered by Pass 1.  A topological ordering pass over
-    // unannotated lets would remove the limitation entirely but is out of
-    // scope for task 1834 ("documenting as intentional simplification").
+    // DESIGN LIMITATION (acknowledged simplification): type inference for
+    // unannotated lets proceeds in `ctx.defaults` iteration order.  Two
+    // unannotated lets that forward-reference each other — e.g., `let a = b + 1mm`
+    // where `let b = 5mm` is *also* unannotated and appears *after* `a` in
+    // iteration order — will fail inference for the forward-referencing
+    // binding (`b` is not in scope when `a`'s expression is compiled), yielding
+    // a diagnostic from `compile_expr`.  Adding an annotation to the
+    // *forward-referencing* binding (the one that needs its referent in scope)
+    // unblocks the case, because the annotated branch above skips `compile_expr`
+    // in the pre-register pass — by the time the injection loop compiles that
+    // binding's expression, the referent has already been registered.
+    // Annotating only the *forward-referenced* binding does NOT help here,
+    // because the pre-register pass walks `ctx.defaults` in iteration order and
+    // the forward-referencing binding's `compile_expr` still fires before the
+    // referenced binding's match arm runs.  A two-pass variant — first register
+    // all annotated defaults/params, then compile unannotated-let expressions —
+    // would make either-side annotation sufficient, but is out of scope for
+    // task 1834 ("documenting as intentional simplification").
     let mut inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
 
-    // Pass 1: register all *annotated* defaults (Param, Let-with-annotation).
-    // Unannotated lets and constraints are deferred to Pass 2 / injection.
-    // register_if_absent provides the no-overwrite guarantee: first-seen type
-    // wins, and the method itself is safe against cross-kind overwrites
-    // without a call-site guard.
+    // Pre-register default member names in scope so their expressions can
+    // reference each other (e.g., constraint x > 0 references param x from same trait).
+    // register_if_absent provides the no-overwrite guarantee: first-seen type wins,
+    // and the method itself is safe against cross-kind overwrites without a call-site guard.
+    //
+    // Two branches for Let defaults:
+    //   - annotated (cell_type: Some(ty))   → register the annotation directly,
+    //   - unannotated (cell_type: None)     → compile the expression in the
+    //     partial scope, register the inferred `result_type`, and cache the
+    //     compiled_expr in `inferred_let_exprs` for the injection loop.
+    //
+    // This pass runs BEFORE `available_defaults` is built so unannotated-let
+    // inference results feed the requirement-matching lookup below.
     for default in &ctx.defaults {
         if let Some(name) = &default.name
             && !structure_members.contains_key(name)
@@ -219,8 +214,20 @@ pub(crate) fn check_trait_conformance(
                     cell_type: Some(annotation_ty),
                     ..
                 } => annotation_ty.clone(),
-                // Deferred to Pass 2 — needs Pass 1's scope to compile against.
-                DefaultKind::Let { cell_type: None, .. } => continue,
+                DefaultKind::Let {
+                    cell_type: None,
+                    let_decl,
+                } => {
+                    // Unannotated let: infer the type from the expression,
+                    // compiled in the partial scope visible so far (structure
+                    // members + already-registered defaults).  Cache the
+                    // compiled_expr so the injection loop can reuse it.
+                    let compiled_expr =
+                        compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
+                    let inferred_ty = compiled_expr.result_type.clone();
+                    inferred_let_exprs.insert(name.clone(), compiled_expr);
+                    inferred_ty
+                }
                 DefaultKind::Constraint(_) => continue,
             };
             // `ty` is cloned here so we retain the value for the debug event on
@@ -237,37 +244,6 @@ pub(crate) fn check_trait_conformance(
                     name = %name,
                     entity = %structure.name,
                     ignored_ty = ?ty,
-                    "trait-merge conflict: second default with same name ignored; first-seen type wins"
-                );
-            }
-        }
-    }
-
-    // Pass 2: compile each *unannotated* Let's expression against the
-    // fully-populated annotated scope from Pass 1 and register its inferred
-    // type.  Caches the compiled_expr in `inferred_let_exprs` for reuse by
-    // the injection loop (avoids double compilation) and by
-    // `available_defaults` (so requirement-matching uses the inferred type
-    // instead of the old `Type::Real` fallback).
-    for default in &ctx.defaults {
-        if let Some(name) = &default.name
-            && !structure_members.contains_key(name)
-            && let DefaultKind::Let {
-                cell_type: None,
-                let_decl,
-            } = &default.kind
-        {
-            let compiled_expr =
-                compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
-            let inferred_ty = compiled_expr.result_type.clone();
-            inferred_let_exprs.insert(name.clone(), compiled_expr);
-            let was_new = scope.register_if_absent(name, inferred_ty.clone());
-            if !was_new {
-                tracing::debug!(
-                    target: "reify_compiler::conformance",
-                    name = %name,
-                    entity = %structure.name,
-                    ignored_ty = ?inferred_ty,
                     "trait-merge conflict: second default with same name ignored; first-seen type wins"
                 );
             }
