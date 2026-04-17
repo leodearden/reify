@@ -1,6 +1,15 @@
 use super::*;
 
 pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
+    // Anti-cascade guard (task-448 amend): Type::Error acts as a wildcard to
+    // prevent type-mismatch cascade diagnostics. If either side is already
+    // poisoned, the originating error was already reported at the producer
+    // site — downstream callers (trait conformance, function-argument checks)
+    // must not fire a second "type mismatch" diagnostic on top of it.
+    if from.is_error() || to.is_error() {
+        return true;
+    }
+
     // Identity: same type always converts to itself.
     if from == to {
         return true;
@@ -79,6 +88,12 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
 /// Not used in overload resolution (which uses exact matching), but used
 /// in trait conformance and field composition checks.
 pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
+    // Anti-cascade guard (task-448 amend): treat Type::Error as a wildcard.
+    // See `implicitly_converts_to` — same rationale applies to consumer sites
+    // that compare a Type::Error-poisoned operand against an expected type.
+    if param_ty.is_error() || arg_ty.is_error() {
+        return true;
+    }
     if param_ty == arg_ty {
         return true;
     }
