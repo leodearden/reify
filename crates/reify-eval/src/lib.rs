@@ -3596,5 +3596,56 @@ mod tests {
         assert_eq!(step_handles.len(), 1, "expected one handle appended");
         assert!(diagnostics.is_empty(), "expected no diagnostics");
     }
+
+    /// Compile failure: a Boolean op with out-of-bounds step references causes
+    /// `compile_geometry_op` to return `None`. Returns `true` (had_failure),
+    /// truncates `step_handles` back to `handle_start`, emits 1 compile-error
+    /// diagnostic.
+    #[test]
+    fn execute_realization_ops_compile_failure_returns_true_and_truncates_handles() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // Step(99) is out-of-bounds when step_handles is empty → compile_geometry_op returns None
+        let ops = vec![CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(99),
+            right: GeomRef::Step(99),
+        }];
+
+        let mut kernel = MockGeometryKernel::new();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        let had_failure = Engine::execute_realization_ops(
+            &mut kernel,
+            &ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+        );
+
+        assert!(had_failure, "expected failure from compile error");
+        assert!(
+            step_handles.is_empty(),
+            "handles should be truncated back to handle_start (0)"
+        );
+        let compile_failures = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("failed to compile geometry operation"))
+            .count();
+        assert_eq!(
+            compile_failures,
+            1,
+            "expected exactly 1 compile-error diagnostic, got {}: {:?}",
+            compile_failures,
+            diagnostics
+        );
+    }
 }
 
