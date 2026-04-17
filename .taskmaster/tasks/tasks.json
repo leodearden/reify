@@ -40450,6 +40450,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-17T06:35:22.153Z"
+      },
+      {
+        "id": "1936",
+        "title": "Add conformance-layer regression test for Type::Error wildcard in type_compat",
+        "description": "Follow-up to task 448 review. `implicitly_converts_to` and `type_compatible` in crates/reify-compiler/src/type_compat.rs (lines 9-11, 94-96) now return `true` unconditionally when either side is `Type::Error`. This is correct for anti-cascade, but these predicates are also consumed by trait-conformance and field-composition checks — meaning a structure with a Type::Error-poisoned field will silently satisfy any trait signature. Today this is safe because the root-cause diagnostic was emitted at the producer site, but if that diagnostic is ever downgraded/suppressed elsewhere, conformance could silently go green with no visible error.\n\nAdd an integration test: compile a structure with a poisoned field (e.g. `x: self.unknown_member` or another known Type::Error producer) that implements a trait expecting a specific field type, and assert:\n1. Conformance is not reported as a clean/green success, OR\n2. The module's diagnostic buffer contains at least one `Severity::Error` whenever the conformance check succeeds on a Type::Error operand.\n\nPin this invariant so that future changes to the Type::Error wildcard behavior in type_compat.rs can't silently hide trait-conformance regressions.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -40459,7 +40470,10 @@
       "completedCount": 1657,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T06:36:14.193Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-17T06:36:14.230Z"
     }
   }
 }
