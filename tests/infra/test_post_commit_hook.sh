@@ -202,5 +202,122 @@ _norm_sha_after="$(git -C "$_repo4" rev-parse HEAD)"
 assert "already-normalized: HEAD sha unchanged after re-running hook" \
     test "$_norm_sha" = "$_norm_sha_after"
 
+# ==============================================================================
+# Check 5: MERGE COMMIT — hook normalizes IDs introduced via merge
+# ==============================================================================
+# The hook uses `git diff-tree -m` so that merge commits are diffed against
+# each parent.  Without -m, git diff-tree emits no output for merges and the
+# hook would silently skip normalization of IDs introduced on the merged branch.
+#
+# Setup:
+#   - initial commit on default branch (no tasks.json)
+#   - 'side' branch: add tasks.json with numeric subtask id (committed --no-verify,
+#     so the hook does NOT fire on this commit — numeric IDs survive into the merge)
+#   - default branch: add an unrelated file to give the merge two real parents
+#   - git merge --no-ff side  → merge commit; post-commit hook fires
+#
+# Regression: removing -m from the hook would cause Assert A below to FAIL
+# (tasks.json in HEAD would retain numeric IDs because the merge commit would
+# not appear in git diff-tree output without the -m flag).
+echo ""
+echo "--- Check 5: merge commit — IDs normalized via -m flag ---"
+
+mk_repo_fixture _repo5
+
+# Initial commit on the default branch (no tasks.json).
+echo "init" > "$_repo5/README.md"
+git -C "$_repo5" add README.md
+git -C "$_repo5" commit --no-verify -m "initial" -q
+
+# Capture the default branch name now that HEAD is detached no more.
+_main_branch5="$(git -C "$_repo5" rev-parse --abbrev-ref HEAD)"
+
+# Create a side branch and commit tasks.json with numeric IDs.
+# Use --no-verify so the post-commit hook does NOT fire on this commit — we
+# want numeric IDs to survive into the merge and be normalized only by the
+# hook on the merge commit itself.
+git -C "$_repo5" checkout -b side -q
+mkdir -p "$_repo5/.taskmaster/tasks"
+cat > "$_repo5/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":"10","subtasks":[{"id":77}]}]}}
+JSON
+git -C "$_repo5" add .taskmaster/tasks/tasks.json
+git -C "$_repo5" commit --no-verify -m "chore(tasks): add tasks with numeric subtask id" -q
+
+# Switch back to default branch and add an unrelated file so the merge has
+# two real parents (prevents fast-forward even with --no-ff).
+git -C "$_repo5" checkout "$_main_branch5" -q
+echo "other" > "$_repo5/other.txt"
+git -C "$_repo5" add other.txt
+git -C "$_repo5" commit --no-verify -m "docs: add other file" -q
+
+# Perform the merge.  --no-ff forces a merge commit.  The post-commit hook
+# fires automatically after git creates the merge commit.
+# Note: --no-verify on git-merge only suppresses pre-commit/commit-msg hooks;
+# the post-commit hook still fires — that is the behaviour being tested.
+git -C "$_repo5" merge --no-edit --no-ff side -q >/dev/null 2>&1
+
+# Assert A: tasks.json in HEAD has normalized (string) subtask ids.
+# Without -m in the hook, diff-tree emits no output for the merge commit and
+# the hook exits early without normalizing — this assert would FAIL.
+assert "merge commit: numeric subtask id normalized in HEAD after merge" \
+    bash -c "! git -C '$_repo5' show HEAD:.taskmaster/tasks/tasks.json \
+             | jq -r '.master.tasks[].subtasks[].id | type' | grep -q 'number'"
+
+# Assert B: HEAD is a merge commit (has two parents) — proves the merge path
+# was exercised and not a fast-forward or regular commit.
+assert "merge commit: HEAD is a merge commit (has two parents)" \
+    bash -c "[ \"\$(git -C '$_repo5' log --format='%P' -1 \
+             | tr ' ' '\n' | grep -c .)\" = '2' ]"
+
+# ==============================================================================
+# Check 6: PYTHON3-FAIL — hook bails out gracefully when normalizer exits non-zero
+# ==============================================================================
+# Step (5) of the hook invokes python3 and catches failure with '|| { ... exit 0 }'.
+# If python3 fails, the hook must:
+#   (a) NOT block the commit (exit 0 from the hook itself), so `git commit` succeeds.
+#   (b) Leave tasks.json un-amended — numeric IDs remain in HEAD.
+#
+# Regression: removing the '|| { ... exit 0 }' guard would propagate the error
+# and potentially block/corrupt the commit.
+echo ""
+echo "--- Check 6: python3-fail — hook bails out gracefully ---"
+
+mk_repo_fixture _repo6
+mkdir -p "$_repo6/.taskmaster/tasks"
+
+# Replace the normalize script with a stub that always exits 1.
+# The hook invokes python3 <script> and catches a non-zero exit; this stub
+# triggers that code path.
+cat > "$_repo6/scripts/normalize_tasks_json.py" <<'STUB'
+#!/usr/bin/env python3
+import sys
+print("stub: simulated normalizer failure", file=sys.stderr)
+sys.exit(1)
+STUB
+chmod +x "$_repo6/scripts/normalize_tasks_json.py"
+
+# Commit tasks.json with numeric IDs.  The post-commit hook fires, the
+# normalizer stub exits 1, and the hook should bail out gracefully (exit 0),
+# leaving the commit intact.
+cat > "$_repo6/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":55,"subtasks":[{"id":88}]}]}}
+JSON
+git -C "$_repo6" add .taskmaster/tasks/tasks.json
+git -C "$_repo6" commit --no-verify -m "chore(tasks): commit with failing normalizer" -q
+
+# Assert A: commit succeeded and HEAD tasks.json retains numeric task id
+# (normalization was skipped because the stub failed).
+assert "python3-fail: commit succeeded and HEAD tasks.json has numeric task id" \
+    bash -c "git -C '$_repo6' show HEAD:.taskmaster/tasks/tasks.json \
+             | jq -e '.master.tasks[0].id | type == \"number\"' >/dev/null"
+
+# Assert B: no amend occurred — re-running the hook with the failing stub
+# still leaves HEAD sha unchanged.
+_py3fail_sha_before="$(git -C "$_repo6" rev-parse HEAD)"
+(cd "$_repo6" && bash hooks/post-commit) || true
+assert "python3-fail: HEAD sha unchanged after re-running hook with failing normalizer" \
+    test "$_py3fail_sha_before" = "$(git -C "$_repo6" rev-parse HEAD)"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
