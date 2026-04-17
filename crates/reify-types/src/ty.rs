@@ -209,6 +209,58 @@ impl Type {
     ///
     /// Consumer sites should short-circuit to `Type::Error` when any operand's
     /// type returns `true` here, to prevent cascading diagnostics.
+    ///
+    /// # Top-level-only contract
+    ///
+    /// **This method checks ONLY the top-level `Type::Error` variant.  It does
+    /// NOT recurse into inner type parameters.**  Compound types that carry a
+    /// poisoned inner type return `false`:
+    ///
+    /// - `List<Error>`  → `false`
+    /// - `Option<Error>` → `false`
+    /// - `Set<Error>` → `false`
+    /// - `Map<K, Error>` (error in value position) → `false`
+    /// - `Map<Error, V>` (error in key position) → `false`
+    /// - Any other `Box<Type>`-bearing variant (`Range`, `Complex`, `Field`,
+    ///   `Point`, `Vector`, `Tensor`, `Matrix`) with an `Error` inner type
+    ///   → `false`
+    ///
+    /// This boundary is intentional in the current implementation: the anti-
+    /// cascade contract (task-448) covers only the top-level sentinel, and
+    /// extending it to a recursive check requires simultaneous updates at every
+    /// consumer guard site.
+    ///
+    /// # Known gap: nested-error cascade
+    ///
+    /// A reachable cascade on current code is:
+    ///
+    /// ```text
+    /// trait T { let x : List<Real> = [self.unsupported] }
+    /// structure S : T {}
+    /// ```
+    ///
+    /// Here `self.unsupported` emits "unknown member 'unsupported' on self" and
+    /// returns `Type::Error`; the list literal infers its element type from the
+    /// first element and wraps it to `List<Error>`.  The trait-let injection
+    /// pass at `conformance.rs:521-531` calls
+    /// `type_compatible(List<Real>, List<Error>)`, whose top-level `is_error()`
+    /// guard trips on neither operand, no rule arm matches, and it returns
+    /// `false` — emitting a second "type mismatch for trait let 'x'" cascade on
+    /// top of the root-cause diagnostic.
+    ///
+    /// This cascade is pinned as a regression test at:
+    /// `crates/reify-compiler/tests/type_error_propagation_tests.rs`
+    /// `::nested_compound_error_cascades_through_trait_let_annotation`
+    ///
+    /// # Follow-up plan
+    ///
+    /// When a future contributor needs deep detection, introduce a
+    /// `contains_error()` recursive helper on `Type` and **update every
+    /// consumer listed in the variant-doc at lines 80–88** (binary ops, index
+    /// access, member access, quantifiers, plus `type_compatible` /
+    /// `implicitly_converts_to` in `type_compat.rs`) in the **same commit**.
+    /// At that point, also flip the cascade assertion in the regression test
+    /// from "IS present" to "is NOT present", and update this follow-up section.
     pub fn is_error(&self) -> bool {
         matches!(self, Type::Error)
     }
