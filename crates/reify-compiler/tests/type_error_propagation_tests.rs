@@ -145,6 +145,90 @@ structure S {
     );
 }
 
+// ── task-1913: nested-error cascade boundary ─────────────────────────────────
+
+/// Regression test documenting that `Type::is_error()`'s top-level-only
+/// contract causes a cascade diagnostic when a compound type transports a
+/// nested `Type::Error`.
+///
+/// ## What this test documents
+///
+/// This test **documents current behavior** — a boundary marker, not an
+/// invariant to preserve.  Specifically:
+///
+/// 1. `self.unsupported` in the trait-let default expression emits
+///    "unknown member 'unsupported' on self" (root cause) and returns
+///    `Type::Error`.
+/// 2. The list literal `[self.unsupported]` infers its element type from the
+///    first element and wraps the result to `List<Error>`.
+/// 3. The trait-let injection pass (`conformance.rs:521-531`) calls
+///    `type_compatible(List<Real>, List<Error>)`.  The guard in
+///    `type_compatible` (`crates/reify-compiler/src/type_compat.rs:94`)
+///    checks `is_error()` on each operand — but `is_error()` is top-level-only,
+///    so `List<Error>.is_error()` returns `false`.  No match arm fires and
+///    `type_compatible` returns `false`, emitting a cascade "type mismatch for
+///    trait let 'x'" on top of the root-cause error.
+///
+/// ## What this test asserts
+///
+/// - **(a)** A root-cause diagnostic containing `"unknown member"` IS present.
+/// - **(b)** A cascade diagnostic containing `"type mismatch for trait let"` IS
+///   present.
+///
+/// Assertion (b) is intentionally the OPPOSITE polarity of the anti-cascade
+/// contract tested in `stub_error_plus_arithmetic_emits_exactly_one_diagnostic`
+/// below: **that** test asserts no cascade (the anti-cascade contract works at
+/// the top level), while **this** test asserts the cascade IS present (the
+/// known gap for nested compound types).
+///
+/// ## How to update when implementing option (a)
+///
+/// If you extend `is_error()` to a recursive `contains_error()` and apply it
+/// at every consumer guard site in `type_compat.rs`, `expr.rs`, and
+/// `conformance.rs` (see the follow-up section in the `is_error()` doc comment
+/// in `crates/reify-types/src/ty.rs`), then:
+///
+/// - Change assertion **(b)** from `any(…)` to `!any(…)` to assert the
+///   cascade is **NOT** present.
+/// - Update the `is_error()` doc comment's follow-up section in the same
+///   commit to reflect the completed change.
+/// - Update the five unit tests `type_error_is_error_false_for_*` in
+///   `crates/reify-types/src/ty.rs` to match the new recursive semantics
+///   (or remove them if `is_error()` itself becomes recursive).
+#[test]
+fn nested_compound_error_cascades_through_trait_let_annotation() {
+    let source = r#"
+trait T { let x : List<Real> = [self.unsupported] }
+structure S : T {}
+"#;
+    let module = compile_source(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // (a) The root-cause diagnostic must be present.
+    assert!(
+        errors.iter().any(|d| d.message.contains("unknown member")),
+        "expected an 'unknown member' root-cause error to be present, got: {:?}",
+        errors,
+    );
+
+    // (b) The cascade diagnostic IS present (nested-error gap, task-1913).
+    // NOTE: this assertion is intentionally the opposite polarity of the
+    // anti-cascade contract.  See doc comment above for update instructions.
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait let")),
+        "expected a 'type mismatch for trait let' cascade to be present \
+         (documenting the nested-error gap at is_error() top-level-only \
+         boundary, task-1913), got: {:?}",
+        errors,
+    );
+}
+
 // ── step-11: end-to-end anti-cascade integration ─────────────────────────────
 
 #[test]
