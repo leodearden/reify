@@ -246,11 +246,23 @@ structure S : ProvidesLength + ProvidesArea {
 
 /// Trait with `let x : Length = 5.0` injected into a structure: the annotation
 /// says Length, but 5.0 evaluates to Real — they are not compatible via
-/// `implicitly_converts_to`, so conformance must emit an error diagnostic whose
-/// message mentions "type mismatch".
+/// `implicitly_converts_to`, so conformance must emit an error diagnostic from
+/// the annotation-cross-check site.
 ///
 /// Before task 1834 this was silent: the cell_type was taken from the compiled
 /// expression (Real), so the annotation had no observable effect.
+///
+/// Assertion pins the *unique phrase* from the new cross-check diagnostic
+/// (see `conformance.rs` injection loop —
+/// "type mismatch for trait let '…': annotation expects …, expression
+/// evaluates to …") rather than the generic "type mismatch" substring.
+/// Task 1834 amendment (reviewer_comprehensive test_coverage fix): the
+/// generic substring also matches the pre-existing requirement-vs-member
+/// and available-default-vs-requirement type-mismatch diagnostics emitted
+/// elsewhere in conformance.rs — so if the cross-check ever stopped firing
+/// while any other type-mismatch error fired on the same input, the
+/// loose assertion would silently pass.  The tightened assertion rules
+/// that out by naming the binding and the two halves of the diagnostic.
 #[test]
 fn annotated_let_expr_type_mismatch_emits_diagnostic() {
     let source = r#"
@@ -268,8 +280,14 @@ structure S : HasX {
     );
     let error_msg = format!("{:?}", errors);
     assert!(
-        error_msg.contains("type mismatch"),
-        "diagnostic should mention 'type mismatch', got: {}",
+        error_msg.contains("type mismatch for trait let 'x'")
+            && error_msg.contains("annotation expects")
+            && error_msg.contains("expression evaluates to"),
+        "diagnostic must come from the annotation-cross-check site \
+         (format: \"type mismatch for trait let '<name>': annotation expects \
+         <ty>, expression evaluates to <ty>\"); the generic \"type mismatch\" \
+         substring is not specific enough because other sites also emit it.  \
+         Got: {}",
         error_msg
     );
 }
