@@ -39813,7 +39813,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "examples/integration_full_v01.ri"
+          ],
+          "modules": [
+            "examples"
+          ]
+        }
       }
     ],
     "metadata": {
