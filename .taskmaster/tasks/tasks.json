@@ -36714,8 +36714,15 @@
             "gui/src/__tests__/viewportStore.test.ts"
           ],
           "modules": [
-            "gui/src/stores",
-            "gui/src/viewport"
+            "gui/src/App.tsx",
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/viewport",
+            "gui/src/__tests__/viewportStore.test.ts",
+            "gui/src/stores/index.ts",
+            "gui/src/stores/viewportStore.ts",
+            "gui/src/viewport/Viewport.tsx",
+            "gui/src/viewport/index.ts",
+            "gui/src/viewport/selection.ts"
           ]
         },
         "updatedAt": "2026-04-17T12:51:24.964Z"
@@ -40562,7 +40569,9 @@
       "completedCount": 1662,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T13:01:47.280Z",
+      "description": "Tasks for master context"
     }
   }
 }
