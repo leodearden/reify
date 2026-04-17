@@ -36907,17 +36907,10 @@
             "crates/reify-types/src/geometry.rs"
           ],
           "memory_hints": {
-            "entities": [
-              "GeometryHandle",
-              "GeomRef",
-              "INVALID sentinel"
-            ],
-            "searches": [
-              "INVALID sentinel GeometryHandle u64::MAX content_hash guard debug_assert",
-              "step_handles rollback saturating_sub unsigned underflow compile_geometry_op",
-              "sentinel placeholder compile_geometry_op None task 612 completed"
-            ],
-            "_causation_id": "9255cb58-9827-4ba9-a1de-71532f4fe900"
+            "entities": [],
+            "queries": [
+              "resolution for: Sentinel robustness: debug_assert for INVALID handle hash + saturating_sub rollback"
+            ]
           }
         }
       },
@@ -39703,11 +39696,11 @@
         "description": "The wall-clock 500ms budget in gui/src/__tests__/editor-perf.test.tsx:130 (\"100 keystrokes on 10k-line doc complete within 500ms\") is likely to flake on shared/cold CI workers where JSDOM + CodeMirror 6 + reify-language parser can spike well over 500ms. The deterministic spy-based tests (no per-keystroke store/bridge work) already guard the invariant that matters; the micro-benchmark is a soft backstop that adds flake risk. Options: (a) raise the budget to ~1500–2000ms, (b) gate behind an env flag like PERF=1 so it only runs in a dedicated perf CI, or (c) add a 20-keystroke warm-up loop before starting the timer to absorb JIT / lazy-load costs. Prefer (b) or (c) to preserve the regression signal while eliminating flakes.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T03:56:48.884Z",
+        "updatedAt": "2026-04-17T04:21:11.732Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/editor-perf.test.tsx"
@@ -40084,7 +40077,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T04:17:34.159Z",
+      "lastModified": "2026-04-17T04:21:11.736Z",
       "taskCount": 1910,
       "completedCount": 1641,
       "tags": [
