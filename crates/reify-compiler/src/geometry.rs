@@ -119,6 +119,7 @@ pub(crate) fn compile_geometry_call(
             return compile_boolean_op(
                 name,
                 args,
+                expr.span,
                 scope,
                 enum_defs,
                 functions,
