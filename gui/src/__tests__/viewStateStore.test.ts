@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRoot } from 'solid-js';
 import { createViewStateStore } from '../stores/viewStateStore';
+import type { ViewDefinition } from '../stores/autoViewGenerator';
 import type { EntityTreeNode } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -735,6 +736,48 @@ describe('viewStateStore — source comments', () => {
     const syntheticWithFn = '// ---------\n  // Mutations\n  // ---------\n\n  function setVisibility(path: string) {}\n';
     expect(GUARD_REGEX.test(synthetic)).toBe(false);
     expect(GUARD_REGEX.test(syntheticWithFn)).toBe(true);
+  });
+});
+
+describe('viewStateStore — views map and activeViewId skeleton', () => {
+  it('(a) on creation state.views === {} and state.activeViewId === "auto:default"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      expect(store.state.views).toEqual({});
+      expect(store.state.activeViewId).toBe('auto:default');
+      dispose();
+    });
+  });
+
+  it('(b) setActiveView("auto:default") when view absent is a no-op — does not crash, does not touch explicit', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      store.setTree([makeNode({ entity_path: 'Root' })]);
+      store.setVisibility('Root', 'ghost', false);
+      // No views seeded — setActiveView should not throw and should not clear explicit
+      store.setActiveView('auto:default');
+      expect(store.state.explicit['Root']).toBe('ghost');
+      dispose();
+    });
+  });
+
+  it('(c) after manually seeding state.views, setActiveView(id) copies visibility into state.explicit and updates activeViewId', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const testView: ViewDefinition = {
+        id: 'auto:default',
+        name: 'Default',
+        auto: true,
+        modified: false,
+        visibility: { 'Root': 'show', 'Root.geo': 'hidden' },
+      };
+      store.seedView(testView);
+      store.setActiveView('auto:default');
+      expect(store.state.activeViewId).toBe('auto:default');
+      expect(store.state.explicit['Root']).toBe('show');
+      expect(store.state.explicit['Root.geo']).toBe('hidden');
+      dispose();
+    });
   });
 });
 
