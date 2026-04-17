@@ -2282,9 +2282,8 @@ fn get_entity_tree_no_realization_has_mesh_false() {
 #[test]
 fn get_entity_tree_sub_component_produces_nested_node() {
     // Build: Assembly { sub bolt: Bolt }  + Bolt { param mass: Mass }
-    use reify_test_support::{vcid, mm};
+    use reify_test_support::vcid;
     use reify_types::{ModulePath, Type, DimensionVector};
-    use reify_compiler::EntityKind;
 
     let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
 
