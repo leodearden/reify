@@ -55,9 +55,9 @@ vi.mock('../editor/FileTabs', () => ({
 }));
 
 // Mock bridge functions
-const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [] };
+const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] };
 vi.mock('../bridge', () => ({
-  getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
+  getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] }),
   setParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
   pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
@@ -65,7 +65,7 @@ vi.mock('../bridge', () => ({
   updateSource: vi.fn().mockResolvedValue(undefined),
   saveFile: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
-  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
+  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
   onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -75,6 +75,7 @@ vi.mock('../bridge', () => ({
   onMeshRemoved: vi.fn().mockResolvedValue(() => {}),
   onValueRemoved: vi.fn().mockResolvedValue(() => {}),
   onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
+  onTessellationDiagnostics: vi.fn().mockResolvedValue(() => {}),
   onFileChanged: vi.fn().mockResolvedValue(() => {}),
   onSerializationError: vi.fn().mockResolvedValue(() => {}),
   claudeSendMessage: vi.fn().mockResolvedValue(undefined),
@@ -103,6 +104,7 @@ beforeEach(() => {
   vi.mocked(bridge.onMeshRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(() => {});
+  vi.mocked(bridge.onTessellationDiagnostics).mockResolvedValue(() => {});
   vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
   vi.mocked(bridge.onSerializationError).mockResolvedValue(() => {});
   vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
@@ -2427,6 +2429,44 @@ describe('App handleSave dirty-indicator and error handling', () => {
 
       // console.error should NOT be called — errors route through showToast, not console
       expect(errorSpy).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('App tessellation diagnostics end-to-end wiring', () => {
+  let tessellationDiagnosticsCallback: ((diags: any[]) => void) | undefined;
+
+  beforeEach(() => {
+    tessellationDiagnosticsCallback = undefined;
+    vi.mocked(bridge.onTessellationDiagnostics).mockImplementation(async (cb: any) => {
+      tessellationDiagnosticsCallback = cb;
+      return () => {};
+    });
+  });
+
+  it('tessellation-diagnostics event with one Error: StatusBar shows data-has-errors="true" and "Compile error"', async () => {
+    render(() => <App />);
+    // Wait until the app is ready and the callback has been registered
+    await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
+
+    // Fire the tessellation-diagnostics event with one Error diagnostic
+    tessellationDiagnosticsCallback!([
+      {
+        file_path: '<unknown>',
+        line: 1, column: 1, end_line: 1, end_column: 1,
+        severity: 'Error',
+        message: 'geometry error: kernel failure',
+        code: null,
+      },
+    ]);
+
+    // Wait for the reactive update to propagate through engineStore → App → StatusBar
+    await waitFor(() => {
+      const statusBar = screen.getByTestId('status-bar');
+      const badge = statusBar.querySelector('[data-testid="tessellation-errors"]');
+      expect(badge).toBeTruthy();
+      expect(badge?.getAttribute('data-has-errors')).toBe('true');
+      expect(statusBar.textContent).toMatch(/compile error/i);
     });
   });
 });
