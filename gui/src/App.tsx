@@ -217,6 +217,7 @@ const App: Component = () => {
         handleDismissReload();
       }
     },
+    onClearSelection: () => selectionStore.clearSelection(),
   });
 
   let alive = true;
