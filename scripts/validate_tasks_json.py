@@ -120,7 +120,9 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
     prefix = f"{context}: " if context else ""
 
     # Invariant 3: no duplicate IDs.
-    id_counter = collections.Counter(t["id"] for t in tasks if "id" in t)
+    # Filter to string ids only: unhashable ids (list/dict) would raise TypeError;
+    # non-string ids are reported separately by invariant 1.
+    id_counter = collections.Counter(t["id"] for t in tasks if isinstance(t.get("id"), str))
     for id_val, count in id_counter.items():
         if count > 1:
             errors.append(
