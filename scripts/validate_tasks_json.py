@@ -55,22 +55,54 @@ def main() -> None:
         print(f"ERROR: cannot load {args.path}: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    tasks = data.get("master", {}).get("tasks", [])
     errors: list[str] = []
+    warnings: list[str] = []
+    # Per-tag list of (tag_name, tasks, known_ids) for subtask iteration.
+    tag_results: list[tuple[str, list, set]] = []
 
-    known_ids = _validate_tasks(tasks, errors, context="")
+    for tag_name, tag_value in data.items():
+        # Skip known metadata keys that are deliberately not tag namespaces.
+        if tag_name.startswith("_"):
+            continue
+        if not isinstance(tag_value, dict):
+            warnings.append(
+                f"top-level key {tag_name!r} has no tasks list; skipping"
+                f" (value type: {type(tag_value).__name__!r})"
+            )
+            continue
+        tasks_list = tag_value.get("tasks")
+        if tasks_list is None:
+            warnings.append(
+                f"top-level key {tag_name!r} has no tasks list; skipping"
+                f" (missing 'tasks' field)"
+            )
+            continue
+        if not isinstance(tasks_list, list):
+            warnings.append(
+                f"top-level key {tag_name!r} has no tasks list; skipping"
+                f" ('tasks' is {type(tasks_list).__name__!r}, expected list)"
+            )
+            continue
+        known_ids = _validate_tasks(tasks_list, errors, context=tag_name)
+        tag_results.append((tag_name, tasks_list, known_ids))
 
     if args.check_subtasks:
-        for task in tasks:
-            subtasks = task.get("subtasks", [])
-            if subtasks:
-                parent_id = task.get("id", "?")
-                _validate_subtasks(subtasks, known_ids, parent_id, errors)
+        for tag_name, tasks_list, known_ids in tag_results:
+            for task in tasks_list:
+                subtasks = task.get("subtasks", [])
+                if subtasks:
+                    parent_id = task.get("id", "?")
+                    _validate_subtasks(subtasks, known_ids, parent_id, errors, tag_context=tag_name)
 
     if errors:
         for err in errors:
             print(err, file=sys.stderr)
+        for warn in warnings:
+            print(f"WARN: {warn}", file=sys.stderr)
         sys.exit(1)
+
+    for warn in warnings:
+        print(f"WARN: {warn}", file=sys.stderr)
 
 
 def _validate_tasks(tasks: list, errors: list, context: str) -> set:
@@ -130,12 +162,17 @@ def _validate_subtasks(
     parent_task_ids: set,
     parent_id: str,
     errors: list,
+    *,
+    tag_context: str = "",
 ) -> None:
     """Apply invariants 1-3 to a subtask array (used only with --check-subtasks).
 
     Subtask deps may reference sibling subtask IDs or parent-task IDs.
+    ``tag_context`` is the enclosing tag name (e.g. ``"master"``) and is
+    prepended to error messages when set.
     """
-    context = f"subtasks of task {parent_id!r}"
+    inner = f"subtasks of task {parent_id!r}"
+    context = f"{tag_context}: {inner}" if tag_context else inner
 
     # Invariant 3 within subtasks.
     id_counter = collections.Counter(s["id"] for s in subtasks if "id" in s)
