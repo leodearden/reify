@@ -835,4 +835,91 @@ describe('selectionStore', () => {
       });
     });
   });
+
+  // --- Backend sync: selectedEntities forwarded to IPC (step-17) ---
+  describe('backend sync — multi-selection IPC payload', () => {
+    let dispose!: () => void;
+    let selectSingle!: (path: string | null) => void;
+    let toggleSelect!: (path: string) => void;
+    let clearSelection!: () => void;
+    let hoverEntity!: (path: string | null) => void;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      mockInvoke.mockResolvedValue(undefined);
+
+      createRoot((d) => {
+        dispose = d;
+        const store = createSelectionStore();
+        selectSingle = store.selectSingle;
+        toggleSelect = store.toggleSelect;
+        clearSelection = store.clearSelection;
+        hoverEntity = store.hoverEntity;
+      });
+    });
+
+    afterEach(() => {
+      dispose();
+      vi.useRealTimers();
+      vi.clearAllMocks();
+    });
+
+    it('selectSingle dispatches invoke with selectedEntities list', () => {
+      selectSingle('Bracket');
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
+        hoveredEntity: null,
+      });
+    });
+
+    it('toggleSelect dispatches invoke with updated selectedEntities list', () => {
+      selectSingle('A');
+      mockInvoke.mockClear();
+
+      toggleSelect('B');
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: 'B',
+        selectedEntities: ['A', 'B'],
+        hoveredEntity: null,
+      });
+    });
+
+    it('clearSelection dispatches invoke with empty selectedEntities list', () => {
+      selectSingle('A');
+      mockInvoke.mockClear();
+
+      clearSelection();
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: null,
+        selectedEntities: [],
+        hoveredEntity: null,
+      });
+    });
+
+    it('hover-only change sends current selectedEntities snapshot after debounce', () => {
+      selectSingle('A');
+      mockInvoke.mockClear();
+
+      hoverEntity('A.width');
+
+      // Should be debounced
+      expect(mockInvoke).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(100);
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
+        selectedEntity: 'A',
+        selectedEntities: ['A'],
+        hoveredEntity: 'A.width',
+      });
+    });
+  });
 });
