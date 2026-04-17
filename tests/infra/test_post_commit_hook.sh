@@ -218,18 +218,25 @@ JSON
 git -C "$_repo5" add .taskmaster/tasks/tasks.json
 git -C "$_repo5" commit --no-verify -m "chore(tasks): numeric ids" -q
 
-# Build a stub PATH that contains git and grep but NO python3.
-# Using individual symlinks avoids the problem of python3 sharing /usr/bin with git.
+# Build a PATH where python3 is absent but standard tools remain.
+#
+# Why not PATH="$stub:$PATH" with a non-executable python3 placeholder?
+# bash's `command -v` skips non-executable files and continues searching
+# subsequent PATH directories, so a non-executable stub would not prevent
+# it from finding the real python3 in /usr/bin — the check would succeed
+# and we would never exercise the python3-missing code path.
+#
+# Instead we build a symlink stub for common tools and use it as the sole
+# PATH.  The list covers coreutils the hook and git helpers may call; extend
+# it if the hook gains new dependencies.
 _stub5="$(mktemp -d -p "$_tmpdir")"
-for _bin5 in git grep date bash sh; do
+for _bin5 in git grep date bash sh env printf cut tr awk sed cat wc; do
     _loc5="$(command -v "$_bin5" 2>/dev/null || true)"
     [ -n "$_loc5" ] && ln -sf "$_loc5" "$_stub5/$_bin5"
 done
-# Deliberately omit python3 from the stub PATH.
-#
-# Set GIT_EXEC_PATH explicitly so git can find its built-in helpers even when
-# they are not reachable via the stub PATH (e.g. /usr/lib/git-core is not
-# listed in PATH but git uses GIT_EXEC_PATH directly for sub-commands).
+# GIT_EXEC_PATH ensures git can reach its built-in sub-commands (e.g.
+# git-diff-tree in /usr/lib/git-core) even when that directory is not
+# listed in the stub PATH.
 _git_exec_path5="$(git --exec-path 2>/dev/null || true)"
 
 _stderr5="$_tmpdir/stderr5.txt"

@@ -67,6 +67,11 @@ python3 "$ROOT/scripts/normalize_tasks_json.py" "$TASKS_JSON" || {
     _loud_fail "normalize_tasks_json.py exited non-zero — tasks.json NOT normalized" \
                "normalizer-crash"
 }
+# Clear any stale failure marker so it reflects only the *last* attempt.
+# An absent marker means "last normalization succeeded"; a present marker
+# means "last normalization failed".  Without this rm the marker would
+# persist indefinitely after the developer fixes the problem and recommits.
+rm -f "$(git rev-parse --git-dir 2>/dev/null || printf '.git')/NORMALIZE_FAILED"
 
 # (6) If the file changed on disk vs HEAD, stage it and amend.
 # --no-verify skips pre-commit/commit-msg hooks on the amend.  This applies

@@ -43,8 +43,8 @@ assert "scripts/setup-dev.sh exists" \
 assert "scripts/setup-dev.sh is executable" \
     test -x "$SETUP_DEV"
 
-assert "scripts/setup-dev.sh contains 'git config core.hooksPath hooks'" \
-    grep -qF 'git config core.hooksPath hooks' "$SETUP_DEV"
+assert "scripts/setup-dev.sh has an uncommented 'git config core.hooksPath hooks' line" \
+    grep -qE '^[[:space:]]*git config core\.hooksPath hooks' "$SETUP_DEV"
 
 # ==============================================================================
 # Check 1: sanity — git config core.hooksPath hooks is idempotent in a fresh repo
