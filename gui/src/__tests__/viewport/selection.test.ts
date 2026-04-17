@@ -1305,6 +1305,114 @@ describe('createSelection', () => {
     });
   });
 
+  describe('multi-wireframe selection', () => {
+    it('setSelected([A,B]) creates two wireframes added to scene', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      (selection.setSelected as any)(['A', 'B']);
+
+      // Both wireframes should be added to scene
+      expect(mockSceneAdd).toHaveBeenCalledTimes(2);
+      // Each wireframe built from the corresponding mesh geometry
+      const addedGeometries = mockSceneAdd.mock.calls.map((c: any[]) => c[0].geometry.sourceGeometry);
+      expect(addedGeometries).toContain(meshA.geometry);
+      expect(addedGeometries).toContain(meshB.geometry);
+    });
+
+    it('setSelected([A]) after setSelected([A,B]) removes only B wireframe, preserves A', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      (selection.setSelected as any)(['A', 'B']);
+
+      // Capture the wireframe objects
+      const wireframeA = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshA.geometry,
+      )?.[0];
+      const wireframeB = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshB.geometry,
+      )?.[0];
+      expect(wireframeA).toBeDefined();
+      expect(wireframeB).toBeDefined();
+
+      mockSceneAdd.mockClear();
+      mockSceneRemove.mockClear();
+
+      // Shrink selection to just A
+      (selection.setSelected as any)(['A']);
+
+      // B wireframe removed and disposed
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframeB);
+      expect(wireframeB.geometry.dispose).toHaveBeenCalled();
+      expect(wireframeB.material.dispose).toHaveBeenCalled();
+      // A wireframe NOT removed (still in scene)
+      expect(mockSceneRemove).not.toHaveBeenCalledWith(wireframeA);
+      // No new wireframe added (A already present)
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+    });
+
+    it('setSelected([]) removes all wireframes', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      (selection.setSelected as any)(['A', 'B']);
+      const wireframeA = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshA.geometry,
+      )?.[0];
+      const wireframeB = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshB.geometry,
+      )?.[0];
+
+      mockSceneRemove.mockClear();
+      (selection.setSelected as any)([]);
+
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframeA);
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframeB);
+      expect(wireframeA.geometry.dispose).toHaveBeenCalled();
+      expect(wireframeB.geometry.dispose).toHaveBeenCalled();
+    });
+
+    it('setSelected(null) removes all wireframes when multiple are active (backward compat)', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      (selection.setSelected as any)(['A', 'B']);
+      const wireframeA = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshA.geometry,
+      )?.[0];
+      const wireframeB = mockSceneAdd.mock.calls.find(
+        (c: any[]) => c[0].geometry.sourceGeometry === meshB.geometry,
+      )?.[0];
+
+      mockSceneRemove.mockClear();
+      selection.setSelected(null);
+
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframeA);
+      expect(mockSceneRemove).toHaveBeenCalledWith(wireframeB);
+    });
+
+    it('setSelected([A,B,C]) where C is unknown only creates wireframes for A and B', () => {
+      const meshA = createMockMesh('A');
+      const meshB = createMockMesh('B');
+      const meshMap = new Map([['A', meshA], ['B', meshB]]);
+      const { selection } = setup(meshMap);
+
+      (selection.setSelected as any)(['A', 'B', 'Unknown']);
+
+      // Only A and B found in getMeshes, Unknown skipped
+      expect(mockSceneAdd).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('refreshSelected (V-08)', () => {
     it('exposes refreshSelected method', () => {
       const { selection } = setup();
