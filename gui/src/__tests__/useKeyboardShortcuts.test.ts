@@ -48,6 +48,31 @@ describe('useKeyboardShortcuts', () => {
     expect(onExportDialog).toHaveBeenCalledTimes(1);
   });
 
+  it('dispatching Ctrl+O when target is a contenteditable element does NOT call onOpen', () => {
+    // JSDOM does not fully implement `isContentEditable` for programmatically created
+    // contenteditable divs (contentEditable = 'true' does not flip isContentEditable
+    // in JSDOM's non-rendering context). Use Object.defineProperty to simulate what
+    // a real browser returns so this test exercises the hook's isContentEditable guard.
+    const onOpen = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onOpen });
+      return d;
+    });
+
+    const div = document.createElement('div');
+    div.contentEditable = 'true';
+    Object.defineProperty(div, 'isContentEditable', { get: () => true, configurable: true });
+    document.body.appendChild(div);
+    try {
+      div.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, bubbles: true }),
+      );
+      expect(onOpen).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(div);
+    }
+  });
+
   it('dispatching Ctrl+O when target is an <input> does NOT call onOpen', () => {
     const onOpen = vi.fn();
     dispose = createRoot((d) => {
