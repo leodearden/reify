@@ -39833,7 +39833,7 @@
         "description": "examples/integration_full_v01.ri lines 336–349 contain placeholder literal constraints (`constraint 1mm > 0mm`, `constraint 2mm > 1mm`, `minimize 1mm`) inside the `purpose mfg_ready(subject)` and `purpose weight_target(part)` bodies, with an in-file comment:\n\n    // Follow-up: replace with `constraint determined(subject.mass)` etc. once reflective\n    // `subject.param` access in purpose bodies is implemented (tracked as a follow-up task).\n\nReflective subject.param access is implemented per tasks #258 (compiler), #259 (evaluator), and #1638 (filter members: geometric_params, material_params, sub_entities, ports, constraints — all done). The example's blocker is gone; the placeholder is now actively misleading because:\n\n(a) Reviewers encountering the file read the comment and assume the feature is missing.\n(b) The example no longer exercises the real purpose-body reflective machinery, so it doesn't demonstrate the intended integration surface.\n\nFix:\n1. Replace `constraint 1mm > 0mm` etc. in `mfg_ready` with real constraints that exercise reflective filters, e.g. `for p in subject.geometric_params { constraint determined(p) }` or the closest syntax supported by tasks #258/#259/#1638.\n2. Similarly for `weight_target` — `minimize subject.mass` or equivalent.\n3. Remove the \"Follow-up: replace with …\" comment.\n4. If any reflective filter behaviour is still missing, keep a scoped placeholder and file a precise follow-up instead of the generic one.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -39851,7 +39851,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T01:47:17.258Z"
+        "updatedAt": "2026-04-17T01:47:55.453Z"
       },
       {
         "id": "1904",
@@ -39900,7 +39900,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T01:47:34.578Z",
+      "lastModified": "2026-04-17T01:47:55.464Z",
       "taskCount": 1901,
       "completedCount": 1637,
       "tags": [
