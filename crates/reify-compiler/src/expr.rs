@@ -1441,10 +1441,17 @@ pub(crate) fn compile_expr_guarded(
             // Create a nested scope with the bound variable
             let mut quant_scope = scope.clone();
             let variable_id = ValueCellId::new(&quant_entity, variable);
-            // Infer element type from the collection's result type
-            let elem_type = match &compiled_collection.result_type {
-                Type::List(elem) | Type::Set(elem) => *elem.clone(),
-                _ => Type::Real, // fallback for unresolved types
+            // Infer element type from the collection's result type.
+            // Anti-cascade guard (task-448): if the collection is already
+            // poisoned, propagate Type::Error into elem_type rather than
+            // falling back to Type::Real.
+            let elem_type = if compiled_collection.result_type.is_error() {
+                Type::Error
+            } else {
+                match &compiled_collection.result_type {
+                    Type::List(elem) | Type::Set(elem) => *elem.clone(),
+                    _ => Type::Real, // fallback for unresolved types
+                }
             };
             quant_scope
                 .names
