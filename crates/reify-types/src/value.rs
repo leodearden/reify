@@ -169,11 +169,34 @@ pub enum Value {
     /// Optional value: Some(value) or None.
     Option(Option<Box<Value>>),
     /// Field value: a typed domain->codomain mapping with stored lambda/data.
+    ///
+    /// The `lambda` field stores one of four value kinds depending on `source`;
+    /// see the `lambda` field doc for the full mapping.
+    ///
+    /// # Calling convention for `lambda`
+    ///
+    /// When `lambda` is a `Value::Lambda`, callers may invoke it with either:
+    ///
+    /// * **(i) `n` scalar arguments** of the domain's component type, where
+    ///   `n` is the domain dimensionality derived from `domain_type`
+    ///   (e.g. `Point { n, scalar }` → `n`; `Real` / `Scalar { .. }` → 1), or
+    /// * **(ii) a single `Value::Point` argument** holding all `n` coordinates.
+    ///
+    /// Convention (ii) — the `single_point_param` path — applies when and only
+    /// when `lambda.params.len() == 1 && n > 1`; otherwise convention (i)
+    /// applies.  The source of `n` is `domain_type`.
     Field {
         domain_type: crate::ty::Type,
         codomain_type: crate::ty::Type,
         source: FieldSourceKind,
-        /// The callable lambda for analytical/composed fields, or Undef for sampled/imported.
+        /// The value stored for this field; valid contents depend on `source`:
+        ///
+        /// | `source` variant(s)                                                         | stored value         |
+        /// |-----------------------------------------------------------------------------|----------------------|
+        /// | `Analytical`, `Composed`                                                    | `Value::Lambda`      |
+        /// | `Sampled`, `Imported`                                                       | `Value::Undef`       |
+        /// | `Gradient`, `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear` | `Value::Field` (the original source field) |
+        /// | `SafetyFactor`                                                              | `Value::List` containing `[original_field, yield_val]` |
         lambda: Box<Value>,
     },
     /// Lambda closure: captures environment values and body expression.
