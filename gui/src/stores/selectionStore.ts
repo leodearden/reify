@@ -157,9 +157,18 @@ export function createSelectionStore() {
 
   function clearIfRemoved(entityPath: string) {
     batch(() => {
-      if (state.selectedEntity === entityPath) {
-        selectEntity(null);
+      // Remove from multi-selection list and recompute primary
+      const nextEntities = state.selectedEntities.filter((p) => p !== entityPath);
+      if (nextEntities.length !== state.selectedEntities.length) {
+        // The path was present — update list and recompute primary
+        setState('selectedEntities', nextEntities);
+        setState('selectedEntity', nextEntities.length > 0 ? nextEntities[nextEntities.length - 1] : null);
       }
+      // Clear anchor only when it matches the removed path
+      if (state.anchorEntity === entityPath) {
+        setState('anchorEntity', null);
+      }
+      // Clear hover when it matches
       if (state.hoveredEntity === entityPath) {
         hoverEntity(null);
       }
