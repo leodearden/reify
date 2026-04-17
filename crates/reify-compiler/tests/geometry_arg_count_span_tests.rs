@@ -58,3 +58,27 @@ fn cylinder_arg_count_diagnostic_has_span_label() {
     assert!(!first.labels.is_empty(), "expected at least one label on cylinder arg-count diagnostic");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span on cylinder arg-count label");
 }
+
+// ── sphere() ───────────────────────────────────────────────────────────
+
+#[test]
+fn sphere_arg_count_diagnostic_has_span_label() {
+    // sphere() expects 1 argument — passing 0 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let s = sphere()
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("sphere() expects 1 argument"))
+        .unwrap_or_else(|| panic!(
+            "expected 'sphere() expects 1 argument' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on sphere arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on sphere arg-count label");
+}
