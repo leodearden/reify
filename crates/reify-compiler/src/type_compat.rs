@@ -1,11 +1,26 @@
 use super::*;
 
 pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
-    // Anti-cascade guard (task-448 amend): Type::Error acts as a wildcard to
-    // prevent type-mismatch cascade diagnostics. If either side is already
-    // poisoned, the originating error was already reported at the producer
-    // site — downstream callers (trait conformance, function-argument checks)
-    // must not fire a second "type mismatch" diagnostic on top of it.
+    // Anti-cascade guard — asymmetric error-wildcard contract (task-448 / task-1918).
+    //
+    // PRODUCER side (`from.is_error()`): legitimate anti-cascade path. When the
+    // producing expression already emitted a diagnostic, its Type::Error sentinel
+    // must be accepted everywhere to suppress follow-on "type mismatch" reports at
+    // downstream call sites (trait conformance, function-argument checks).
+    //
+    // CONSUMER side (`to.is_error()`): declared annotations are resolved via
+    // `resolve_type_with_aliases`, which always falls back to a concrete type
+    // (e.g. Type::Real, Type::StructureRef) — Type::Error never legitimately
+    // appears as the expected/declared type. The debug_assert below catches any
+    // call site that accidentally passes Error as `to` (a bug, not a cascade).
+    // In release builds the short-circuit preserves cascade safety as a
+    // belt-and-braces fallback (task-448 rationale).
+    debug_assert!(
+        !to.is_error(),
+        "Type::Error must not appear on the consumer/target side of implicitly_converts_to \
+         — declared annotations never resolve to the poison sentinel; \
+         this indicates a bug at the call site (task-1918)"
+    );
     if from.is_error() || to.is_error() {
         return true;
     }
