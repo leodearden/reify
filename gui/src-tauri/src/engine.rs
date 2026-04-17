@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use tracing::warn;
+
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
@@ -414,17 +416,35 @@ impl EngineSession {
         // tessellation diagnostics (e.g. OCCT kernel errors).
         let (meshes, tessellation_diagnostics) = match self.engine.tessellate_snapshot(compiled) {
             Some(result) => {
-                // Map tessellation diagnostics → DiagnosticInfo.
-                // Resolve source for span lookup; fall back to "<unknown>" when the
-                // invariant is broken (e.g. via break_*_for_test helpers).
+                // Map tessellation diagnostics → DiagnosticInfo and emit backend
+                // log entries so headless/CI runs still surface these via tracing.
                 let tess_diags = if result.diagnostics.is_empty() {
                     Vec::new()
                 } else {
-                    let (file_path, source) = self
+                    // Log each diagnostic before mapping so stderr/tracing output
+                    // is available even when the GUI channel is not subscribed.
+                    for diag in &result.diagnostics {
+                        warn!(severity = ?diag.severity, message = %diag.message, "tessellation diagnostic");
+                    }
+                    // Resolve source for span lookup.  When source is unavailable
+                    // (e.g. break_*_for_test helpers), we still produce
+                    // DiagnosticInfo but tag code = "unresolved-source" so
+                    // frontends can distinguish reliable from unreliable positions.
+                    let source_info = self
                         .resolve_source()
-                        .map(|(f, s)| (f.to_owned(), s.to_owned()))
-                        .unwrap_or_else(|| ("<unknown>".to_owned(), String::new()));
-                    diagnostics_to_info(&result.diagnostics, &file_path, &source)
+                        .map(|(f, s)| (f.to_owned(), s.to_owned()));
+                    let unresolved = source_info.is_none();
+                    let (file_path, source) =
+                        source_info.unwrap_or_else(|| ("<unknown>".to_owned(), String::new()));
+                    let mut diags = diagnostics_to_info(&result.diagnostics, &file_path, &source);
+                    if unresolved {
+                        for d in &mut diags {
+                            if d.code.is_none() {
+                                d.code = Some("unresolved-source".to_owned());
+                            }
+                        }
+                    }
+                    diags
                 };
                 let meshes = result
                     .meshes
@@ -1324,6 +1344,13 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
 ///
 /// Each diagnostic's first label span is used for line/column resolution.
 /// Diagnostics without labels (labelless fallback) produce `(1, 1, 1, 1)`.
+///
+/// # Severity format
+///
+/// `DiagnosticInfo::severity` is serialized as PascalCase (`"Error"`,
+/// `"Warning"`, `"Info"`).  This is the canonical wire format for all
+/// callers — both `get_diagnostics` (compile-time) and the tessellation path.
+/// MCP consumers and TypeScript code must compare against PascalCase strings.
 fn diagnostics_to_info(diagnostics: &[Diagnostic], file_path: &str, source: &str) -> Vec<DiagnosticInfo> {
     if diagnostics.is_empty() {
         return Vec::new();

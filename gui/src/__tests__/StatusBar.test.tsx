@@ -169,9 +169,22 @@ describe('StatusBar tessellation diagnostics', () => {
         tessellationDiagnostics={[makeDiag('Error'), makeDiag('Warning')]}
       />
     ));
-    const badge = screen.getByTestId('tessellation-errors');
-    expect(badge.textContent).toContain('1'); // 1 error
-    expect(badge.textContent).toContain('1'); // 1 warning
+    // Assert each badge separately so a missing badge fails the test.
+    expect(screen.getByText(/1 error/i)).toBeTruthy();
+    expect(screen.getByText(/1 warning/i)).toBeTruthy();
+  });
+
+  it('asymmetric counts: pluralisation is correct for 2 errors and 1 warning', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error'), makeDiag('Error'), makeDiag('Warning')]}
+      />
+    ));
+    expect(screen.getByText(/2 errors/i)).toBeTruthy();
+    expect(screen.getByText(/1 warning/i)).toBeTruthy();
   });
 
   it('zero meshes and zero errors: shows "No geometry" label', () => {

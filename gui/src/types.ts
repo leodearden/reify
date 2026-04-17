@@ -56,6 +56,12 @@ export interface DiagnosticInfo {
   column: number;
   end_line: number;
   end_column: number;
+  /**
+   * PascalCase severity string: `"Error"`, `"Warning"`, or `"Info"`.
+   * This is the canonical wire format — compare against PascalCase strings.
+   * When `code === "unresolved-source"`, position data (line/column) is
+   * unreliable because the backend could not resolve the source file.
+   */
   severity: string;
   message: string;
   code: string | null;

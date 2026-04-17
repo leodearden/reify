@@ -38,7 +38,13 @@ impl StateDelta {
             removed_mesh_paths: vec![],
             removed_value_ids: vec![],
             removed_constraint_ids: vec![],
-            changed_tessellation_diagnostics: Some(state.tessellation_diagnostics.clone()),
+            // Skip the event when the list is empty to avoid no-op wire traffic
+            // on every full refresh in the common clean-compile case.
+            changed_tessellation_diagnostics: if state.tessellation_diagnostics.is_empty() {
+                None
+            } else {
+                Some(state.tessellation_diagnostics.clone())
+            },
         }
     }
 }
