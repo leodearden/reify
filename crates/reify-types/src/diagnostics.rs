@@ -121,6 +121,44 @@ pub struct DiagnosticRef {
     pub index: usize,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::SourceSpan;
+
+    #[test]
+    fn prelude_sentinel_is_prelude() {
+        assert!(
+            SourceSpan::prelude().is_prelude(),
+            "SourceSpan::prelude() must satisfy is_prelude()"
+        );
+    }
+
+    #[test]
+    fn empty_zero_is_not_prelude() {
+        assert!(
+            !SourceSpan::empty(0).is_prelude(),
+            "SourceSpan::empty(0) must NOT satisfy is_prelude()"
+        );
+    }
+
+    #[test]
+    fn regular_span_is_not_prelude() {
+        assert!(
+            !SourceSpan::new(0, 5).is_prelude(),
+            "SourceSpan::new(0, 5) must NOT satisfy is_prelude()"
+        );
+    }
+
+    #[test]
+    fn prelude_distinct_from_empty_zero() {
+        assert_ne!(
+            SourceSpan::prelude(),
+            SourceSpan::empty(0),
+            "SourceSpan::prelude() must be distinct from SourceSpan::empty(0)"
+        );
+    }
+}
+
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
 ///
 /// This is a presentation type — it holds 1-based `line`/`column` positions
