@@ -40362,7 +40362,14 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:50:16.439Z"
+        "updatedAt": "2026-04-17T05:50:16.439Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src/diagnostics.rs",
+            "gui/src-tauri/src/engine.rs",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": "1931",
@@ -40374,7 +40381,13 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:50:59.008Z"
+        "updatedAt": "2026-04-17T05:50:59.008Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/unit_registry_tests.rs"
+          ]
+        }
       },
       {
         "id": "1932",
@@ -40396,7 +40409,9 @@
       "completedCount": 1655,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T05:54:20.827Z",
+      "description": "Tasks for master context"
     }
   }
 }
