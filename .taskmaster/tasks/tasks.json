@@ -40542,15 +40542,16 @@
         "description": "Review follow-up from Task 1888. scripts/validate_tasks_json.py silently returns exit 0 when given a malformed tasks.json — the opposite of the validator's stated purpose.\n\nTwo concrete gaps:\n1. Line 47 (`tasks = data.get(\"master\", {}).get(\"tasks\", [])`): if the top-level JSON is not an object, or `master` is not a dict, or `tasks` is not a list, the `.get()` chain silently yields `[]` and the validator prints no errors. Assert `isinstance(data, dict)`, `isinstance(data.get('master'), dict)`, and `isinstance(data['master'].get('tasks'), list)`, printing an explicit schema error and exiting 1 otherwise.\n2. Line 76 (`collections.Counter(t[\"id\"] for t in tasks if \"id\" in t)`): Counter raises TypeError uncaught if an id is unhashable (list/dict due to corruption). Filter the Counter input to hashable scalars, or wrap the call and report an explicit invariant-3 error for unhashable ids.\n\nFiles: scripts/validate_tasks_json.py.\n\nNote: if the multi-tag follow-up lands first, the same assertions should apply to every tag dict, not just `master`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T12:55:04.822Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T12:55:02.400Z",
+      "lastModified": "2026-04-17T12:55:04.823Z",
       "taskCount": 1934,
       "completedCount": 1661,
       "tags": [
