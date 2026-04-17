@@ -88,7 +88,7 @@ def main() -> None:
                 subtasks = task.get("subtasks", [])
                 if subtasks:
                     parent_id = task.get("id", "?")
-                    _validate_subtasks(subtasks, known_ids, parent_id, errors)
+                    _validate_subtasks(subtasks, known_ids, parent_id, errors, tag_context=tag_name)
 
     for warn in warnings:
         print(f"WARN: {warn}", file=sys.stderr)
@@ -156,12 +156,17 @@ def _validate_subtasks(
     parent_task_ids: set,
     parent_id: str,
     errors: list,
+    *,
+    tag_context: str = "",
 ) -> None:
     """Apply invariants 1-3 to a subtask array (used only with --check-subtasks).
 
     Subtask deps may reference sibling subtask IDs or parent-task IDs.
+    ``tag_context`` is the enclosing tag name (e.g. ``"master"``) and is
+    prepended to error messages when set.
     """
-    context = f"subtasks of task {parent_id!r}"
+    inner = f"subtasks of task {parent_id!r}"
+    context = f"{tag_context}: {inner}" if tag_context else inner
 
     # Invariant 3 within subtasks.
     id_counter = collections.Counter(s["id"] for s in subtasks if "id" in s)
