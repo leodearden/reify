@@ -9,6 +9,8 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use reify_types::DiagnosticInfo;
+
 use crate::types::{ConstraintData, GuiState, MeshData, ValueData};
 
 /// Minimal delta between two GuiState snapshots.
@@ -20,6 +22,8 @@ pub struct StateDelta {
     pub removed_mesh_paths: Vec<String>,
     pub removed_value_ids: Vec<String>,
     pub removed_constraint_ids: Vec<String>,
+    /// Some(vec) when the tessellation diagnostics list changed; None when unchanged.
+    pub changed_tessellation_diagnostics: Option<Vec<DiagnosticInfo>>,
 }
 
 impl StateDelta {
@@ -34,6 +38,13 @@ impl StateDelta {
             removed_mesh_paths: vec![],
             removed_value_ids: vec![],
             removed_constraint_ids: vec![],
+            // Skip the event when the list is empty to avoid no-op wire traffic
+            // on every full refresh in the common clean-compile case.
+            changed_tessellation_diagnostics: if state.tessellation_diagnostics.is_empty() {
+                None
+            } else {
+                Some(state.tessellation_diagnostics.clone())
+            },
         }
     }
 }
@@ -128,6 +139,14 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
         .map(|m| m.entity_path.clone())
         .collect();
 
+    // --- Tessellation diagnostics: emit the new list when it differs ---
+    let changed_tessellation_diagnostics =
+        if old.tessellation_diagnostics != new.tessellation_diagnostics {
+            Some(new.tessellation_diagnostics.clone())
+        } else {
+            None
+        };
+
     StateDelta {
         changed_meshes,
         changed_values,
@@ -135,6 +154,7 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
         removed_mesh_paths,
         removed_value_ids,
         removed_constraint_ids,
+        changed_tessellation_diagnostics,
     }
 }
 
@@ -189,6 +209,17 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
             "constraint-removed".to_string(),
             serde_json::Value::String(id.clone()),
         ));
+    }
+
+    // Tessellation diagnostics: emit full list when it changed.
+    if let Some(diags) = &delta.changed_tessellation_diagnostics {
+        push_serialized_event(
+            &mut events,
+            "tessellation-diagnostics",
+            "tessellation-diagnostics",
+            "diagnostics",
+            serde_json::to_value(diags),
+        );
     }
 
     events

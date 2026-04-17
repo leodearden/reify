@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use tracing::warn;
+
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_eval::{CheckResult, Engine};
 use reify_types::{
@@ -10,7 +12,7 @@ use reify_types::{
     ModulePath, Satisfaction, Severity, Value, ValueCellId,
 };
 
-use reify_types::{DiagnosticInfo, SourceLocationInfo};
+use reify_types::{Diagnostic, DiagnosticInfo, SourceLocationInfo};
 
 use crate::types::{
     ConstraintData, DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MeshData,
@@ -387,40 +389,7 @@ impl EngineSession {
             }
         };
 
-        // Build the newline table once (O(M)) so each span lookup is O(log M).
-        let line_offsets = build_line_offsets(source);
-        // Allocate an owned String once; move it into the closure to avoid
-        // re-allocating per diagnostic.
-        let file_path = file_path.to_owned();
-
-        compiled
-            .diagnostics
-            .iter()
-            .map(|diag| {
-                // Use the first label's span if available; otherwise default to (1,1,1,1).
-                let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
-                {
-                    let (l, c) =
-                        offset_to_line_col_fast(source, &line_offsets, label.span.start as usize);
-                    let (el, ec) =
-                        offset_to_line_col_fast(source, &line_offsets, label.span.end as usize);
-                    (l as u32, c as u32, el as u32, ec as u32)
-                } else {
-                    (1, 1, 1, 1)
-                };
-
-                DiagnosticInfo {
-                    file_path: file_path.clone(),
-                    line,
-                    column,
-                    end_line,
-                    end_column,
-                    severity: diag.severity.to_string(),
-                    message: diag.message.clone(),
-                    code: None,
-                }
-            })
-            .collect()
+        diagnostics_to_info(&compiled.diagnostics, file_path, source)
     }
 
     /// Build the full GUI state from the current engine state.
@@ -433,6 +402,7 @@ impl EngineSession {
                     values: Vec::new(),
                     constraints: Vec::new(),
                     files: Vec::new(),
+                    tessellation_diagnostics: Vec::new(),
                 });
             }
         };
@@ -442,13 +412,41 @@ impl EngineSession {
         let values = build_values(compiled, check);
         let constraints = build_constraints(compiled, check);
 
-        // Build meshes (from tessellation of realizations)
-        let meshes = match self.engine.tessellate_snapshot(compiled) {
+        // Build meshes (from tessellation of realizations) and capture any
+        // tessellation diagnostics (e.g. OCCT kernel errors).
+        let (meshes, tessellation_diagnostics) = match self.engine.tessellate_snapshot(compiled) {
             Some(result) => {
-                for diag in &result.diagnostics {
-                    eprintln!("[tessellation] {:?}: {}", diag.severity, diag.message);
-                }
-                result
+                // Map tessellation diagnostics → DiagnosticInfo and emit backend
+                // log entries so headless/CI runs still surface these via tracing.
+                let tess_diags = if result.diagnostics.is_empty() {
+                    Vec::new()
+                } else {
+                    // Log each diagnostic before mapping so stderr/tracing output
+                    // is available even when the GUI channel is not subscribed.
+                    for diag in &result.diagnostics {
+                        warn!(severity = ?diag.severity, message = %diag.message, "tessellation diagnostic");
+                    }
+                    // Resolve source for span lookup.  When source is unavailable
+                    // (e.g. break_*_for_test helpers), we still produce
+                    // DiagnosticInfo but tag code = "unresolved-source" so
+                    // frontends can distinguish reliable from unreliable positions.
+                    let source_info = self
+                        .resolve_source()
+                        .map(|(f, s)| (f.to_owned(), s.to_owned()));
+                    let unresolved = source_info.is_none();
+                    let (file_path, source) =
+                        source_info.unwrap_or_else(|| ("<unknown>".to_owned(), String::new()));
+                    let mut diags = diagnostics_to_info(&result.diagnostics, &file_path, &source);
+                    if unresolved {
+                        for d in &mut diags {
+                            if d.code.is_none() {
+                                d.code = Some("unresolved-source".to_owned());
+                            }
+                        }
+                    }
+                    diags
+                };
+                let meshes = result
                     .meshes
                     .into_iter()
                     .map(|(entity_path, mesh)| MeshData {
@@ -457,9 +455,10 @@ impl EngineSession {
                         indices: mesh.indices,
                         normals: mesh.normals,
                     })
-                    .collect()
+                    .collect();
+                (meshes, tess_diags)
             }
-            None => Vec::new(),
+            None => (Vec::new(), Vec::new()),
         };
 
         // Build files
@@ -477,6 +476,7 @@ impl EngineSession {
             values,
             constraints,
             files,
+            tessellation_diagnostics,
         })
     }
 
@@ -493,6 +493,16 @@ impl EngineSession {
             None => return Vec::new(),
         };
 
+        // Validate template-name uniqueness once (O(N)) rather than inside every
+        // build_template_node call (which would be O(N²) across the full tree build).
+        debug_assert!(
+            {
+                let mut seen = std::collections::HashSet::new();
+                compiled.templates.iter().all(|t| seen.insert(t.name.as_str()))
+            },
+            "template names must be unique within a compiled module"
+        );
+
         compiled
             .templates
             .iter()
@@ -507,11 +517,12 @@ impl EngineSession {
     ///
     /// - **Template roots** — keyed by `template.name` (e.g. `"Bracket"`).
     ///   `content_hash` = `template.content_hash.to_string()` (32-char hex).
-    ///   `structural_fingerprint` = `"{entity_kind}::{sub_count}:{children_hash}"`.
+    ///   `structural_fingerprint` = `"{entity_kind}:<root>:{sub_count}:{children_hash}"`.
     ///   `source_span` = `None` (TopologyTemplate has no span in the compiled IR).
     ///
     /// - **Value cells** — keyed by `"{template.name}.{cell.id.member}"`.
-    ///   `content_hash` = hex of `ContentHash::of_str(cell_id_string)`.
+    ///   `content_hash` = hex of `ContentHash::of_str(cell_id_string)` (identity hash,
+    ///   not a content hash — see `EntityIdentity.content_hash` doc for details).
     ///   `structural_fingerprint` = `"{cell_kind}:{template.name}:0:{cell_type_hash}"`.
     ///   `source_span` = `Some(SourceSpanInfo { start, end })` from `cell.span`.
     ///
@@ -534,10 +545,12 @@ impl EngineSession {
             let sub_count = template.sub_components.len();
             let children_hash =
                 ContentHash::combine_all(template.sub_components.iter().map(|s| s.content_hash));
-            // The second field (parent) is intentionally empty for template roots:
-            // they have no containing definition.  Format: "{kind}:{parent}:{sub_count}:{hash}".
+            // The second field (parent) uses the '<root>' sentinel for template roots
+            // (angle-bracket form is an impossible template identifier, preventing
+            // collision with user-defined templates named "root").
+            // Format: "{kind}:{parent}:{sub_count}:{hash}".
             let structural_fingerprint =
-                format!("{}:{}:{}:{}", entity_kind, "", sub_count, children_hash);
+                format!("{}:{}:{}:{}", entity_kind, "<root>", sub_count, children_hash);
 
             map.insert(
                 template.name.clone(),
@@ -559,6 +572,8 @@ impl EngineSession {
                 map.insert(
                     cell_path,
                     EntityIdentity {
+                        // Identity-hash, not content-hash: see EntityIdentity docs.
+                        // Hashes the cell's id string (e.g. "Bracket.width"), not its type or value.
                         content_hash: ContentHash::of_str(&cell.id.to_string()).to_string(),
                         structural_fingerprint,
                         source_span: Some(SourceSpanInfo {
@@ -861,6 +876,7 @@ fn build_preview_gui_state(
         values: build_values(compiled, check),
         constraints: build_constraints(compiled, check),
         files: Vec::new(),
+        tessellation_diagnostics: Vec::new(),
     }
 }
 
@@ -873,11 +889,17 @@ fn build_preview_gui_state(
 /// compiler's Tarjan SCC pass), this function emits an empty `children` vec for
 /// that sub node rather than recursing — preventing infinite recursion for
 /// self-referential and mutually-recursive structure definitions.
+///
+/// # Preconditions
+/// Caller must ensure `compiled.templates` has no duplicate names — the compiler
+/// guarantees this for well-formed modules. `get_entity_tree` performs a
+/// debug-only uniqueness check (O(N)) before iterating templates.
 pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
     compiled: &reify_compiler::CompiledModule,
 ) -> EntityTreeNode {
+
     let kind = match template.entity_kind {
         EntityKind::Structure => "structure",
         EntityKind::Occurrence => "occurrence",
@@ -1061,6 +1083,20 @@ impl EngineSession {
     /// uses the cached table rather than recomputing it from the source text.
     pub(crate) fn override_line_offsets_cache_for_test(&mut self, offsets: Vec<usize>) {
         self.line_offsets_cache = Some(offsets);
+    }
+
+    /// Directly inject a `CompiledModule` as the session's current compiled state,
+    /// bypassing parse / compile / check.
+    ///
+    /// Allows tests to exercise functions that operate on `self.compiled` with
+    /// synthetic or intentionally malformed modules (e.g. duplicate template names)
+    /// that the normal compiler pipeline would never produce.
+    ///
+    /// Note: `module_name`, `source_map`, and `last_check` are NOT updated, so the
+    /// session's invariant is intentionally broken.  Functions that rely on those
+    /// fields (e.g. `get_diagnostics`, `resolve_source`) degrade gracefully.
+    pub(crate) fn inject_compiled_for_test(&mut self, compiled: CompiledModule) {
+        self.compiled = Some(compiled);
     }
 }
 
@@ -1333,6 +1369,59 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
     refs.sort();
     refs.dedup();
     refs
+}
+
+/// Map a slice of [`Diagnostic`] to `Vec<DiagnosticInfo>`.
+///
+/// `file_path` is the source file name used for all produced `DiagnosticInfo`
+/// entries.  When no file is available (e.g. tessellation errors without a
+/// known source location), pass `"<unknown>"` and an empty string for `source`.
+///
+/// Each diagnostic's first label span is used for line/column resolution.
+/// Diagnostics without labels (labelless fallback) produce `(1, 1, 1, 1)`.
+///
+/// # Severity format
+///
+/// `DiagnosticInfo::severity` is serialized as PascalCase (`"Error"`,
+/// `"Warning"`, `"Info"`).  This is the canonical wire format for all
+/// callers — both `get_diagnostics` (compile-time) and the tessellation path.
+/// MCP consumers and TypeScript code must compare against PascalCase strings.
+fn diagnostics_to_info(diagnostics: &[Diagnostic], file_path: &str, source: &str) -> Vec<DiagnosticInfo> {
+    if diagnostics.is_empty() {
+        return Vec::new();
+    }
+    // Build the newline table once (O(M)) so each span lookup is O(log M).
+    let line_offsets = build_line_offsets(source);
+    diagnostics
+        .iter()
+        .map(|diag| {
+            // Use the first label's span if available; otherwise default to (1,1,1,1).
+            let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first() {
+                let (l, c) =
+                    offset_to_line_col_fast(source, &line_offsets, label.span.start as usize);
+                let (el, ec) =
+                    offset_to_line_col_fast(source, &line_offsets, label.span.end as usize);
+                (l as u32, c as u32, el as u32, ec as u32)
+            } else {
+                (1, 1, 1, 1)
+            };
+            DiagnosticInfo {
+                file_path: file_path.to_owned(),
+                line,
+                column,
+                end_line,
+                end_column,
+                severity: match diag.severity {
+                    Severity::Error => "Error",
+                    Severity::Warning => "Warning",
+                    Severity::Info => "Info",
+                }
+                .to_owned(),
+                message: diag.message.clone(),
+                code: None,
+            }
+        })
+        .collect()
 }
 
 /// Pre-compute byte positions of all `\n` characters in `source` in O(M).

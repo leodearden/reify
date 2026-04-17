@@ -667,7 +667,10 @@ fn purpose_compiled_and_activatable() {
     // Deriving from mfg_ready.constraints.len() guards against silent drifts if the
     // purpose body is updated — both the test and the .ri source stay in sync automatically.
     // (See examples/integration_full_v01.ri: mfg_ready uses literal placeholder constraints;
-    // adding subject-referencing constraints is tracked as a follow-up task.)
+    // replacing them with reflective `forall p in subject.geometric_params: determined(p)`
+    // is tracked as task #1904 — three missing pieces: StructureRef member-access compilation
+    // in expr.rs, filter-kind branches in traits.rs resolved_queries loop, and forall runtime
+    // expansion via ResolvedSchemaQuery.resolved_ids in reify-eval activate_purpose.)
     let expected_extra = mfg_ready.constraints.len();
     assert!(
         expected_extra > 0,
@@ -800,6 +803,71 @@ fn test_runner_all_pass() {
             r.status
         );
     }
+}
+
+// ── Test 26: purpose follow-up comments are precise ──────────────────────────
+
+/// Assert that the .ri file's purpose comments have been upgraded from the
+/// old generic "tracked as a follow-up task" phrasing to precise scoped
+/// references citing task #1904.
+///
+/// Self-expiring scaffolding: delete this test when task #1904 lands and
+/// the placeholder constraints are replaced with real reflective syntax.
+///
+/// Assertions:
+/// 1. The old generic phrase is absent (regression guard).
+/// 2. The old vague phrase is absent (regression guard).
+/// 3. The precise follow-up task id "task #1904" is present somewhere.
+/// 4. A scoped placeholder comment with task #1904 appears above weight_target,
+///    naming both target shapes (minimize subject.mass, determined(subject.mass)).
+#[test]
+fn purpose_follow_up_comment_is_precise() {
+    let src = source();
+
+    // 1. Old generic "Follow-up:" sentence must be gone.
+    assert!(
+        !src.contains("Follow-up: replace with `constraint determined(subject.mass)`"),
+        "Old generic follow-up phrase found in .ri — must be replaced with precise task #1904 reference"
+    );
+
+    // 2. Old vague "tracked as a follow-up task" phrase must be gone.
+    assert!(
+        !src.contains("tracked as a follow-up task"),
+        "Vague 'tracked as a follow-up task' phrase found — must be replaced with 'task #1904' reference"
+    );
+
+    // 3. Precise follow-up task id must be present.
+    assert!(
+        src.contains("task #1904"),
+        "Precise follow-up marker 'task #1904' not found in .ri — add scoped placeholder comments"
+    );
+
+    // 4. The scoped comment ABOVE weight_target must cite task #1904 and name
+    // both target shapes (minimize subject.mass and determined(subject.mass)).
+    // Narrow the slice to just the region between the end of mfg_ready's body
+    // and weight_target's declaration — otherwise a stray match in mfg_ready's
+    // comment (or anywhere earlier in the file) would satisfy the assertion
+    // even if weight_target's scoped comment were removed.
+    let weight_target_pos = src
+        .find("purpose weight_target")
+        .expect("'purpose weight_target' must exist in .ri");
+    let mfg_ready_end = src[..weight_target_pos]
+        .rfind('}')
+        .expect("closing '}' of mfg_ready must precede 'purpose weight_target'");
+    let weight_target_region = &src[mfg_ready_end + 1..weight_target_pos];
+    assert!(
+        weight_target_region.contains("task #1904"),
+        "No 'task #1904' reference found in the doc block immediately above 'purpose weight_target'"
+    );
+    assert!(
+        weight_target_region.contains("minimize subject.mass"),
+        "Target shape 'minimize subject.mass' not found in the doc block immediately above 'purpose weight_target'"
+    );
+    assert!(
+        weight_target_region.contains("determined(subject.mass)"),
+        "Target shape 'determined(subject.mass)' not found in the doc block immediately above 'purpose weight_target' — \
+         scoped comment must name both minimize and constraint targets"
+    );
 }
 
 // ── Test 19: constraint def labels ────────────────────────────────────────────

@@ -439,6 +439,18 @@ assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit co
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
+        _abs_kill=$(command -v kill)
+        _abs_awk=$(command -v awk)
+
+        # Kill stale "sleep 31337" orphans left by Test 16a, prior runs, or
+        # concurrent verify pipelines on the same host so they do not cause
+        # a false negative for THIS invocation. Mirrors the stabilization
+        # pattern applied to Test 21b in cbeeb5a81 / 14f9287f2.
+        "$_abs_ps" -A -o pid,args 2>/dev/null \
+            | "$_abs_grep" -E "[[:space:]]sleep 31337$" \
+            | "$_abs_awk" "{print \$1}" \
+            | while read _pid; do "$_abs_kill" -9 "$_pid" 2>/dev/null; done
+        "$_abs_sleep" 0.5
 
         eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
@@ -447,11 +459,16 @@ assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit co
         # its inner "sleep 31337" before the command exits.
         portable_timeout 31337 "$_abs_sleep" 0.3 || true
 
-        # Use saved absolute paths — rescue_dir may be gone if the timer
-        # subshell ran its inherited EXIT trap when killed.
-        "$_abs_sleep" 0.5
+        # Poll up to 5s for the orphan sleep 31337 to be reaped.
+        # A single fixed sleep races against kernel process-table cleanup
+        # on busy systems, so retry a few times before declaring failure.
         _check_rc=0
-        ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31337$" || _check_rc=$?
+        for _try in 1 2 3 4 5; do
+            _check_rc=0
+            ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31337$" || _check_rc=$?
+            [ "$_check_rc" -eq 0 ] && break
+            "$_abs_sleep" 1
+        done
         # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
         rm -rf "$rescue_dir"
         exit "$_check_rc"

@@ -391,6 +391,8 @@ fn assert_all_type_variants_listed(t: &reify_types::Type) {
         Type::Plane | Type::Axis | Type::BoundingBox => true,
         // Matrix
         Type::Matrix { .. } => true,
+        // Type-inference poison sentinel (task-448)
+        Type::Error => true,
     };
 }
 

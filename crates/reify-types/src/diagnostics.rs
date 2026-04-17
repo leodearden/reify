@@ -30,6 +30,41 @@ impl SourceSpan {
         self.start == self.end
     }
 
+    /// A sentinel span used for prelude-originated entries that have no
+    /// meaningful byte-offset in the current compilation unit.
+    ///
+    /// The value `{ start: u32::MAX, end: u32::MAX }` is guaranteed to fall
+    /// outside any real source (files are bounded well below 4 GiB in
+    /// practice).  Use [`SourceSpan::is_prelude`] to detect this sentinel
+    /// before converting offsets to line/column positions.
+    ///
+    /// # Renderer behaviour
+    ///
+    /// - `reify-types::byte_offset_to_line_col` short-circuits the prelude
+    ///   sentinel to `(1, 1)` — the same "no user-file location" fallback
+    ///   used by `mcp_context::get_diagnostics` when no labels are present.
+    ///   This prevents a `debug_assert` panic (debug builds) and a silent
+    ///   EOF mis-report (release builds).
+    /// - LSP and GUI renderers that do their own offset→position conversion
+    ///   clamp via `offset.min(source.len())`, so the sentinel degrades to an
+    ///   EOF position there.  The provenance truth is carried by the label
+    ///   *message* (e.g. "defined in stdlib prelude"), not the span coordinates.
+    /// - Callers that render span coordinates are encouraged to check
+    ///   [`SourceSpan::is_prelude`] and substitute a "no user-file location"
+    ///   presentation rather than relying on clamping.
+    pub fn prelude() -> Self {
+        Self {
+            start: u32::MAX,
+            end: u32::MAX,
+        }
+    }
+
+    /// Returns `true` if this span is the prelude sentinel produced by
+    /// [`SourceSpan::prelude`].
+    pub fn is_prelude(&self) -> bool {
+        self.start == u32::MAX && self.end == u32::MAX
+    }
+
     /// Merge two spans into one covering both.
     pub fn merge(self, other: SourceSpan) -> SourceSpan {
         SourceSpan {
@@ -119,6 +154,44 @@ impl DiagnosticLabel {
 #[derive(Debug, Clone)]
 pub struct DiagnosticRef {
     pub index: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SourceSpan;
+
+    #[test]
+    fn prelude_sentinel_is_prelude() {
+        assert!(
+            SourceSpan::prelude().is_prelude(),
+            "SourceSpan::prelude() must satisfy is_prelude()"
+        );
+    }
+
+    #[test]
+    fn empty_zero_is_not_prelude() {
+        assert!(
+            !SourceSpan::empty(0).is_prelude(),
+            "SourceSpan::empty(0) must NOT satisfy is_prelude()"
+        );
+    }
+
+    #[test]
+    fn regular_span_is_not_prelude() {
+        assert!(
+            !SourceSpan::new(0, 5).is_prelude(),
+            "SourceSpan::new(0, 5) must NOT satisfy is_prelude()"
+        );
+    }
+
+    #[test]
+    fn prelude_distinct_from_empty_zero() {
+        assert_ne!(
+            SourceSpan::prelude(),
+            SourceSpan::empty(0),
+            "SourceSpan::prelude() must be distinct from SourceSpan::empty(0)"
+        );
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.

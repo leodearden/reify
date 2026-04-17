@@ -621,6 +621,7 @@ const App: Component = () => {
             constraints={engineStore.state.constraints}
             claudeStatus={claudeStore.state.sessionStatus}
             onToggleChat={handleToggleChat}
+            tessellationDiagnostics={engineStore.state.tessellationDiagnostics}
           />
           <ExportDialog
             open={showExportDialog()}

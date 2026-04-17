@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { StatusBar } from '../panels/StatusBar';
-import type { EvaluationStatus, MeshData, ConstraintData } from '../types';
+import type { EvaluationStatus, MeshData, ConstraintData, DiagnosticInfo } from '../types';
 
 function makeMesh(entityPath: string, numTriangles: number): MeshData {
   return {
@@ -106,6 +106,109 @@ describe('StatusBar accessibility', () => {
     ));
     const el = screen.getByTestId('status-bar');
     expect(el.getAttribute('aria-live')).toBe('polite');
+  });
+});
+
+describe('StatusBar tessellation diagnostics', () => {
+  function makeDiag(severity: string, message = 'test error'): DiagnosticInfo {
+    return {
+      file_path: '<unknown>',
+      line: 1, column: 1, end_line: 1, end_column: 1,
+      severity,
+      message,
+      code: null,
+    };
+  }
+
+  it('absent tessellationDiagnostics prop: no error badge rendered and phase label unchanged', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+      />
+    ));
+    expect(screen.queryByTestId('tessellation-errors')).toBeNull();
+    expect(screen.getByText(/idle/i)).toBeTruthy();
+  });
+
+  it('empty tessellationDiagnostics prop: no error badge rendered', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[]}
+      />
+    ));
+    expect(screen.queryByTestId('tessellation-errors')).toBeNull();
+  });
+
+  it('one Error diagnostic: badge with count 1 is visible and data-has-errors="true"', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error')]}
+      />
+    ));
+    const badge = screen.getByTestId('tessellation-errors');
+    expect(badge).toBeTruthy();
+    expect(badge.getAttribute('data-has-errors')).toBe('true');
+    // Error count badge should contain "1"
+    expect(badge.textContent).toContain('1');
+  });
+
+  it('mixed Error and Warning diagnostics: both counts render', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error'), makeDiag('Warning')]}
+      />
+    ));
+    // Assert each badge separately so a missing badge fails the test.
+    expect(screen.getByText(/1 error/i)).toBeTruthy();
+    expect(screen.getByText(/1 warning/i)).toBeTruthy();
+  });
+
+  it('asymmetric counts: pluralisation is correct for 2 errors and 1 warning', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error'), makeDiag('Error'), makeDiag('Warning')]}
+      />
+    ));
+    expect(screen.getByText(/2 errors/i)).toBeTruthy();
+    expect(screen.getByText(/1 warning/i)).toBeTruthy();
+  });
+
+  it('zero meshes and zero errors: shows "No geometry" label', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[]}
+      />
+    ));
+    expect(screen.getByText(/no geometry/i)).toBeTruthy();
+  });
+
+  it('zero meshes and at least one error: shows "Compile error" label', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error')]}
+      />
+    ));
+    expect(screen.getByText(/compile error/i)).toBeTruthy();
   });
 });
 

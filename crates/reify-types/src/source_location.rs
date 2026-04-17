@@ -36,6 +36,15 @@ pub struct SourceLocationInfo {
 ///   same offset produces identical `(line, col)` coordinates, as expected for
 ///   zero-length diagnostic spans.
 pub fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    // Prelude-sentinel early return: u32::MAX is used by SourceSpan::prelude()
+    // to mark spans that have no meaningful byte-offset in the current
+    // compilation unit (e.g. cross-prelude collision warnings).  Return (1, 1)
+    // — the same "no user-file location" fallback used by mcp_context when
+    // labels is empty — in BOTH debug and release builds.  This must come
+    // before the debug_assert so debug builds don't panic on the sentinel.
+    if offset == u32::MAX as usize {
+        return (1, 1);
+    }
     debug_assert!(offset <= source.len());
     let mut line = 1;
     let mut col = 1;
@@ -117,6 +126,18 @@ mod tests {
         assert_eq!(byte_offset_to_line_col(source, 4), (1, 3));
         // offset 5 → 'γ' (first codepoint on line 2) → (2, 1)
         assert_eq!(byte_offset_to_line_col(source, 5), (2, 1));
+    }
+
+    #[test]
+    fn byte_offset_to_line_col_prelude_sentinel_returns_fallback() {
+        // The prelude sentinel (u32::MAX as usize) must be handled specially:
+        // it should return (1, 1) — the "no meaningful location" fallback —
+        // in BOTH debug and release builds.
+        //
+        // Without the fix:
+        //   - debug builds: debug_assert!(offset <= source.len()) panics
+        //   - release builds: loop exhausts "abc" and returns (1, 4) (EOF pos)
+        assert_eq!(byte_offset_to_line_col("abc", u32::MAX as usize), (1, 1));
     }
 
     #[test]

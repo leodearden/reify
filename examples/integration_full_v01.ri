@@ -334,8 +334,21 @@ structure def Assembly : Physical + Locatable {
 
 /// Manufacturing readiness: all geometric params of the subject structure must be determined.
 /// Uses literal placeholder constraints so the activation/deactivation machinery is exercised.
-/// Follow-up: replace with `constraint determined(subject.mass)` etc. once reflective
-/// `subject.param` access in purpose bodies is implemented (tracked as a follow-up task).
+///
+/// Placeholder rationale (task #1904): Three pieces of reflective-purpose plumbing are
+/// missing and block the real reflective form:
+///   (i)  Type::StructureRef member-access compilation in reify-compiler/src/expr.rs —
+///        every `subject.<field>` expression (subject.params, subject.geometric_params, etc.)
+///        hits `error: member access not yet supported` because no StructureRef branch exists.
+///   (ii) Filter-kind branches (geometric_params, material_params, sub_entities, ports,
+///        constraints) in the resolved_queries loop in reify-compiler/src/traits.rs:337-357.
+///  (iii) Runtime expansion of `forall p in subject.<query>: predicate(p)` in
+///        reify-eval/src/lib.rs activate_purpose, by iterating ResolvedSchemaQuery.resolved_ids
+///        and materialising one constraint per resolved ValueCellId (with entity remapping).
+///
+/// Target shape (once task #1904 is done):
+///   constraint forall p in subject.geometric_params: determined(p)
+///   constraint forall p in subject.params: determined(p)
 purpose mfg_ready(subject : Structure) {
     constraint 1mm > 0mm
     constraint 2mm > 1mm
@@ -343,6 +356,15 @@ purpose mfg_ready(subject : Structure) {
 }
 
 /// Weight minimization target for a structural part.
+///
+/// Placeholder rationale (task #1904): same three missing pieces as mfg_ready above
+/// (member-access compilation, resolved_queries filter branches, forall runtime expansion)
+/// prevent use of the real reflective form. The current body keeps `constraint 1mm > 0mm`
+/// and `minimize 1mm` to exercise the minimize-injection path through activate_purpose.
+///
+/// Target shape (once task #1904 is done):
+///   minimize subject.mass
+///   constraint determined(subject.mass)
 pub purpose weight_target(part : Structure) {
     constraint 1mm > 0mm
     minimize 1mm

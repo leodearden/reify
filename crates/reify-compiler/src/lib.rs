@@ -273,13 +273,31 @@ pub(crate) fn compile_with_prelude_refs(
         let module_display = prelude_module.path.to_string();
         for cu in &prelude_module.units {
             if cu.is_pub {
+                // Detect cross-prelude collision before overwriting: if another
+                // prelude module already seeded this unit name, emit a warning.
+                if let Some(existing) = unit_registry.lookup(&cu.name) {
+                    let first_module: &str = existing
+                        .source_module
+                        .as_deref()
+                        .unwrap_or("<unknown>");
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "prelude unit '{}' declared in both '{}' and '{}'; last-wins",
+                            cu.name, first_module, module_display
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            SourceSpan::prelude(),
+                            "cross-prelude collision",
+                        )),
+                    );
+                }
                 unit_registry.seed_prelude_unit(UnitEntry {
                     name: cu.name.clone(),
                     dimension: cu.dimension,
                     factor: cu.factor,
                     offset: cu.offset,
                     is_pub: cu.is_pub,
-                    span: SourceSpan::empty(0),
+                    span: SourceSpan::prelude(),
                     content_hash: cu.content_hash,
                     source_module: Some(module_display.clone()),
                 });
@@ -309,9 +327,9 @@ pub(crate) fn compile_with_prelude_refs(
                     match &original.source_module {
                         Some(m) if m.starts_with("std/") => {
                             // Original is a stdlib prelude unit.
-                            // Emit a single-label diagnostic — omit the misleading
-                            // SourceSpan::empty(0) label that would point to byte 0
-                            // of the user's file.
+                            // Emit a two-label diagnostic: primary is the user's
+                            // duplicate decl; secondary is the prelude sentinel
+                            // carrying provenance text.
                             diagnostics.push(
                                 Diagnostic::error(format!(
                                     "duplicate unit declaration '{}' — already defined in stdlib prelude",
@@ -320,13 +338,18 @@ pub(crate) fn compile_with_prelude_refs(
                                 .with_label(DiagnosticLabel::new(
                                     dup_entry.span,
                                     "duplicate of stdlib unit",
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    original.span,
+                                    "defined in stdlib prelude",
                                 )),
                             );
                         }
                         Some(m) => {
                             // Original was seeded from a user module — name that module.
-                            // Emit a single-label diagnostic (original span is empty(0),
-                            // so omit it to avoid a misleading byte-0 label).
+                            // Emit a two-label diagnostic: primary is the user's
+                            // duplicate decl; secondary is the prelude sentinel
+                            // carrying provenance text.
                             diagnostics.push(
                                 Diagnostic::error(format!(
                                     "duplicate unit declaration '{}' — already defined in module '{}'",
@@ -335,6 +358,10 @@ pub(crate) fn compile_with_prelude_refs(
                                 .with_label(DiagnosticLabel::new(
                                     dup_entry.span,
                                     format!("duplicate of unit from '{}'", m),
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    original.span,
+                                    format!("defined in module '{}' prelude", m),
                                 )),
                             );
                         }

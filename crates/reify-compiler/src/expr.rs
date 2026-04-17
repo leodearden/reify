@@ -731,7 +731,10 @@ pub(crate) fn compile_expr_guarded(
                                     "unknown member",
                                 )),
                             );
-                            return CompiledExpr::literal(Value::Undef, Type::Real);
+                            // Anti-cascade (task-448): emit Type::Error so
+                            // downstream operand-level guards can short-circuit
+                            // rather than cascading type-mismatch diagnostics.
+                            return CompiledExpr::literal(Value::Undef, Type::Error);
                         }
                     }
                 }
@@ -971,6 +974,17 @@ pub(crate) fn compile_expr_guarded(
                 lambda_counter,
             );
             if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
+                // Anti-cascade guard (task-448): if the object is already
+                // poisoned, propagate Type::Error rather than falling back
+                // to Type::Real / List<Real>.
+                if compiled_obj.result_type.is_error() {
+                    return CompiledExpr::method_call(
+                        compiled_obj,
+                        member.clone(),
+                        vec![],
+                        Type::Error,
+                    );
+                }
                 // Infer result type from method and object type
                 let result_type = match member.as_str() {
                     "count" => Type::Int,
@@ -990,11 +1004,22 @@ pub(crate) fn compile_expr_guarded(
                 };
                 CompiledExpr::method_call(compiled_obj, member.clone(), vec![], result_type)
             } else {
+                // Anti-cascade (task-448 amend): if the object is already
+                // poisoned, do NOT emit a second "not yet supported" diagnostic
+                // on top of the root-cause error. Short-circuit to Type::Error
+                // silently — the original producer already reported the issue.
+                if compiled_obj.result_type.is_error() {
+                    return CompiledExpr::literal(Value::Undef, Type::Error);
+                }
                 diagnostics.push(
                     Diagnostic::error(format!("member access not yet supported: .{}", member))
                         .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
                 );
-                CompiledExpr::literal(Value::Undef, Type::Real)
+                // Anti-cascade (task-448): emit Type::Error so downstream
+                // operand-level guards (infer_binop_type, index access,
+                // aggregation, quantifier) can short-circuit and avoid
+                // cascade diagnostics on top of this stub.
+                CompiledExpr::literal(Value::Undef, Type::Error)
             }
         }
         reify_syntax::ExprKind::ListLiteral(elements) => {
@@ -1125,11 +1150,18 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
-            // Infer result type from collection's element type
-            let result_type = match &compiled_obj.result_type {
-                Type::List(inner) => (**inner).clone(),
-                Type::Map(_, val) => (**val).clone(),
-                _ => Type::Real,
+            // Infer result type from collection's element type.
+            // Anti-cascade guard (task-448): if the object is already
+            // poisoned, propagate Type::Error rather than falling back to
+            // Type::Real.
+            let result_type = if compiled_obj.result_type.is_error() {
+                Type::Error
+            } else {
+                match &compiled_obj.result_type {
+                    Type::List(inner) => (**inner).clone(),
+                    Type::Map(_, val) => (**val).clone(),
+                    _ => Type::Real,
+                }
             };
             CompiledExpr::index_access(compiled_obj, compiled_idx, result_type)
         }
@@ -1423,10 +1455,17 @@ pub(crate) fn compile_expr_guarded(
             // Create a nested scope with the bound variable
             let mut quant_scope = scope.clone();
             let variable_id = ValueCellId::new(&quant_entity, variable);
-            // Infer element type from the collection's result type
-            let elem_type = match &compiled_collection.result_type {
-                Type::List(elem) | Type::Set(elem) => *elem.clone(),
-                _ => Type::Real, // fallback for unresolved types
+            // Infer element type from the collection's result type.
+            // Anti-cascade guard (task-448): if the collection is already
+            // poisoned, propagate Type::Error into elem_type rather than
+            // falling back to Type::Real.
+            let elem_type = if compiled_collection.result_type.is_error() {
+                Type::Error
+            } else {
+                match &compiled_collection.result_type {
+                    Type::List(elem) | Type::Set(elem) => *elem.clone(),
+                    _ => Type::Real, // fallback for unresolved types
+                }
             };
             quant_scope
                 .names
