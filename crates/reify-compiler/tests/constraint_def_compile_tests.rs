@@ -4,6 +4,7 @@
 //! Complements the existing constraint_inst_tests.rs from task 198.
 
 use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
+use reify_compiler::{CompiledConstraintDef, CompiledConstraintParam};
 use reify_test_support::{compile_source, compile_template};
 use reify_types::*;
 
