@@ -36,6 +36,8 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         },
         selection: {
           selectedEntity: selection.state.selectedEntity,
+          selectedEntities: selection.state.selectedEntities,
+          anchorEntity: selection.state.anchorEntity,
           hoveredEntity: selection.state.hoveredEntity,
           highlightedParams: selection.state.highlightedParams,
         },
@@ -84,6 +86,7 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         meshCount: meshes.size,
         meshInfo,
         selectedEntity: ctx.stores.selection.state.selectedEntity,
+        selectedEntities: ctx.stores.selection.state.selectedEntities,
         sceneBounds: bounds.isEmpty()
           ? null
           : {
@@ -202,6 +205,29 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
     select_entity: (params) => {
       const entityPath = (params.entityPath as string) ?? null;
       ctx.stores.selection.selectEntity(entityPath);
+      return { ok: true };
+    },
+
+    clear_selection: () => {
+      // clearSelection is exposed on the store if available, else fall back to selectEntity(null)
+      const sel = ctx.stores.selection as any;
+      if (typeof sel.clearSelection === 'function') {
+        sel.clearSelection();
+      } else {
+        ctx.stores.selection.selectEntity(null);
+      }
+      return { ok: true };
+    },
+
+    toggle_select: (params) => {
+      const entityPath = params.entityPath as string;
+      if (!entityPath) return { error: 'entityPath is required' };
+      const sel = ctx.stores.selection as any;
+      if (typeof sel.toggleSelect === 'function') {
+        sel.toggleSelect(entityPath);
+      } else {
+        ctx.stores.selection.selectEntity(entityPath);
+      }
       return { ok: true };
     },
 
