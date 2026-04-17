@@ -2418,7 +2418,7 @@ fn entity_identity_serialization_roundtrip() {
     use crate::types::{EntityIdentity, SourceSpanInfo};
     let identity = EntityIdentity {
         content_hash: "abc123def456abc123def456abc123de".to_string(),
-        structural_fingerprint: "structure:root:0:deadbeef00000000000000000000000".to_string(),
+        structural_fingerprint: "structure:<root>:0:deadbeef00000000000000000000000".to_string(),
         source_span: Some(SourceSpanInfo { start: 10, end: 50 }),
     };
     let json = serde_json::to_string(&identity).expect("serialize should succeed");
@@ -2507,7 +2507,9 @@ fn get_entity_identity_map_content_hash_is_hex_string() {
 ///
 /// For a root template:
 /// - type = "structure" or "occurrence"
-/// - parent = "root" (sentinel for root templates — no containing definition)
+/// - parent = "<root>" (reserved sentinel for root templates — angle-bracket form
+///   is an impossible template identifier, preventing collisions with user templates
+///   named "root")
 /// - child_count = number of sub-components (Bracket has 0)
 /// - hash = non-empty hex string from children content hashes
 #[test]
@@ -2531,7 +2533,7 @@ fn get_entity_identity_map_root_structural_fingerprint_format() {
         fp
     );
     assert_eq!(parts[0], "structure", "first part is entity kind");
-    assert_eq!(parts[1], "root", "parent of root template is 'root' sentinel");
+    assert_eq!(parts[1], "<root>", "parent of root template is '<root>' sentinel");
     let child_count: usize = parts[2]
         .parse()
         .expect("third part (child_count) must be a non-negative integer");
@@ -3145,7 +3147,7 @@ fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
     );
 }
 
-/// In debug builds, build_template_node must panic (via debug_assert) when the
+/// In debug builds, get_entity_tree must panic (via debug_assert) when the
 /// compiled module contains duplicate template names.
 ///
 /// The compiler guarantees unique names within a well-formed module; this test
@@ -3153,11 +3155,12 @@ fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
 /// surface loudly in development builds.  Release builds retain the graceful
 /// first-match behaviour.
 ///
-/// This test pins the invariant so future changes that violate it surface loudly.
+/// The uniqueness check runs once in get_entity_tree (O(N) per call), not inside
+/// each build_template_node call (which would be O(N²) across the full tree build).
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "template names must be unique")]
-fn build_template_node_panics_on_duplicate_template_names_in_debug() {
+fn get_entity_tree_panics_on_duplicate_template_names_in_debug() {
     use reify_types::ModulePath;
 
     let dup1 = TopologyTemplateBuilder::new("Dup").build();
@@ -3167,15 +3170,12 @@ fn build_template_node_panics_on_duplicate_template_names_in_debug() {
         .template(dup2)
         .build();
 
-    let first = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "Dup")
-        .expect("Dup template must be in the module");
-
-    // With the current impl (no debug_assert), this does NOT panic, so
-    // #[should_panic] makes the test FAIL — that is the intended red-phase state.
-    build_template_node(first, "Dup", &compiled);
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    // Inject the malformed module directly via test helper; the debug_assert in
+    // get_entity_tree fires because compiled.templates contains two "Dup" entries.
+    session.inject_compiled_for_test(compiled);
+    let _ = session.get_entity_tree();
 }
 
 // ---- Cache tests: parsed_cache + line_offsets_cache ----

@@ -493,6 +493,16 @@ impl EngineSession {
             None => return Vec::new(),
         };
 
+        // Validate template-name uniqueness once (O(N)) rather than inside every
+        // build_template_node call (which would be O(N²) across the full tree build).
+        debug_assert!(
+            {
+                let mut seen = std::collections::HashSet::new();
+                compiled.templates.iter().all(|t| seen.insert(t.name.as_str()))
+            },
+            "template names must be unique within a compiled module"
+        );
+
         compiled
             .templates
             .iter()
@@ -507,7 +517,7 @@ impl EngineSession {
     ///
     /// - **Template roots** — keyed by `template.name` (e.g. `"Bracket"`).
     ///   `content_hash` = `template.content_hash.to_string()` (32-char hex).
-    ///   `structural_fingerprint` = `"{entity_kind}:root:{sub_count}:{children_hash}"`.
+    ///   `structural_fingerprint` = `"{entity_kind}:<root>:{sub_count}:{children_hash}"`.
     ///   `source_span` = `None` (TopologyTemplate has no span in the compiled IR).
     ///
     /// - **Value cells** — keyed by `"{template.name}.{cell.id.member}"`.
@@ -535,10 +545,12 @@ impl EngineSession {
             let sub_count = template.sub_components.len();
             let children_hash =
                 ContentHash::combine_all(template.sub_components.iter().map(|s| s.content_hash));
-            // The second field (parent) uses the 'root' sentinel for template roots:
-            // they have no containing definition.  Format: "{kind}:{parent}:{sub_count}:{hash}".
+            // The second field (parent) uses the '<root>' sentinel for template roots
+            // (angle-bracket form is an impossible template identifier, preventing
+            // collision with user-defined templates named "root").
+            // Format: "{kind}:{parent}:{sub_count}:{hash}".
             let structural_fingerprint =
-                format!("{}:{}:{}:{}", entity_kind, "root", sub_count, children_hash);
+                format!("{}:{}:{}:{}", entity_kind, "<root>", sub_count, children_hash);
 
             map.insert(
                 template.name.clone(),
@@ -880,19 +892,13 @@ fn build_preview_gui_state(
 ///
 /// # Preconditions
 /// Caller must ensure `compiled.templates` has no duplicate names — the compiler
-/// guarantees this for well-formed modules; a debug-only assertion fires if violated.
+/// guarantees this for well-formed modules. `get_entity_tree` performs a
+/// debug-only uniqueness check (O(N)) before iterating templates.
 pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
     compiled: &reify_compiler::CompiledModule,
 ) -> EntityTreeNode {
-    debug_assert!(
-        {
-            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-            compiled.templates.iter().all(|t| seen.insert(t.name.as_str()))
-        },
-        "template names must be unique within a compiled module"
-    );
 
     let kind = match template.entity_kind {
         EntityKind::Structure => "structure",
@@ -1077,6 +1083,20 @@ impl EngineSession {
     /// uses the cached table rather than recomputing it from the source text.
     pub(crate) fn override_line_offsets_cache_for_test(&mut self, offsets: Vec<usize>) {
         self.line_offsets_cache = Some(offsets);
+    }
+
+    /// Directly inject a `CompiledModule` as the session's current compiled state,
+    /// bypassing parse / compile / check.
+    ///
+    /// Allows tests to exercise functions that operate on `self.compiled` with
+    /// synthetic or intentionally malformed modules (e.g. duplicate template names)
+    /// that the normal compiler pipeline would never produce.
+    ///
+    /// Note: `module_name`, `source_map`, and `last_check` are NOT updated, so the
+    /// session's invariant is intentionally broken.  Functions that rely on those
+    /// fields (e.g. `get_diagnostics`, `resolve_source`) degrade gracefully.
+    pub(crate) fn inject_compiled_for_test(&mut self, compiled: CompiledModule) {
+        self.compiled = Some(compiled);
     }
 }
 

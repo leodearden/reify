@@ -176,7 +176,9 @@ pub struct SourceSpanInfo {
 ///     cell-content hash must derive it separately.
 /// - `structural_fingerprint`: `"{type}:{parent}:{child_count}:{hash}"` format.
 ///   - `type` — entity kind (`"structure"`, `"occurrence"`, `"param"`, `"let"`, `"auto"`)
-///   - `parent` — parent template name, literal `"root"` sentinel for root templates
+///   - `parent` — parent template name, literal `"<root>"` sentinel for root templates
+///     (angle-bracket form cannot be a valid template identifier, preventing
+///     collision with user-defined templates named "root")
 ///   - `child_count` — number of sub-components (0 for value cells)
 ///   - `hash` — hex hash combining sub-component content hashes
 /// - `source_span`: byte span of the entity's declaration; `None` for template roots
