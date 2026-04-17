@@ -279,7 +279,7 @@ pub(crate) fn compile_with_prelude_refs(
                     factor: cu.factor,
                     offset: cu.offset,
                     is_pub: cu.is_pub,
-                    span: SourceSpan::empty(0),
+                    span: SourceSpan::prelude(),
                     content_hash: cu.content_hash,
                     source_module: Some(module_display.clone()),
                 });
@@ -309,9 +309,9 @@ pub(crate) fn compile_with_prelude_refs(
                     match &original.source_module {
                         Some(m) if m.starts_with("std/") => {
                             // Original is a stdlib prelude unit.
-                            // Emit a single-label diagnostic — omit the misleading
-                            // SourceSpan::empty(0) label that would point to byte 0
-                            // of the user's file.
+                            // Emit a two-label diagnostic: primary is the user's
+                            // duplicate decl; secondary is the prelude sentinel
+                            // carrying provenance text.
                             diagnostics.push(
                                 Diagnostic::error(format!(
                                     "duplicate unit declaration '{}' — already defined in stdlib prelude",
@@ -320,6 +320,10 @@ pub(crate) fn compile_with_prelude_refs(
                                 .with_label(DiagnosticLabel::new(
                                     dup_entry.span,
                                     "duplicate of stdlib unit",
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    original.span,
+                                    "defined in stdlib prelude",
                                 )),
                             );
                         }
