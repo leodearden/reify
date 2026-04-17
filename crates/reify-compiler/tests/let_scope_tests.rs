@@ -1045,6 +1045,31 @@ fn chamfer_chained_shell_ops() {
     );
 }
 
+#[test]
+fn fillet_chained_shell_ops() {
+    // fillet(shell(body, t), d): shell is an inline modifier wrapping a let-bound cylinder.
+    // Expected: [Cylinder, Modify(Shell, 0), Modify(Fillet, 1)]
+    //   shell resolves body → Step(0), emits Modify(Shell, 0) at Step(1)
+    //   fillet receives Step(1) as its geometry target, emits Modify(Fillet, 1) at Step(2)
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = fillet(shell(body, 0.5), 2)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Modify(ModifyKind::Shell, 0),
+            ExpectedOp::Modify(ModifyKind::Fillet, 1),
+        ],
+    );
+}
+
 // ─── task-1715 step-7 + step-9: sweep two geometry args; loft all-geometry profiles ───
 
 #[test]
