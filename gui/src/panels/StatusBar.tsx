@@ -1,5 +1,5 @@
 import { type Component, createMemo, Show } from 'solid-js';
-import type { EvaluationStatus, MeshData, ConstraintData } from '../types';
+import type { EvaluationStatus, MeshData, ConstraintData, DiagnosticInfo } from '../types';
 import type { SessionStatus } from '../stores/claudeStore';
 import styles from './StatusBar.module.css';
 
@@ -9,6 +9,7 @@ export interface StatusBarProps {
   constraints: Record<string, ConstraintData>;
   claudeStatus?: SessionStatus;
   onToggleChat?: () => void;
+  tessellationDiagnostics?: DiagnosticInfo[];
 }
 
 export const StatusBar: Component<StatusBarProps> = (props) => {
@@ -28,6 +29,17 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
       else counts.indeterminate++;
     }
     return counts;
+  });
+
+  const diagnosticSummary = createMemo(() => {
+    const diags = props.tessellationDiagnostics ?? [];
+    let errorCount = 0;
+    let warningCount = 0;
+    for (const d of diags) {
+      if (d.severity === 'Error') errorCount++;
+      else if (d.severity === 'Warning') warningCount++;
+    }
+    return { errorCount, warningCount };
   });
 
   function claudeStatusText(status: SessionStatus): string {
@@ -50,8 +62,32 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
       <span class={styles.divider} />
       <span class={styles.section}>
         <span class={styles.label}>Triangles:</span>
-        <span class={styles.value}>{triangleCount()}</span>
+        <Show
+          when={triangleCount() > 0}
+          fallback={
+            <span class={styles.value}>
+              {diagnosticSummary().errorCount > 0 ? 'Compile error' : 'No geometry'}
+            </span>
+          }
+        >
+          <span class={styles.value}>{triangleCount()}</span>
+        </Show>
       </span>
+      <Show when={(props.tessellationDiagnostics?.length ?? 0) > 0}>
+        <span class={styles.divider} />
+        <span
+          class={styles.section}
+          data-testid="tessellation-errors"
+          data-has-errors={diagnosticSummary().errorCount > 0 ? 'true' : 'false'}
+        >
+          <Show when={diagnosticSummary().errorCount > 0}>
+            <span class={styles.errorBadge}>{diagnosticSummary().errorCount} error{diagnosticSummary().errorCount > 1 ? 's' : ''}</span>
+          </Show>
+          <Show when={diagnosticSummary().warningCount > 0}>
+            <span class={styles.warningBadge}>{diagnosticSummary().warningCount} warning{diagnosticSummary().warningCount > 1 ? 's' : ''}</span>
+          </Show>
+        </span>
+      </Show>
       <span class={styles.divider} />
       <span class={styles.section}>
         <span class={styles.constraintCount} data-status="satisfied">

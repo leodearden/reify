@@ -2,7 +2,7 @@ use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
-    MockGeometryKernel, bracket_source, bracket_source_with_width,
+    FailingMockGeometryKernel, MockGeometryKernel, bracket_source, bracket_source_with_width,
     warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
 };
 use reify_types::ExportFormat;
@@ -879,10 +879,10 @@ fn engine_get_diagnostics_returns_populated_warning() {
 
     let first = &diags[0];
 
-    // severity must be "warning"
+    // severity must be "Warning"
     assert_eq!(
-        first.severity, "warning",
-        "expected severity 'warning', got '{}'",
+        first.severity, "Warning",
+        "expected severity 'Warning', got '{}'",
         first.severity
     );
 
@@ -1012,7 +1012,7 @@ fn diagnostics_and_source_location_agree_on_file_key() {
         "expected at least one diagnostic for unknown port type"
     );
     assert_eq!(
-        diags[0].severity, "warning",
+        diags[0].severity, "Warning",
         "this test relies on NonExistentTrait producing a warning — \
          if severity changed to error, load_from_source would have returned Err above; \
          update the test fixture if the compiler's severity classification changes"
@@ -1051,7 +1051,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should have diagnostics after initial load"
     );
     assert_eq!(
-        diags_before[0].severity, "warning",
+        diags_before[0].severity, "Warning",
         "this test relies on NonExistentTrait producing a warning — \
          if severity changed to error, load_from_source would have returned Err above; \
          update the test fixture if the compiler's severity classification changes"
@@ -1071,7 +1071,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should still have diagnostics after update_source"
     );
     assert_eq!(
-        diags_after[0].severity, "warning",
+        diags_after[0].severity, "Warning",
         "this test relies on NonExistentTrait producing a warning — \
          if severity changed to error, update_source would have returned Err above; \
          update the test fixture if the compiler's severity classification changes"
@@ -1137,8 +1137,8 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
 
     // (c) Severity preserved
     assert_eq!(
-        injected.severity, "warning",
-        "expected severity 'warning', got '{}'",
+        injected.severity, "Warning",
+        "expected severity 'Warning', got '{}'",
         injected.severity
     );
 
@@ -2282,9 +2282,8 @@ fn get_entity_tree_no_realization_has_mesh_false() {
 #[test]
 fn get_entity_tree_sub_component_produces_nested_node() {
     // Build: Assembly { sub bolt: Bolt }  + Bolt { param mass: Mass }
-    use reify_test_support::{vcid, mm};
+    use reify_test_support::vcid;
     use reify_types::{ModulePath, Type, DimensionVector};
-    use reify_compiler::EntityKind;
 
     let mass_type = Type::Scalar { dimension: DimensionVector::MASS };
 
@@ -2419,7 +2418,7 @@ fn entity_identity_serialization_roundtrip() {
     use crate::types::{EntityIdentity, SourceSpanInfo};
     let identity = EntityIdentity {
         content_hash: "abc123def456abc123def456abc123de".to_string(),
-        structural_fingerprint: "structure::0:deadbeef00000000000000000000000".to_string(),
+        structural_fingerprint: "structure:<root>:0:deadbeef00000000000000000000000".to_string(),
         source_span: Some(SourceSpanInfo { start: 10, end: 50 }),
     };
     let json = serde_json::to_string(&identity).expect("serialize should succeed");
@@ -2508,7 +2507,9 @@ fn get_entity_identity_map_content_hash_is_hex_string() {
 ///
 /// For a root template:
 /// - type = "structure" or "occurrence"
-/// - parent = "" (empty — no parent)
+/// - parent = "<root>" (reserved sentinel for root templates — angle-bracket form
+///   is an impossible template identifier, preventing collisions with user templates
+///   named "root")
 /// - child_count = number of sub-components (Bracket has 0)
 /// - hash = non-empty hex string from children content hashes
 #[test]
@@ -2532,7 +2533,7 @@ fn get_entity_identity_map_root_structural_fingerprint_format() {
         fp
     );
     assert_eq!(parts[0], "structure", "first part is entity kind");
-    assert_eq!(parts[1], "", "parent of root template is empty string");
+    assert_eq!(parts[1], "<root>", "parent of root template is '<root>' sentinel");
     let child_count: usize = parts[2]
         .parse()
         .expect("third part (child_count) must be a non-negative integer");
@@ -3117,6 +3118,66 @@ fn all_new_commands_callable_on_bracket_fixture() {
     );
 }
 
+/// Regression-pin: value-cell `content_hash` is an identity hash, not a content hash.
+///
+/// Pins the semantics of the `content_hash` field for value-cell entries:
+/// it is derived from the cell's *identity* (the id string `"Bracket.width"`),
+/// not from the cell's *content* (type, default_expr, kind, etc.).
+///
+/// A future "fix" that hashes cell content instead would break this test,
+/// surfacing the semantic change immediately.
+#[test]
+fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+    use reify_types::ContentHash;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+    let width_identity = map.get("Bracket.width").expect("Bracket.width should be in map");
+    let expected = ContentHash::of_str("Bracket.width").to_string();
+    assert_eq!(
+        width_identity.content_hash, expected,
+        "value-cell content_hash must equal ContentHash::of_str(\"Bracket.width\").to_string()"
+    );
+}
+
+/// In debug builds, get_entity_tree must panic (via debug_assert) when the
+/// compiled module contains duplicate template names.
+///
+/// The compiler guarantees unique names within a well-formed module; this test
+/// pins the invariant so future changes that accidentally produce duplicates
+/// surface loudly in development builds.  Release builds retain the graceful
+/// first-match behaviour.
+///
+/// The uniqueness check runs once in get_entity_tree (O(N) per call), not inside
+/// each build_template_node call (which would be O(N²) across the full tree build).
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "template names must be unique")]
+fn get_entity_tree_panics_on_duplicate_template_names_in_debug() {
+    use reify_types::ModulePath;
+
+    let dup1 = TopologyTemplateBuilder::new("Dup").build();
+    let dup2 = TopologyTemplateBuilder::new("Dup").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("m"))
+        .template(dup1)
+        .template(dup2)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    // Inject the malformed module directly via test helper; the debug_assert in
+    // get_entity_tree fires because compiled.templates contains two "Dup" entries.
+    session.inject_compiled_for_test(compiled);
+    let _ = session.get_entity_tree();
+}
+
 // ---- Cache tests: parsed_cache + line_offsets_cache ----
 
 /// Fresh session returns None from parsed_cache_for_test.
@@ -3323,5 +3384,67 @@ fn get_containing_definition_reads_from_line_offsets_cache() {
         after.is_none(),
         "after injecting empty line_offsets_cache, get_containing_definition(2,1) \
          should return None (proves the method uses the cached table)"
+    );
+}
+
+#[test]
+fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with valid bracket source");
+
+    // With a successful tessellation (MockGeometryKernel never errors),
+    // tessellation_diagnostics must be empty.
+    assert!(
+        state.tessellation_diagnostics.is_empty(),
+        "expected empty tessellation_diagnostics after successful tessellation, got {:?}",
+        state.tessellation_diagnostics
+    );
+}
+
+#[test]
+fn build_gui_state_captures_tessellation_errors_from_failing_kernel() {
+    let checker = SimpleConstraintChecker;
+    // FailingMockGeometryKernel::execute always returns Err, causing the eval
+    // pipeline to emit Diagnostic::error("geometry error: ...") via
+    // tessellate_from_values.
+    let kernel = FailingMockGeometryKernel;
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed even with failing geometry kernel");
+
+    // The failing kernel forces tessellation errors to be captured.
+    assert!(
+        !state.tessellation_diagnostics.is_empty(),
+        "expected non-empty tessellation_diagnostics from failing kernel"
+    );
+
+    // Every diagnostic must have severity == "Error"
+    for diag in &state.tessellation_diagnostics {
+        assert_eq!(
+            diag.severity, "Error",
+            "expected severity 'Error', got '{}'",
+            diag.severity
+        );
+    }
+
+    // At least one diagnostic message must mention "geometry"
+    assert!(
+        state
+            .tessellation_diagnostics
+            .iter()
+            .any(|d| d.message.to_lowercase().contains("geometry")),
+        "expected at least one diagnostic message containing 'geometry', got: {:?}",
+        state
+            .tessellation_diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }

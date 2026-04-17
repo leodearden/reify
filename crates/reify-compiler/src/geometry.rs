@@ -18,6 +18,26 @@ pub(crate) fn is_geometry_let(
     }
 }
 
+/// Returns `true` if a param with the given type and default expression is a
+/// Solid-typed geometry param — i.e. its type is `Type::Geometry` and its
+/// default expression is a geometry call or a reference to a geometry let.
+///
+/// This predicate is the single source of truth for the "Solid param with
+/// geometry-call default" check, which must be consistent across four sites:
+/// entity.rs pre-pass, entity.rs main Param loop, guards.rs
+/// `register_guarded_names`, and guards.rs `compile_guarded_members`.
+pub(crate) fn is_solid_geometry_param(
+    ty: &reify_types::Type,
+    default: Option<&reify_syntax::Expr>,
+    functions: &[CompiledFunction],
+    known: &HashSet<&str>,
+) -> bool {
+    ty == &reify_types::Type::Geometry
+        && default
+            .map(|e| is_geometry_let(e, functions, known))
+            .unwrap_or(false)
+}
+
 /// Returns the arg indices that are geometry refs for each non-boolean geometry function.
 /// Empty slice means no geometry args (primitives, curves).
 /// Boolean ops are excluded — they handle geometry args with their own recursive block.
@@ -631,6 +651,30 @@ mod tests {
         "nurbs",
     ];
 
+    /// Canary pin: the total number of distinct function names dispatched by
+    /// `compile_geometry_call`, spread across the four category lists.
+    ///
+    /// Breakdown at time of writing:
+    /// - `GEOM_ARG_FUNCTIONS`   14  (translate, rotate, scale, rotate_around, circular_pattern,
+    ///                                linear_pattern, mirror, extrude, revolve, revolve_full,
+    ///                                shell, thicken, draft, sweep)
+    /// - `NO_GEOM_ARG_FUNCTIONS` 13 (box, cylinder, sphere, linear_pattern_2d, arbitrary_pattern,
+    ///                                chamfer, fillet, line_segment, arc, helix, interp, bezier, nurbs)
+    /// - boolean ops             5  (union, intersection, difference, union_all, intersection_all)
+    /// - loft                    1
+    /// Total                    33
+    ///
+    /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
+    ///   1. Add the function name to exactly one of the four lists in
+    ///      `all_dispatch_functions_accounted_for`.
+    ///   2. Increment this constant.
+    ///   3. Confirm the `assert_eq!` in `all_dispatch_functions_accounted_for` still passes.
+    ///
+    /// The constant is declared separately from the lists so any mutation of the lists
+    /// that omits the corresponding increment will trip the assertion, prompting a
+    /// conscious audit.
+    const EXPECTED_DISPATCH_COUNT: usize = 33;
+
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
         for &name in GEOM_ARG_FUNCTIONS {
@@ -693,21 +737,20 @@ mod tests {
         // The per-function tests above (`geometry_arg_indices_covers_all_geom_arg_functions`
         // and `geometry_arg_indices_empty_for_no_geom_arg_functions`) are the primary
         // correctness guardrail — they verify each function is in the right list.
-        // This count check is a secondary reminder: if you add a new function to
-        // `compile_geometry_call` without adding it to one of the four lists here,
-        // the count will be wrong and this test will tell you to update the lists.
-        let expected = GEOM_ARG_FUNCTIONS.len()
-            + NO_GEOM_ARG_FUNCTIONS.len()
-            + boolean_ops.len()
-            + loft.len();
+        // `EXPECTED_DISPATCH_COUNT` is the canary pin for the four lists above.  If any of
+        // GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft changes,
+        // bump that constant and verify that `compile_geometry_call` contains a matching
+        // dispatch arm for the new entry.
+        // NOTE: this test does NOT detect the reverse — an arm added to
+        // `compile_geometry_call` without a corresponding entry in one of the four lists.
+        // That gap is an acknowledged limitation; true coverage would require a
+        // source-text scan of the match arms, which is beyond this test's scope.
         assert_eq!(
             all.len(),
-            expected,
-            "expected {} total dispatched function names, got {} — \
-             did you add a new geometry function? Add it to GEOM_ARG_FUNCTIONS or \
-             NO_GEOM_ARG_FUNCTIONS in this test.",
-            expected,
-            all.len()
+            EXPECTED_DISPATCH_COUNT,
+            "total dispatched geometry function count changed — \
+             bump EXPECTED_DISPATCH_COUNT and make sure the new function is added to \
+             GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft above"
         );
     }
 }

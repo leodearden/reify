@@ -342,10 +342,7 @@ pub(crate) fn compile_entity(
                 // symmetrically to geometry lets: register as Type::Geometry,
                 // mark scope as having geometry, and track in known_geometry_lets
                 // so subsequent members can reference this param as a geometry source.
-                if ty == Type::Geometry
-                    && let Some(default_expr) = &param.default
-                    && is_geometry_let(default_expr, functions, &known_geometry_lets)
-                {
+                if is_solid_geometry_param(&ty, param.default.as_ref(), functions, &known_geometry_lets) {
                     scope.has_geometry = true;
                     known_geometry_lets.insert(param.name.as_str());
                 }
@@ -591,13 +588,7 @@ pub(crate) fn compile_entity(
                 // Solid-typed params with a geometry-call default are lowered as
                 // realizations (third pass), not as scalar ValueCellDecls.
                 // Symmetric with the geometry-let early-continue in the Let branch.
-                if cell_type == Type::Geometry
-                    && param
-                        .default
-                        .as_ref()
-                        .map(|e| is_geometry_let(e, functions, &known_geometry_lets))
-                        .unwrap_or(false)
-                {
+                if is_solid_geometry_param(&cell_type, param.default.as_ref(), functions, &known_geometry_lets) {
                     continue;
                 }
 
@@ -1253,54 +1244,11 @@ pub(crate) fn compile_entity(
     // Build a lookup table mapping geometry let/param names to their initializer AST
     // expressions. This allows compile_geometry_call to resolve Ident references
     // (let-bound geometry variables) used as arguments to boolean ops.
-    // Also recurses one level into GuardedGroupDecl members so guarded geometry
-    // params (registered into known_geometry_lets by register_guarded_names) are
-    // included.
+    // `collect_geometry_exprs` recurses fully into nested GuardedGroupDecl members
+    // so geometry params at any nesting depth are captured.
     let geometry_lets: HashMap<&str, &reify_syntax::Expr> = {
         let mut map = HashMap::new();
-        for m in structure.members {
-            match m {
-                reify_syntax::MemberDecl::Let(let_decl)
-                    if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) =>
-                {
-                    map.insert(let_decl.name.as_str(), &let_decl.value);
-                }
-                // Solid-typed params with a geometry-call default also contribute
-                // to the lookup table so boolean ops can reference them by name.
-                reify_syntax::MemberDecl::Param(param)
-                    if known_geometry_lets.contains(param.name.as_str()) =>
-                {
-                    if let Some(e) = &param.default {
-                        map.insert(param.name.as_str(), e);
-                    }
-                }
-                // Recurse into guarded groups to capture guarded geometry params/lets.
-                reify_syntax::MemberDecl::GuardedGroup(g) => {
-                    for gm in g.members.iter().chain(g.else_members.iter()) {
-                        match gm {
-                            reify_syntax::MemberDecl::Let(let_decl)
-                                if is_geometry_let(
-                                    &let_decl.value,
-                                    functions,
-                                    &known_geometry_lets,
-                                ) =>
-                            {
-                                map.insert(let_decl.name.as_str(), &let_decl.value);
-                            }
-                            reify_syntax::MemberDecl::Param(param)
-                                if known_geometry_lets.contains(param.name.as_str()) =>
-                            {
-                                if let Some(e) = &param.default {
-                                    map.insert(param.name.as_str(), e);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        collect_geometry_exprs(structure.members, &known_geometry_lets, functions, &mut map);
         map
     };
 
@@ -1356,36 +1304,26 @@ pub(crate) fn compile_entity(
                 }
             }
             // Recurse into guarded groups to emit realizations for guarded
-            // Solid-typed params (registered in known_geometry_lets by
-            // register_guarded_names). Guarded geometry lets do NOT emit
-            // realizations here — that is a separate, unimplemented feature.
+            // Solid-typed params at any nesting depth (registered in
+            // known_geometry_lets by register_guarded_names). Guarded geometry
+            // lets do NOT emit realizations here — that is a separate,
+            // unimplemented feature.
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                for gm in g.members.iter().chain(g.else_members.iter()) {
-                    if let reify_syntax::MemberDecl::Param(param) = gm
-                        && known_geometry_lets.contains(param.name.as_str())
-                        && let Some(default_expr) = &param.default
-                        && let Some(ops) = compile_geometry_call(
-                            default_expr,
-                            &scope,
-                            enum_defs,
-                            functions,
-                            diagnostics,
-                            0,
-                            &geometry_lets,
-                            &mut HashSet::new(),
-                        )
-                    {
-                        realizations.push(RealizationDecl {
-                            id: RealizationNodeId::new(
-                                entity_name,
-                                realization_index,
-                            ),
-                            operations: ops,
-                            span: SourceSpan::new(0, 0),
-                        });
-                        realization_index += 1;
-                    }
-                }
+                let deps = GeometryRealizationDeps {
+                    entity_name,
+                    scope: &scope,
+                    enum_defs,
+                    functions,
+                    known_geometry_lets: &known_geometry_lets,
+                    geometry_lets: &geometry_lets,
+                };
+                let mut sink = GeometryRealizationSink {
+                    realizations: &mut realizations,
+                    realization_index: &mut realization_index,
+                    diagnostics,
+                };
+                emit_guarded_geometry_realizations(&g.members, &deps, &mut sink);
+                emit_guarded_geometry_realizations(&g.else_members, &deps, &mut sink);
             }
             _ => {}
         }
@@ -1759,6 +1697,115 @@ pub(crate) enum PendingBoundCheck {
         target_name: String,
         span: SourceSpan,
     },
+}
+
+/// Recursively collect geometry-let and geometry-param initializer expressions
+/// from a slice of `MemberDecl`s into `out`.
+///
+/// Mirrors `register_guarded_names` in guards.rs in its descend-into-GuardedGroup
+/// recursion. The `known` set is the `known_geometry_lets` built by the pre-pass
+/// and `register_guarded_names`; a Param is included iff its name is already in
+/// `known` (meaning the pre-pass already classified it as a geometry param).
+///
+/// Used by `compile_entity`'s third pass to build the `geometry_lets` lookup
+/// table that `compile_geometry_call` uses to resolve Ident references.
+fn collect_geometry_exprs<'a>(
+    members: &'a [reify_syntax::MemberDecl],
+    known: &HashSet<&str>,
+    functions: &[CompiledFunction],
+    out: &mut HashMap<&'a str, &'a reify_syntax::Expr>,
+) {
+    for m in members {
+        match m {
+            reify_syntax::MemberDecl::Let(let_decl)
+                if is_geometry_let(&let_decl.value, functions, known) =>
+            {
+                out.insert(let_decl.name.as_str(), &let_decl.value);
+            }
+            reify_syntax::MemberDecl::Param(param)
+                if known.contains(param.name.as_str()) =>
+            {
+                if let Some(e) = &param.default {
+                    out.insert(param.name.as_str(), e);
+                }
+            }
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                collect_geometry_exprs(&g.members, known, functions, out);
+                collect_geometry_exprs(&g.else_members, known, functions, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Read-only dependencies for [`emit_guarded_geometry_realizations`].
+///
+/// Separating immutable inputs from mutable outputs (`GeometryRealizationSink`)
+/// keeps the lifetime on each half independent, so a future field that borrows
+/// from `realizations` won't fight the `'a` shared by the whole context.
+struct GeometryRealizationDeps<'a> {
+    entity_name: &'a str,
+    scope: &'a CompilationScope<'a>,
+    enum_defs: &'a [reify_types::EnumDef],
+    functions: &'a [CompiledFunction],
+    known_geometry_lets: &'a HashSet<&'a str>,
+    geometry_lets: &'a HashMap<&'a str, &'a reify_syntax::Expr>,
+}
+
+/// Mutable output sinks for [`emit_guarded_geometry_realizations`].
+struct GeometryRealizationSink<'a> {
+    realizations: &'a mut Vec<RealizationDecl>,
+    realization_index: &'a mut u32,
+    diagnostics: &'a mut Vec<Diagnostic>,
+}
+
+/// Recursively emit `RealizationDecl`s for Solid-typed geometry params inside
+/// guarded groups at any nesting depth.
+///
+/// This is the recursive counterpart to the `GuardedGroup` arm of the third-pass
+/// main loop in `compile_entity`. It handles Params (whose names are in
+/// `deps.known_geometry_lets`) and descends into nested GuardedGroup members.
+///
+/// Intentionally does NOT handle Lets — guarded geometry lets do not emit
+/// realizations (that is a separate, unimplemented feature; see the existing
+/// comment in the GuardedGroup arm of the third-pass loop).
+fn emit_guarded_geometry_realizations(
+    members: &[reify_syntax::MemberDecl],
+    deps: &GeometryRealizationDeps<'_>,
+    sink: &mut GeometryRealizationSink<'_>,
+) {
+    for m in members {
+        match m {
+            reify_syntax::MemberDecl::Param(param)
+                if deps.known_geometry_lets.contains(param.name.as_str()) =>
+            {
+                if let Some(default_expr) = &param.default
+                    && let Some(ops) = compile_geometry_call(
+                        default_expr,
+                        deps.scope,
+                        deps.enum_defs,
+                        deps.functions,
+                        sink.diagnostics,
+                        0,
+                        deps.geometry_lets,
+                        &mut HashSet::new(),
+                    )
+                {
+                    sink.realizations.push(RealizationDecl {
+                        id: RealizationNodeId::new(deps.entity_name, *sink.realization_index),
+                        operations: ops,
+                        span: SourceSpan::new(0, 0),
+                    });
+                    *sink.realization_index += 1;
+                }
+            }
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                emit_guarded_geometry_realizations(&g.members, deps, sink);
+                emit_guarded_geometry_realizations(&g.else_members, deps, sink);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Check that type arguments satisfy the bounds on type parameters.

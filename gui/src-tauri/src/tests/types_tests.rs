@@ -10,12 +10,34 @@ fn gui_state_empty_serializes_with_expected_keys() {
         values: vec![],
         constraints: vec![],
         files: vec![],
+        tessellation_diagnostics: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
     assert!(v.get("values").unwrap().is_array());
     assert!(v.get("constraints").unwrap().is_array());
     assert!(v.get("files").unwrap().is_array());
+}
+
+#[test]
+fn gui_state_serializes_tessellation_diagnostics_field() {
+    let state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+    };
+    let v = serde_json::to_value(&state).unwrap();
+    assert!(
+        v.get("tessellation_diagnostics").unwrap().is_array(),
+        "tessellation_diagnostics must serialize as a JSON array"
+    );
+    assert_eq!(
+        v["tessellation_diagnostics"].as_array().unwrap().len(),
+        0,
+        "empty tessellation_diagnostics should serialize as an empty array"
+    );
 }
 
 #[test]

@@ -27,6 +27,7 @@ import {
   onMeshUpdate,
   onEvaluationStatus,
   onSerializationError,
+  onTessellationDiagnostics,
   pickOpenPath,
 } from '../bridge';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -47,6 +48,7 @@ describe('bridge commands', () => {
       values: [],
       constraints: [],
       files: [],
+      tessellation_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(mockState);
 
@@ -57,7 +59,7 @@ describe('bridge commands', () => {
   });
 
   it('setParameter calls invoke with cellId and value', async () => {
-    const rawState: RawGuiState = { meshes: [], values: [], constraints: [], files: [] };
+    const rawState: RawGuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] };
     mockInvoke.mockResolvedValue(rawState);
 
     await setParameter('cell_001', '42.0');
@@ -97,6 +99,7 @@ describe('bridge commands', () => {
       values: [{ cell_id: 'c1', name: 'w', value: '10', unit: 'mm', determinacy: 'determined', entity_path: 'Box.w', kind: 'parameter' }],
       constraints: [],
       files: [],
+      tessellation_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
@@ -117,6 +120,7 @@ describe('bridge commands', () => {
       values: [],
       constraints: [{ node_id: 'n1', expression: 'x > 0', status: 'satisfied', label: null, parameter_ids: [] }],
       files: [{ path: 'main.ri', content: 'updated' }],
+      tessellation_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
@@ -135,6 +139,7 @@ describe('bridge commands', () => {
       values: [],
       constraints: [],
       files: [{ path: 'main.ri', content: 'content' }],
+      tessellation_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
@@ -287,5 +292,37 @@ describe('bridge event listeners', () => {
     expect(received.vertices).toBeInstanceOf(Float32Array);
     expect(received.indices).toBeInstanceOf(Uint32Array);
     expect(received.normals).toBeNull();
+  });
+
+  it('onTessellationDiagnostics subscribes to tessellation-diagnostics event', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onTessellationDiagnostics(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('tessellation-diagnostics', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onTessellationDiagnostics passes payload array to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      const payload = [
+        { file_path: '<unknown>', line: 1, column: 1, end_line: 1, end_column: 1,
+          severity: 'Error', message: 'geometry error: kernel failure', code: null },
+      ];
+      (handler as (event: { payload: unknown }) => void)({ payload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onTessellationDiagnostics(callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ severity: 'Error', message: 'geometry error: kernel failure' }),
+      ])
+    );
   });
 });

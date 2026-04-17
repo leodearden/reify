@@ -15,6 +15,7 @@ import type {
   MeshUpdate,
   ValueUpdate,
   ConstraintUpdate,
+  DiagnosticInfo,
 } from '../types';
 import { convertRawMesh } from '../types';
 
@@ -87,13 +88,30 @@ const file: FileData = {
   content: 'structure Bracket { }',
 };
 
+// --- DiagnosticInfo ---
+const diag: DiagnosticInfo = {
+  file_path: 'bracket.ri',
+  line: 10,
+  column: 5,
+  end_line: 10,
+  end_column: 20,
+  severity: 'Error',
+  message: 'geometry error: kernel failure',
+  code: null,
+};
+
 // --- GuiState ---
 const state: GuiState = {
   meshes: [mesh, meshNoNormals],
   values: [value],
   constraints: [constraint, constraintWithLabel],
   files: [file],
+  tessellation_diagnostics: [diag],
 };
+
+// --- GuiState.tessellation_diagnostics type assertion ---
+// The field must be typed as DiagnosticInfo[], not unknown[] or any[].
+const _diagField: DiagnosticInfo[] = state.tessellation_diagnostics;
 
 // --- EvaluationStatus ---
 const idle: EvaluationStatus = { phase: 'idle' };
@@ -149,6 +167,8 @@ type _AssertBuildContextHandledFieldsExhaustive = AssertTrue<
 >;
 
 // Suppress unused variable warnings — this file is only for type checking
+void diag;
+void _diagField;
 void mesh;
 void meshNoNormals;
 void rawMesh;

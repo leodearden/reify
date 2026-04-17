@@ -57,28 +57,39 @@ pub fn compile_errors(dir: &Path, entry: &str) -> Vec<Diagnostic> {
     compile_errors_with_stdlib(dir, entry, &dir.join("stdlib"))
 }
 
-/// Assert that `diag` emits exactly one label and that the label's span is not
-/// `SourceSpan::empty(0)`.
+/// Assert that `diag` emits exactly two labels with the prelude-collision shape:
+/// - `labels[0]`: user's in-file duplicate decl (span is not empty and not
+///   `SourceSpan::empty(0)`)
+/// - `labels[1]`: prelude sentinel (`span.is_prelude()`) with a message that
+///   contains "prelude" to convey provenance
 ///
-/// Used to guard the "exactly one non-empty label" invariant for cross-module
-/// user unit collision diagnostics in both `module_dag_tests` and
-/// `unit_registry_tests`.  The two test files share identical assertion logic,
-/// so a single helper eliminates the duplication while keeping the loop-free,
-/// direct-index form that follows naturally from the count assertion.
+/// Used by cross-module user unit collision diagnostics in `module_dag_tests`,
+/// `unit_registry_tests`, and `user_defined_unit_tests`.
 #[allow(dead_code)] // used by some, but not all, test binaries that include this module
-pub fn assert_single_non_empty_label(diag: &Diagnostic) {
+pub fn assert_prelude_collision_labels(diag: &Diagnostic) {
     assert_eq!(
         diag.labels.len(),
-        1,
-        "diagnostic should emit exactly one label, got {:?}",
+        2,
+        "diagnostic should emit exactly two labels (user dup + prelude sentinel), got {:?}",
         diag.labels
     );
     let empty_span = SourceSpan::empty(0);
     assert_ne!(
         diag.labels[0].span,
         empty_span,
-        "diagnostic label '{}' has SourceSpan::empty(0) — misleading offset",
+        "first label '{}' must not be SourceSpan::empty(0)",
         diag.labels[0].message
+    );
+    assert!(
+        diag.labels[1].span.is_prelude(),
+        "second label '{}' must have is_prelude() span, got {:?}",
+        diag.labels[1].message,
+        diag.labels[1].span
+    );
+    assert!(
+        diag.labels[1].message.contains("prelude"),
+        "second label message must contain 'prelude', got: {:?}",
+        diag.labels[1].message
     );
 }
 

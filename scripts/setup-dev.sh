@@ -39,6 +39,12 @@ else
     ok "clippy installed"
 fi
 
+# ---------- Git hooks (core.hooksPath) ----------
+
+info "Configuring git core.hooksPath → hooks/"
+git config core.hooksPath hooks
+ok "git hooks path configured"
+
 # ---------- System packages (apt) ----------
 
 check_apt() {

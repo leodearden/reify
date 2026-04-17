@@ -16,6 +16,7 @@ import type {
   SourceLocation,
   FileData,
   SerializationError,
+  DiagnosticInfo,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -340,6 +341,15 @@ export async function onEvaluationStatus(
   callback: (data: EvaluationStatus) => void,
 ): Promise<UnlistenFn> {
   return listen<EvaluationStatus>('evaluation-status', (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Subscribe to tessellation diagnostic events. Carries the full current list. */
+export async function onTessellationDiagnostics(
+  callback: (data: DiagnosticInfo[]) => void,
+): Promise<UnlistenFn> {
+  return listen<DiagnosticInfo[]>('tessellation-diagnostics', (event) => {
     callback(event.payload);
   });
 }

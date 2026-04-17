@@ -102,7 +102,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   // Reset bridge mock implementations
-  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
+  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] });
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
@@ -241,6 +241,7 @@ describe('App wiring', () => {
         { node_id: 'c1', expression: 'width > 100', status: 'violated', label: null, parameter_ids: [] },
       ],
       files: [],
+      tessellation_diagnostics: [],
     });
     await renderAndWaitForReady();
     const row = screen.getByTestId('constraint-row-c1');
@@ -257,6 +258,7 @@ describe('App wiring', () => {
         { node_id: 'c1', expression: 'width > 100', status: 'violated', label: null, parameter_ids: [] },
       ],
       files: [],
+      tessellation_diagnostics: [],
     });
     await renderAndWaitForReady();
     // Open context picker — 'Violated constraints' should be enabled
