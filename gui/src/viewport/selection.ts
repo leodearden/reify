@@ -16,13 +16,18 @@ import { THEME_TOKENS } from '../theme';
 // Patch Mesh prototype for BVH-accelerated raycasting
 Mesh.prototype.raycast = acceleratedRaycast;
 
+export interface SelectionModifiers {
+  ctrl: boolean;
+  shift: boolean;
+}
+
 export interface SelectionOptions {
   scene: Scene;
   camera: PerspectiveCamera;
   domElement: HTMLElement;
   getMeshes: () => Map<string, Mesh>;
   onHover: (path: string | null) => void;
-  onSelect: (path: string | null) => void;
+  onSelect: (path: string | null, modifiers: SelectionModifiers) => void;
   controls?: { target: { copy: (v: any) => void } };
 }
 
@@ -114,7 +119,9 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     pointerDownPos = null;
     if (distance < CLICK_THRESHOLD) {
       const entityPath = raycast(me);
-      onSelect(entityPath);
+      // Read modifiers from the pointerup event (up-time state, since click-intent is confirmed on up)
+      const modifiers: SelectionModifiers = { ctrl: me.ctrlKey, shift: me.shiftKey };
+      onSelect(entityPath, modifiers);
     }
   }
 

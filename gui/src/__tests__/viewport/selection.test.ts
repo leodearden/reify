@@ -498,7 +498,7 @@ describe('createSelection', () => {
         clientY: 300,
       }));
 
-      expect(onSelect).toHaveBeenCalledWith('A');
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
     });
 
     it('calls onSelect with null on click miss', () => {
@@ -517,7 +517,7 @@ describe('createSelection', () => {
         clientY: 300,
       }));
 
-      expect(onSelect).toHaveBeenCalledWith(null);
+      expect(onSelect).toHaveBeenCalledWith(null, { ctrl: false, shift: false });
     });
 
     it('uses raycaster with same NDC computation as hover', () => {
@@ -1087,7 +1087,7 @@ describe('createSelection', () => {
 
       // Click should raycast immediately without rAF
       expect(mockRaycasterSetFromCamera).toHaveBeenCalledTimes(1);
-      expect(onSelect).toHaveBeenCalledWith('A');
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
     });
 
     it('dispose cancels outstanding rAF', () => {
@@ -1143,7 +1143,7 @@ describe('createSelection', () => {
         clientY: 300,
       }));
 
-      expect(onSelect).toHaveBeenCalledWith('A');
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
     });
 
     it('pointerdown + pointerup with >5px movement does NOT fire onSelect', () => {
@@ -1185,7 +1185,7 @@ describe('createSelection', () => {
         clientY: 303,
       }));
 
-      expect(onSelect).toHaveBeenCalledWith('A');
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
     });
 
     it('onSelect receives null when pointerup raycast misses', () => {
@@ -1205,7 +1205,7 @@ describe('createSelection', () => {
         clientY: 300,
       }));
 
-      expect(onSelect).toHaveBeenCalledWith(null);
+      expect(onSelect).toHaveBeenCalledWith(null, { ctrl: false, shift: false });
     });
 
     it('after dispose, pointerup does not fire onSelect', () => {
