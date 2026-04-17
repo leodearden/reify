@@ -40228,11 +40228,11 @@
         "description": "In crates/reify-eval/src/lib.rs (~line 101-143, `value_type_kind_matches`), every value/type predicate (e.g. `Value::Real(_) => matches!(ty, Type::Real | Type::Int)`) enumerates concrete `Type` variants but never accepts `Type::Error`. Since the Type::Error sentinel now propagates further into compiled expressions (task-448 / task-1912), a CompiledExpr carrying `Type::Error` could reach evaluation — particularly in incremental/LSP scenarios where the evaluator may proceed despite compiler errors. In that case, every value/type predicate would report `false` and downstream logic may surface spurious TypeKindMismatch diagnostics or panic. Either: (a) add an explicit `Type::Error` arm in each predicate (likely returning `true` as \"don't second-guess a poisoned type\"), or (b) guard the evaluator to refuse evaluation of any module whose diagnostics contain errors before walking expressions, and document that contract. Related: task 1867 (value_type_kind_matches TypeParam/StructureRef/Geometry verification), task 1893 (Bool arm unit tests), task 1913 (nested is_error). Review followup from task 1912; suggestion S6.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:22:00.844Z"
+        "updatedAt": "2026-04-17T05:59:42.255Z"
       },
       {
         "id": "1923",
@@ -40404,7 +40404,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:59:37.297Z",
+      "lastModified": "2026-04-17T05:59:42.255Z",
       "taskCount": 1927,
       "completedCount": 1656,
       "tags": [
