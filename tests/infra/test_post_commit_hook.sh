@@ -194,7 +194,9 @@ _norm_sha="$(git -C "$_repo4" rev-parse HEAD)"
 
 # No second amendment should have happened; verify by re-running the hook
 # and checking HEAD is still the same.
-_REIFY_TASKS_NORMALIZE_AMEND="" bash "$_repo4/hooks/post-commit" || true
+# cwd must be inside the fixture so git rev-parse --show-toplevel resolves
+# to the fixture repo rather than the real reify repo running the tests.
+(cd "$_repo4" && _REIFY_TASKS_NORMALIZE_AMEND="" bash hooks/post-commit) || true
 _norm_sha_after="$(git -C "$_repo4" rev-parse HEAD)"
 
 assert "already-normalized: HEAD sha unchanged after re-running hook" \
