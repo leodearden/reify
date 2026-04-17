@@ -39164,13 +39164,13 @@
         "description": "Two small documentation improvements in crates/reify-eval/src/lib.rs:\n\n1. Lines 53-57: EngineError::TypeKindMismatch boxes both `expected: Box<Type>` and `got: Box<Value>` while the sibling DimensionMismatch variant keeps its payload unboxed. The boxing keeps EngineError's discriminant size bounded (Value is a large enum), but the inconsistency deserves a one-line rationale. Either add a short comment on the variant or align DimensionMismatch to also use Box.\n\n2. Lines 141-147: The trailing comment says \"If a future Value::GeometryHandle variant is added, add a matching arm here so the compiler enforces completeness.\" This is misleading — Rust's exhaustive match already enforces completeness on Value variants, so a new Value variant is a compile error. The actual gap is the opposite direction: adding a new Type variant falls silently into default-reject without a compile error. Rewrite the note to flag Type variants (not Value variants) as the reviewer-required extension point.\n\nSource: task 1829 review suggestions (reviewer_comprehensive).",
         "details": "<info added on 2026-04-16T21:53:18.712Z>\nAdd a comment explaining the rationale for boxing `expected: Box<Type>` and `got: Box<Value>` in `EngineError::TypeKindMismatch` to maintain a bounded discriminant size due to the large size of the `Value` enum. Consider aligning `DimensionMismatch` to use `Box` for consistency or provide a brief explanation for the current inconsistency.\n\nRewrite the misleading comment regarding `Value::GeometryHandle` to correctly indicate that the extension point requiring review is the addition of new `Type` variants, which can silently fall into default-reject without a compile error.\n</info added on 2026-04-16T21:53:18.712Z>\n<info added on 2026-04-16T22:02:52.300Z>\nmemory_hints:\n- entity: Engine, EngineError\n- search: \"EngineError TypeKindMismatch boxing Value enum size discriminant\"\n- search: \"value_type_kind_matches GeometryHandle comment Type variants extension point\"\n\nNote: depends on 1868 (lib.rs module-lock sequencing); 1867 depends on this task.\n</info added on 2026-04-16T22:02:52.300Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1868"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T01:09:28.759Z",
+        "updatedAt": "2026-04-17T01:47:34.577Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs"
@@ -39900,9 +39900,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T01:47:17.261Z",
+      "lastModified": "2026-04-17T01:47:34.578Z",
       "taskCount": 1901,
-      "completedCount": 1636,
+      "completedCount": 1637,
       "tags": [
         "master"
       ]
