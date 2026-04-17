@@ -38437,11 +38437,11 @@
         "description": "Two related improvements to let-default type handling in conformance.rs, identified during task 366 review:\n\n1. **Annotation vs expression type cross-check** (conformance.rs ~line 342): When injecting a let default into a structure, the cell_type comes from `compiled_expr.result_type`, ignoring the annotation type stored in `DefaultKind::Let { cell_type, .. }`. Now that cell_type is `Option<Type>`, add a diagnostic when `cell_type` is `Some(ty)` and `compiled_expr.result_type` differs from `ty` (e.g., `let x : Length = 5.0` — annotation says Length, expression evaluates to Real).\n\n2. **Scope pre-registration for unannotated lets** (conformance.rs ~line 279): `cell_type.clone().unwrap_or(Type::Real)` means unannotated let defaults get `Type::Real` in scope regardless of what their expression evaluates to. Same pattern at ~lines 153 and 473. This is a design limitation since scope registration happens before expression compilation. Consider either a two-pass approach (compile expressions first, then register types) or documenting as intentional simplification.\n\nMemory hints: search \"DefaultKind Let cell_type conformance scope registration\", entities: DefaultKind, compile_traits, Type",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T00:52:02.203Z",
+        "updatedAt": "2026-04-17T01:49:18.363Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -39900,7 +39900,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T01:49:14.577Z",
+      "lastModified": "2026-04-17T01:49:18.363Z",
       "taskCount": 1901,
       "completedCount": 1637,
       "tags": [
