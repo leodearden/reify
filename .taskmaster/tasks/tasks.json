@@ -37205,11 +37205,11 @@
         "description": "The Ctrl+O keyboard shortcut to open a file does not work when the CodeMirror editor has focus. The shortcut likely gets captured by CodeMirror before it reaches the app-level handler.",
         "details": "memory_hints: search \"Ctrl+O open file keyboard shortcut CodeMirror\"\n\nThe shortcut is registered via `useKeyboardShortcuts` in App.tsx, but CodeMirror may intercept the keydown event before it bubbles up. Fix by either:\n1. Adding Ctrl+O to the CodeMirror keymap that delegates to the app handler\n2. Using a higher-priority event listener (capture phase)\n3. Using Tauri's global shortcut API\n\nFiles: gui/src/App.tsx (useKeyboardShortcuts, onOpen), gui/src/editor/Editor.tsx (keymap)",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:46:02.528Z",
+        "updatedAt": "2026-04-17T13:17:53.003Z",
         "metadata": {
           "modules": [
             "gui/src/App.tsx",
@@ -40606,14 +40606,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:13:13.731Z",
+      "lastModified": "2026-04-17T13:17:53.018Z",
       "taskCount": 1937,
       "completedCount": 1664,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-17T13:15:40.992Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }
