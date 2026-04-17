@@ -618,3 +618,93 @@ fn error_wildcard_implicit_error_to_error() {
         "implicitly_converts_to(Error, Error) must be true (anti-cascade guard, task-1912)"
     );
 }
+
+/// `implicitly_converts_to(Error, List<Int>) == true` — compound type.
+#[test]
+fn error_wildcard_implicit_error_to_list() {
+    let to = Type::List(Box::new(Type::Int));
+    assert!(
+        implicitly_converts_to(&Type::Error, &to),
+        "implicitly_converts_to(Error, List<Int>) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(List<Int>, Error) == true` — mirror direction for compound.
+#[test]
+fn error_wildcard_implicit_list_to_error() {
+    let from = Type::List(Box::new(Type::Int));
+    assert!(
+        implicitly_converts_to(&from, &Type::Error),
+        "implicitly_converts_to(List<Int>, Error) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(Error, Option<Real>) == true` — compound type.
+#[test]
+fn error_wildcard_implicit_error_to_option() {
+    let to = Type::Option(Box::new(Type::Real));
+    assert!(
+        implicitly_converts_to(&Type::Error, &to),
+        "implicitly_converts_to(Error, Option<Real>) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(Error, Scalar[m]) == true` — dimensioned scalar.
+#[test]
+fn error_wildcard_implicit_error_to_scalar() {
+    assert!(
+        implicitly_converts_to(&Type::Error, &length_scalar()),
+        "implicitly_converts_to(Error, Scalar[m]) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(Scalar[m], Error) == true` — mirror direction for
+/// shape-carrying type.
+#[test]
+fn error_wildcard_implicit_scalar_to_error() {
+    assert!(
+        implicitly_converts_to(&length_scalar(), &Type::Error),
+        "implicitly_converts_to(Scalar[m], Error) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(Error, Vector<3,Real>) == true` — shape-carrying type.
+#[test]
+fn error_wildcard_implicit_error_to_vector() {
+    let to = Type::Vector {
+        n: 3,
+        quantity: Box::new(Type::Real),
+    };
+    assert!(
+        implicitly_converts_to(&Type::Error, &to),
+        "implicitly_converts_to(Error, Vector<3,Real>) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(Error, Tensor<2,3,Real>) == true` — shape-carrying type.
+#[test]
+fn error_wildcard_implicit_error_to_tensor() {
+    let to = Type::Tensor {
+        rank: 2,
+        n: 3,
+        quantity: Box::new(Type::Real),
+    };
+    assert!(
+        implicitly_converts_to(&Type::Error, &to),
+        "implicitly_converts_to(Error, Tensor<2,3,Real>) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(Error, Matrix<3,3,Real>) == true` — shape-carrying type.
+#[test]
+fn error_wildcard_implicit_error_to_matrix() {
+    let to = Type::Matrix {
+        m: 3,
+        n: 3,
+        quantity: Box::new(Type::Real),
+    };
+    assert!(
+        implicitly_converts_to(&Type::Error, &to),
+        "implicitly_converts_to(Error, Matrix<3,3,Real>) must be true (anti-cascade guard, task-1912)"
+    );
+}
