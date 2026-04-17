@@ -177,7 +177,17 @@ const DesignTree: Component<Props> = (props) => {
             class={styles.eyeIcon}
             data-testid={`eye-icon-${node.entity_path}`}
             aria-label={eff()}
-            onClick={(e) => { e.stopPropagation(); props.viewStateStore.cycleCascading(node.entity_path); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              const sel = effectiveSelected();
+              // Bulk-cycle: if the clicked row is part of a multi-selection (>1),
+              // cycle all selected paths. Otherwise fall back to single-path cycle.
+              if (sel.size > 1 && sel.has(node.entity_path)) {
+                for (const p of sel) props.viewStateStore.cycleCascading(p);
+              } else {
+                props.viewStateStore.cycleCascading(node.entity_path);
+              }
+            }}
           >
             {eff() === 'show' ? '👁' : eff() === 'ghost' ? '◑' : '○'}
           </button>
