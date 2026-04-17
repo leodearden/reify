@@ -595,13 +595,9 @@ pub(crate) fn compile_geometry_call(
             compile_transform_op(name, compiled_args, geom_ref(0), diagnostics, sub_ops)
         }
         // --- Modify extensions ---
-        // shell/thicken/draft: pass geom_ref(0) as target (correctly resolved from geom_refs).
-        "shell" | "thicken" | "draft" => {
-            compile_modify_op(name, compiled_args, geom_ref(0), expr.span, diagnostics, sub_ops)
-        }
-        // chamfer/fillet: pass geom_ref(0) as target (correctly resolved from geom_refs).
-        // Registered in geometry_arg_indices() alongside shell/thicken/draft.
-        "chamfer" | "fillet" => {
+        // All five modifiers take a geometry target as their first argument (correctly
+        // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
+        "shell" | "thicken" | "draft" | "chamfer" | "fillet" => {
             compile_modify_op(name, compiled_args, geom_ref(0), expr.span, diagnostics, sub_ops)
         }
         // --- Curve constructors ---
@@ -712,11 +708,11 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    14  (translate, rotate, scale, rotate_around, circular_pattern,
+    /// GEOM_ARG_FUNCTIONS    16  (translate, rotate, scale, rotate_around, circular_pattern,
     ///                            linear_pattern, mirror, extrude, revolve, revolve_full,
-    ///                            shell, thicken, draft, sweep)
-    /// NO_GEOM_ARG_FUNCTIONS 13  (box, cylinder, sphere, linear_pattern_2d, arbitrary_pattern,
-    ///                            chamfer, fillet, line_segment, arc, helix, interp, bezier, nurbs)
+    ///                            shell, thicken, draft, sweep, chamfer, fillet)
+    /// NO_GEOM_ARG_FUNCTIONS 11  (box, cylinder, sphere, linear_pattern_2d, arbitrary_pattern,
+    ///                            line_segment, arc, helix, interp, bezier, nurbs)
     /// boolean ops            5  (union, intersection, difference, union_all, intersection_all)
     /// loft                   1
     /// Total                 33
