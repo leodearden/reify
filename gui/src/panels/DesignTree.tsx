@@ -11,7 +11,9 @@ interface Props {
   viewStateStore: ReturnType<typeof createViewStateStore>;
   selectedEntity?: string | null;
   selectedEntities?: readonly string[];
+  anchorEntity?: string | null;
   onSelect?: (path: string, modifiers: { ctrl: boolean; shift: boolean }) => void;
+  onRangeSelect?: (paths: string[]) => void;
 }
 
 interface MenuState {
@@ -23,6 +25,19 @@ interface MenuState {
 function nodeName(entityPath: string): string {
   const parts = entityPath.split('.');
   return parts[parts.length - 1];
+}
+
+/** DFS flatten: returns all visible entity paths respecting the expanded set. */
+function flattenVisible(nodes: EntityTreeNode[], expandedSet: Set<string>): string[] {
+  const result: string[] = [];
+  function visit(node: EntityTreeNode) {
+    result.push(node.entity_path);
+    if (expandedSet.has(node.entity_path)) {
+      for (const child of node.children) visit(child);
+    }
+  }
+  for (const node of nodes) visit(node);
+  return result;
 }
 
 const DesignTree: Component<Props> = (props) => {
@@ -119,7 +134,21 @@ const DesignTree: Component<Props> = (props) => {
           data-testid={`tree-row-${node.entity_path}`}
           data-selected={effectiveSelected().has(node.entity_path) ? 'true' : undefined}
           onContextMenu={(e) => openMenu(node.entity_path, e)}
-          onClick={(e) => props.onSelect?.(node.entity_path, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
+          onClick={(e) => {
+            if (e.shiftKey && props.anchorEntity && props.onRangeSelect) {
+              // Shift+click with anchor: compute visible range and invoke onRangeSelect
+              const visibleOrder = flattenVisible(props.tree, expanded());
+              const anchorIdx = visibleOrder.indexOf(props.anchorEntity);
+              const targetIdx = visibleOrder.indexOf(node.entity_path);
+              if (anchorIdx !== -1 && targetIdx !== -1) {
+                const lo = Math.min(anchorIdx, targetIdx);
+                const hi = Math.max(anchorIdx, targetIdx);
+                props.onRangeSelect(visibleOrder.slice(lo, hi + 1));
+                return;
+              }
+            }
+            props.onSelect?.(node.entity_path, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey });
+          }}
         >
           <Show when={node.children.length > 0} fallback={<span class={styles.chevronPlaceholder} />}>
             <button
