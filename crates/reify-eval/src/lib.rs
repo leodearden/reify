@@ -108,12 +108,7 @@ impl std::error::Error for EngineError {}
 /// (task-448 / task-1922).
 fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -> bool {
     use reify_types::{Type, Value};
-    // Anti-cascade guard (task-1922 / task-448): accept any supplied value when
-    // the declared cell type is the `Type::Error` poison sentinel.  The compiler
-    // already emitted a root-cause diagnostic at the point it produced
-    // `Type::Error`; rejecting here with `TypeKindMismatch` would be a cascade.
-    // Mirrors the guards in `reify_compiler::type_compat::{implicitly_converts_to,
-    // type_compatible}`.
+    // Anti-cascade guard — see function doc.
     if ty.is_error() {
         return true;
     }
@@ -3554,6 +3549,24 @@ mod tests {
         assert!(
             value_type_kind_matches(&v, &t),
             "Value::Undef against Type::Error must return true (Undef sentinel always accepted)"
+        );
+    }
+
+    /// `Value::Bool` paired with `Type::Int` must return `false`.
+    ///
+    /// Negative-case lock (task-1922): the `Type::Error` early-return guard is the
+    /// *only* unconditional-true path besides `Value::Undef`.  A mismatched
+    /// value/type pair where `ty` is **not** `Type::Error` must still be rejected,
+    /// ensuring a future refactor cannot accidentally widen the guard (e.g. by
+    /// replacing `if ty.is_error()` with an always-true condition).
+    #[test]
+    fn value_type_kind_matches_bool_value_into_int_type_returns_false() {
+        use reify_types::{Type, Value};
+        let v = Value::Bool(true);
+        let t = Type::Int;
+        assert!(
+            !value_type_kind_matches(&v, &t),
+            "Value::Bool against Type::Int must return false (Type::Error guard must not over-fire)"
         );
     }
 
