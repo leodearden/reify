@@ -38,12 +38,24 @@ export function median(values: number[]): number {
  * copy of every sample so CI triage can read the distribution at a glance
  * without mentally recomputing statistics from a raw dump.
  *
- * Delegates to `median()` first so non-finite inputs (NaN, ±Infinity) are
- * rejected before any further arithmetic.
+ * Delegates to `median()` first so non-finite inputs (NaN, ±Infinity) and
+ * empty arrays are rejected before any further arithmetic.
+ *
+ * Min and max are computed via `Array.prototype.reduce` rather than
+ * `Math.min(...samples)` / `Math.max(...samples)` to avoid a `RangeError` on
+ * very large sample arrays (spread pushes every element onto the call stack).
+ *
+ * The scalar `median`, `min`, and `max` fields are formatted to exactly two
+ * decimal places via `toFixed(2)`.  Sample values in the `samples` array are
+ * also rounded to two decimals, but re-coerced to `number` before JSON
+ * serialisation, so trailing zeros are dropped (e.g. `1.20` serialises as
+ * `1.2`, not `"1.20"`).
  */
 export function formatPerfSamples(samples: number[]): string {
   const med = median(samples);
-  return `median=${med.toFixed(2)}ms min=${Math.min(...samples).toFixed(2)} max=${Math.max(...samples).toFixed(2)} samples=${JSON.stringify(samples.map(v => +v.toFixed(2)))}`;
+  const min = samples.reduce((a, b) => (b < a ? b : a));
+  const max = samples.reduce((a, b) => (b > a ? b : a));
+  return `median=${med.toFixed(2)}ms min=${min.toFixed(2)} max=${max.toFixed(2)} samples=${JSON.stringify(samples.map(v => +v.toFixed(2)))}`;
 }
 
 /** Yield to the macrotask queue so setTimeout callbacks execute. */
