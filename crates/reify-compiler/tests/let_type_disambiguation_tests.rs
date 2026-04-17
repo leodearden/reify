@@ -486,6 +486,71 @@ structure S : T {
     );
 }
 
+// ── task 1834 amendment: two-pass pre-register restores annotated forward refs ──
+
+/// Regression guard for the two-pass pre-register split
+/// (reviewer_comprehensive behavior_regression fix): an *unannotated* let
+/// whose expression forward-references an *annotated* member from the same
+/// trait-bound set must compile cleanly — the annotated type is registered
+/// by Pass 1 before any expression is compiled in Pass 2.
+///
+/// Before the split, the pre-register loop walked `ctx.defaults` in source
+/// order and compiled unannotated-let expressions inline, so `let a = b + 1mm`
+/// appearing before `let b : Length = 2mm` produced a spurious
+/// `unresolved name: b` diagnostic — a silent regression vs. the pre-1834
+/// code, which registered every annotated type up front.  The two-pass
+/// structure (annotated-first, then unannotated-with-compile) restores the
+/// old tolerance without re-introducing the `Type::Real` fallback.
+///
+/// Flip-guard for the sibling limitation test: this scenario is `mixed`
+/// (one annotated, one unannotated).  The purely-unannotated mutual case
+/// stays documented in `mutual_unannotated_lets_documented_limitation`
+/// below — only a topological ordering pass would resolve that one.
+#[test]
+fn unannotated_let_resolves_forward_reference_to_annotated_let() {
+    let source = r#"
+trait MixedLets {
+    let a = b + 1mm
+    let b : Length = 2mm
+}
+structure S : MixedLets {
+}
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "an unannotated let (`a = b + 1mm`) forward-referencing an *annotated* \
+         let (`b : Length = 2mm`) must resolve cleanly via the two-pass \
+         pre-register pass — Pass 1 registers `b : Length` before Pass 2 \
+         compiles `a`'s expression.  A single-pass implementation would emit \
+         `unresolved name: b` here; got: {:?}",
+        errors
+    );
+
+    // The injected cell for `a` must have its inferred Length type, confirming
+    // Pass 2's `compile_expr` saw `b : Length` in scope and typed `b + 1mm`
+    // correctly.
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+    let a_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "a")
+        .expect("expected value_cell 'a' injected from trait MixedLets");
+    assert_eq!(
+        a_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "cell for `a` must have inferred type Length (Pass 2 saw `b : Length` \
+         in scope via Pass 1's annotated-first registration)"
+    );
+}
+
 // ── task 1834 step-10: documented simplification for mutual unannotated-let refs ──
 
 /// Two unannotated lets in the same trait-bound set that forward-reference each
