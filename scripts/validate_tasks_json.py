@@ -56,14 +56,28 @@ def main() -> None:
         sys.exit(1)
 
     errors: list[str] = []
+    warnings: list[str] = []
     # Per-tag list of (tag_name, tasks, known_ids) for subtask iteration.
     tag_results: list[tuple[str, list, set]] = []
 
     for tag_name, tag_value in data.items():
         if not isinstance(tag_value, dict):
+            warnings.append(
+                f"unexpected top-level key {tag_name!r}: value is"
+                f" {type(tag_value).__name__!r}, expected dict"
+            )
             continue
-        tasks_list = tag_value.get("tasks", [])
+        tasks_list = tag_value.get("tasks")
+        if tasks_list is None:
+            warnings.append(
+                f"unexpected top-level key {tag_name!r}: missing 'tasks' list"
+            )
+            continue
         if not isinstance(tasks_list, list):
+            warnings.append(
+                f"unexpected top-level key {tag_name!r}: 'tasks' is"
+                f" {type(tasks_list).__name__!r}, expected list"
+            )
             continue
         known_ids = _validate_tasks(tasks_list, errors, context=tag_name)
         tag_results.append((tag_name, tasks_list, known_ids))
@@ -75,6 +89,9 @@ def main() -> None:
                 if subtasks:
                     parent_id = task.get("id", "?")
                     _validate_subtasks(subtasks, known_ids, parent_id, errors)
+
+    for warn in warnings:
+        print(f"WARN: {warn}", file=sys.stderr)
 
     if errors:
         for err in errors:
