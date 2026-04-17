@@ -651,6 +651,30 @@ mod tests {
         "nurbs",
     ];
 
+    /// Canary pin: the total number of distinct function names dispatched by
+    /// `compile_geometry_call`, spread across the four category lists.
+    ///
+    /// Breakdown at time of writing:
+    /// - `GEOM_ARG_FUNCTIONS`   14  (translate, rotate, scale, rotate_around, circular_pattern,
+    ///                                linear_pattern, mirror, extrude, revolve, revolve_full,
+    ///                                shell, thicken, draft, sweep)
+    /// - `NO_GEOM_ARG_FUNCTIONS` 13 (box, cylinder, sphere, linear_pattern_2d, arbitrary_pattern,
+    ///                                chamfer, fillet, line_segment, arc, helix, interp, bezier, nurbs)
+    /// - boolean ops             5  (union, intersection, difference, union_all, intersection_all)
+    /// - loft                    1
+    /// Total                    33
+    ///
+    /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
+    ///   1. Add the function name to exactly one of the four lists in
+    ///      `all_dispatch_functions_accounted_for`.
+    ///   2. Increment this constant.
+    ///   3. Confirm the `assert_eq!` in `all_dispatch_functions_accounted_for` still passes.
+    ///
+    /// The constant is declared separately from the lists so any mutation of the lists
+    /// that omits the corresponding increment will trip the assertion, prompting a
+    /// conscious audit.
+    const EXPECTED_DISPATCH_COUNT: usize = 33;
+
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
         for &name in GEOM_ARG_FUNCTIONS {
@@ -713,9 +737,9 @@ mod tests {
         // The per-function tests above (`geometry_arg_indices_covers_all_geom_arg_functions`
         // and `geometry_arg_indices_empty_for_no_geom_arg_functions`) are the primary
         // correctness guardrail — they verify each function is in the right list.
-        // This literal is a canary pin for the four lists above. If any of
+        // `EXPECTED_DISPATCH_COUNT` is the canary pin for the four lists above.  If any of
         // GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft changes,
-        // bump this literal and verify that `compile_geometry_call` contains a matching
+        // bump that constant and verify that `compile_geometry_call` contains a matching
         // dispatch arm for the new entry.
         // NOTE: this test does NOT detect the reverse — an arm added to
         // `compile_geometry_call` without a corresponding entry in one of the four lists.
@@ -723,9 +747,9 @@ mod tests {
         // source-text scan of the match arms, which is beyond this test's scope.
         assert_eq!(
             all.len(),
-            33,
+            EXPECTED_DISPATCH_COUNT,
             "total dispatched geometry function count changed — \
-             bump the literal here and make sure the new function is added to \
+             bump EXPECTED_DISPATCH_COUNT and make sure the new function is added to \
              GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft above"
         );
     }
