@@ -39662,11 +39662,11 @@
         "description": "gui/src/editor/Editor.tsx:210 uses optional chaining `unlisten?.()` on a value typed as `Promise<UnlistenFn>` (non-nullable). In production with real Tauri this guard never fires — it only matters when test mocks return undefined. The type contract is silently contradicted. Pick one: (a) keep the `?.` guard and add an inline comment explaining it exists solely for the test-mock path where listen() returns undefined, (b) widen the createDiagnosticsListener return type to `Promise<UnlistenFn | undefined>` to match mock reality, or (c) tighten test mocks to always return a no-op unlisten fn so the production code can keep its tighter contract. Option (c) is cleanest.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T00:05:51.903Z",
+        "updatedAt": "2026-04-17T00:35:13.866Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/Editor.test.tsx"
@@ -39698,7 +39698,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T00:35:08.807Z",
+      "lastModified": "2026-04-17T00:35:13.867Z",
       "taskCount": 1895,
       "completedCount": 1629,
       "tags": [
