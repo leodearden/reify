@@ -14,6 +14,7 @@ interface Props {
   anchorEntity?: string | null;
   onSelect?: (path: string, modifiers: { ctrl: boolean; shift: boolean }) => void;
   onRangeSelect?: (paths: string[]) => void;
+  onSelectAll?: (paths: string[]) => void;
 }
 
 interface MenuState {
@@ -86,6 +87,14 @@ const DesignTree: Component<Props> = (props) => {
   }
 
   function handleKeyDown(e: KeyboardEvent) {
+    // Ctrl+A / Meta+A: select-all visible nodes. Must come BEFORE the
+    // general ctrlKey/metaKey early-exit guard below.
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      props.onSelectAll?.(flattenVisible(props.tree, expanded()));
+      return;
+    }
+
     const selected = props.selectedEntity;
     if (!selected) return;
     // Don't steal browser/OS shortcuts (Ctrl+S = save, etc.)
