@@ -844,21 +844,28 @@ fn purpose_follow_up_comment_is_precise() {
 
     // 4. The scoped comment ABOVE weight_target must cite task #1904 and name
     // both target shapes (minimize subject.mass and determined(subject.mass)).
+    // Narrow the slice to just the region between the end of mfg_ready's body
+    // and weight_target's declaration — otherwise a stray match in mfg_ready's
+    // comment (or anywhere earlier in the file) would satisfy the assertion
+    // even if weight_target's scoped comment were removed.
     let weight_target_pos = src
         .find("purpose weight_target")
         .expect("'purpose weight_target' must exist in .ri");
-    let before_weight_target = &src[..weight_target_pos];
+    let mfg_ready_end = src[..weight_target_pos]
+        .rfind('}')
+        .expect("closing '}' of mfg_ready must precede 'purpose weight_target'");
+    let weight_target_region = &src[mfg_ready_end + 1..weight_target_pos];
     assert!(
-        before_weight_target.contains("task #1904"),
-        "No 'task #1904' reference found before 'purpose weight_target' — add scoped placeholder comment above it"
+        weight_target_region.contains("task #1904"),
+        "No 'task #1904' reference found in the doc block immediately above 'purpose weight_target'"
     );
     assert!(
-        before_weight_target.contains("minimize subject.mass"),
-        "Target shape 'minimize subject.mass' not found before 'purpose weight_target'"
+        weight_target_region.contains("minimize subject.mass"),
+        "Target shape 'minimize subject.mass' not found in the doc block immediately above 'purpose weight_target'"
     );
     assert!(
-        before_weight_target.contains("determined(subject.mass)"),
-        "Target shape 'determined(subject.mass)' not found before 'purpose weight_target' — \
+        weight_target_region.contains("determined(subject.mass)"),
+        "Target shape 'determined(subject.mass)' not found in the doc block immediately above 'purpose weight_target' — \
          scoped comment must name both minimize and constraint targets"
     );
 }
