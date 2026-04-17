@@ -268,3 +268,75 @@ fn intersection_all_arg_count_diagnostic_has_span_label() {
     assert!(!first.labels.is_empty(), "expected at least one label on intersection_all arg-count diagnostic");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span on intersection_all arg-count label");
 }
+
+// ── shell() / thicken() / draft() — regression guards ──────────────────
+//
+// These ops already attach labels via `compile_modify_op`; the tests below
+// lock in that behavior so a future refactor cannot silently strip the
+// labels without tripping a test.
+
+#[test]
+fn shell_arg_count_diagnostic_has_span_label() {
+    // shell() expects at least 2 arguments — passing 1 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let s = shell(box(10mm, 10mm, 10mm))
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("shell() expects at least 2 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'shell() expects at least 2 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on shell arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on shell arg-count label");
+}
+
+#[test]
+fn thicken_arg_count_diagnostic_has_span_label() {
+    // thicken() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let t = thicken(box(10mm, 10mm, 10mm))
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("thicken() expects 2 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'thicken() expects 2 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on thicken arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on thicken arg-count label");
+}
+
+#[test]
+fn draft_arg_count_diagnostic_has_span_label() {
+    // draft() expects 3 arguments — passing 1 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let d = draft(box(10mm, 10mm, 10mm))
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("draft() expects 3 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'draft() expects 3 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on draft arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on draft arg-count label");
+}
