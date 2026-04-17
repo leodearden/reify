@@ -708,3 +708,130 @@ fn error_wildcard_implicit_error_to_matrix() {
         "implicitly_converts_to(Error, Matrix<3,3,Real>) must be true (anti-cascade guard, task-1912)"
     );
 }
+
+// ── type_compatible() error-wildcard tests (task-1912 req-c) ───────────────
+//
+// `type_compatible(param_ty, arg_ty)` has the same anti-cascade guard:
+//   if param_ty.is_error() || arg_ty.is_error() { return true; }
+// These tests pin that guard for a representative sample of X values and for
+// both argument positions so that removing or reordering the guard is caught.
+
+/// `type_compatible(Error, Real) == true`.
+#[test]
+fn type_compatible_error_wildcard_real() {
+    assert!(
+        type_compatible(&Type::Error, &Type::Real),
+        "type_compatible(Error, Real) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `type_compatible(Error, Int) == true`.
+#[test]
+fn type_compatible_error_wildcard_int() {
+    assert!(
+        type_compatible(&Type::Error, &Type::Int),
+        "type_compatible(Error, Int) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `type_compatible(Error, Bool) == true`.
+#[test]
+fn type_compatible_error_wildcard_bool() {
+    assert!(
+        type_compatible(&Type::Error, &Type::Bool),
+        "type_compatible(Error, Bool) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `type_compatible(Error, String) == true`.
+#[test]
+fn type_compatible_error_wildcard_string() {
+    assert!(
+        type_compatible(&Type::Error, &Type::String),
+        "type_compatible(Error, String) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `type_compatible(Error, Scalar[m]) == true` — dimensioned scalar.
+#[test]
+fn type_compatible_error_wildcard_scalar() {
+    assert!(
+        type_compatible(&Type::Error, &length_scalar()),
+        "type_compatible(Error, Scalar[m]) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `type_compatible(Error, List<Int>) == true` — compound type.
+#[test]
+fn type_compatible_error_wildcard_list() {
+    let x = Type::List(Box::new(Type::Int));
+    assert!(
+        type_compatible(&Type::Error, &x),
+        "type_compatible(Error, List<Int>) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `type_compatible(Error, Option<Real>) == true` — compound type.
+#[test]
+fn type_compatible_error_wildcard_option() {
+    let x = Type::Option(Box::new(Type::Real));
+    assert!(
+        type_compatible(&Type::Error, &x),
+        "type_compatible(Error, Option<Real>) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `type_compatible(Error, Vector<3,Real>) == true` — shape-carrying type.
+#[test]
+fn type_compatible_error_wildcard_vector() {
+    let x = Type::Vector {
+        n: 3,
+        quantity: Box::new(Type::Real),
+    };
+    assert!(
+        type_compatible(&Type::Error, &x),
+        "type_compatible(Error, Vector<3,Real>) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `type_compatible(Error, Matrix<3,3,Real>) == true` — shape-carrying type.
+#[test]
+fn type_compatible_error_wildcard_matrix() {
+    let x = Type::Matrix {
+        m: 3,
+        n: 3,
+        quantity: Box::new(Type::Real),
+    };
+    assert!(
+        type_compatible(&Type::Error, &x),
+        "type_compatible(Error, Matrix<3,3,Real>) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `type_compatible(Error, Error) == true`.
+#[test]
+fn type_compatible_error_wildcard_error_error() {
+    assert!(
+        type_compatible(&Type::Error, &Type::Error),
+        "type_compatible(Error, Error) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// Mirror: `type_compatible(Real, Error) == true` — guard checks BOTH params.
+#[test]
+fn type_compatible_error_wildcard_mirror_real() {
+    assert!(
+        type_compatible(&Type::Real, &Type::Error),
+        "type_compatible(Real, Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
+    );
+}
+
+/// Mirror: `type_compatible(List<Int>, Error) == true` — guard checks BOTH params.
+#[test]
+fn type_compatible_error_wildcard_mirror_list() {
+    let param = Type::List(Box::new(Type::Int));
+    assert!(
+        type_compatible(&param, &Type::Error),
+        "type_compatible(List<Int>, Error) must be true (anti-cascade guard checks arg_ty, task-1912)"
+    );
+}
