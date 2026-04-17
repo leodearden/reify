@@ -39696,11 +39696,11 @@
         "description": "The wall-clock 500ms budget in gui/src/__tests__/editor-perf.test.tsx:130 (\"100 keystrokes on 10k-line doc complete within 500ms\") is likely to flake on shared/cold CI workers where JSDOM + CodeMirror 6 + reify-language parser can spike well over 500ms. The deterministic spy-based tests (no per-keystroke store/bridge work) already guard the invariant that matters; the micro-benchmark is a soft backstop that adds flake risk. Options: (a) raise the budget to ~1500–2000ms, (b) gate behind an env flag like PERF=1 so it only runs in a dedicated perf CI, or (c) add a 20-keystroke warm-up loop before starting the timer to absorb JIT / lazy-load costs. Prefer (b) or (c) to preserve the regression signal while eliminating flakes.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T04:24:27.671Z",
+        "updatedAt": "2026-04-17T04:35:25.200Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/editor-perf.test.tsx"
@@ -40077,9 +40077,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T04:29:45.019Z",
+      "lastModified": "2026-04-17T04:35:25.201Z",
       "taskCount": 1910,
-      "completedCount": 1641,
+      "completedCount": 1642,
       "tags": [
         "master"
       ]
