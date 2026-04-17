@@ -1413,6 +1413,84 @@ describe('createSelection', () => {
     });
   });
 
+  describe('modifier key routing on click', () => {
+    it('plain click calls onSelect with path and { ctrl: false, shift: false }', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300 }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300 }));
+
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
+    });
+
+    it('Ctrl+click calls onSelect with { ctrl: true, shift: false }', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300, ctrlKey: true }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300, ctrlKey: true }));
+
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: true, shift: false });
+    });
+
+    it('Shift+click calls onSelect with { ctrl: false, shift: true }', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300, shiftKey: true }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300, shiftKey: true }));
+
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: true });
+    });
+
+    it('click miss calls onSelect with null and { ctrl: false, shift: false }', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([]);
+
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300 }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300 }));
+
+      expect(onSelect).toHaveBeenCalledWith(null, { ctrl: false, shift: false });
+    });
+
+    it('modifier state is read from pointerup event (not pointerdown)', () => {
+      // A user could theoretically release Ctrl between pointerdown and pointerup;
+      // the implementation reads modifiers from the pointerup event.
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { domElement, onSelect } = setup(meshMap);
+
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      // pointerdown with ctrl, pointerup without ctrl → should see ctrl: false
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300, ctrlKey: true }));
+      domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300, ctrlKey: false }));
+
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
+    });
+  });
+
   describe('refreshSelected (V-08)', () => {
     it('exposes refreshSelected method', () => {
       const { selection } = setup();
