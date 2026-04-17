@@ -218,5 +218,55 @@ assert "cross-tag orphan dep fails validator" \
 assert "cross-tag orphan dep error mentions 'master' tag name" \
     bash -c "python3 '$VALIDATOR' '$MULTI_TAG_CROSS_DEP' 2>&1 | grep -q 'master'"
 
+# -- Unexpected top-level keys emit warnings ----------------------------------
+echo ""
+echo "--- Test: unexpected top-level keys emit warnings ---"
+
+# (a) Top-level value is a non-dict (string).  Validator should exit 0 (no
+#     task errors) but print a WARN line on stderr mentioning the key.
+WARN_NON_DICT="$TMPDIR_FIXTURES/warn_non_dict.json"
+cat >"$WARN_NON_DICT" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[]}]},"bad_key":"not-a-dict"}
+EOF
+
+assert "non-dict top-level value passes validator (exit 0)" \
+    python3 "$VALIDATOR" "$WARN_NON_DICT"
+
+assert "non-dict top-level value emits WARN on stderr" \
+    bash -c "python3 '$VALIDATOR' '$WARN_NON_DICT' 2>&1 | grep -q 'WARN'"
+
+assert "non-dict top-level value WARN mentions bad_key" \
+    bash -c "python3 '$VALIDATOR' '$WARN_NON_DICT' 2>&1 | grep -q 'bad_key'"
+
+# (b) Top-level value is a dict but has no 'tasks' field.
+WARN_NO_TASKS="$TMPDIR_FIXTURES/warn_no_tasks.json"
+cat >"$WARN_NO_TASKS" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[]}]},"bad_key":{"no_tasks_field":true}}
+EOF
+
+assert "dict without tasks field passes validator (exit 0)" \
+    python3 "$VALIDATOR" "$WARN_NO_TASKS"
+
+assert "dict without tasks field emits WARN on stderr" \
+    bash -c "python3 '$VALIDATOR' '$WARN_NO_TASKS' 2>&1 | grep -q 'WARN'"
+
+assert "dict without tasks field WARN mentions bad_key" \
+    bash -c "python3 '$VALIDATOR' '$WARN_NO_TASKS' 2>&1 | grep -q 'bad_key'"
+
+# (c) Top-level value is a dict with tasks set to a non-list value.
+WARN_TASKS_NOT_LIST="$TMPDIR_FIXTURES/warn_tasks_not_list.json"
+cat >"$WARN_TASKS_NOT_LIST" <<'EOF'
+{"master":{"tasks":[{"id":"1","dependencies":[]}]},"bad_key":{"tasks":"not-a-list"}}
+EOF
+
+assert "tasks-not-list top-level value passes validator (exit 0)" \
+    python3 "$VALIDATOR" "$WARN_TASKS_NOT_LIST"
+
+assert "tasks-not-list top-level value emits WARN on stderr" \
+    bash -c "python3 '$VALIDATOR' '$WARN_TASKS_NOT_LIST' 2>&1 | grep -q 'WARN'"
+
+assert "tasks-not-list top-level value WARN mentions bad_key" \
+    bash -c "python3 '$VALIDATOR' '$WARN_TASKS_NOT_LIST' 2>&1 | grep -q 'bad_key'"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
