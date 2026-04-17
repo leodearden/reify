@@ -46,7 +46,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         "translate" | "rotate" | "scale" | "rotate_around"
         | "circular_pattern" | "linear_pattern" | "mirror"
         | "extrude" | "revolve" | "revolve_full"
-        | "shell" | "thicken" | "draft" => &[0],
+        | "shell" | "thicken" | "draft" | "chamfer" | "fillet" => &[0],
         "sweep" => &[0, 1],
         // NOTE: `loft` is handled specially (variadic geometry args) in the resolution block.
         // IMPORTANT: New geometry functions that take geometry args MUST be registered here
@@ -599,11 +599,10 @@ pub(crate) fn compile_geometry_call(
         "shell" | "thicken" | "draft" => {
             compile_modify_op(name, compiled_args, geom_ref(0), expr.span, diagnostics, sub_ops)
         }
-        // chamfer/fillet: pass GeomRef::Step(0) explicitly to preserve the known bug.
-        // These are NOT registered in geometry_arg_indices(), so sub_ops is always empty
-        // and geom_ref(0) would fall back to GeomRef::Step(step_offset), not Step(0).
+        // chamfer/fillet: pass geom_ref(0) as target (correctly resolved from geom_refs).
+        // Registered in geometry_arg_indices() alongside shell/thicken/draft.
         "chamfer" | "fillet" => {
-            compile_modify_op(name, compiled_args, GeomRef::Step(0), expr.span, diagnostics, sub_ops)
+            compile_modify_op(name, compiled_args, geom_ref(0), expr.span, diagnostics, sub_ops)
         }
         // --- Curve constructors ---
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
@@ -686,6 +685,8 @@ mod tests {
         "shell",
         "thicken",
         "draft",
+        "chamfer",
+        "fillet",
         "sweep",
     ];
 
@@ -698,8 +699,6 @@ mod tests {
         "sphere",
         "linear_pattern_2d",
         "arbitrary_pattern",
-        "chamfer",
-        "fillet",
         "line_segment",
         "arc",
         "helix",
