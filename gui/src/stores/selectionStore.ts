@@ -130,7 +130,11 @@ export function createSelectionStore() {
   }
 
   function selectEntity(entityPath: string | null) {
-    setState('selectedEntity', entityPath);
+    if (entityPath === null) {
+      clearSelection();
+    } else {
+      selectSingle(entityPath);
+    }
   }
 
   function hoverEntity(entityPath: string | null) {
