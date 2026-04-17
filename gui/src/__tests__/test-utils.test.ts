@@ -405,4 +405,8 @@ describe('formatPerfSamples', () => {
   it('propagates the median() non-finite guard', () => {
     expect(() => formatPerfSamples([1, Infinity])).toThrow(/non-finite/i);
   });
+
+  it('throws on empty input', () => {
+    expect(() => formatPerfSamples([])).toThrow(/empty/i);
+  });
 });
