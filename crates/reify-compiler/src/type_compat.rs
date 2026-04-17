@@ -274,3 +274,35 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         BinOp::Pow => left.clone(), // simplified for M1
     }
 }
+
+#[cfg(test)]
+mod infer_binop_type_error_tests {
+    //! Anti-cascade guard tests (task-448): `Type::Error` operands must
+    //! propagate `Type::Error`, not fall back to any op-specific result type.
+    use super::*;
+
+    #[test]
+    fn binop_add_left_error_yields_error() {
+        assert_eq!(
+            infer_binop_type(BinOp::Add, &Type::Error, &Type::Int),
+            Type::Error,
+        );
+    }
+
+    #[test]
+    fn binop_mul_right_error_yields_error() {
+        assert_eq!(
+            infer_binop_type(BinOp::Mul, &Type::Real, &Type::Error),
+            Type::Error,
+        );
+    }
+
+    #[test]
+    fn binop_lt_error_operand_yields_error_not_bool() {
+        // Comparison ops would normally produce Type::Bool — the error must win.
+        assert_eq!(
+            infer_binop_type(BinOp::Lt, &Type::Error, &Type::Int),
+            Type::Error,
+        );
+    }
+}
