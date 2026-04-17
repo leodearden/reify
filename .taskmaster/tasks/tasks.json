@@ -40449,7 +40449,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T06:35:22.153Z"
+        "updatedAt": "2026-04-17T06:35:22.153Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/type_error_propagation_tests.rs"
+          ]
+        }
       },
       {
         "id": "1936",
@@ -40483,7 +40488,9 @@
       "completedCount": 1657,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T06:39:20.496Z",
+      "description": "Tasks for master context"
     }
   }
 }
