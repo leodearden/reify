@@ -39896,18 +39896,18 @@
         "description": "Root-cause fix for the taskmaster subtask-id-as-number regression that Task 1905 worked around. One-line change in a sibling repo: /home/leo/src/dark-factory/taskmaster-ai/packages/tm-core/src/modules/storage/adapters/file-storage/file-storage.ts line 296.",
         "details": "## Root cause\n`FileStorage.normalizeTaskIds()` at /home/leo/src/dark-factory/taskmaster-ai/packages/tm-core/src/modules/storage/adapters/file-storage/file-storage.ts coerces `task.id` and `subtask.parentId` via `String(...)` but coerces `subtask.id` via `Number(...)` on line 296 — an internal inconsistency. Every write path (saveTasks → updateTask/updateTaskStatus/appendTasks/createTag/deleteTag/renameTag/copyTag) funnels through this method, so every MCP write that touches subtasks re-emits numeric IDs and re-breaks `tests/infra/test_tasks_json_id_types.sh` Check 2 on the reify repo.\n\nContext on source inconsistency comment (line 285): \"keep Task IDs as strings, Subtask IDs as numbers\" — this doc and the code line 296 are internally self-consistent with each other but inconsistent with the rest of the codebase and with reify's tasks.json invariant.\n\n## Fix (one line)\nAt line 296:\n\n    id: Number(subtask.id), // Subtask IDs are numbers\n\nChange to:\n\n    id: String(subtask.id), // Subtask IDs are digit-strings\n\nAlso update the jsdoc on line 285 to say \"Subtask IDs as digit-strings\".\n\n## Verification\n1. Rebuild: `cd /home/leo/src/dark-factory/taskmaster-ai && <build cmd>` to regenerate `dist/mcp-server.js` (the MCP server entry-point referenced by fused-memory-config.yaml TASKMASTER_DIR).\n2. Add a vitest in `packages/tm-core/tests/integration/storage/` that:\n   - Saves a task with a subtask via the public save path.\n   - Reads the raw tasks.json back via `fs.readFile` + `JSON.parse`.\n   - Asserts `typeof taskOut.subtasks[0].id === 'string'` and matches `/^[0-9]+$/`.\n3. On reify, run:\n     jq -r '.master.tasks[].subtasks[]?.id | type' /home/leo/src/reify/.taskmaster/tasks/tasks.json | sort -u\n   Expect only `\"string\"` after any MCP write that touches subtasks.\n\n## Predecessors\n- Task 1887 established the digit-string invariant + `tests/infra/test_tasks_json_id_types.sh` regression test.\n- Task 1895 attempted an `add_subtask`-specific fix; closed `done` but did not actually patch this upstream file — the bug recurred.\n- Task 1905 delivered an in-scope reify workaround (`scripts/normalize_tasks_json_ids.sh` + run_all.sh pre-flight + `UPSTREAM DRIFT` stderr warning). The workaround is kept as belt-and-suspenders drift detection even after this upstream fix lands — it fires a loud warning if any future regression re-appears.\n\n## Memory hints\n- search(\"Task 1887 subtask id digit-string convention\")\n- search(\"taskmaster writer auto-commit\")\n- search(\"FileStorage.normalizeTaskIds subtask Number String\")\n- `.task/plan.json` on branch `task/1905` has the full analysis and fix coordinates.\n\n## Cross-repo scope\nThis task touches `/home/leo/src/dark-factory/taskmaster-ai/` which is a sibling repo, NOT part of the reify worktree. The assignee must work in the dark-factory repo and ship from there; reify has no vendored copy. After the upstream fix ships and `dist/mcp-server.js` is rebuilt, the steward can optionally verify on reify by watching the `UPSTREAM DRIFT` warning stop firing in `run_all.sh` output.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-17T01:39:55.397Z"
+        "updatedAt": "2026-04-17T02:32:00.040Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T02:28:43.748Z",
+      "lastModified": "2026-04-17T02:32:00.044Z",
       "taskCount": 1901,
-      "completedCount": 1637,
+      "completedCount": 1638,
       "tags": [
         "master"
       ]
