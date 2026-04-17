@@ -379,5 +379,41 @@ assert "unhashable dict subtask id error mentions invariant 1 or expected str" \
 assert "unhashable dict subtask id does NOT leak Traceback" \
     bash -c "! python3 '$VALIDATOR' --check-subtasks '$UNHASHABLE_SUBTASK_ID' 2>&1 | grep -q 'Traceback'"
 
+# -- Sole-tag malformation is a schema error ----------------------------------
+# When EVERY top-level key is WARN-skipped (all have malformed shapes) and no
+# valid tag namespace was found, the validator must exit 1 — not silently exit 0.
+# This is distinct from the multi-key fixtures above (lines 222-269) which all
+# have a valid 'master' tag alongside the malformed secondary key.
+echo ""
+echo "--- Test: sole-tag malformation is a schema error ---"
+
+SOLE_TAG_NON_DICT="$TMPDIR_FIXTURES/sole_tag_non_dict.json"
+cat >"$SOLE_TAG_NON_DICT" <<'EOF'
+{"master":"not-a-dict"}
+EOF
+
+assert "sole non-dict tag fails validator" \
+    bash -c "! python3 '$VALIDATOR' '$SOLE_TAG_NON_DICT'"
+
+assert "sole non-dict tag error mentions schema or tag or no valid" \
+    bash -c "python3 '$VALIDATOR' '$SOLE_TAG_NON_DICT' 2>&1 | grep -qiE 'schema|no valid'"
+
+assert "sole non-dict tag does NOT leak Traceback" \
+    bash -c "! python3 '$VALIDATOR' '$SOLE_TAG_NON_DICT' 2>&1 | grep -q 'Traceback'"
+
+SOLE_TAG_TASKS_NOT_LIST="$TMPDIR_FIXTURES/sole_tag_tasks_not_list.json"
+cat >"$SOLE_TAG_TASKS_NOT_LIST" <<'EOF'
+{"master":{"tasks":"not-a-list"}}
+EOF
+
+assert "sole tag-with-non-list-tasks fails validator" \
+    bash -c "! python3 '$VALIDATOR' '$SOLE_TAG_TASKS_NOT_LIST'"
+
+assert "sole tag-with-non-list-tasks error mentions schema or no valid" \
+    bash -c "python3 '$VALIDATOR' '$SOLE_TAG_TASKS_NOT_LIST' 2>&1 | grep -qiE 'schema|no valid'"
+
+assert "sole tag-with-non-list-tasks does NOT leak Traceback" \
+    bash -c "! python3 '$VALIDATOR' '$SOLE_TAG_TASKS_NOT_LIST' 2>&1 | grep -q 'Traceback'"
+
 # -- Summary ------------------------------------------------------------------
 test_summary

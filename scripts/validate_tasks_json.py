@@ -93,6 +93,17 @@ def main() -> None:
         known_ids = _validate_tasks(tasks_list, errors, context=tag_name)
         tag_results.append((tag_name, tasks_list, known_ids))
 
+    # Require at least one valid tag namespace when tag-like keys exist.
+    # A file where every non-metadata key was WARN-skipped (malformed shape)
+    # has had zero tasks validated; treat that as a schema error rather than
+    # silently exiting 0.
+    candidate_keys = [k for k in data if not k.startswith("_")]
+    if candidate_keys and not tag_results:
+        errors.append(
+            "schema: no valid tag namespace found — every top-level key was "
+            "skipped as malformed; tasks.json cannot be validated"
+        )
+
     if args.check_subtasks:
         for tag_name, tasks_list, known_ids in tag_results:
             for task in tasks_list:
@@ -120,9 +131,13 @@ def _validate_tasks(tasks: list, errors: list, context: str) -> set:
     prefix = f"{context}: " if context else ""
 
     # Invariant 3: no duplicate IDs.
-    # Filter to string ids only: unhashable ids (list/dict) would raise TypeError;
-    # non-string ids are reported separately by invariant 1.
-    id_counter = collections.Counter(t["id"] for t in tasks if isinstance(t.get("id"), str))
+    # Exclude unhashable id types (list/dict/set) which would crash Counter;
+    # those are already reported by invariant 1. Hashable non-string ids (e.g.
+    # integers) are included so duplicate detection remains intact for all types.
+    id_counter = collections.Counter(
+        t["id"] for t in tasks
+        if "id" in t and not isinstance(t["id"], (list, dict, set))
+    )
     for id_val, count in id_counter.items():
         if count > 1:
             errors.append(
@@ -184,9 +199,13 @@ def _validate_subtasks(
     context = f"{tag_context}: {inner}" if tag_context else inner
 
     # Invariant 3 within subtasks.
-    # Filter to string ids only: unhashable ids (list/dict) would raise TypeError;
-    # non-string ids are reported separately by invariant 1.
-    id_counter = collections.Counter(s["id"] for s in subtasks if isinstance(s.get("id"), str))
+    # Exclude unhashable id types (list/dict/set) which would crash Counter;
+    # those are already reported by invariant 1. Hashable non-string ids (e.g.
+    # integers) are included so duplicate detection remains intact for all types.
+    id_counter = collections.Counter(
+        s["id"] for s in subtasks
+        if "id" in s and not isinstance(s["id"], (list, dict, set))
+    )
     for id_val, count in id_counter.items():
         if count > 1:
             errors.append(
