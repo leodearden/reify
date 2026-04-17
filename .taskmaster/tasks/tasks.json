@@ -39936,13 +39936,13 @@
         "description": "Re-apply the two-pass pre-register split in conformance.rs that resolves forward references through annotated lets across kinds (Param + unannotated Let). The split was implemented and verified under task 1834 (commit aa4ef1245) but reverted (commit ccb87a247) because it legitimately obsoletes an out-of-scope \"known design limitation\" test in crates/reify-compiler/tests/trait_merge_tests.rs — a file outside task 1834's locked modules. This follow-up bundles the re-application with a coordinated update to that test.\n\nMemory hints: search \"task 1834 two-pass pre-register conformance\"; entities: DefaultKind, compile_traits, Type.",
         "details": "Scope:\n1. Re-apply the two-pass pre-register split in `crates/reify-compiler/src/conformance.rs` — see reverted commit aa4ef1245 for the exact patch. Pass 1 registers every annotated default (Param + Let with `cell_type = Some(ty)`); Pass 2 compiles unannotated-let expressions against the fully-populated annotated scope and registers the inferred type. The remaining mutual-unannotated limitation stays documented by `mutual_unannotated_lets_documented_limitation`.\n\n2. Add regression guard `unannotated_let_resolves_forward_reference_to_annotated_let` to `crates/reify-compiler/tests/let_type_disambiguation_tests.rs` — scenario: `let a = b + 1mm` followed by `let b : Length = 2mm` must compile without \"unresolved name: b\" diagnostic.\n\n3. Update `cross_kind_pre_registration_order_sensitivity_reversed_order_produces_error` in `crates/reify-compiler/tests/trait_merge_tests.rs:1094` — flip the assertion from `!errors.is_empty()` (expects error) to clean compilation. Rename accordingly (e.g. drop `_produces_error` suffix, rename to reflect that cross-kind order-sensitivity is resolved when one trait provides annotated Param and another provides unannotated Let). Update the accompanying doc comment that describes this as a \"known design limitation\" — it is now a resolved limitation. The test was introduced in commit adbb43007 as an intentional document-via-test of the single-pass scope ordering.\n\nVerify: `cargo test -p reify-compiler` green; `cargo clippy --workspace -- -D warnings` clean; `cargo fmt --check`.\n\nOrigin: reviewer_comprehensive suggestion 1 (behavior_regression) on task 1834 amendment round 2. Reverted in ccb87a247 due to scope rule (trait_merge_tests.rs outside 1834's locked modules). Implementation was already validated on task 1834's worktree before revert.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1834"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:45:59.180Z",
+        "updatedAt": "2026-04-17T12:46:06.670Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -40526,7 +40526,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T12:46:04.236Z",
+      "lastModified": "2026-04-17T12:46:06.670Z",
       "taskCount": 1932,
       "completedCount": 1659,
       "tags": [
