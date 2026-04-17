@@ -39767,7 +39767,23 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/App.tsx",
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/stores/viewStateStore.ts",
+            "gui/src/panels/DesignTree.tsx",
+            "gui/src/stores/index.ts",
+            "gui/src/panels/index.ts"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/stores",
+            "gui/src/panels",
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 1902,
@@ -39778,7 +39794,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/stores/viewStateStore.ts"
+          ],
+          "modules": [
+            "gui/src/stores"
+          ]
+        }
       },
       {
         "id": 1903,
