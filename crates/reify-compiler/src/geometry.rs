@@ -284,10 +284,13 @@ pub(crate) fn compile_geometry_call(
         // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)
         "circular_pattern" => {
             if compiled_args.len() != 9 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "circular_pattern() expects 9 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "circular_pattern() expects 9 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
