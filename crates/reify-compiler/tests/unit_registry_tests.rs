@@ -1785,6 +1785,12 @@ fn prelude_module_unit_collision_emits_warning() {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Warning)
         .collect();
+    assert_eq!(
+        warnings.iter().filter(|w| w.message.contains("foo")).count(),
+        1,
+        "expected exactly 1 collision warning, got: {:?}",
+        warnings
+    );
     let collision_warn = warnings.iter().find(|d| d.message.contains("foo"));
     assert!(
         collision_warn.is_some(),
