@@ -35,9 +35,23 @@ impl SourceSpan {
     ///
     /// The value `{ start: u32::MAX, end: u32::MAX }` is guaranteed to fall
     /// outside any real source (files are bounded well below 4 GiB in
-    /// practice).  Use [`SourceSpan::is_prelude`] to detect this sentinel.
-    /// Existing renderers clamp offsets safely via `offset.min(source.len())`,
-    /// so no renderer crate needs changes.
+    /// practice).  Use [`SourceSpan::is_prelude`] to detect this sentinel
+    /// before converting offsets to line/column positions.
+    ///
+    /// # Renderer behaviour
+    ///
+    /// - `reify-types::byte_offset_to_line_col` short-circuits the prelude
+    ///   sentinel to `(1, 1)` — the same "no user-file location" fallback
+    ///   used by `mcp_context::get_diagnostics` when no labels are present.
+    ///   This prevents a `debug_assert` panic (debug builds) and a silent
+    ///   EOF mis-report (release builds).
+    /// - LSP and GUI renderers that do their own offset→position conversion
+    ///   clamp via `offset.min(source.len())`, so the sentinel degrades to an
+    ///   EOF position there.  The provenance truth is carried by the label
+    ///   *message* (e.g. "defined in stdlib prelude"), not the span coordinates.
+    /// - Callers that render span coordinates are encouraged to check
+    ///   [`SourceSpan::is_prelude`] and substitute a "no user-file location"
+    ///   presentation rather than relying on clamping.
     pub fn prelude() -> Self {
         Self {
             start: u32::MAX,
