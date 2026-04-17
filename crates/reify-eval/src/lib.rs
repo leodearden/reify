@@ -904,13 +904,13 @@ impl Engine {
             let lambda_value = match &field.source {
                 reify_compiler::CompiledFieldSource::Analytical { expr } => {
                     let ctx =
-                        reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map);
+                        reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Box::new(val)
                 }
                 reify_compiler::CompiledFieldSource::Composed { expr } => {
                     let ctx =
-                        reify_expr::EvalContext::new(&values, functions).with_meta(&self.meta_map);
+                        reify_expr::EvalContext::new(&values, &functions).with_meta(&self.meta_map);
                     let val = reify_expr::eval_expr(expr, &ctx);
                     Box::new(val)
                 }
@@ -1002,7 +1002,7 @@ impl Engine {
 
                     let val = reify_expr::eval_expr(
                         expr,
-                        &reify_expr::EvalContext::new(&values, functions)
+                        &reify_expr::EvalContext::new(&values, &functions)
                             .with_meta(&self.meta_map)
                             .with_determinacy(&snapshot.values),
                     );
@@ -1043,7 +1043,7 @@ impl Engine {
                     &mut values,
                     &mut snapshot,
                     version_id,
-                    functions,
+                    &functions,
                     &meta_map,
                     &mut diagnostics,
                 );
@@ -1056,7 +1056,7 @@ impl Engine {
                 // Evaluate the guard cell expression
                 let guard_val = reify_expr::eval_expr(
                     &group.guard_expr,
-                    &reify_expr::EvalContext::new(&values, functions)
+                    &reify_expr::EvalContext::new(&values, &functions)
                         .with_meta(&self.meta_map)
                         .with_determinacy(&snapshot.values),
                 );
@@ -1082,7 +1082,7 @@ impl Engine {
                             if let Some(ref expr) = cell.default_expr {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, functions)
+                                    &reify_expr::EvalContext::new(&values, &functions)
                                         .with_meta(&self.meta_map)
                                         .with_determinacy(&snapshot.values),
                                 );
@@ -1122,7 +1122,7 @@ impl Engine {
                             if let Some(ref expr) = cell.default_expr {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &reify_expr::EvalContext::new(&values, functions)
+                                    &reify_expr::EvalContext::new(&values, &functions)
                                         .with_meta(&self.meta_map)
                                         .with_determinacy(&snapshot.values),
                                 );
@@ -1195,7 +1195,7 @@ impl Engine {
                             elaborate_child_instance(
                                 &mut values,
                                 &mut snapshot,
-                                functions,
+                                &functions,
                                 &mut self.journal,
                                 &mut self.cache,
                                 version_id,
@@ -1251,7 +1251,7 @@ impl Engine {
                     unfold_recursive_sub(
                         &mut values,
                         &mut snapshot,
-                        functions,
+                        &functions,
                         &mut self.journal,
                         &mut self.cache,
                         version_id,
@@ -1275,7 +1275,7 @@ impl Engine {
                 elaborate_child_instance(
                     &mut values,
                     &mut snapshot,
-                    functions,
+                    &functions,
                     &mut self.journal,
                     &mut self.cache,
                     version_id,
@@ -1298,7 +1298,7 @@ impl Engine {
                     &mut values,
                     &mut snapshot,
                     version_id,
-                    functions,
+                    &functions,
                     &meta_map,
                     &mut diagnostics,
                 );
