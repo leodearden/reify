@@ -7006,6 +7006,64 @@ mod tests {
         );
     }
 
+    /// Self-check: verifies that the `doc_region` locator used in
+    /// `field_source_kind_gradient_doc_describes_provenance_only` actually
+    /// returns the real `FieldSourceKind::Gradient` doc block rather than a
+    /// fragment of test source.
+    ///
+    /// This test MUST FAIL until step-8 replaces the fragile sentinel-based
+    /// locator with a robust walk-backwards `enum_variant_doc_region` helper.
+    /// The failure mode: after the doc was rewritten in step-4 to say "A field
+    /// produced by the language-level `gradient()` operator", the exact
+    /// substring "A field produced by `gradient()`" no longer appears in the
+    /// actual Gradient doc — its first occurrence in the file is inside the
+    /// `field_source_kind_gradient_doc_describes_provenance_only` test body
+    /// (comment + string literal).  `doc_region` therefore slices a fragment
+    /// of test source, not a `///`-prefixed doc block, causing assertions (b)
+    /// and (c) below to fire.
+    #[test]
+    fn gradient_doc_region_locator_self_check() {
+        let source = value_rs_source();
+
+        // Same locator call as field_source_kind_gradient_doc_describes_provenance_only.
+        let region = doc_region(
+            &source,
+            "A field produced by `gradient()`",
+            "    Gradient,",
+        );
+
+        // (a) The region must not be empty.
+        assert!(
+            !region.trim().is_empty(),
+            "doc_region returned an empty region; locator is completely broken"
+        );
+
+        // (b) The region must begin with a doc-comment line (///), not with
+        //     arbitrary source text pulled from the test function's body.
+        assert!(
+            region.trim_start().starts_with("///"),
+            "doc_region did not return a ///‐prefixed doc block; \
+             the sentinel likely matched inside test source rather than the \
+             real Gradient doc.\nRegion:\n{region}"
+        );
+
+        // (c) The region must contain none of the test-body-only tokens that
+        //     would appear if the locator sliced the test function's own source.
+        for forbidden in &[
+            "fn field_source_kind_gradient_doc",
+            "assert!",
+            "let source",
+            "let region",
+        ] {
+            assert!(
+                !region.contains(forbidden),
+                "doc_region region contains test-only token {forbidden:?}; \
+                 the sentinel matched test source instead of the Gradient doc.\n\
+                 Region:\n{region}"
+            );
+        }
+    }
+
     /// Asserts that `Value::Field.lambda`'s doc comment enumerates all four
     /// valid content kinds and maps every `FieldSourceKind` variant to one of
     /// them.  Fails against the current one-liner; passes once step-2 expands
