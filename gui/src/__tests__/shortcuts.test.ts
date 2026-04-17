@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SHORTCUTS, SHORTCUT_IDS, getShortcut, shortcutKey, matchesEvent, type KeyBinding, type ShortcutId } from '../shortcuts';
+import { SHORTCUTS, getShortcut, shortcutKey, matchesEvent, type KeyBinding, type ShortcutId } from '../shortcuts';
 
 const SRC = readFileSync(join(__dirname, '../shortcuts.ts'), 'utf-8');
 
@@ -100,14 +100,8 @@ describe('shortcuts', () => {
   });
 
   it('all non-disabled shortcuts with keys do NOT have disabled set to true', () => {
-    // SHORTCUTS is widened to readonly ShortcutDef[] so s.id is string; use
-    // SHORTCUT_IDS (literal-typed) to pass ids to getShortcut without an unsafe cast.
-    const activeIds = SHORTCUT_IDS.filter((id) => {
-      const s = SHORTCUTS.find((sh) => sh.id === id);
-      return s && !s.disabled && s.key;
-    });
-    for (const id of activeIds) {
-      const entry = getShortcut(id);
+    for (const s of SHORTCUTS.filter((sh) => !sh.disabled && sh.key)) {
+      const entry = getShortcut(s.id);
       expect(entry).toBeDefined();
       expect(entry?.disabled).not.toBe(true);
     }
