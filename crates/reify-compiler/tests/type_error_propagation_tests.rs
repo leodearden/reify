@@ -7,7 +7,7 @@
 //! tests exercise (see step-12).
 
 use reify_test_support::compile_source;
-use reify_types::{CompiledExpr, CompiledExprKind, Type};
+use reify_types::{CompiledExpr, CompiledExprKind, Severity, Type};
 
 /// Walk a `CompiledExpr` tree and return the first node whose `result_type`
 /// satisfies the predicate, if any. Used to search for a `Type::Error`-typed
@@ -142,5 +142,42 @@ structure S {
         "expected quantifier-bound variable `x` to have Type::Error element \
          type (inherited from self.unsupported), got {:?}",
         left.result_type,
+    );
+}
+
+// ── step-11: end-to-end anti-cascade integration ─────────────────────────────
+
+#[test]
+fn stub_error_plus_arithmetic_emits_exactly_one_diagnostic() {
+    // `self.unsupported` triggers the "member access not yet supported" stub
+    // at expr.rs:~1008 which emits a single Severity::Error diagnostic.
+    // Post-step-12 the stub returns Type::Error; with the step-4 guard in
+    // infer_binop_type, the enclosing `+ 5.0` short-circuits to Type::Error
+    // instead of falling through to Type::Real and emitting a type-mismatch
+    // cascade. The net: exactly ONE error on the whole module.
+    let source = r#"
+structure S {
+    let broken = self.unsupported + 5.0
+}
+"#;
+    let module = compile_source(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error (the stub), got {}: {:?}",
+        errors.len(),
+        errors,
+    );
+    // Sanity-check the single error is the stub itself, not some other
+    // fallout we're ignoring by accident.
+    assert!(
+        errors[0].message.contains("member access not yet supported"),
+        "expected the sole error to be the unsupported-member stub, got: {}",
+        errors[0].message,
     );
 }
