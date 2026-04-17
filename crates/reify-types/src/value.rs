@@ -41,27 +41,41 @@ pub enum FieldSourceKind {
     /// in the associated `Value::Field` holds the original source field; see
     /// `Value::Field.lambda` for the storage-layout contract.
     Gradient,
-    /// A field produced by `divergence()` — its lambda slot stores the original
-    /// vector field and the sample handler dispatches to numerical-divergence evaluation.
+    /// A field produced by the language-level `divergence()` operator, yielding
+    /// the divergence of a parent vector field.  The stored `lambda` in the
+    /// associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     Divergence,
-    /// A field produced by `curl()` — its lambda slot stores the original
-    /// vector field and the sample handler dispatches to numerical-curl evaluation.
+    /// A field produced by the language-level `curl()` operator, yielding
+    /// the curl of a parent vector field.  The stored `lambda` in the
+    /// associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     Curl,
-    /// A field produced by `laplacian()` — its lambda slot stores the original
-    /// scalar field and the sample handler dispatches to numerical-laplacian evaluation.
+    /// A field produced by the language-level `laplacian()` operator, yielding
+    /// the Laplacian of a parent scalar field.  The stored `lambda` in the
+    /// associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     Laplacian,
-    /// A field produced by `von_mises()` — lambda slot stores the original tensor
-    /// field; sample handler applies pointwise von Mises stress computation.
+    /// A field produced by the language-level `von_mises()` operator, yielding
+    /// the von Mises stress of a parent tensor field.  The stored `lambda` in
+    /// the associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     VonMises,
-    /// A field produced by `principal_stresses()` — lambda slot stores the original
-    /// tensor field; sample handler applies pointwise eigenvalue computation.
+    /// A field produced by the language-level `principal_stresses()` operator,
+    /// yielding the principal stresses of a parent tensor field.  The stored
+    /// `lambda` in the associated `Value::Field` holds the original source
+    /// field; see `Value::Field.lambda` for the storage-layout contract.
     PrincipalStresses,
-    /// A field produced by `max_shear()` — lambda slot stores the original tensor
-    /// field; sample handler applies pointwise max shear computation.
+    /// A field produced by the language-level `max_shear()` operator, yielding
+    /// the maximum shear stress of a parent tensor field.  The stored `lambda`
+    /// in the associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     MaxShear,
-    /// A field produced by `safety_factor()` — lambda slot stores a
-    /// `Value::List([original_field, yield_val])`; sample handler unpacks both
-    /// and applies pointwise safety-factor computation.
+    /// A field produced by the language-level `safety_factor()` operator,
+    /// yielding the safety factor of a parent tensor field with respect to a
+    /// yield value.  The stored `lambda` in the associated `Value::Field` is a
+    /// `Value::List` containing `[original_field, yield_val]`; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     SafetyFactor,
 }
 
