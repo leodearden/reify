@@ -1,6 +1,15 @@
 use super::*;
 
 pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
+    // Anti-cascade guard (task-448 amend): Type::Error acts as a wildcard to
+    // prevent type-mismatch cascade diagnostics. If either side is already
+    // poisoned, the originating error was already reported at the producer
+    // site — downstream callers (trait conformance, function-argument checks)
+    // must not fire a second "type mismatch" diagnostic on top of it.
+    if from.is_error() || to.is_error() {
+        return true;
+    }
+
     // Identity: same type always converts to itself.
     if from == to {
         return true;
@@ -79,6 +88,12 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
 /// Not used in overload resolution (which uses exact matching), but used
 /// in trait conformance and field composition checks.
 pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
+    // Anti-cascade guard (task-448 amend): treat Type::Error as a wildcard.
+    // See `implicitly_converts_to` — same rationale applies to consumer sites
+    // that compare a Type::Error-poisoned operand against an expected type.
+    if param_ty.is_error() || arg_ty.is_error() {
+        return true;
+    }
     if param_ty == arg_ty {
         return true;
     }
@@ -232,6 +247,11 @@ pub(crate) fn resolve_unop(op: &str) -> Option<UnOp> {
 
 /// Infer the result type of a binary operation given operand types.
 pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
+    // Anti-cascade guard (task-448): if either operand is already poisoned,
+    // propagate Type::Error so downstream sites don't emit follow-on diagnostics.
+    if left.is_error() || right.is_error() {
+        return Type::Error;
+    }
     match op {
         BinOp::Eq
         | BinOp::Ne
@@ -272,5 +292,37 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         },
         BinOp::Mod => left.clone(),
         BinOp::Pow => left.clone(), // simplified for M1
+    }
+}
+
+#[cfg(test)]
+mod infer_binop_type_error_tests {
+    //! Anti-cascade guard tests (task-448): `Type::Error` operands must
+    //! propagate `Type::Error`, not fall back to any op-specific result type.
+    use super::*;
+
+    #[test]
+    fn binop_add_left_error_yields_error() {
+        assert_eq!(
+            infer_binop_type(BinOp::Add, &Type::Error, &Type::Int),
+            Type::Error,
+        );
+    }
+
+    #[test]
+    fn binop_mul_right_error_yields_error() {
+        assert_eq!(
+            infer_binop_type(BinOp::Mul, &Type::Real, &Type::Error),
+            Type::Error,
+        );
+    }
+
+    #[test]
+    fn binop_lt_error_operand_yields_error_not_bool() {
+        // Comparison ops would normally produce Type::Bool — the error must win.
+        assert_eq!(
+            infer_binop_type(BinOp::Lt, &Type::Error, &Type::Int),
+            Type::Error,
+        );
     }
 }

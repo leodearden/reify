@@ -77,6 +77,15 @@ pub enum Type {
         n: usize,
         quantity: Box<Type>,
     },
+    /// Sentinel for a type-inference failure ("poison value").
+    ///
+    /// Operations that see a `Type::Error` operand must propagate `Type::Error`
+    /// (not fall back to `Type::Real`) so that a single root-cause error does
+    /// not trigger cascading type-mismatch diagnostics downstream. Producers
+    /// that emit an error diagnostic should pair it with a `Type::Error`
+    /// result type; consumer sites (binary operators, index access, member
+    /// access, quantifiers, etc.) guard on `is_error()` and short-circuit.
+    Error,
 }
 
 impl Type {
@@ -196,6 +205,14 @@ impl Type {
         matches!(self, Type::Int | Type::Real | Type::Scalar { .. })
     }
 
+    /// Is this the poison-value sentinel `Type::Error`?
+    ///
+    /// Consumer sites should short-circuit to `Type::Error` when any operand's
+    /// type returns `true` here, to prevent cascading diagnostics.
+    pub fn is_error(&self) -> bool {
+        matches!(self, Type::Error)
+    }
+
     /// Returns the inner name for name-carrying variants without allocating.
     /// Used for registry lookups instead of Display formatting.
     pub fn as_name(&self) -> Option<&str> {
@@ -248,6 +265,7 @@ impl std::fmt::Display for Type {
             Type::Axis => write!(f, "Axis"),
             Type::BoundingBox => write!(f, "BoundingBox"),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
+            Type::Error => write!(f, "<error>"),
         }
     }
 }
@@ -1137,5 +1155,47 @@ mod tests {
     #[test]
     fn type_bounding_box_as_name_none() {
         assert_eq!(Type::BoundingBox.as_name(), None);
+    }
+
+    // ── Error tests (task-448) ───────────────────────────────────────────────
+
+    #[test]
+    fn type_error_construction_and_equality() {
+        // (a) Construction and equality
+        assert_eq!(Type::Error, Type::Error);
+        assert_ne!(Type::Error, Type::Real);
+        assert_ne!(Type::Error, Type::Int);
+    }
+
+    #[test]
+    fn type_error_is_error_true() {
+        // (b) Type::Error.is_error() returns true
+        assert!(Type::Error.is_error());
+    }
+
+    #[test]
+    fn type_error_is_error_false_for_others() {
+        // (c) Other types return false from is_error()
+        assert!(!Type::Real.is_error());
+        assert!(!Type::Int.is_error());
+        assert!(!Type::List(Box::new(Type::Int)).is_error());
+    }
+
+    #[test]
+    fn type_error_not_numeric() {
+        // (d) Type::Error.is_numeric() returns false
+        assert!(!Type::Error.is_numeric());
+    }
+
+    #[test]
+    fn type_error_as_name_none() {
+        // (e) Type::Error.as_name() returns None
+        assert_eq!(Type::Error.as_name(), None);
+    }
+
+    #[test]
+    fn type_error_display() {
+        // (f) Display is "<error>"
+        assert_eq!(format!("{}", Type::Error), "<error>");
     }
 }
