@@ -120,6 +120,18 @@ mod tests {
     }
 
     #[test]
+    fn byte_offset_to_line_col_prelude_sentinel_returns_fallback() {
+        // The prelude sentinel (u32::MAX as usize) must be handled specially:
+        // it should return (1, 1) — the "no meaningful location" fallback —
+        // in BOTH debug and release builds.
+        //
+        // Without the fix:
+        //   - debug builds: debug_assert!(offset <= source.len()) panics
+        //   - release builds: loop exhausts "abc" and returns (1, 4) (EOF pos)
+        assert_eq!(byte_offset_to_line_col("abc", u32::MAX as usize), (1, 1));
+    }
+
+    #[test]
     fn byte_offset_to_line_col_at_source_len() {
         // Source "abc\ndef" has byte length 7.
         // offset == source.len() is the EOF position, one past the last char 'f'.
