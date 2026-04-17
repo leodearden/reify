@@ -375,11 +375,15 @@ fn nested_guarded_solid_param_compiles_as_realization() {
         );
     }
 
-    // (d) At least one RealizationDecl must be emitted for the nested geometry param.
-    assert!(
-        !template.realizations.is_empty(),
-        "expected at least one RealizationDecl for nested `param g : Solid = cylinder(...)`, \
-         got none — nested GuardedGroup recursion in entity.rs is broken"
+    // (d) Exactly one RealizationDecl must be emitted for the nested geometry
+    // param. Using `== 1` (not `>= 1`) prevents a future double-emit regression
+    // if the recursive walk mistakenly visits the same guard twice.
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 RealizationDecl for nested `param g : Solid = cylinder(...)`, \
+         got {} — nested GuardedGroup recursion in entity.rs is broken",
+        template.realizations.len()
     );
 }
 
@@ -467,11 +471,15 @@ fn nested_guarded_solid_param_in_else_branch_compiles_as_realization() {
         );
     }
 
-    // (b) At least one RealizationDecl must be emitted for `g` (from the else branch).
-    assert!(
-        !template.realizations.is_empty(),
-        "expected at least one RealizationDecl for `param g : Solid = cylinder(...)` \
-         declared inside a nested else_members branch — else_members recursion may be broken"
+    // (b) Exactly one RealizationDecl must be emitted for `g` (from the else
+    // branch). Using `== 1` guards against both recursion failure (0) and
+    // double-emit regressions (≥2).
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 RealizationDecl for `param g : Solid = cylinder(...)` \
+         declared inside a nested else_members branch, got {} — else_members recursion may be broken",
+        template.realizations.len()
     );
 }
 
