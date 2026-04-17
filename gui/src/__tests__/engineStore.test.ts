@@ -6,6 +6,7 @@ import type {
   ValueData,
   ConstraintData,
   EvaluationStatus,
+  DiagnosticInfo,
 } from '../types';
 
 // Mock the bridge module
@@ -17,6 +18,7 @@ vi.mock('../bridge', () => ({
   onMeshRemoved: vi.fn(),
   onValueRemoved: vi.fn(),
   onConstraintRemoved: vi.fn(),
+  onTessellationDiagnostics: vi.fn(),
 }));
 
 import {
@@ -27,6 +29,7 @@ import {
   onMeshRemoved,
   onValueRemoved,
   onConstraintRemoved,
+  onTessellationDiagnostics,
 } from '../bridge';
 import { createEngineStore } from '../stores/engineStore';
 
@@ -37,6 +40,7 @@ const mockOnEvaluationStatus = vi.mocked(onEvaluationStatus);
 const mockOnMeshRemoved = vi.mocked(onMeshRemoved);
 const mockOnValueRemoved = vi.mocked(onValueRemoved);
 const mockOnConstraintRemoved = vi.mocked(onConstraintRemoved);
+const mockOnTessellationDiagnostics = vi.mocked(onTessellationDiagnostics);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -506,6 +510,80 @@ describe('engineStore', () => {
       expect(spy).toHaveBeenCalledWith('constraint_001');
 
       expect(spy).toHaveBeenCalledTimes(3);
+      dispose();
+    });
+  });
+});
+
+describe('engineStore tessellationDiagnostics', () => {
+  it('initial state.tessellationDiagnostics is []', () => {
+    createRoot((dispose) => {
+      const { state } = createEngineStore();
+      expect(state.tessellationDiagnostics).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('initFromState populates tessellationDiagnostics from GuiState', () => {
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      const diag: DiagnosticInfo = {
+        file_path: '<unknown>',
+        line: 1,
+        column: 1,
+        end_line: 1,
+        end_column: 1,
+        severity: 'Error',
+        message: 'geometry error: kernel failure',
+        code: null,
+      };
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [diag],
+      };
+      initFromState(guiState);
+      expect(state.tessellationDiagnostics).toEqual([diag]);
+      dispose();
+    });
+  });
+
+  it('subscribeToEvents wires tessellation-diagnostics event and updates state', async () => {
+    await createRoot(async (dispose) => {
+      let tessCb: ((diags: DiagnosticInfo[]) => void) | undefined;
+
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+      mockOnTessellationDiagnostics.mockImplementation(async (cb) => {
+        tessCb = cb as (diags: DiagnosticInfo[]) => void;
+        return vi.fn();
+      });
+
+      const store = createEngineStore();
+      await store.subscribeToEvents();
+
+      expect(mockOnTessellationDiagnostics).toHaveBeenCalledWith(expect.any(Function));
+
+      const diag: DiagnosticInfo = {
+        file_path: '<unknown>',
+        line: 1,
+        column: 1,
+        end_line: 1,
+        end_column: 1,
+        severity: 'Error',
+        message: 'geometry error: kernel failure',
+        code: null,
+      };
+
+      tessCb!([diag]);
+      expect(store.state.tessellationDiagnostics).toEqual([diag]);
       dispose();
     });
   });
