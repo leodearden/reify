@@ -59,7 +59,7 @@ describe('bridge commands', () => {
   });
 
   it('setParameter calls invoke with cellId and value', async () => {
-    const rawState: RawGuiState = { meshes: [], values: [], constraints: [], files: [] };
+    const rawState: RawGuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] };
     mockInvoke.mockResolvedValue(rawState);
 
     await setParameter('cell_001', '42.0');
@@ -99,6 +99,7 @@ describe('bridge commands', () => {
       values: [{ cell_id: 'c1', name: 'w', value: '10', unit: 'mm', determinacy: 'determined', entity_path: 'Box.w', kind: 'parameter' }],
       constraints: [],
       files: [],
+      tessellation_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
@@ -119,6 +120,7 @@ describe('bridge commands', () => {
       values: [],
       constraints: [{ node_id: 'n1', expression: 'x > 0', status: 'satisfied', label: null, parameter_ids: [] }],
       files: [{ path: 'main.ri', content: 'updated' }],
+      tessellation_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 
@@ -137,6 +139,7 @@ describe('bridge commands', () => {
       values: [],
       constraints: [],
       files: [{ path: 'main.ri', content: 'content' }],
+      tessellation_diagnostics: [],
     };
     mockInvoke.mockResolvedValue(rawState);
 

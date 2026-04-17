@@ -94,6 +94,7 @@ describe('engineStore', () => {
         values: [sampleValue],
         constraints: [sampleConstraint],
         files: [],
+        tessellation_diagnostics: [],
       };
       initFromState(guiState);
 

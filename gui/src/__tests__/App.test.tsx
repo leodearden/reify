@@ -96,7 +96,7 @@ beforeEach(() => {
   localStorage.clear();
   capturedEditorStore = null;
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
-  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
+  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] });
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
@@ -229,6 +229,7 @@ describe('App initial state loading', () => {
       ],
       constraints: [],
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+      tessellation_diagnostics: [],
     };
 
     vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
@@ -292,7 +293,7 @@ describe('App side panel vertical splitter', () => {
 describe('App dynamic window title', () => {
   it('sets document.title to "Reify" when no file is open', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue({
-      meshes: [], values: [], constraints: [], files: [],
+      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
     });
 
     render(() => <App />);
@@ -308,6 +309,7 @@ describe('App dynamic window title', () => {
       values: [],
       constraints: [],
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+      tessellation_diagnostics: [],
     });
 
     render(() => <App />);
@@ -330,6 +332,7 @@ describe('App dynamic window title', () => {
       values: [],
       constraints: [],
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+      tessellation_diagnostics: [],
     });
 
     render(() => <App />);
@@ -421,6 +424,7 @@ describe('App async mount/cleanup race conditions', () => {
       }],
       constraints: [],
       files: [{ path: '/test.ri', content: '' }],
+      tessellation_diagnostics: [],
     });
 
     // Flush macrotasks so setTimeout(0) callbacks execute
@@ -544,6 +548,7 @@ describe('App navigation wiring', () => {
       },
     ],
     files: [],
+    tessellation_diagnostics: [],
   };
 
   it('viewport onSelect triggers getSourceLocation from bridge', async () => {
@@ -636,7 +641,7 @@ describe('App initialization loading state', () => {
     expect(screen.queryByTestId('app-layout')).toBeNull();
 
     // Resolve to transition to ready
-    resolveGetState({ meshes: [], values: [], constraints: [], files: [] });
+    resolveGetState({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -669,7 +674,7 @@ describe('App initialization loading state', () => {
     });
 
     // Reset to succeed on retry
-    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] });
 
     fireEvent.click(screen.getByText('Retry'));
 
@@ -682,7 +687,7 @@ describe('App initialization loading state', () => {
   });
 
   it('after successful getInitialState, app-layout is shown and loading/error are gone', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] });
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] });
 
     render(() => <App />);
 
@@ -756,6 +761,7 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
       { path: '/project/gear.ri', content: 'structure Gear {}' },
     ],
+    tessellation_diagnostics: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -847,6 +853,7 @@ describe('App dirty-file check before reload (R-4)', () => {
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
       { path: '/project/gear.ri', content: 'structure Gear {}' },
     ],
+    tessellation_diagnostics: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -962,6 +969,7 @@ describe('App handleReload partial failure', () => {
       { path: '/project/bracket.ri', content: 'structure Bracket {}' },
       { path: '/project/gear.ri', content: 'structure Gear {}' },
     ],
+    tessellation_diagnostics: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1127,6 +1135,7 @@ describe('App handleReload race condition', () => {
       { path: '/project/gear.ri', content: 'structure Gear {}' },
       { path: '/project/housing.ri', content: 'structure Housing {}' },
     ],
+    tessellation_diagnostics: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1244,6 +1253,7 @@ describe('App handleSetParameter error handling', () => {
         }],
         constraints: [],
         files: [],
+        tessellation_diagnostics: [],
       });
 
       render(() => <App />);
@@ -1287,6 +1297,7 @@ describe('App re-evaluate error toast', () => {
         values: [],
         constraints: [],
         files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+        tessellation_diagnostics: [],
       });
 
       render(() => <App />);
@@ -1328,6 +1339,7 @@ describe('App F5 re-evaluate multi-file', () => {
         { path: '/project/bracket.ri', content: 'structure Bracket {}' },
         { path: '/project/mount.ri', content: 'structure Mount {}' },
       ],
+      tessellation_diagnostics: [],
     });
     vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
 
@@ -1380,6 +1392,7 @@ describe('App event subscription error toast', () => {
         values: [],
         constraints: [],
         files: [],
+        tessellation_diagnostics: [],
       });
 
       render(() => <App />);
@@ -1450,6 +1463,7 @@ describe('App reload error toast', () => {
         values: [],
         constraints: [],
         files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+        tessellation_diagnostics: [],
       });
 
       render(() => <App />);
@@ -1613,7 +1627,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(bridge.getInitialState).toHaveBeenCalledTimes(2);
 
     // Clean up: resolve the deferred promise
-    resolveRetry({ meshes: [], values: [], constraints: [], files: [] });
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -1639,7 +1653,7 @@ describe('App initApp concurrent execution guard', () => {
     vi.mocked(bridge.onFileChanged).mockResolvedValueOnce(priorFileUnsub);
 
     vi.mocked(bridge.getInitialState).mockResolvedValueOnce({
-      meshes: [], values: [], constraints: [], files: [],
+      meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
     });
 
     const { unmount } = render(() => <App />);
@@ -1702,7 +1716,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(screen.getByTestId('app-loading')).toBeTruthy();
 
     // Clean up: resolve the deferred promise
-    resolveRetry({ meshes: [], values: [], constraints: [], files: [] });
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -1877,6 +1891,7 @@ describe('App Ctrl+O open file', () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue({
       meshes: [], values: [], constraints: [],
       files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+      tessellation_diagnostics: [],
     });
 
     // Mock pickOpenPath to return a path
@@ -1919,6 +1934,7 @@ describe('App end-to-end toast integration', () => {
         }],
         constraints: [],
         files: [],
+        tessellation_diagnostics: [],
       });
 
       render(() => <App />);
@@ -2093,6 +2109,7 @@ describe('App onSend context forwarding', () => {
       values: [],
       constraints: [],
       files: [{ path: 'bracket.ri', content: 'structure Bracket {}' }],
+      tessellation_diagnostics: [],
     };
     vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
 
@@ -2147,6 +2164,7 @@ describe('App claudeSendMessage error-path integration', () => {
         values: [],
         constraints: [],
         files: [{ path: 'bracket.ri', content: 'structure Bracket {}' }],
+        tessellation_diagnostics: [],
       });
 
       render(() => <App />);
