@@ -20,6 +20,7 @@ impl GeometryHandleId {
     /// Domain-separated with tag byte [11] followed by the id as le_bytes.
     /// This serves as a proxy hash since OCCT shapes can't be hashed directly.
     pub fn content_hash(&self) -> ContentHash {
+        debug_assert_ne!(self.0, u64::MAX, "INVALID handle must not be hashed");
         let mut buf = [0u8; 9];
         buf[0] = 11;
         buf[1..].copy_from_slice(&self.0.to_le_bytes());
