@@ -536,3 +536,85 @@ fn type_compatible_matrix_tensor2_symmetric() {
         "type_compatible(Matrix<3,3,Real>, Tensor<2,3,Real>) should be true (symmetric check)"
     );
 }
+
+// ── Type::Error wildcard contract (task-1912) ──────────────────────────────
+//
+// Task 448 introduced a `Type::Error` poison-value sentinel and added
+// anti-cascade early-return guards to `implicitly_converts_to` and
+// `type_compatible`: when either operand `is_error()` the functions return
+// `true` immediately, suppressing follow-on "type mismatch" diagnostics for
+// an operand whose error was already reported at its producer site.
+//
+// These tests PIN that contract so that a future refactor cannot silently
+// strip the `is_error()` early-returns without breaking compilation.
+
+/// (task-1912 req-a) `implicitly_converts_to(Error, Real) == true`.
+/// Anti-cascade guard: when `from` is the poison sentinel, suppress any
+/// downstream type-mismatch diagnostic — the originating error is already
+/// reported.
+#[test]
+fn error_wildcard_implicit_from_error_to_real() {
+    assert!(
+        implicitly_converts_to(&Type::Error, &Type::Real),
+        "implicitly_converts_to(Error, Real) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// (task-1912 req-b) `implicitly_converts_to(Real, Error) == true`.
+/// Anti-cascade guard: when `to` is the poison sentinel, suppress any
+/// downstream type-mismatch diagnostic.
+#[test]
+fn error_wildcard_implicit_from_real_to_error() {
+    assert!(
+        implicitly_converts_to(&Type::Real, &Type::Error),
+        "implicitly_converts_to(Real, Error) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(Error, Int) == true`.
+#[test]
+fn error_wildcard_implicit_error_to_int() {
+    assert!(
+        implicitly_converts_to(&Type::Error, &Type::Int),
+        "implicitly_converts_to(Error, Int) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(Int, Error) == true`.
+#[test]
+fn error_wildcard_implicit_int_to_error() {
+    assert!(
+        implicitly_converts_to(&Type::Int, &Type::Error),
+        "implicitly_converts_to(Int, Error) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(Error, Bool) == true`.
+#[test]
+fn error_wildcard_implicit_error_to_bool() {
+    assert!(
+        implicitly_converts_to(&Type::Error, &Type::Bool),
+        "implicitly_converts_to(Error, Bool) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(Error, String) == true`.
+#[test]
+fn error_wildcard_implicit_error_to_string() {
+    assert!(
+        implicitly_converts_to(&Type::Error, &Type::String),
+        "implicitly_converts_to(Error, String) must be true (anti-cascade guard, task-1912)"
+    );
+}
+
+/// `implicitly_converts_to(Error, Error) == true`.
+/// The wildcard guard sits BEFORE the identity check, so this pins that
+/// removing only the guard (while leaving the identity arm) would be
+/// caught if a future refactor accidentally orders the arms differently.
+#[test]
+fn error_wildcard_implicit_error_to_error() {
+    assert!(
+        implicitly_converts_to(&Type::Error, &Type::Error),
+        "implicitly_converts_to(Error, Error) must be true (anti-cascade guard, task-1912)"
+    );
+}
