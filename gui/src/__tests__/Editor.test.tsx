@@ -69,8 +69,22 @@ describe('Editor mounting', () => {
 });
 
 describe('Editor debounce constant', () => {
-  it('EDITOR_DEBOUNCE_MS is exported with value 300', () => {
-    expect(EDITOR_DEBOUNCE_MS).toBe(300);
+  it('updateSource fires at EDITOR_DEBOUNCE_MS boundary — not before, yes after', () => {
+    const store = setupStore();
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    view.dispatch({ changes: { from: 0, insert: 'x' } });
+
+    // Must NOT fire 1ms before the boundary
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS - 1);
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    // Must fire exactly at the boundary
+    vi.advanceTimersByTime(1);
+    expect(updateSpy).toHaveBeenCalledTimes(1);
   });
 });
 

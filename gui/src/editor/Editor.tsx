@@ -20,6 +20,10 @@ import { errorMessage } from '../utils/errorClassifier';
 import { isSameFile, normalizePath } from '../utils/pathUtils';
 import styles from './Editor.module.css';
 
+// Intentionally shared by both the backend source-sync debounce (updateSource)
+// and the LSP didChange debounce — both react to the same user-editing signal
+// and are designed to fire on the same tick. If these debounces ever need to
+// diverge, introduce a second named constant (e.g. LSP_DID_CHANGE_DEBOUNCE_MS).
 export const EDITOR_DEBOUNCE_MS = 300;
 
 export interface EditorProps {
