@@ -581,6 +581,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
         hoveredEntity: null,
       });
     });
@@ -595,6 +596,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: null,
       });
     });
@@ -611,6 +613,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: 'Bracket.width',
       });
     });
@@ -638,6 +641,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
         hoveredEntity: 'Bracket.width',
       });
     });
@@ -654,6 +658,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
         hoveredEntity: 'X',
       });
 
@@ -671,6 +676,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
         hoveredEntity: null,
       });
 
@@ -683,6 +689,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(2);
       expect(mockInvoke).toHaveBeenLastCalledWith('update_selection', {
         selectedEntity: 'Bracket',
+        selectedEntities: ['Bracket'],
         hoveredEntity: 'Bracket.width',
       });
     });
@@ -704,6 +711,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: 'B',
       });
     });
@@ -750,6 +758,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: null,
       });
     });
@@ -769,6 +778,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: null,
       });
     });
@@ -792,6 +802,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: null,
       });
     });
@@ -831,6 +842,7 @@ describe('selectionStore', () => {
       expect(mockInvoke).toHaveBeenCalledTimes(1);
       expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
         selectedEntity: null,
+        selectedEntities: [],
         hoveredEntity: null,
       });
     });

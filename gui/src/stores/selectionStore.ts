@@ -27,11 +27,17 @@ export function createSelectionStore() {
   //     flooding the backend during mouse movement.
   let hoverTimer: ReturnType<typeof setTimeout> | null = null;
   let prevSelected: string | null = null;
+  let prevSelectedEntities: string[] = [];
   let prevHovered: string | null = null;
 
-  const sendSelection = (selected: string | null, hovered: string | null) => {
+  function entitiesEqual(a: string[], b: string[]): boolean {
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+  }
+
+  const sendSelection = (selected: string | null, entities: string[], hovered: string | null) => {
     invoke('update_selection', {
       selectedEntity: selected,
+      selectedEntities: entities,
       hoveredEntity: hovered,
     }).catch(() => {
       // Ignore errors (e.g. when running outside Tauri in tests)
@@ -40,6 +46,7 @@ export function createSelectionStore() {
 
   createEffect(() => {
     const selected = state.selectedEntity;
+    const entities = state.selectedEntities; // reactive dependency on the list
     const hovered = state.hoveredEntity;
 
     // Always clear any pending debounce to avoid sending stale state
@@ -48,22 +55,26 @@ export function createSelectionStore() {
       hoverTimer = null;
     }
 
-    const selectionChanged = selected !== prevSelected;
+    // Selection changed if the primary OR the list contents differ
+    const selectionChanged =
+      selected !== prevSelected || !entitiesEqual(entities, prevSelectedEntities);
     const hoverChanged = hovered !== prevHovered;
 
     prevSelected = selected;
+    prevSelectedEntities = entities.slice(); // fresh copy for next comparison
     prevHovered = hovered;
 
     if (!selectionChanged && !hoverChanged) return;
 
     if (selectionChanged && !hoverChanged) {
       // Selection-only change — dispatch immediately
-      sendSelection(selected, hovered);
+      sendSelection(selected, entities.slice(), hovered);
     } else {
       // Hover changed (possibly with selection) — debounce at 100ms
+      const entitiesSnapshot = entities.slice();
       hoverTimer = setTimeout(() => {
         hoverTimer = null;
-        sendSelection(selected, hovered);
+        sendSelection(selected, entitiesSnapshot, hovered);
       }, 100);
     }
   });
@@ -151,6 +162,8 @@ export function createSelectionStore() {
   function clearHighlights() {
     batch(() => {
       setState('selectedEntity', null);
+      setState('selectedEntities', []);
+      setState('anchorEntity', null);
       setState('highlightedParams', []);
     });
   }
