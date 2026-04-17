@@ -6932,6 +6932,51 @@ mod tests {
         );
     }
 
+    /// Asserts that the `Value::Field` variant's doc block documents the
+    /// `single_point_param` calling-convention contract (params.len() == 1 &&
+    /// n > 1 → callers pass a single `Value::Point`).  Fails against the
+    /// current doc; passes once step-6 expands it.
+    #[test]
+    fn value_field_doc_documents_single_point_param_contract() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/value.rs");
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+
+        // Slice the region from the Field variant's leading doc line up to
+        // (but not including) the next "    Lambda {" variant declaration.
+        let start_sentinel = "Field value: a typed domain->codomain mapping";
+        let end_sentinel = "    Lambda {";
+        let start = source
+            .find(start_sentinel)
+            .unwrap_or_else(|| panic!("sentinel not found in value.rs: {start_sentinel:?}"));
+        let end_offset = source[start..]
+            .find(end_sentinel)
+            .unwrap_or_else(|| panic!("sentinel not found in value.rs after Field: {end_sentinel:?}"));
+        let region = &source[start..start + end_offset];
+
+        // (a) Must name the heuristic so readers grepping for it land here.
+        assert!(
+            region.contains("single_point_param"),
+            "Value::Field doc must mention 'single_point_param'; region:\n{region}"
+        );
+
+        // (b) Must state the contract: 1 param + n > 1 → Value::Point arg.
+        assert!(
+            region.contains("Value::Point"),
+            "Value::Field doc must mention 'Value::Point' in the calling convention; region:\n{region}"
+        );
+        assert!(
+            region.contains("n > 1"),
+            "Value::Field doc must state the 'n > 1' condition; region:\n{region}"
+        );
+
+        // (c) Must name domain_type as the source of n.
+        assert!(
+            region.contains("domain_type"),
+            "Value::Field doc must name 'domain_type' as the source of n; region:\n{region}"
+        );
+    }
+
     /// Asserts that `Value::Field.lambda`'s doc comment enumerates all four
     /// valid content kinds and maps every `FieldSourceKind` variant to one of
     /// them.  Fails against the current one-liner; passes once step-2 expands
