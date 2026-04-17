@@ -31,6 +31,21 @@ export function median(values: number[]): number {
   return n % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+/**
+ * Format a diagnostic message for wall-clock perf guards.
+ *
+ * Computes median, min, and max over the sample array and includes a rounded
+ * copy of every sample so CI triage can read the distribution at a glance
+ * without mentally recomputing statistics from a raw dump.
+ *
+ * Delegates to `median()` first so non-finite inputs (NaN, ±Infinity) are
+ * rejected before any further arithmetic.
+ */
+export function formatPerfSamples(samples: number[]): string {
+  const med = median(samples);
+  return `median=${med.toFixed(2)}ms min=${Math.min(...samples).toFixed(2)} max=${Math.max(...samples).toFixed(2)} samples=${JSON.stringify(samples.map(v => +v.toFixed(2)))}`;
+}
+
 /** Yield to the macrotask queue so setTimeout callbacks execute. */
 export const flushMacrotasks = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 
