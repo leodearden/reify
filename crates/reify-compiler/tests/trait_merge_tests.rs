@@ -929,6 +929,12 @@ structure def S : FirstParam + SecondParam {
 /// Note: comparison operators (>, <, etc.) have no type checking in the compiler
 /// (only Add/Sub do). The subtraction in `x - 1mm > 0mm` is what triggers the
 /// observable type error when x is overwritten from Length to Real.
+///
+/// Cell shape: exactly ONE Param cell for `x` (from TraitA).  The two-pass
+/// amendment (task 1907) means Pass 2 detects that the Param already claimed
+/// the scope slot and records TraitB's `let x` in `pass2_skipped`, so the
+/// injection loop skips the Let cell — preventing duplicate (entity, member)
+/// pairs for `x`.
 #[test]
 fn cross_kind_pre_registration_preserves_first_type() {
     let source = r#"
@@ -966,7 +972,10 @@ structure def S : TraitA + TraitB {
         template.constraints.len()
     );
 
-    // 2 'x' value cells: one Param (from TraitA), one Let (from TraitB).
+    // Exactly 1 'x' value cell: the Param from TraitA.  TraitB's `let x = 5.0`
+    // is suppressed by the two-pass amendment: Pass 2 finds the scope slot
+    // already occupied by TraitA's Param and records `x` in `pass2_skipped`,
+    // so the injection loop skips Let-cell emission for `x`.
     let x_cells: Vec<_> = template
         .value_cells
         .iter()
@@ -974,22 +983,23 @@ structure def S : TraitA + TraitB {
         .collect();
     assert_eq!(
         x_cells.len(),
-        2,
-        "expected 2 'x' value cells (one Param from TraitA, one Let from TraitB), got {}",
+        1,
+        "expected 1 'x' value cell (Param from TraitA only; Let from TraitB \
+         suppressed by pass2_skipped), got {}",
         x_cells.len()
     );
-
-    let param_cells: Vec<_> = x_cells
-        .iter()
-        .filter(|vc| vc.kind == ValueCellKind::Param)
-        .collect();
-    assert_eq!(param_cells.len(), 1, "expected exactly 1 Param 'x' cell");
-
-    let let_cells: Vec<_> = x_cells
-        .iter()
-        .filter(|vc| vc.kind == ValueCellKind::Let)
-        .collect();
-    assert_eq!(let_cells.len(), 1, "expected exactly 1 Let 'x' cell");
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single `x` cell must be Param (from TraitA)"
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "the `x` Param cell must carry type Length"
+    );
 }
 
 /// Constraint default coexists with a param default for the same member name.
@@ -1111,7 +1121,7 @@ structure def S : TraitB + TraitA {
 }
 "#;
 
-    let (_template, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
     let errors: Vec<_> = diagnostics
         .iter()
@@ -1128,6 +1138,39 @@ structure def S : TraitB + TraitA {
          cleanly — Pass 1 registers the annotated `param x : Length` regardless of \
          bound-list order, so the constraint sees `x : Length`, not Real; got: {:?}",
         errors
+    );
+
+    // Pin the cell shape: exactly ONE cell for `x` (the Param from TraitA),
+    // with type Length.  Two cells would reveal double-injection — the old
+    // pre-amendment Pass 2 inserted TraitB's `let x` compiled expression into
+    // `inferred_let_exprs` *before* calling `register_if_absent`, so the
+    // injection loop found an entry and emitted a spurious Let cell alongside
+    // the Param cell, producing duplicate (entity, member) pairs downstream.
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "exactly one cell expected for `x` (Param from TraitA); \
+         two cells indicate double-injection (Let cell from TraitB must not \
+         be emitted when Pass 1 already claimed the scope slot): {:?}",
+        template.value_cells
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "the single `x` cell must be Param (from TraitA), not Let"
+    );
+    assert_eq!(
+        x_cells[0].cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
+        "the `x` Param cell must carry type Length \
+         (from TraitA's `param x : Length = 10mm`)"
     );
 }
 

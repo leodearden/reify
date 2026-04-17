@@ -225,6 +225,26 @@ pub(crate) fn check_trait_conformance(
     // unannotated lets would remove the limitation entirely but is out of
     // scope for task 1834 ("documenting as intentional simplification").
     let mut inferred_let_exprs: HashMap<String, CompiledExpr> = HashMap::new();
+    // Unannotated-let defaults whose scope slot was already claimed by an annotated
+    // type in Pass 1.  Pass 2 records names here and skips the `inferred_let_exprs`
+    // insert so the injection loop does not emit a duplicate Let cell alongside the
+    // Param/annotated-Let cell that will already be injected for the same name.
+    // The injection loop uses this set to distinguish a deliberate skip from drift.
+    let mut pass2_skipped: HashSet<String> = HashSet::new();
+
+    // Shared conflict logger for `register_if_absent` Occupied returns.  Captures
+    // `&structure.name` from the enclosing scope so both Pass 1 and Pass 2 call
+    // sites stay structurally identical — no drift risk if the message or fields
+    // ever change.
+    let log_conflict = |name: &str, ignored_ty: Type| {
+        tracing::debug!(
+            target: "reify_compiler::conformance",
+            name = %name,
+            entity = %structure.name,
+            ignored_ty = ?ignored_ty,
+            "trait-merge conflict: second default with same name ignored; first-seen type wins"
+        );
+    };
 
     // Pass 1: register all *annotated* defaults (Param, Let-with-annotation).
     // Unannotated lets and constraints are deferred to Pass 2 / injection.
@@ -250,21 +270,20 @@ pub(crate) fn check_trait_conformance(
             // `Some(ignored_ty)` for the debug emission, so no clone is needed on
             // the hot Vacant insertion path.
             if let Some(ignored_ty) = scope.register_if_absent(name, ty) {
-                tracing::debug!(
-                    target: "reify_compiler::conformance",
-                    name = %name,
-                    entity = %structure.name,
-                    ignored_ty = ?ignored_ty,
-                    "trait-merge conflict: second default with same name ignored; first-seen type wins"
-                );
+                log_conflict(name, ignored_ty);
             }
         }
     }
 
     // Pass 2: compile each *unannotated* Let's expression against the
     // fully-populated annotated scope from Pass 1 and register its inferred
-    // type.  Caches the compiled_expr in `inferred_let_exprs` for reuse by
-    // the injection loop (avoids double compilation) and by
+    // type.  When `register_if_absent` finds the scope slot already claimed
+    // (Pass 1 registered an annotated Param or Let), the compiled expression
+    // is discarded and the name is recorded in `pass2_skipped` so the
+    // injection loop skips Let-cell injection — preventing a duplicate
+    // (entity, member) cell alongside the annotated-type injection.  When the
+    // slot is vacant, the expression is cached in `inferred_let_exprs` for
+    // reuse by the injection loop (avoids double compilation) and by
     // `available_defaults` (so requirement-matching uses the inferred type
     // instead of the old `Type::Real` fallback).
     for default in &ctx.defaults {
@@ -278,15 +297,14 @@ pub(crate) fn check_trait_conformance(
             let compiled_expr =
                 compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics);
             let inferred_ty = compiled_expr.result_type.clone();
-            inferred_let_exprs.insert(name.clone(), compiled_expr);
             if let Some(ignored_ty) = scope.register_if_absent(name, inferred_ty) {
-                tracing::debug!(
-                    target: "reify_compiler::conformance",
-                    name = %name,
-                    entity = %structure.name,
-                    ignored_ty = ?ignored_ty,
-                    "trait-merge conflict: second default with same name ignored; first-seen type wins"
-                );
+                log_conflict(name, ignored_ty);
+                // Scope slot already claimed by an annotated type (Pass 1).
+                // Record in pass2_skipped so the injection loop skips Let-cell
+                // injection for this name and avoids duplicate (entity, member) cells.
+                pass2_skipped.insert(name.to_string());
+            } else {
+                inferred_let_exprs.insert(name.clone(), compiled_expr);
             }
         }
     }
@@ -303,9 +321,13 @@ pub(crate) fn check_trait_conformance(
     //
     // For unannotated let defaults (`cell_type: None`), the advertised type comes from
     // `inferred_let_exprs` populated by the pre-register pass above — see task 1834 step-8.
-    // The final `Type::Real` fallback is reached only when inference itself failed
-    // (the expression errored out and left no cached result), and matches the pre-fix
-    // behavior as a safety net for that pathological case.
+    // The `Type::Real` fallback is reached when (a) inference failed (the
+    // expression errored out and left no cached result), or (b) Pass 2 deliberately
+    // skipped caching the result because an annotated type already claimed the scope
+    // slot (see `pass2_skipped` above).  In case (b) the Let entry advertises Real;
+    // that entry is only relevant if a requirement check looks up `("name", Let)`,
+    // and in the Param-wins scenario the requirement is structurally unsatisfied
+    // anyway (kind mismatch), so the Real fallback does not cause a false positive.
     let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = ctx
         .defaults
         .iter()
@@ -472,38 +494,47 @@ pub(crate) fn check_trait_conformance(
                     // Reuse the compiled_expr cached by the pre-register/inference
                     // pass (task 1834 step-9) to avoid a second compilation of the
                     // same expression.  The dispatch mirrors the pre-register
-                    // branches: unannotated lets always populate the cache there,
-                    // annotated lets never do.
+                    // branches: unannotated lets populate the cache unless Pass 2
+                    // found the scope slot already claimed (recorded in `pass2_skipped`);
+                    // annotated lets never use the cache.
                     //
-                    // Cache miss handling (task 1834 reviewer_comprehensive
-                    // robustness fix): a cache miss on the `None` arm means the
-                    // pre-register pass did not compile this expression, which
-                    // would only happen if a future refactor decoupled the
-                    // pre-register guard (`!structure_members.contains_key(name)`)
-                    // from the injection guard or changed the cache key (today
-                    // name-only, keyed on the invariants documented beside the
-                    // cache declaration above).  Emit a single
-                    // internal-consistency diagnostic and skip injection rather
-                    // than silently recompiling — a recompile would risk
-                    // duplicating diagnostics that the pre-register pass already
-                    // pushed for the same AST node if the invariants ever drift
-                    // such that both passes run for one name.  `debug_assert!`
-                    // still trips in dev/test so the drift is caught early.
+                    // Cache miss handling: two reasons a `None` arm miss can occur:
+                    //   (a) Deliberate skip (`pass2_skipped.contains(name)`): Pass 2
+                    //       found an annotated type claiming the scope slot and did not
+                    //       cache the expression.  Silent `continue` — the Param/
+                    //       annotated-Let default will inject its own cell for this name.
+                    //   (b) Unexpected drift: a refactor decoupled the pre-register
+                    //       guard from the injection guard or changed the cache key.
+                    //       `debug_assert!(false, …)` fires in dev/test; the error
+                    //       diagnostic fires in release rather than silently recompiling
+                    //       (which would risk duplicating diagnostics already pushed by
+                    //       Pass 2 for the same AST node).
                     let compiled_expr = match cell_type {
                         Some(_) => {
                             compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics)
                         }
                         None => {
-                            debug_assert!(
-                                inferred_let_exprs.contains_key(name),
-                                "unannotated let '{}' should have been cached by the \
-                                 pre-register pass (Pass 2) — cache miss indicates a \
-                                 drift between the pre-register guard and the injection guard",
-                                name
-                            );
                             match inferred_let_exprs.remove(name) {
                                 Some(ce) => ce,
                                 None => {
+                                    if pass2_skipped.contains(name) {
+                                        // Deliberate skip: Pass 2 found an annotated
+                                        // type already occupying the scope slot and
+                                        // did not cache this expression (see `pass2_skipped`
+                                        // above).  The Param/annotated-Let default will
+                                        // inject its own cell; skip Let injection here
+                                        // to prevent duplicate (entity, member) cells.
+                                        continue;
+                                    }
+                                    // Unexpected: pre-register guard and injection guard
+                                    // have diverged, or the cache key changed.
+                                    debug_assert!(
+                                        false,
+                                        "unannotated let '{}' has no cached compiled expression \
+                                         and is not in pass2_skipped — drift between the \
+                                         pre-register guard and the injection guard in conformance.rs",
+                                        name
+                                    );
                                     diagnostics.push(
                                         Diagnostic::error(format!(
                                             "internal error: compiled expression for unannotated \
@@ -519,8 +550,6 @@ pub(crate) fn check_trait_conformance(
                                             ),
                                         ),
                                     );
-                                    // Skip injection for this default rather than
-                                    // silently recompiling (see comment block above).
                                     continue;
                                 }
                             }
