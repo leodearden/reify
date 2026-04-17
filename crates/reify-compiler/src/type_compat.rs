@@ -102,10 +102,29 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
 ///
 /// Not used in overload resolution (which uses exact matching), but used
 /// in trait conformance and field composition checks.
+///
+/// # Error-wildcard contract (task-448 / task-1918)
+///
+/// `arg_ty.is_error()` is the **producer-side** anti-cascade path: when the
+/// argument expression already emitted a diagnostic, its Type::Error sentinel
+/// must be accepted to suppress follow-on "type mismatch" reports.
+///
+/// `param_ty.is_error()` **must never legitimately occur**: declared annotations
+/// are resolved via `resolve_type_with_aliases` which always falls back to a
+/// concrete type. Call-site audit (task-1918) confirmed none of the 4 production
+/// call sites (functions.rs:276, conformance.rs:322, conformance.rs:345,
+/// conformance.rs:522) can pass Type::Error as `param_ty`. The debug_assert
+/// below catches any future regression. In release builds the short-circuit
+/// preserves cascade safety as a belt-and-braces fallback (task-448 rationale).
 pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
-    // Anti-cascade guard (task-448 amend): treat Type::Error as a wildcard.
-    // See `implicitly_converts_to` — same rationale applies to consumer sites
-    // that compare a Type::Error-poisoned operand against an expected type.
+    // Producer-side anti-cascade guard (task-448 / task-1918): asymmetric contract.
+    // See doc comment above for full rationale.
+    debug_assert!(
+        !param_ty.is_error(),
+        "Type::Error must not appear on the param/expected side of type_compatible \
+         — declared annotations never resolve to the poison sentinel; \
+         this indicates a bug at the call site (task-1918)"
+    );
     if param_ty.is_error() || arg_ty.is_error() {
         return true;
     }
