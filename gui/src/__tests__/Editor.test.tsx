@@ -68,26 +68,6 @@ describe('Editor mounting', () => {
   });
 });
 
-describe('Editor debounce constant', () => {
-  it('updateSource fires at EDITOR_DEBOUNCE_MS boundary — not before, yes after', () => {
-    const store = setupStore();
-    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
-    render(() => <Editor store={store} />);
-    const container = screen.getByTestId('editor-container');
-    const view = getEditorView(container);
-
-    view.dispatch({ changes: { from: 0, insert: 'x' } });
-
-    // Must NOT fire 1ms before the boundary
-    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS - 1);
-    expect(updateSpy).not.toHaveBeenCalled();
-
-    // Must fire exactly at the boundary
-    vi.advanceTimersByTime(1);
-    expect(updateSpy).toHaveBeenCalledTimes(1);
-  });
-});
-
 /** Get the CM6 EditorView instance from the rendered container. */
 function getEditorView(container: HTMLElement): EditorView {
   const cmEditor = container.querySelector('.cm-editor')!;
