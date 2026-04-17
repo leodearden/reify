@@ -539,6 +539,78 @@ describe('DesignTree — range select', () => {
   });
 });
 
+describe('DesignTree — select all', () => {
+  it('Ctrl+A calls onSelectAll with all visible flat paths', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    const onSelectAll = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelectAll={onSelectAll} />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 'a', ctrlKey: true });
+    expect(onSelectAll).toHaveBeenCalledOnce();
+    expect(onSelectAll).toHaveBeenCalledWith(['Root.A', 'Root.B']);
+  });
+
+  it('Ctrl+A excludes collapsed children (only visible paths)', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({
+        entity_path: 'Root.B',
+        children: [makeNode({ entity_path: 'Root.B.b1' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    const onSelectAll = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelectAll={onSelectAll} />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    // Root.B is not expanded → b1 is not visible
+    fireEvent.keyDown(treeRoot, { key: 'a', ctrlKey: true });
+    expect(onSelectAll).toHaveBeenCalledWith(['Root.A', 'Root.B']);
+  });
+
+  it('Ctrl+A without onSelectAll prop is a no-op (no throw)', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const treeRoot = screen.getByTestId('design-tree');
+    expect(() => fireEvent.keyDown(treeRoot, { key: 'a', ctrlKey: true })).not.toThrow();
+  });
+
+  it('Meta+A (Mac) also triggers onSelectAll', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onSelectAll = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelectAll={onSelectAll} />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    fireEvent.keyDown(treeRoot, { key: 'a', metaKey: true });
+    expect(onSelectAll).toHaveBeenCalledOnce();
+    expect(onSelectAll).toHaveBeenCalledWith(['Root.A']);
+  });
+
+  it('Ctrl+A calls e.preventDefault() (suppresses browser Select-All)', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onSelectAll = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onSelectAll={onSelectAll} />
+    ));
+    const treeRoot = screen.getByTestId('design-tree');
+    const event = new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true, cancelable: true });
+    const preventDefaultSpy = vi.spyOn(event, 'preventDefault');
+    treeRoot.dispatchEvent(event);
+    expect(preventDefaultSpy).toHaveBeenCalled();
+  });
+});
+
 describe('DesignTree — keyboard shortcuts', () => {
   it('pressing H with selected entity sets hidden+cascade', () => {
     const nodes = [makeNode({ entity_path: 'Root.A' })];
