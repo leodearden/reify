@@ -3176,6 +3176,7 @@ impl Engine {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> bool {
         let handle_start = step_handles.len();
+        let mut had_failure = false;
         for op in operations {
             let geom_op = compile_geometry_op(
                 op,
@@ -3185,16 +3186,30 @@ impl Engine {
                 meta_map,
                 diagnostics,
             );
-            if let Some(geom_op) = geom_op {
-                match kernel.execute(&geom_op) {
+            match geom_op {
+                Some(geom_op) => match kernel.execute(&geom_op) {
                     Ok(handle) => {
                         step_handles.push(handle.id);
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        diagnostics
+                            .push(Diagnostic::error(format!("geometry error: {}", e)));
                         break;
                     }
+                },
+                None => {
+                    diagnostics.push(Diagnostic::error(
+                        "failed to compile geometry operation",
+                    ));
+                    step_handles.push(GeometryHandleId::INVALID);
+                    had_failure = true;
                 }
             }
+        }
+        // Discard intermediate handles from partially-failed realizations
+        if had_failure || step_handles.len() - handle_start < operations.len() {
+            step_handles.truncate(handle_start);
+            return true;
         }
         false
     }
