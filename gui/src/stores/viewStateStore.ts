@@ -4,6 +4,7 @@ import {
   generateDefaultView,
   generateAllGeometryView,
   generatePurposeViews,
+  defaultVisibilityFor,
 } from './autoViewGenerator';
 import type { ViewDefinition } from './autoViewGenerator';
 
@@ -49,11 +50,12 @@ function walkDescendants(path: string, nodeByPath: Map<string, EntityTreeNode>):
   return result;
 }
 
-/** Default visibility rule for a node when no ancestor has an explicit state. */
+/** Default visibility rule for a node when no ancestor has an explicit state.
+ *  Delegates to autoViewGenerator.defaultVisibilityFor so the walk-up fallback
+ *  and the per-node materialisation in generateDefaultView always agree.
+ */
 function defaultRuleFor(node: EntityTreeNode): VisibilityState {
-  if (node.trait_geometry) return 'show';
-  if (node.kind === 'let' && node.type_name?.includes('Solid')) return 'hidden';
-  return 'show';
+  return defaultVisibilityFor(node);
 }
 
 // ---------------------------------------------------------------------------
