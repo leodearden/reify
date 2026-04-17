@@ -37553,11 +37553,11 @@
         "description": "In gui/src-tauri/src/tests/engine_tests.rs: (1) In get_entity_tree_no_realization_has_mesh_false (lines 2254-2278), remove the TopologyTemplateBuilder/CompiledModuleBuilder setup and the bracket_compiled_module() call — they are suppressed with let _ = ... and contribute nothing to the test assertions. (2) In get_entity_tree_sub_component_produces_nested_node (lines 2283-2318), remove the bolt_template/assembly_template/compiled builder code and the let _ = vcid(...) line for the same reason. If builder-based coverage is desired, add a separate focused test using build_template_node directly.\n\n### memory_hints\n- search: \"get_entity_tree_no_realization_has_mesh_false get_entity_tree_sub_component_produces_nested_node\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-15T12:46:00.974Z",
+        "updatedAt": "2026-04-17T13:43:53.235Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/tests"
@@ -40700,7 +40700,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:43:49.738Z",
+      "lastModified": "2026-04-17T13:43:53.236Z",
       "taskCount": 1943,
       "completedCount": 1672,
       "tags": [
