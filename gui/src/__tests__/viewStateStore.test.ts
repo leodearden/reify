@@ -712,6 +712,11 @@ describe('viewStateStore — full PRD integration scenario', () => {
 // ---------------------------------------------------------------------------
 
 describe('viewStateStore — source comments', () => {
+  // Anchored to the first mutation function (setVisibility) so the guard detects
+  // if the entire mutations block is deleted, not merely that the section header
+  // is present. If a future refactor legitimately inserts a helper or comment
+  // between the Mutations divider and setVisibility, update this regex and the
+  // synthetic-source self-test below.
   const GUARD_REGEX = /-{5,}\n\s*\/\/ Mutations\n\s*\/\/ -{5,}\n\s*\n\s*function setVisibility\(/;
 
   it('section header uses bare // Mutations form without stale "stubs" phrasing', () => {
@@ -725,7 +730,7 @@ describe('viewStateStore — source comments', () => {
     expect(src).toMatch(GUARD_REGEX);
   });
 
-  it('anchored guard rejects source with divider header but no setVisibility function', () => {
+  it('GUARD_REGEX requires setVisibility immediately after Mutations divider', () => {
     const synthetic = '// ---------\n  // Mutations\n  // ---------\n\n  // nothing here\n';
     const syntheticWithFn = '// ---------\n  // Mutations\n  // ---------\n\n  function setVisibility(path: string) {}\n';
     expect(GUARD_REGEX.test(synthetic)).toBe(false);
