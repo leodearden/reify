@@ -3117,6 +3117,35 @@ fn all_new_commands_callable_on_bracket_fixture() {
     );
 }
 
+/// Regression-pin: value-cell `content_hash` is an identity hash, not a content hash.
+///
+/// Pins the semantics of the `content_hash` field for value-cell entries:
+/// it is derived from the cell's *identity* (the id string `"Bracket.width"`),
+/// not from the cell's *content* (type, default_expr, kind, etc.).
+///
+/// A future "fix" that hashes cell content instead would break this test,
+/// surfacing the semantic change immediately.
+#[test]
+fn get_entity_identity_map_value_cell_content_hash_is_identity_hash() {
+    use std::collections::HashMap;
+    use crate::types::EntityIdentity;
+    use reify_types::ContentHash;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load should succeed");
+    let map: HashMap<String, EntityIdentity> = session.get_entity_identity_map();
+    let width_identity = map.get("Bracket.width").expect("Bracket.width should be in map");
+    let expected = ContentHash::of_str("Bracket.width").to_string();
+    assert_eq!(
+        width_identity.content_hash, expected,
+        "value-cell content_hash must equal ContentHash::of_str(\"Bracket.width\").to_string()"
+    );
+}
+
 /// In debug builds, build_template_node must panic (via debug_assert) when the
 /// compiled module contains duplicate template names.
 ///
