@@ -1070,29 +1070,33 @@ structure def S : HasParam + HasConstraint {
     );
 }
 
-/// Documents order-sensitivity of the pre-registration guard (known design limitation).
+/// Documents that the two-pass pre-register split resolves cross-kind
+/// order-sensitivity when one trait provides an annotated Param and the other
+/// provides an unannotated Let for the same name.
 ///
-/// The pre-registration loop uses first-registration-wins semantics: the first trait
-/// bound in the `structure def S : ... {}` declaration wins the scope type for a
-/// shared name. Reversing the bound order (`S : TraitB + TraitA` instead of
-/// `S : TraitA + TraitB`) changes which type gets registered.
-///
-/// In this scenario:
+/// Scenario (bound-list order intentionally reversed to exercise the old failure
+/// mode):
 /// - TraitA provides `param x : Length = 10mm` + `constraint x - 1mm > 0mm`
-/// - TraitB provides `let x = 5.0` (type Real)
+/// - TraitB provides `let x = 5.0` (unannotated, type Real)
 /// - Structure lists TraitB first: `S : TraitB + TraitA`
 ///
-/// With TraitB first, the pre-registration loop visits the Let default before the
-/// Param default. It registers x as Real. When TraitA's Param default is visited
-/// next, `scope.names.contains_key("x")` is already true, so it is skipped.
-/// The constraint `x - 1mm > 0mm` from TraitA then sees x as Real, and the
-/// subtraction `x - 1mm` (Real - Length) produces an 'incompatible types' error.
+/// Under the old single-pass loop, TraitB's unannotated Let was compiled inline
+/// (winning the scope registration for `x : Real`) before TraitA's annotated Param
+/// could be visited — the constraint `x - 1mm > 0mm` then saw `x : Real` and
+/// produced a `Real - Length` type error.
 ///
-/// This test asserts that the reversed order DOES produce an error, documenting
-/// the order-sensitivity as expected (not silent or undefined) behavior. Users who
-/// hit this should reorder trait bounds so the Param-typed trait appears first.
+/// Under the two-pass split in conformance.rs:
+///   Pass 1 — registers every annotated default (Param + Let-with-annotation)
+///             regardless of bound-list order. TraitA's `param x : Length` wins.
+///   Pass 2 — compiles each unannotated Let against the fully-annotated scope.
+///             TraitB's `let x = 5.0` calls `scope.register_if_absent` and finds
+///             `x` already occupied (debug-logged, no error). The constraint sees
+///             `x : Length` → clean compile.
+///
+/// Bound-list order is preserved unchanged (`TraitB + TraitA`) so this test
+/// continues to exercise the formerly-sensitive scenario as a regression guard.
 #[test]
-fn cross_kind_pre_registration_order_sensitivity_reversed_order_produces_error() {
+fn cross_kind_pre_registration_order_resolved_by_two_pass() {
     let source = r#"
 trait TraitA {
     param x : Length = 10mm
@@ -1114,20 +1118,16 @@ structure def S : TraitB + TraitA {
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
-    // With TraitB listed first, the Let default (type Real) registers x before the
-    // Param default (type Length). The contains_key guard then skips the Param
-    // registration, leaving x as Real in scope. The constraint `x - 1mm > 0mm`
-    // performs Real - Length, which the expression compiler rejects.
-    //
-    // This documents order-sensitivity as a known design limitation of the
-    // first-registration-wins approach. To avoid this, users should list the
-    // Param-typed trait before the Let-typed trait.
+    // Pass 1 registers TraitA's annotated `param x : Length` before any
+    // unannotated-let expression is compiled.  Pass 2 then sees `x` as occupied
+    // and skips TraitB's `let x = 5.0`.  The constraint `x - 1mm > 0mm`
+    // operates on `x : Length`, compiles cleanly, and no type error is emitted.
     assert!(
-        !errors.is_empty(),
-        "expected at least one type error when the Let-typed trait (TraitB) is listed \
-         before the Param-typed trait (TraitA): the constraint `x - 1mm > 0mm` should \
-         see x as Real (not Length) and fail. This documents the order-sensitivity of \
-         the pre-registration guard."
+        errors.is_empty(),
+        "with the two-pass pre-register split, `S : TraitB + TraitA` must compile \
+         cleanly — Pass 1 registers the annotated `param x : Length` regardless of \
+         bound-list order, so the constraint sees `x : Length`, not Real; got: {:?}",
+        errors
     );
 }
 
