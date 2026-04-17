@@ -232,6 +232,11 @@ pub(crate) fn resolve_unop(op: &str) -> Option<UnOp> {
 
 /// Infer the result type of a binary operation given operand types.
 pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
+    // Anti-cascade guard (task-448): if either operand is already poisoned,
+    // propagate Type::Error so downstream sites don't emit follow-on diagnostics.
+    if left.is_error() || right.is_error() {
+        return Type::Error;
+    }
     match op {
         BinOp::Eq
         | BinOp::Ne
