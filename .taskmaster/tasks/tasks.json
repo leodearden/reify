@@ -39989,11 +39989,11 @@
         "description": "In crates/reify-compiler/src/expr.rs (UserFunctionCall path, lines ~508-578), `resolve_function_overload` uses exact `param_ty == arg_ty` matching, so a Type::Error-typed argument never matches and falls into `OverloadResolution::NoMatch`, emitting a 'no matching overload for f(<error>, ...)' diagnostic on top of the root-cause error — exactly the cascade behavior task-448 targets. Additionally, the NoMatch / Ambiguous arms still fall back to Type::Real, so enclosing arithmetic re-cascades. Options: (a) short-circuit `resolve_function_overload` (or call site) when any arg is Type::Error, returning a Type::Error-typed UserFunctionCall stub without emitting the no-overload diagnostic; add regression test `let bad = my_fn(self.unsupported)` asserting only the root-cause error is reported; or (b) explicitly document this gap as out-of-scope. (Review followup from task 448; suggestion S2.)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T03:33:48.259Z"
+        "updatedAt": "2026-04-17T03:43:24.019Z"
       },
       {
         "id": "1912",
@@ -40035,7 +40035,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T03:43:01.552Z",
+      "lastModified": "2026-04-17T03:43:24.019Z",
       "taskCount": 1909,
       "completedCount": 1640,
       "tags": [
