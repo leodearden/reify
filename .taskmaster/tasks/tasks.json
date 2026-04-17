@@ -40469,23 +40469,21 @@
         "description": "Follow-up to task 448 review. `implicitly_converts_to` and `type_compatible` in crates/reify-compiler/src/type_compat.rs (lines 9-11, 94-96) return `true` unconditionally when either side is `Type::Error`. Correct for anti-cascade, but these predicates are also consumed by trait-conformance and field-composition checks — a structure with a Type::Error-poisoned field will silently satisfy any trait signature. Safe today because the producer diagnostic exists, but if that diagnostic is ever downgraded/suppressed, conformance could silently go green with no visible error.\n\nAdd integration test: compile a structure with a poisoned field (e.g. `x: self.unknown_member`) implementing a trait expecting a specific field type, and assert: (1) conformance isn't reported as clean success, OR (2) the diagnostic buffer contains a Severity::Error whenever conformance succeeds on a Type::Error operand. Pin the invariant so future changes to the wildcard can't silently hide trait-conformance regressions.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T06:37:14.352Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T06:36:25.114Z",
-      "taskCount": 1931,
+      "lastModified": "2026-04-17T06:37:14.352Z",
+      "taskCount": 1932,
       "completedCount": 1657,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-17T06:37:03.380Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-17T06:37:03.432Z"
+      ]
     }
   }
 }
