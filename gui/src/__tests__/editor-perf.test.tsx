@@ -30,7 +30,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(),
 }));
 
-import { Editor } from '../editor/Editor';
+import { Editor, EDITOR_DEBOUNCE_MS } from '../editor/Editor';
 
 // 10k-line synthetic document (~90KB).  All lines are comments so the
 // reify-language parser's lex cost is predictable and small.
@@ -85,7 +85,7 @@ describe('Editor per-keystroke invariants', () => {
 
     // Not called even after the 300ms debounce fires — bridge.updateSource is the
     // debounced call, not store.updateFileContent
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
     expect(updateFileContentSpy).not.toHaveBeenCalled();
   });
 
@@ -107,7 +107,7 @@ describe('Editor per-keystroke invariants', () => {
     expect(updateSourceSpy).not.toHaveBeenCalled();
 
     // (b) All 100 keystrokes coalesce into exactly one debounced call after 300ms
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
     expect(updateSourceSpy).toHaveBeenCalledTimes(1);
     expect(updateSourceSpy).toHaveBeenCalledWith(LARGE_FILE.path, expect.any(String));
   });
@@ -178,7 +178,7 @@ describe('Editor store sync under load', () => {
     expect(updateSourceSpy).not.toHaveBeenCalled();
 
     // (d) After the 300ms debounce fires: exactly 1 call (all 200 keystrokes coalesced)
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
     expect(updateSourceSpy).toHaveBeenCalledTimes(1);
   });
 });
