@@ -2860,11 +2860,11 @@ impl Engine {
         // Execute geometry operations
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
-            let mut total_ops: usize = 0;
+            let mut had_realization_ops = false;
 
             for template in &module.templates {
                 for realization in &template.realizations {
-                    total_ops += realization.operations.len();
+                    had_realization_ops |= !realization.operations.is_empty();
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
                         &realization.operations,
@@ -2877,7 +2877,7 @@ impl Engine {
                 }
             }
 
-            if total_ops == 0 {
+            if !had_realization_ops {
                 None
             } else if step_handles.is_empty() {
                 diagnostics.push(Diagnostic::error(
@@ -2916,11 +2916,11 @@ impl Engine {
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
-            let mut total_ops: usize = 0;
+            let mut had_realization_ops = false;
 
             for template in &module.templates {
                 for realization in &template.realizations {
-                    total_ops += realization.operations.len();
+                    had_realization_ops |= !realization.operations.is_empty();
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
                         &realization.operations,
@@ -2935,9 +2935,9 @@ impl Engine {
 
             if step_handles.is_empty() {
                 // No geometry handles available — nothing to export.
-                // Only emit the summary diagnostic when ops were actually attempted
-                // but all failed; when total_ops==0 there is simply no geometry.
-                if total_ops > 0 {
+                // Only emit the summary diagnostic when ops were actually declared
+                // but all failed; when no ops were declared there is simply no geometry.
+                if had_realization_ops {
                     diagnostics.push(Diagnostic::error(
                         "all geometry operations failed; no geometry output produced",
                     ));
@@ -3071,8 +3071,7 @@ impl Engine {
     ///
     /// After the op loop, if `had_failure` or fewer handles were produced than
     /// there are `operations`, truncates `step_handles` to `handle_start` (discards
-    /// all partial handles from this realization) and returns `true`.
-    /// Returns `false` when all operations succeeded.
+    /// all partial handles from this realization).
     fn execute_realization_ops(
         kernel: &mut dyn GeometryKernel,
         operations: &[reify_compiler::CompiledGeometryOp],
@@ -3081,7 +3080,7 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         step_handles: &mut Vec<GeometryHandleId>,
         diagnostics: &mut Vec<Diagnostic>,
-    ) -> bool {
+    ) {
         let handle_start = step_handles.len();
         let mut had_failure = false;
         for op in operations {
@@ -3116,9 +3115,7 @@ impl Engine {
         // Discard intermediate handles from partially-failed realizations
         if had_failure || step_handles.len() - handle_start < operations.len() {
             step_handles.truncate(handle_start);
-            return true;
         }
-        false
     }
 
     /// Tessellate realizations from the current snapshot values, without
@@ -3474,9 +3471,9 @@ mod tests {
     // ── execute_realization_ops unit tests ────────────────────────────────────
 
     /// Happy path: all operations compile and execute successfully.
-    /// Returns `false` (no failure), appends exactly one handle, emits no diagnostics.
+    /// Appends exactly one handle and emits no diagnostics.
     #[test]
-    fn execute_realization_ops_happy_path_returns_false_and_appends_handle() {
+    fn execute_realization_ops_happy_path_appends_handle() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::mocks::MockGeometryKernel;
         use reify_types::{CompiledExpr, Type};
@@ -3504,7 +3501,7 @@ mod tests {
         let mut step_handles: Vec<GeometryHandleId> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let had_failure = Engine::execute_realization_ops(
+        Engine::execute_realization_ops(
             &mut kernel,
             &ops,
             &values,
@@ -3514,17 +3511,15 @@ mod tests {
             &mut diagnostics,
         );
 
-        assert!(!had_failure, "expected no failure for valid ops");
         assert_eq!(step_handles.len(), 1, "expected one handle appended");
         assert!(diagnostics.is_empty(), "expected no diagnostics");
     }
 
     /// Compile failure: a Boolean op with out-of-bounds step references causes
-    /// `compile_geometry_op` to return `None`. Returns `true` (had_failure),
-    /// truncates `step_handles` back to `handle_start`, emits 1 compile-error
-    /// diagnostic.
+    /// `compile_geometry_op` to return `None`. Truncates `step_handles` back to
+    /// `handle_start` and emits 1 compile-error diagnostic.
     #[test]
-    fn execute_realization_ops_compile_failure_returns_true_and_truncates_handles() {
+    fn execute_realization_ops_compile_failure_truncates_handles() {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
         use reify_test_support::mocks::MockGeometryKernel;
 
@@ -3542,7 +3537,7 @@ mod tests {
         let mut step_handles: Vec<GeometryHandleId> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let had_failure = Engine::execute_realization_ops(
+        Engine::execute_realization_ops(
             &mut kernel,
             &ops,
             &values,
@@ -3552,7 +3547,6 @@ mod tests {
             &mut diagnostics,
         );
 
-        assert!(had_failure, "expected failure from compile error");
         assert!(
             step_handles.is_empty(),
             "handles should be truncated back to handle_start (0)"
@@ -3571,10 +3565,10 @@ mod tests {
     }
 
     /// Kernel error: ops compile successfully but `kernel.execute()` returns `Err`.
-    /// Returns `true` (rollback occurred), truncates `step_handles` to `handle_start`,
-    /// emits exactly 1 geometry-error diagnostic.
+    /// Truncates `step_handles` to `handle_start` and emits exactly 1 geometry-error
+    /// diagnostic.
     #[test]
-    fn execute_realization_ops_kernel_error_returns_true_and_truncates_handles() {
+    fn execute_realization_ops_kernel_error_truncates_handles() {
         use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_test_support::mocks::FailingMockGeometryKernel;
         use reify_types::{CompiledExpr, Type};
@@ -3599,7 +3593,7 @@ mod tests {
         let mut step_handles: Vec<GeometryHandleId> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
-        let had_failure = Engine::execute_realization_ops(
+        Engine::execute_realization_ops(
             &mut kernel,
             &ops,
             &values,
@@ -3609,7 +3603,6 @@ mod tests {
             &mut diagnostics,
         );
 
-        assert!(had_failure, "expected failure from kernel error");
         assert!(
             step_handles.is_empty(),
             "handles should be truncated back to handle_start (0)"
@@ -3623,6 +3616,86 @@ mod tests {
             1,
             "expected exactly 1 geometry-error diagnostic, got {}: {:?}",
             geometry_errors,
+            diagnostics
+        );
+    }
+
+    /// Multi-op rollback: a realization where the first op succeeds (real handle
+    /// pushed) and a later op fails via compile error. Verifies that the real
+    /// handle from the first op is discarded — `step_handles` is truncated back
+    /// to its pre-call length, leaving only the handles that were there before
+    /// `execute_realization_ops` was called.
+    #[test]
+    fn execute_realization_ops_partial_success_then_failure_discards_earlier_handles() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+        use reify_types::{CompiledExpr, Type};
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Two-op realization:
+        //   op 0 — Box primitive: compiles and executes OK (real handle pushed)
+        //   op 1 — Boolean union of Step(99) and Step(99): Step(99) is OOB
+        //          (step_handles[handle_start..] will only have 1 entry after op 0)
+        //          → compile_geometry_op returns None → rollback triggered
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(99),
+                right: GeomRef::Step(99),
+            },
+        ];
+
+        let mut kernel = MockGeometryKernel::new();
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        // Pre-seed step_handles with a sentinel to verify truncation goes back
+        // to exactly this pre-call length, not to zero.
+        let pre_existing = GeometryHandleId(0xBEEF);
+        let mut step_handles: Vec<GeometryHandleId> = vec![pre_existing];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+
+        Engine::execute_realization_ops(
+            &mut kernel,
+            &ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut step_handles,
+            &mut diagnostics,
+        );
+
+        // The real handle produced by op 0 must have been discarded.
+        // Only the pre-existing handle should remain.
+        assert_eq!(
+            step_handles.len(),
+            1,
+            "step_handles should be truncated back to the pre-call length of 1; \
+             the real handle from op 0 must be gone"
+        );
+        assert_eq!(
+            step_handles[0], pre_existing,
+            "the pre-existing handle must be preserved unchanged"
+        );
+        // Exactly one compile-error diagnostic from the failing op 1
+        let compile_failures = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("failed to compile geometry operation"))
+            .count();
+        assert_eq!(
+            compile_failures,
+            1,
+            "expected exactly 1 compile-error diagnostic, got {}: {:?}",
+            compile_failures,
             diagnostics
         );
     }
