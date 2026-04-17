@@ -192,6 +192,48 @@ describe('selectionStore', () => {
     });
   });
 
+  describe('clearSelection', () => {
+    it('empties selectedEntities', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, clearSelection } = createSelectionStore();
+        selectSingle('A');
+        clearSelection();
+        expect(state.selectedEntities).toEqual([]);
+        dispose();
+      });
+    });
+
+    it('sets selectedEntity to null', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, clearSelection } = createSelectionStore();
+        selectSingle('A');
+        clearSelection();
+        expect(state.selectedEntity).toBeNull();
+        dispose();
+      });
+    });
+
+    it('sets anchorEntity to null', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, clearSelection } = createSelectionStore();
+        selectSingle('A');
+        clearSelection();
+        expect(state.anchorEntity).toBeNull();
+        dispose();
+      });
+    });
+
+    it('does NOT clear highlightedParams', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, clearSelection } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        clearSelection();
+        expect(state.highlightedParams).toEqual(['c1', 'c2']);
+        dispose();
+      });
+    });
+  });
+
   it('selectEntity sets selectedEntity', () => {
     createRoot((dispose) => {
       const { state, selectEntity } = createSelectionStore();
