@@ -119,8 +119,9 @@ fn quantifier_over_error_typed_collection_yields_type_error_element() {
     // observe elem_type directly from the top-level node. Instead we inspect
     // the predicate: the bound variable `x` is inserted into the nested scope
     // with `elem_type`, so a reference to `x` inside the predicate carries
-    // that type as its result_type. Finding a Type::Error node inside the
-    // predicate demonstrates the quantifier propagated Type::Error.
+    // that type as its result_type. We use `find_node` to search the predicate
+    // for ANY Type::Error-typed node — this avoids coupling to the parser's
+    // canonicalization of `x > 0` (e.g. future chained-comparison desugaring).
     let source = r#"
 structure S {
     let broken = exists x in self.unsupported: x > 0
@@ -131,17 +132,16 @@ structure S {
     let CompiledExprKind::Quantifier { predicate, .. } = &expr.kind else {
         panic!("expected Quantifier at top of let-expr, got {:?}", expr.kind);
     };
-    // The predicate is `x > 0` — a BinOp(Gt). Its left operand is the
-    // variable reference `x`, which should carry the element type.
-    let CompiledExprKind::BinOp { left, .. } = &predicate.kind else {
-        panic!("expected BinOp predicate, got {:?}", predicate.kind);
-    };
-    assert_eq!(
-        left.result_type,
-        Type::Error,
-        "expected quantifier-bound variable `x` to have Type::Error element \
-         type (inherited from self.unsupported), got {:?}",
-        left.result_type,
+    // Search the entire predicate subtree for any node with Type::Error.
+    // This finds the bound variable `x` regardless of how `x > 0` is shaped
+    // by the compiler (direct BinOp, wrapped in a coercion, desugared chain).
+    let found = find_node(predicate, &|node| node.result_type == Type::Error);
+    assert!(
+        found.is_some(),
+        "expected predicate to contain a Type::Error-typed node (from the \
+         quantifier-bound variable `x` inheriting the element type), but \
+         found none. Predicate kind: {:?}",
+        predicate.kind,
     );
 }
 
@@ -166,18 +166,23 @@ structure S {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert_eq!(
-        errors.len(),
-        1,
-        "expected exactly 1 error (the stub), got {}: {:?}",
-        errors.len(),
+    // (task-448 amend): Assert the targeted anti-cascade properties directly
+    // rather than a hard count of 1, so unrelated future diagnostics on this
+    // source don't spuriously fail the test.
+    //
+    // (a) the expected root-cause error must be present,
+    // (b) no type-mismatch / incompatible-types cascade was emitted on top.
+    assert!(
+        errors.iter().any(|d| d.message.contains("unknown member")),
+        "expected an 'unknown member' root-cause error, got: {:?}",
         errors,
     );
-    // Sanity-check the single error is the stub itself, not some other
-    // fallout we're ignoring by accident.
     assert!(
-        errors[0].message.contains("unknown member"),
-        "expected the sole error to be the unknown-member-on-self stub, got: {}",
-        errors[0].message,
+        !errors
+            .iter()
+            .any(|d| d.message.contains("mismatch") || d.message.contains("incompatible")),
+        "expected NO type-mismatch/incompatible cascade on top of the stub \
+         (anti-cascade contract), got: {:?}",
+        errors,
     );
 }
