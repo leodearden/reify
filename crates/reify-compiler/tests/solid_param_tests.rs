@@ -389,6 +389,11 @@ fn nested_guarded_solid_param_compiles_as_realization() {
 /// overhead). Asserts exactly-one `RealizationDecl` for the nested geometry
 /// param so a regression either drops the realization (recursion broken) or
 /// double-emits it (recursive walk visits both sides of the same guard).
+///
+/// Note: bare boolean-literal guard conditions (`where true`) are a supported
+/// and stable syntactic form in the Reify compiler — they are handled by the
+/// same guard-condition lowering path as param-reference guards and are not
+/// subject to future tightening.
 #[test]
 fn nested_guarded_solid_param_emits_exactly_one_realization() {
     let source = r#"structure def X {
@@ -414,6 +419,59 @@ fn nested_guarded_solid_param_emits_exactly_one_realization() {
         1,
         "expected exactly 1 RealizationDecl for nested guarded \
          `param g : Solid = cylinder(...)`"
+    );
+}
+
+// ─── coverage: else_members recursion at depth ≥2 ────────────────────────────
+
+/// Regression guard for the `else_members` branch of the recursive walkers in
+/// `collect_geometry_exprs` and `emit_guarded_geometry_realizations`.
+///
+/// A Solid-typed param inside a nested `else { ... }` block (`where a { where b
+/// { } else { param g : Solid = cylinder(...) } }`) exercises the
+/// `g.else_members` recursive call at depth 2. A regression that dropped
+/// `else_members` recursion would leave `g` unregistered in `geometry_lets` and
+/// emit no `RealizationDecl`, causing assertion (b) to fail.
+#[test]
+fn nested_guarded_solid_param_in_else_branch_compiles_as_realization() {
+    let source = r#"structure def W5 {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        where b {
+        } else {
+            param g : Solid = cylinder(10mm, 20mm)
+        }
+    }
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "W5")
+        .expect("W5 template not found");
+
+    // (a) `g` must NOT appear as a ValueCellDecl anywhere.
+    assert!(
+        !template.value_cells.iter().any(|c| c.id.member == "g"),
+        "top-level ValueCellDecl for 'g' must not exist"
+    );
+    for group in &template.guarded_groups {
+        assert!(
+            !group.members.iter().any(|m| m.id.member == "g"),
+            "guarded ValueCellDecl for 'g' must not exist in members"
+        );
+        assert!(
+            !group.else_members.iter().any(|m| m.id.member == "g"),
+            "guarded ValueCellDecl for 'g' must not exist in else_members"
+        );
+    }
+
+    // (b) At least one RealizationDecl must be emitted for `g` (from the else branch).
+    assert!(
+        !template.realizations.is_empty(),
+        "expected at least one RealizationDecl for `param g : Solid = cylinder(...)` \
+         declared inside a nested else_members branch — else_members recursion may be broken"
     );
 }
 
