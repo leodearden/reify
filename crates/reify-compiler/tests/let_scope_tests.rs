@@ -972,6 +972,52 @@ fn draft_let_bound_target_ops() {
     );
 }
 
+// ─── task-1823: chamfer/fillet let-bound target resolution ───
+
+#[test]
+fn chamfer_let_bound_target_ops() {
+    // chamfer(body, distance): body is a let-bound cylinder.
+    // Expected: [Cylinder, Modify(Chamfer, 0)] — target resolves to Step(0).
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = chamfer(body, 2)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Modify(ModifyKind::Chamfer, 0),
+        ],
+    );
+}
+
+#[test]
+fn fillet_let_bound_target_ops() {
+    // fillet(body, radius): body is a let-bound cylinder.
+    // Expected: [Cylinder, Modify(Fillet, 0)] — target resolves to Step(0).
+    let source = r#"structure S {
+    param r: Scalar = 5mm
+    param h: Scalar = 10mm
+    let body = cylinder(r, h)
+    let result = fillet(body, 2)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = &compiled.templates[0];
+    let realization = realization_named(template, &["body", "result"], "result");
+    assert_op_sequence(
+        &realization.operations,
+        &[
+            ExpectedOp::Cylinder,
+            ExpectedOp::Modify(ModifyKind::Fillet, 0),
+        ],
+    );
+}
+
 // ─── task-1715 step-7 + step-9: sweep two geometry args; loft all-geometry profiles ───
 
 #[test]

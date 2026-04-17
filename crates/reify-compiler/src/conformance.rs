@@ -252,20 +252,16 @@ pub(crate) fn check_trait_conformance(
                 }
                 DefaultKind::Constraint(_) => continue,
             };
-            // `ty` is cloned here so we retain the value for the debug event on
-            // the cold conflict path (`!was_new`). `register_if_absent` consumes its
-            // argument, so we cannot borrow `ty` after the call without the clone.
-            // This is a compile-time-only path; the clone cost is negligible.
-            let was_new = scope.register_if_absent(name, ty.clone());
-            // First-seen type wins. When was_new is false a prior default already
-            // owns this name — the incoming type is silently dropped. Emit a debug
-            // event so trait-merge conflicts are observable at runtime.
-            if !was_new {
+            // First-seen type wins. `ty` is moved into `register_if_absent`; on
+            // the cold Occupied (conflict) path the method hands it back via
+            // `Some(ignored_ty)` for the debug emission, so no clone is needed on
+            // the hot Vacant insertion path.
+            if let Some(ignored_ty) = scope.register_if_absent(name, ty) {
                 tracing::debug!(
                     target: "reify_compiler::conformance",
                     name = %name,
                     entity = %structure.name,
-                    ignored_ty = ?ty,
+                    ignored_ty = ?ignored_ty,
                     "trait-merge conflict: second default with same name ignored; first-seen type wins"
                 );
             }

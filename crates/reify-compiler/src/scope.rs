@@ -94,18 +94,20 @@ impl<'u> CompilationScope<'u> {
 
     /// Insert `name → (id, ty, None)` only if `name` is not already registered.
     ///
-    /// Returns `true` if the entry was inserted (vacant), `false` if it already
-    /// existed (occupied) and was left unchanged. Unlike `register`, this method
-    /// is guaranteed never to overwrite an existing registration.
-    pub(crate) fn register_if_absent(&mut self, name: &str, ty: Type) -> bool {
+    /// Returns `None` if the entry was inserted (vacant), or `Some(ty)` handing
+    /// back the rejected type if the name was already registered (occupied) —
+    /// callers can log the ignored type on conflict without paying for a clone on
+    /// the hot insertion path. Unlike `register`, this method is guaranteed never
+    /// to overwrite an existing registration.
+    pub(crate) fn register_if_absent(&mut self, name: &str, ty: Type) -> Option<Type> {
         use std::collections::hash_map::Entry;
         match self.names.entry(name.to_string()) {
             Entry::Vacant(e) => {
                 let id = ValueCellId::new(&self.entity_name, name);
                 e.insert((id, ty, None));
-                true
+                None
             }
-            Entry::Occupied(_) => false,
+            Entry::Occupied(_) => Some(ty),
         }
     }
 
@@ -122,16 +124,20 @@ mod tests {
     fn register_if_absent_does_not_overwrite() {
         let mut scope = CompilationScope::new("TestEntity");
 
-        // Vacant case: register_if_absent should insert and return true.
+        // Vacant case: register_if_absent should insert and return None.
         let inserted = scope.register_if_absent("y", Type::Bool);
-        assert!(inserted, "register_if_absent should return true for a fresh name");
+        assert!(inserted.is_none(), "register_if_absent should return None for a fresh name");
         let (_, ty, _) = scope.names["y"].clone();
         assert_eq!(ty, Type::Bool, "fresh insert should store the given type");
 
-        // Occupied case: register_if_absent must NOT overwrite and must return false.
+        // Occupied case: register_if_absent must NOT overwrite and must return Some(rejected_ty).
         scope.register("x", Type::Real);
-        let overwritten = scope.register_if_absent("x", Type::length());
-        assert!(!overwritten, "register_if_absent should return false for an existing name");
+        let rejected = scope.register_if_absent("x", Type::length());
+        assert_eq!(
+            rejected,
+            Some(Type::length()),
+            "register_if_absent should hand back the rejected type on conflict"
+        );
         let (_, ty, _) = scope.names["x"].clone();
         assert_eq!(ty, Type::Real, "existing type must not be overwritten");
     }

@@ -209,6 +209,58 @@ impl Type {
     ///
     /// Consumer sites should short-circuit to `Type::Error` when any operand's
     /// type returns `true` here, to prevent cascading diagnostics.
+    ///
+    /// # Top-level-only contract
+    ///
+    /// **This method checks ONLY the top-level `Type::Error` variant.  It does
+    /// NOT recurse into inner type parameters.**  Compound types that carry a
+    /// poisoned inner type return `false`:
+    ///
+    /// - `List<Error>`  → `false`
+    /// - `Option<Error>` → `false`
+    /// - `Set<Error>` → `false`
+    /// - `Map<K, Error>` (error in value position) → `false`
+    /// - `Map<Error, V>` (error in key position) → `false`
+    /// - Any other `Box<Type>`-bearing variant (`Range`, `Complex`, `Field`,
+    ///   `Point`, `Vector`, `Tensor`, `Matrix`) with an `Error` inner type
+    ///   → `false`
+    ///
+    /// This boundary is intentional in the current implementation: the anti-
+    /// cascade contract (task-448) covers only the top-level sentinel, and
+    /// extending it to a recursive check requires simultaneous updates at every
+    /// consumer guard site.
+    ///
+    /// # Known gap: nested-error cascade
+    ///
+    /// A reachable cascade on current code is:
+    ///
+    /// ```text
+    /// trait T { let x : List<Real> = [self.unsupported] }
+    /// structure S : T {}
+    /// ```
+    ///
+    /// Here `self.unsupported` emits "unknown member 'unsupported' on self" and
+    /// returns `Type::Error`; the list literal infers its element type from the
+    /// first element and wraps it to `List<Error>`.  The trait-let injection
+    /// pass at `conformance.rs:521-531` calls
+    /// `type_compatible(List<Real>, List<Error>)`, whose top-level `is_error()`
+    /// guard trips on neither operand, no rule arm matches, and it returns
+    /// `false` — emitting a second "type mismatch for trait let 'x'" cascade on
+    /// top of the root-cause diagnostic.
+    ///
+    /// This cascade is pinned as a regression test at:
+    /// `crates/reify-compiler/tests/type_error_propagation_tests.rs`
+    /// `::nested_compound_error_cascades_through_trait_let_annotation`
+    ///
+    /// # Follow-up plan
+    ///
+    /// When a future contributor needs deep detection, introduce a
+    /// `contains_error()` recursive helper on `Type` and **update every
+    /// consumer listed in the variant-doc at lines 80–88** (binary ops, index
+    /// access, member access, quantifiers, plus `type_compatible` /
+    /// `implicitly_converts_to` in `type_compat.rs`) in the **same commit**.
+    /// At that point, also flip the cascade assertion in the regression test
+    /// from "IS present" to "is NOT present", and update this follow-up section.
     pub fn is_error(&self) -> bool {
         matches!(self, Type::Error)
     }
@@ -1197,5 +1249,70 @@ mod tests {
     fn type_error_display() {
         // (f) Display is "<error>"
         assert_eq!(format!("{}", Type::Error), "<error>");
+    }
+
+    // ── task-1913: is_error() top-level-only boundary pins ───────────────────
+    // These tests DOCUMENT and PIN the fact that `is_error()` returns `false`
+    // for compound types that contain `Type::Error` as an inner type parameter.
+    // They are INTENTIONALLY written so that they PASS on current code (where
+    // `is_error()` is top-level-only) and would FAIL if `is_error()` were
+    // changed to recurse. Paired with the integration regression test at:
+    //   crates/reify-compiler/tests/type_error_propagation_tests.rs
+    //   ::nested_compound_error_cascades_through_trait_let_annotation
+    //
+    // If you are implementing a recursive `contains_error()` helper (option (a)
+    // from the task-1913 design), you need to update both these tests and all
+    // consumer guard sites (`type_compat.rs`, `expr.rs`, `conformance.rs`)
+    // in a single coordinated change. See the `is_error()` doc comment for the
+    // full follow-up plan.
+
+    #[test]
+    fn type_error_is_error_false_for_list_of_error() {
+        // top-level-only boundary; see `contains_error` follow-up
+        assert!(
+            !Type::List(Box::new(Type::Error)).is_error(),
+            "is_error() must return false for List<Error>: \
+             top-level-only boundary; nested errors are not yet detected"
+        );
+    }
+
+    #[test]
+    fn type_error_is_error_false_for_option_of_error() {
+        // top-level-only boundary; see `contains_error` follow-up
+        assert!(
+            !Type::Option(Box::new(Type::Error)).is_error(),
+            "is_error() must return false for Option<Error>: \
+             top-level-only boundary; nested errors are not yet detected"
+        );
+    }
+
+    #[test]
+    fn type_error_is_error_false_for_set_of_error() {
+        // top-level-only boundary; see `contains_error` follow-up
+        assert!(
+            !Type::Set(Box::new(Type::Error)).is_error(),
+            "is_error() must return false for Set<Error>: \
+             top-level-only boundary; nested errors are not yet detected"
+        );
+    }
+
+    #[test]
+    fn type_error_is_error_false_for_map_value_of_error() {
+        // top-level-only boundary; see `contains_error` follow-up
+        assert!(
+            !Type::Map(Box::new(Type::Int), Box::new(Type::Error)).is_error(),
+            "is_error() must return false for Map<Int, Error>: \
+             top-level-only boundary; nested errors are not yet detected"
+        );
+    }
+
+    #[test]
+    fn type_error_is_error_false_for_map_key_of_error() {
+        // top-level-only boundary; see `contains_error` follow-up
+        assert!(
+            !Type::Map(Box::new(Type::Error), Box::new(Type::Int)).is_error(),
+            "is_error() must return false for Map<Error, Int>: \
+             top-level-only boundary; nested errors are not yet detected"
+        );
     }
 }

@@ -711,17 +711,30 @@ describe('viewStateStore — full PRD integration scenario', () => {
 // Source-text regression guard
 // ---------------------------------------------------------------------------
 
-const SRC_PATH = join(__dirname, '../stores/viewStateStore.ts');
-const src = readFileSync(SRC_PATH, 'utf-8');
-
 describe('viewStateStore — source comments', () => {
+  // Anchored to the first mutation function (setVisibility) so the guard detects
+  // if the entire mutations block is deleted, not merely that the section header
+  // is present. If a future refactor legitimately inserts a helper or comment
+  // between the Mutations divider and setVisibility, update this regex and the
+  // synthetic-source self-test below.
+  const GUARD_REGEX = /-{5,}\n\s*\/\/ Mutations\n\s*\/\/ -{5,}\n\s*\n\s*function setVisibility\(/;
+
   it('section header uses bare // Mutations form without stale "stubs" phrasing', () => {
+    const SRC_PATH = join(__dirname, '../stores/viewStateStore.ts');
+    const src = readFileSync(SRC_PATH, 'utf-8');
     // Guard against re-introduction of the historical scaffolding comment
     // "Mutations (stubs — fully implemented in later steps)".
     // The regex anchors against surrounding divider lines to avoid false positives
     // from incidental occurrences of '// Mutations' elsewhere in the file.
     expect(src).not.toContain('stubs — fully implemented in later steps');
-    expect(src).toMatch(/-{5,}\n\s*\/\/ Mutations\n\s*\/\/ -{5,}/);
+    expect(src).toMatch(GUARD_REGEX);
+  });
+
+  it('GUARD_REGEX requires setVisibility immediately after Mutations divider', () => {
+    const synthetic = '// ---------\n  // Mutations\n  // ---------\n\n  // nothing here\n';
+    const syntheticWithFn = '// ---------\n  // Mutations\n  // ---------\n\n  function setVisibility(path: string) {}\n';
+    expect(GUARD_REGEX.test(synthetic)).toBe(false);
+    expect(GUARD_REGEX.test(syntheticWithFn)).toBe(true);
   });
 });
 

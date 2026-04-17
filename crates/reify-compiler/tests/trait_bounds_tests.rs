@@ -3,7 +3,6 @@
 //! Tests for generic type parameters on traits and structures,
 //! bound checking at instantiation, and default type parameter handling.
 
-use reify_compiler::*;
 use reify_test_support::compile_source;
 use reify_types::*;
 

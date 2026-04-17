@@ -863,15 +863,6 @@ pub(crate) fn compile_with_prelude_refs(
 mod tests {
     use super::*;
 
-    /// Convenience helper: build a bare number-literal expression.
-    /// Used by multiple tests to construct non-geometry arguments.
-    fn num_lit(v: f64) -> reify_syntax::Expr {
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral(v),
-            span: reify_types::SourceSpan::new(0, 1),
-        }
-    }
-
     #[test]
     fn entity_kind_display() {
         assert_eq!(EntityKind::Structure.to_string(), "structure");
@@ -2386,14 +2377,11 @@ structure S {
     }
 
     #[test]
-    fn compile_modify_op_chamfer_preserves_step0() {
-        // The bug-preservation lives in the *caller* (geometry.rs), not in compile_modify_op.
-        // geometry.rs passes GeomRef::Step(0) explicitly for chamfer/fillet because they are
-        // not registered in geometry_arg_indices() — so geom_ref(0) would fall back to
-        // GeomRef::Step(step_offset) rather than a resolved geometry ref.
-        //
-        // This integration test verifies the full compile pipeline produces GeomRef::Step(0)
-        // for chamfer, confirming the caller upholds bug-for-bug compatibility.
+    fn compile_modify_op_chamfer_non_geometry_target_fallback() {
+        // chamfer is registered in geometry_arg_indices() — so geom_ref(0) is used.
+        // When the first arg is a scalar param (not a geometry let), the resolution
+        // block finds no ops for it, so geom_ref(0) falls back to GeomRef::Step(step_offset).
+        // With no sub-ops, step_offset == 0, so the target is GeomRef::Step(0).
         let source = r#"structure S {
     param target: Scalar = 5mm
     param dist: Scalar = 2mm
@@ -2407,9 +2395,9 @@ structure S {
         assert_eq!(ops.len(), 1);
         match &ops[0] {
             CompiledGeometryOp::Modify { kind: ModifyKind::Chamfer, target: op_target, .. } => {
-                // Caller passes GeomRef::Step(0) for chamfer — bug preserved in dispatch
+                // Non-geometry target → geom_ref(0) falls back to GeomRef::Step(0)
                 assert_eq!(*op_target, GeomRef::Step(0),
-                    "chamfer caller must pass GeomRef::Step(0) for bug-compat, got {:?}", op_target);
+                    "chamfer with non-geometry target should fall back to GeomRef::Step(0), got {:?}", op_target);
             }
             other => panic!("expected Modify(Chamfer), got {:?}", other),
         }

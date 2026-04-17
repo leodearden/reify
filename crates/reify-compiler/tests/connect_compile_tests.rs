@@ -2,7 +2,6 @@
 //!
 //! Tests for compiling connect and chain declarations into CompiledConnection entries.
 
-use reify_compiler::*;
 use reify_test_support::{assert_has_diagnostic, assert_no_diagnostic, compile_first_template, compile_source};
 use reify_types::*;
 
