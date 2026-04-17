@@ -106,6 +106,14 @@ export function createSelectionStore() {
     });
   }
 
+  function selectAll(paths: string[]) {
+    const deduped = Array.from(new Set(paths));
+    batch(() => {
+      setState('selectedEntities', deduped);
+      setState('selectedEntity', deduped.length > 0 ? deduped[deduped.length - 1] : null);
+    });
+  }
+
   function toggleSelect(entityPath: string) {
     batch(() => {
       const current = state.selectedEntities;
@@ -151,5 +159,5 @@ export function createSelectionStore() {
     });
   }
 
-  return { state, selectSingle, toggleSelect, rangeSelect, clearSelection, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };
+  return { state, selectSingle, toggleSelect, rangeSelect, selectAll, clearSelection, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };
 }
