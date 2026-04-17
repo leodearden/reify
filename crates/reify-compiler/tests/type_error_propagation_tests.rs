@@ -81,6 +81,15 @@ structure S {
         "expected .sum on Type::Error object to propagate Type::Error, got {:?}",
         expr.result_type,
     );
+    // Amendment S4 invariant: the poisoned aggregation is emitted as a
+    // Literal (via make_poison_literal), not as a dead MethodCall — so any
+    // downstream pass pattern-matching on MethodCall cannot try to evaluate
+    // it. Pin the node kind so a revert to MethodCall fails this test.
+    assert!(
+        matches!(expr.kind, CompiledExprKind::Literal { .. }),
+        "expected poisoned aggregation to be emitted as a Literal node (S4 invariant), got {:?}",
+        expr.kind,
+    );
 }
 
 // ── step-7: index access on error-typed object ───────────────────────────────
@@ -232,13 +241,17 @@ structure S : T {}
 // ── step-11: end-to-end anti-cascade integration ─────────────────────────────
 
 #[test]
-fn stub_error_plus_arithmetic_emits_exactly_one_diagnostic() {
+fn stub_error_plus_arithmetic_does_not_cascade_type_mismatch() {
     // `self.unsupported` triggers the "unknown member 'X' on self" stub
     // at expr.rs:~724 which emits a single Severity::Error diagnostic.
     // Post-step-12 that stub returns Type::Error; with the step-4 guard in
     // infer_binop_type, the enclosing `+ 5.0` short-circuits to Type::Error
     // instead of falling through to Type::Real and emitting a type-mismatch
-    // cascade. The net: exactly ONE error on the whole module.
+    // cascade.
+    //
+    // (Renamed from `..._emits_exactly_one_diagnostic` per amendment-round-2
+    //  S2: the assertion below is the substring-based anti-cascade check, not
+    //  a hard count-of-1, so the name now matches what's actually verified.)
     let source = r#"
 structure S {
     let broken = self.unsupported + 5.0
