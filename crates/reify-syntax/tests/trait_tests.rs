@@ -11,6 +11,14 @@ fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
     (module.declarations, module.errors)
 }
 
+/// Helper: unwrap a Named type_expr returning (name, type_args).
+fn as_named<'a>(te: &'a TypeExpr) -> (&'a str, &'a [TypeExpr]) {
+    match &te.kind {
+        TypeExprKind::Named { name, type_args } => (name.as_str(), type_args.as_slice()),
+        other => panic!("expected TypeExprKind::Named, got {:?}", other),
+    }
+}
+
 // ── Step 1: basic trait ────────────────────────────────────────────
 
 #[test]
@@ -289,10 +297,12 @@ fn parse_type_expr_with_type_args() {
         .type_expr
         .as_ref()
         .expect("type_expr should be present");
-    assert_eq!(te.name, "Box");
-    assert_eq!(te.type_args.len(), 1);
-    assert_eq!(te.type_args[0].name, "Bolt");
-    assert!(te.type_args[0].type_args.is_empty());
+    let (name, type_args) = as_named(te);
+    assert_eq!(name, "Box");
+    assert_eq!(type_args.len(), 1);
+    let (arg0_name, arg0_args) = as_named(&type_args[0]);
+    assert_eq!(arg0_name, "Bolt");
+    assert!(arg0_args.is_empty());
 }
 
 #[test]
@@ -312,11 +322,14 @@ fn parse_type_expr_nested_type_args() {
     };
 
     let te = param.type_expr.as_ref().unwrap();
-    assert_eq!(te.name, "Container");
-    assert_eq!(te.type_args.len(), 1);
-    assert_eq!(te.type_args[0].name, "Box");
-    assert_eq!(te.type_args[0].type_args.len(), 1);
-    assert_eq!(te.type_args[0].type_args[0].name, "T");
+    let (name, type_args) = as_named(te);
+    assert_eq!(name, "Container");
+    assert_eq!(type_args.len(), 1);
+    let (arg0_name, arg0_args) = as_named(&type_args[0]);
+    assert_eq!(arg0_name, "Box");
+    assert_eq!(arg0_args.len(), 1);
+    let (arg0_0_name, _) = as_named(&arg0_args[0]);
+    assert_eq!(arg0_0_name, "T");
 }
 
 // ── pre-2: type_parameter with default ─────────────────────────────
@@ -337,8 +350,9 @@ fn parse_type_param_with_default() {
     assert_eq!(tp.name, "T");
     assert_eq!(tp.bounds, vec!["Rigid"]);
     let default = tp.default.as_ref().expect("default type should be present");
-    assert_eq!(default.name, "Steel");
-    assert!(default.type_args.is_empty());
+    let (default_name, default_args) = as_named(default);
+    assert_eq!(default_name, "Steel");
+    assert!(default_args.is_empty());
 }
 
 // ── pre-2: sub_declaration with type args ──────────────────────────
@@ -361,7 +375,8 @@ fn parse_sub_with_type_args() {
     assert_eq!(sub.name, "part");
     assert_eq!(sub.structure_name, "Box");
     assert_eq!(sub.type_args.len(), 1);
-    assert_eq!(sub.type_args[0].name, "Bolt");
+    let (arg0_name, _) = as_named(&sub.type_args[0]);
+    assert_eq!(arg0_name, "Bolt");
 }
 
 // ── pre-2: trait_bound_list with type args ─────────────────────────
@@ -381,5 +396,6 @@ fn parse_trait_bound_with_type_args() {
     assert_eq!(structure.trait_bounds.len(), 1);
     assert_eq!(structure.trait_bounds[0].name, "Container");
     assert_eq!(structure.trait_bounds[0].type_args.len(), 1);
-    assert_eq!(structure.trait_bounds[0].type_args[0].name, "Bolt");
+    let (arg0_name, _) = as_named(&structure.trait_bounds[0].type_args[0]);
+    assert_eq!(arg0_name, "Bolt");
 }
