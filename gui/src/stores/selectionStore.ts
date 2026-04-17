@@ -129,6 +129,9 @@ export function createSelectionStore() {
     });
   }
 
+  // Backward-compat alias: selectEntity(path) === selectSingle(path),
+  // selectEntity(null) === clearSelection().  All existing call sites
+  // (App.tsx, navigation.ts, debug bridge) continue to work unchanged.
   function selectEntity(entityPath: string | null) {
     if (entityPath === null) {
       clearSelection();
