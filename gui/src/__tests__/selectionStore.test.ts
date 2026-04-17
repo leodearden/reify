@@ -37,6 +37,59 @@ describe('selectionStore', () => {
     });
   });
 
+  describe('selectSingle', () => {
+    it('sets selectedEntities to [path]', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle } = createSelectionStore();
+        selectSingle('Bracket');
+        expect(state.selectedEntities).toEqual(['Bracket']);
+        dispose();
+      });
+    });
+
+    it('sets anchorEntity to path', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle } = createSelectionStore();
+        selectSingle('Bracket');
+        expect(state.anchorEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+
+    it('sets selectedEntity (primary) to path', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle } = createSelectionStore();
+        selectSingle('Bracket');
+        expect(state.selectedEntity).toBe('Bracket');
+        dispose();
+      });
+    });
+
+    it('calling selectSingle again replaces (not appends) the selection', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle } = createSelectionStore();
+        selectSingle('Bracket');
+        selectSingle('Mount');
+        expect(state.selectedEntities).toEqual(['Mount']);
+        expect(state.selectedEntity).toBe('Mount');
+        expect(state.anchorEntity).toBe('Mount');
+        dispose();
+      });
+    });
+
+    it('selectSingle(null) empties selection and clears anchor', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle } = createSelectionStore();
+        selectSingle('Bracket');
+        selectSingle(null);
+        expect(state.selectedEntities).toEqual([]);
+        expect(state.selectedEntity).toBeNull();
+        expect(state.anchorEntity).toBeNull();
+        dispose();
+      });
+    });
+  });
+
   it('selectEntity sets selectedEntity', () => {
     createRoot((dispose) => {
       const { state, selectEntity } = createSelectionStore();
