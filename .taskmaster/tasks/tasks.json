@@ -39526,7 +39526,20 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:49:04.960Z"
+        "updatedAt": "2026-04-16T22:49:04.960Z",
+        "metadata": {
+          "files": [
+            "scripts/validate-tasks-json.sh",
+            "hooks/pre-commit",
+            "hooks/project-checks",
+            "tests/infra/test_tasks_json_schema.sh"
+          ],
+          "modules": [
+            "scripts",
+            "hooks",
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": 1889,
