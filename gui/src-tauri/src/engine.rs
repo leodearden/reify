@@ -511,7 +511,8 @@ impl EngineSession {
     ///   `source_span` = `None` (TopologyTemplate has no span in the compiled IR).
     ///
     /// - **Value cells** — keyed by `"{template.name}.{cell.id.member}"`.
-    ///   `content_hash` = hex of `ContentHash::of_str(cell_id_string)`.
+    ///   `content_hash` = hex of `ContentHash::of_str(cell_id_string)` (identity hash,
+    ///   not a content hash — see `EntityIdentity.content_hash` doc for details).
     ///   `structural_fingerprint` = `"{cell_kind}:{template.name}:0:{cell_type_hash}"`.
     ///   `source_span` = `Some(SourceSpanInfo { start, end })` from `cell.span`.
     ///
@@ -559,6 +560,8 @@ impl EngineSession {
                 map.insert(
                     cell_path,
                     EntityIdentity {
+                        // Identity-hash, not content-hash: see EntityIdentity docs.
+                        // Hashes the cell's id string (e.g. "Bracket.width"), not its type or value.
                         content_hash: ContentHash::of_str(&cell.id.to_string()).to_string(),
                         structural_fingerprint,
                         source_span: Some(SourceSpanInfo {
