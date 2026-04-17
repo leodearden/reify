@@ -119,7 +119,7 @@ export function createViewStateStore() {
   }
 
   // ---------------------------------------------------------------------------
-  // Mutations (stubs — fully implemented in later steps)
+  // Mutations
   // ---------------------------------------------------------------------------
 
   function setVisibility(path: string, vs: VisibilityState, cascade = true): void {
