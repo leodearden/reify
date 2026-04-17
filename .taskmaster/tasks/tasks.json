@@ -38172,11 +38172,11 @@
         "description": "In `crates/reify-compiler/src/geometry.rs` (lines ~1161-1179), the `all_dispatch_functions_accounted_for` test's count assertion is tautological. It builds a `HashSet` from four lists and asserts `all.len() == GEOM_ARG_FUNCTIONS.len() + NO_GEOM_ARG_FUNCTIONS.len() + boolean_ops.len() + loft.len()`. Since `all` is constructed from exactly those lists, this can only fail if there are duplicates — which the `all.insert()` assert already catches two lines earlier. The count check cannot detect a function added to `compile_geometry_call` without being added to the test lists.\n\nFix: Replace the derived `expected` count with a hardcoded literal (e.g., `assert_eq!(all.len(), 33)`) with a comment explaining it must be bumped when new geometry functions are added. This makes the assertion actually fail when a new dispatch arm is added without updating the test lists.\n\n## memory_hints\n- search: \"compile_geometry_call dispatch functions cross-check\"\n- entity: \"geometry_arg_indices\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T01:39:06.813Z",
+        "updatedAt": "2026-04-17T01:45:47.651Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/geometry.rs"
@@ -39900,7 +39900,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T01:44:14.612Z",
+      "lastModified": "2026-04-17T01:45:47.653Z",
       "taskCount": 1901,
       "completedCount": 1636,
       "tags": [
