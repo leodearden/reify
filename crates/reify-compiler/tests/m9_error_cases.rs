@@ -776,6 +776,65 @@ fn trait_refinement_chain_too_deep_single_path() {
     );
 }
 
+/// Diamond refinement convergence on a deep shared tail should produce exactly
+/// ONE "trait refinement chain too deep" diagnostic, not two.
+///
+/// Both chains A128→A127→...→A0→Shared and B128→B127→...→B0→Shared reach
+/// the shared trait `Shared` at depth 129 > MAX_TRAIT_DEPTH (128).
+///
+/// With the visited-FIRST ordering (task 403's fix): chain A's depth-limit
+/// branch INSERTS `Shared` into the visited set before returning, so chain
+/// B's subsequent walk of `Shared` hits the visited check and short-circuits
+/// silently — exactly ONE diagnostic is emitted.
+///
+/// With the buggy depth-FIRST ordering, `Shared` would NOT be inserted on
+/// chain A's depth-fail branch, so chain B would also reach depth 129 and
+/// emit a second "too deep" diagnostic — a duplicate.
+///
+/// Exercises conformance.rs `collect_all_requirements` guard ordering (task 403).
+#[test]
+fn trait_refinement_too_deep_diamond_no_duplicate_diagnostic() {
+    // Shared trait reached by both chains at depth 129 > MAX_TRAIT_DEPTH (128).
+    let mut src = String::new();
+    src.push_str("trait Shared { }\n");
+
+    // Chain A: A0 refines Shared; A1 refines A0; ...; A128 refines A127.
+    // Walking from A128 at depth 0 reaches Shared at depth 129.
+    src.push_str("trait A0 : Shared { }\n");
+    for i in 1..=128 {
+        src.push_str(&format!("trait A{} : A{} {{ }}\n", i, i - 1));
+    }
+
+    // Chain B: identical structure, independent path to the same Shared trait.
+    src.push_str("trait B0 : Shared { }\n");
+    for i in 1..=128 {
+        src.push_str(&format!("trait B{} : B{} {{ }}\n", i, i - 1));
+    }
+
+    // Structure bound to both deepest traits via '+' (Reify multi-bound syntax).
+    src.push_str("structure def S : A128 + B128 { }\n");
+
+    // Must not panic
+    let module = compile_source(&src);
+
+    let errors = errors_only(&module);
+    let too_deep_count = errors
+        .iter()
+        .filter(|d| d.message.contains("trait refinement chain too deep"))
+        .count();
+
+    // Visited-first ordering (task 403 fix): Shared is inserted on chain A's
+    // depth-limit branch, so chain B's walk of Shared short-circuits silently.
+    assert_eq!(
+        too_deep_count,
+        1,
+        "expected exactly ONE 'trait refinement chain too deep' diagnostic \
+         (visited-first dedup); got {}: {:?}",
+        too_deep_count,
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// Two entity definitions with the same name should produce
 /// "duplicate entity definition" diagnostic (from lib.rs pass 1).
 ///
