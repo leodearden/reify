@@ -307,5 +307,40 @@ assert "multi-tag subtask orphan dep error mentions 'feature-x' tag name" \
 assert "multi-tag subtask orphan dep error mentions '999' or 'orphan'" \
     bash -c "python3 '$VALIDATOR' --check-subtasks '$MULTI_TAG_SUBTASK_ORPHAN_FX' 2>&1 | grep -qE '999|orphan'"
 
+# -- Malformed top-level schema (not a dict) ----------------------------------
+echo ""
+echo "--- Test: malformed top-level schema (not a dict) ---"
+
+# (a) Top-level is a JSON array.  The validator must exit nonzero with a clean
+#     error message — NOT a raw AttributeError traceback.
+NON_DICT_TOP_LEVEL="$TMPDIR_FIXTURES/non_dict_top_level.json"
+cat >"$NON_DICT_TOP_LEVEL" <<'EOF'
+[]
+EOF
+
+assert "non-dict top-level fails validator" \
+    bash -c "! python3 '$VALIDATOR' '$NON_DICT_TOP_LEVEL'"
+
+assert "non-dict top-level error mentions schema or object or dict" \
+    bash -c "python3 '$VALIDATOR' '$NON_DICT_TOP_LEVEL' 2>&1 | grep -qE 'schema|object|dict'"
+
+assert "non-dict top-level does NOT leak Traceback" \
+    bash -c "! python3 '$VALIDATOR' '$NON_DICT_TOP_LEVEL' 2>&1 | grep -q 'Traceback'"
+
+# (b) Top-level is JSON null.  Same expectations as array case.
+NULL_TOP_LEVEL="$TMPDIR_FIXTURES/null_top_level.json"
+cat >"$NULL_TOP_LEVEL" <<'EOF'
+null
+EOF
+
+assert "null top-level fails validator" \
+    bash -c "! python3 '$VALIDATOR' '$NULL_TOP_LEVEL'"
+
+assert "null top-level error mentions schema or object or dict" \
+    bash -c "python3 '$VALIDATOR' '$NULL_TOP_LEVEL' 2>&1 | grep -qE 'schema|object|dict'"
+
+assert "null top-level does NOT leak Traceback" \
+    bash -c "! python3 '$VALIDATOR' '$NULL_TOP_LEVEL' 2>&1 | grep -q 'Traceback'"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
