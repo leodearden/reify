@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createRoot } from 'solid-js';
 import { createViewStateStore } from '../stores/viewStateStore';
 import type { EntityTreeNode } from '../types';
@@ -702,6 +704,23 @@ describe('viewStateStore — full PRD integration scenario', () => {
 
       dispose();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Source-text regression guard
+// ---------------------------------------------------------------------------
+
+const SRC_PATH = join(__dirname, '../stores/viewStateStore.ts');
+const src = readFileSync(SRC_PATH, 'utf-8');
+
+describe('viewStateStore — source comments', () => {
+  it('section header does not contain stale "stubs" phrasing', () => {
+    expect(src).not.toContain('stubs — fully implemented in later steps');
+  });
+
+  it('section header uses bare // Mutations form', () => {
+    expect(src).toContain('// Mutations');
   });
 });
 
