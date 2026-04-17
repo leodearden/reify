@@ -680,7 +680,7 @@ fn error_wildcard_implicit_error_to_matrix() {
 /// The debug_assert fires because `to=Type::Error` is never legitimate.
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic(expected = "Type::Error")]
+#[should_panic(expected = "consumer/target side of implicitly_converts_to")]
 fn error_wildcard_implicit_to_error_debug_panics_real() {
     let _ = implicitly_converts_to(&Type::Real, &Type::Error);
 }
@@ -689,13 +689,18 @@ fn error_wildcard_implicit_to_error_debug_panics_real() {
 /// Shape-carrying type — the debug_assert fires regardless of the `from` type.
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic(expected = "Type::Error")]
+#[should_panic(expected = "consumer/target side of implicitly_converts_to")]
 fn error_wildcard_implicit_to_error_debug_panics_scalar() {
     let _ = implicitly_converts_to(&length_scalar(), &Type::Error);
 }
 
 /// Consumer-side contract (release): `implicitly_converts_to(Real, Error)` returns true.
 /// Belt-and-braces short-circuit preserves cascade safety in release builds.
+///
+/// NOTE: This test only executes under `cargo test --release` (or any profile with
+/// `debug-assertions = false`).  In the default debug build `debug_assertions` is
+/// enabled, so this cfg branch is compiled out and the panic variant above runs instead.
+/// Run `cargo test --release -p reify-compiler` to exercise these belt-and-braces pins.
 #[cfg(not(debug_assertions))]
 #[test]
 fn error_wildcard_implicit_to_error_release_returns_true_real() {
@@ -707,6 +712,9 @@ fn error_wildcard_implicit_to_error_release_returns_true_real() {
 
 /// Consumer-side contract (release): `implicitly_converts_to(Scalar[m], Error)` returns true.
 /// Shape-carrying type — belt-and-braces short-circuit still fires in release.
+///
+/// NOTE: Only executes under `cargo test --release`. See note on
+/// `error_wildcard_implicit_to_error_release_returns_true_real` above.
 #[cfg(not(debug_assertions))]
 #[test]
 fn error_wildcard_implicit_to_error_release_returns_true_scalar() {
@@ -732,7 +740,7 @@ fn error_wildcard_implicit_to_error_release_returns_true_scalar() {
 /// The debug_assert fires because `param_ty=Type::Error` is never legitimate.
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic(expected = "Type::Error")]
+#[should_panic(expected = "param/expected side of type_compatible")]
 fn type_compatible_param_error_debug_panics_real() {
     let _ = type_compatible(&Type::Error, &Type::Real);
 }
@@ -741,13 +749,18 @@ fn type_compatible_param_error_debug_panics_real() {
 /// Compound arg type — the debug_assert fires regardless of `arg_ty`.
 #[cfg(debug_assertions)]
 #[test]
-#[should_panic(expected = "Type::Error")]
+#[should_panic(expected = "param/expected side of type_compatible")]
 fn type_compatible_param_error_debug_panics_list() {
     let _ = type_compatible(&Type::Error, &Type::List(Box::new(Type::Int)));
 }
 
 /// Param-side contract (release): `type_compatible(Error, Real)` returns true.
 /// Belt-and-braces short-circuit preserves cascade safety in release builds.
+///
+/// NOTE: This test only executes under `cargo test --release` (or any profile with
+/// `debug-assertions = false`).  In the default debug build `debug_assertions` is
+/// enabled, so this cfg branch is compiled out and the panic variant above runs instead.
+/// Run `cargo test --release -p reify-compiler` to exercise these belt-and-braces pins.
 #[cfg(not(debug_assertions))]
 #[test]
 fn type_compatible_param_error_release_returns_true_real() {
@@ -759,6 +772,9 @@ fn type_compatible_param_error_release_returns_true_real() {
 
 /// Param-side contract (release): `type_compatible(Error, List<Int>)` returns true.
 /// Compound arg type — belt-and-braces short-circuit still fires in release.
+///
+/// NOTE: Only executes under `cargo test --release`. See note on
+/// `type_compatible_param_error_release_returns_true_real` above.
 #[cfg(not(debug_assertions))]
 #[test]
 fn type_compatible_param_error_release_returns_true_list() {

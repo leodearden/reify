@@ -109,13 +109,16 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
 /// argument expression already emitted a diagnostic, its Type::Error sentinel
 /// must be accepted to suppress follow-on "type mismatch" reports.
 ///
-/// `param_ty.is_error()` **must never legitimately occur**: declared annotations
-/// are resolved via `resolve_type_with_aliases` which always falls back to a
-/// concrete type. Call-site audit (task-1918) confirmed none of the 4 production
-/// call sites (functions.rs:276, conformance.rs:322, conformance.rs:345,
-/// conformance.rs:522) can pass Type::Error as `param_ty`. The debug_assert
-/// below catches any future regression. In release builds the short-circuit
-/// preserves cascade safety as a belt-and-braces fallback (task-448 rationale).
+/// `param_ty.is_error()` **must never legitimately occur**: all production call
+/// sites pass types that originate from `resolve_type_with_aliases`, which always
+/// falls back to a concrete type (e.g. `Type::Real`, `Type::StructureRef`) and
+/// never returns `Type::Error`. Call-site audit (task-1918) confirmed this for
+/// every external caller in `functions.rs` and `conformance.rs`. The internal
+/// call on line 139 (`implicitly_converts_to(param_ty, arg_ty)`) is also safe
+/// because this function guards `param_ty` before reaching that call; the outer
+/// debug_assert fires first if `param_ty` is ever Error. The debug_assert below
+/// catches any future regression. In release builds the short-circuit preserves
+/// cascade safety as a belt-and-braces fallback (task-448 rationale).
 pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     // Producer-side anti-cascade guard (task-448 / task-1918): asymmetric contract.
     // See doc comment above for full rationale.
