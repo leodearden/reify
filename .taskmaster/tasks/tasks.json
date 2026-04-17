@@ -40500,11 +40500,11 @@
         "description": "Follow-up to task 448 review. `implicitly_converts_to` and `type_compatible` in crates/reify-compiler/src/type_compat.rs (lines 9-11, 94-96) now return `true` unconditionally when either side is `Type::Error`. This is correct for anti-cascade, but these predicates are also consumed by trait-conformance and field-composition checks — meaning a structure with a Type::Error-poisoned field will silently satisfy any trait signature. Today this is safe because the root-cause diagnostic was emitted at the producer site, but if that diagnostic is ever downgraded/suppressed elsewhere, conformance could silently go green with no visible error.\n\nAdd an integration test: compile a structure with a poisoned field (e.g. `x: self.unknown_member` or another known Type::Error producer) that implements a trait expecting a specific field type, and assert:\n1. Conformance is not reported as a clean/green success, OR\n2. The module's diagnostic buffer contains at least one `Severity::Error` whenever the conformance check succeeds on a Type::Error operand.\n\nPin this invariant so that future changes to the Type::Error wildcard behavior in type_compat.rs can't silently hide trait-conformance regressions.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:22:47.197Z",
+        "updatedAt": "2026-04-17T13:43:40.016Z",
         "metadata": {
           "files": [
             "crates/reify-compiler/tests/trait_conformance_tests.rs",
@@ -40684,13 +40684,24 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-17T13:43:35.362Z"
+      },
+      {
+        "id": "1948",
+        "title": "Tighten PRELUDE_SENTINEL_OFFSET usage + convergence test assertion",
+        "description": "Two review follow-ups from task 1930:\n\n(1) Code reuse: Replace the raw `u32::MAX as usize` literal at `crates/reify-types/src/source_location.rs:45` with `crate::SourceSpan::PRELUDE_SENTINEL_OFFSET` (both symbols live in the same `reify-types` crate, so the migration is trivial). Update the companion test `byte_offset_to_line_col_prelude_sentinel_returns_fallback` to reference the constant. Drop the \"a follow-up can migrate it to reference this constant\" caveat from the `PRELUDE_SENTINEL_OFFSET` rustdoc at `crates/reify-types/src/diagnostics.rs:44-46` once done.\n\n(2) Test quality: In `offset_to_line_col_fast_matches_original_every_offset` (`gui/src-tauri/src/tests/engine_tests.rs:1397-1411`), the sentinel convergence assertion `fast_sentinel == orig_sentinel` is effectively `(1,1) == (1,1)` by construction — a regression that broke both functions identically (e.g. someone changed both early-return values) would still pass. Strengthen by also asserting the literal `assert_eq!(fast_sentinel, (1, 1))` so the expected value is pinned in the convergence test too.\n\nAcceptance:\n- `source_location.rs` imports/uses `crate::SourceSpan::PRELUDE_SENTINEL_OFFSET` (no remaining `u32::MAX as usize` literal at the sentinel check).\n- Caveat removed from `PRELUDE_SENTINEL_OFFSET` rustdoc.\n- Convergence test pins the literal `(1, 1)` for the sentinel in addition to the cross-check.\n- `cargo test -p reify-types` and GUI engine tests green.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:43:35.362Z",
-      "taskCount": 1942,
-      "completedCount": 1670,
+      "lastModified": "2026-04-17T13:43:40.016Z",
+      "taskCount": 1943,
+      "completedCount": 1671,
       "tags": [
         "master"
       ]
