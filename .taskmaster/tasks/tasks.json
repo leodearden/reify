@@ -21216,7 +21216,7 @@
         "testStrategy": "Ensure that the .catch() block correctly handles RangeError and that the bounds check prevents out-of-bounds access.",
         "subtasks": [
           {
-            "id": 1,
+            "id": "1",
             "title": "Add .catch() to handle RangeError",
             "description": "Implement a .catch() block in the requestDefinition promise chain to handle stale document RangeError.",
             "dependencies": [],
@@ -21226,7 +21226,7 @@
             "parentId": "undefined"
           },
           {
-            "id": 2,
+            "id": "2",
             "title": "Add bounds check after isConnected guard",
             "description": "Implement a bounds check `if (line+1 > view.state.doc.lines) return;` after the isConnected guard.",
             "dependencies": [],
@@ -33775,7 +33775,7 @@
         "testStrategy": "1. Verify the existence of make_analytical_field. 2. Test run_dim_metadata_test to ensure it correctly uses make_analytical_field with the new source parameter. 3. Validate memory_hints integration by checking execution context behavior.",
         "subtasks": [
           {
-            "id": 1,
+            "id": "1",
             "title": "Verify existence of make_analytical_field",
             "description": "Check if make_analytical_field is implemented in the codebase.",
             "dependencies": [],
@@ -33786,7 +33786,7 @@
             "updatedAt": "2026-04-13T23:43:38.636Z"
           },
           {
-            "id": 2,
+            "id": "2",
             "title": "Add memory_hints for execution context",
             "description": "Integrate memory_hints to improve execution context handling.",
             "dependencies": [],
@@ -35331,7 +35331,7 @@
         "testStrategy": "Ensure that the 'Fillet' needle is correctly restored by running tests that check for missing geometry arguments. Verify the generalized assert_rejected_at_compile by testing both scenarios: with None and Some(f) options, ensuring correct behavior in each case.",
         "subtasks": [
           {
-            "id": 1,
+            "id": "1",
             "title": "Restore 'Fillet' needle",
             "description": "Add 'Fillet' back to warning_needles in build_modify_missing_arg_no_kernel_error and update the doc comment.",
             "dependencies": [],
@@ -35341,7 +35341,7 @@
             "parentId": "undefined"
           },
           {
-            "id": 2,
+            "id": "2",
             "title": "Generalize assert_rejected_at_compile",
             "description": "Modify the helper to accept Option for primitive check.",
             "dependencies": [],
@@ -36912,11 +36912,11 @@
         "description": "Two small robustness improvements for the INVALID sentinel pattern introduced in task 612:\n\n1. **INVALID handle hash guard** (crates/reify-types/src/geometry.rs:17): The INVALID sentinel (u64::MAX) has no compile-time enforcement. If it accidentally reaches content_hash() or the caching layer, it produces a valid-looking hash causing subtle cache corruption. Add: `debug_assert_ne!(self.0, u64::MAX, \"INVALID handle must not be hashed\");` in content_hash().\n\n2. **Saturating subtraction in rollback** (crates/reify-eval/src/lib.rs ~line 3128): The rollback condition `step_handles.len() - handle_start < realization.operations.len()` performs unsigned subtraction. If a bug causes step_handles to be truncated below handle_start, this would underflow. Rewrite defensively: `if had_failure || (step_handles.len().saturating_sub(handle_start)) < realization.operations.len()`\n\nmemory_hints: search \"INVALID sentinel GeometryHandle content_hash\", search \"step_handles rollback saturating_sub\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:44:36.156Z",
+        "updatedAt": "2026-04-17T05:59:37.297Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -38299,7 +38299,7 @@
         "testStrategy": "1. Verify that the updated comment in Editor.test.tsx:163 accurately describes the behavior by reviewing the code logic. 2. Ensure the waitFor pattern in App.test.tsx:~1340 is correctly implemented by running the test and confirming it passes consistently.",
         "subtasks": [
           {
-            "id": 1,
+            "id": "1",
             "title": "Update misleading comment in Editor.test.tsx",
             "description": "Change the comment at Editor.test.tsx:163 to correctly describe the debounce timer mechanism.",
             "dependencies": [],
@@ -38309,7 +38309,7 @@
             "parentId": "undefined"
           },
           {
-            "id": 2,
+            "id": "2",
             "title": "Add defensive waitFor in App.test.tsx",
             "description": "Add await waitFor(() => expect(capturedEditorStore).toBeTruthy()) in App.test.tsx:~1340.",
             "dependencies": [],
@@ -40228,11 +40228,11 @@
         "description": "In crates/reify-eval/src/lib.rs (~line 101-143, `value_type_kind_matches`), every value/type predicate (e.g. `Value::Real(_) => matches!(ty, Type::Real | Type::Int)`) enumerates concrete `Type` variants but never accepts `Type::Error`. Since the Type::Error sentinel now propagates further into compiled expressions (task-448 / task-1912), a CompiledExpr carrying `Type::Error` could reach evaluation — particularly in incremental/LSP scenarios where the evaluator may proceed despite compiler errors. In that case, every value/type predicate would report `false` and downstream logic may surface spurious TypeKindMismatch diagnostics or panic. Either: (a) add an explicit `Type::Error` arm in each predicate (likely returning `true` as \"don't second-guess a poisoned type\"), or (b) guard the evaluator to refuse evaluation of any module whose diagnostics contain errors before walking expressions, and document that contract. Related: task 1867 (value_type_kind_matches TypeParam/StructureRef/Geometry verification), task 1893 (Bool arm unit tests), task 1913 (nested is_error). Review followup from task 1912; suggestion S6.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:22:00.844Z"
+        "updatedAt": "2026-04-17T05:59:42.255Z"
       },
       {
         "id": "1923",
@@ -40274,11 +40274,11 @@
         "description": "The `viewStateStore — source comments` test in gui/src/__tests__/viewStateStore.test.ts (lines 710-726) asserts on the *text* of a code comment rather than any runtime behavior. It has two reviewer-flagged problems:\n\n1. **Typography-only assertion.** The regex `/-{5,}\\n\\s*\\/\\/ Mutations\\n\\s*\\/\\/ -{5,}/` matches the decorative divider header only; the test still passes even if the mutation functions below it are deleted. It will also spuriously fail if anyone re-styles section headers. Options:\n   - Remove the test (trust code review / the commit that added the neutral header).\n   - Convert it to an ESLint custom rule (behaves like a lint rule, not a unit test).\n   - Anchor the regex to the actual function definition, e.g. `/-{5,}\\n\\s*\\/\\/ Mutations\\n\\s*\\/\\/ -{5,}\\n\\s*\\n\\s*function setVisibility\\(/` so a deletion of the mutations block breaks the guard.\n\n2. **Top-level `readFileSync` breaks suite isolation.** `const src = readFileSync(SRC_PATH, 'utf-8');` runs at module load time. If viewStateStore.ts is renamed/moved, the *entire* test file fails to load and every other test in the suite becomes unreported instead of producing a single localized failure on the guard test. Move `SRC_PATH` and `readFileSync` inside the `it(...)` callback so only this one test fails.\n\nPick option 1.3 (anchor to function) + move readFileSync inside `it`, OR delete the test entirely and accept code review as the guard. Source: review of task 1902 (esc-1902-177).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:21:34.661Z"
+        "updatedAt": "2026-04-17T06:05:51.424Z"
       },
       {
         "id": "1926",
@@ -40404,7 +40404,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:56:15.070Z",
+      "lastModified": "2026-04-17T06:05:51.428Z",
       "taskCount": 1927,
       "completedCount": 1656,
       "tags": [
