@@ -879,10 +879,10 @@ fn engine_get_diagnostics_returns_populated_warning() {
 
     let first = &diags[0];
 
-    // severity must be "warning"
+    // severity must be "Warning"
     assert_eq!(
-        first.severity, "warning",
-        "expected severity 'warning', got '{}'",
+        first.severity, "Warning",
+        "expected severity 'Warning', got '{}'",
         first.severity
     );
 
@@ -1012,7 +1012,7 @@ fn diagnostics_and_source_location_agree_on_file_key() {
         "expected at least one diagnostic for unknown port type"
     );
     assert_eq!(
-        diags[0].severity, "warning",
+        diags[0].severity, "Warning",
         "this test relies on NonExistentTrait producing a warning — \
          if severity changed to error, load_from_source would have returned Err above; \
          update the test fixture if the compiler's severity classification changes"
@@ -1051,7 +1051,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should have diagnostics after initial load"
     );
     assert_eq!(
-        diags_before[0].severity, "warning",
+        diags_before[0].severity, "Warning",
         "this test relies on NonExistentTrait producing a warning — \
          if severity changed to error, load_from_source would have returned Err above; \
          update the test fixture if the compiler's severity classification changes"
@@ -1071,7 +1071,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should still have diagnostics after update_source"
     );
     assert_eq!(
-        diags_after[0].severity, "warning",
+        diags_after[0].severity, "Warning",
         "this test relies on NonExistentTrait producing a warning — \
          if severity changed to error, update_source would have returned Err above; \
          update the test fixture if the compiler's severity classification changes"
@@ -1137,8 +1137,8 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
 
     // (c) Severity preserved
     assert_eq!(
-        injected.severity, "warning",
-        "expected severity 'warning', got '{}'",
+        injected.severity, "Warning",
+        "expected severity 'Warning', got '{}'",
         injected.severity
     );
 

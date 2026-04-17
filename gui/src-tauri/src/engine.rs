@@ -1349,7 +1349,12 @@ fn diagnostics_to_info(diagnostics: &[Diagnostic], file_path: &str, source: &str
                 column,
                 end_line,
                 end_column,
-                severity: diag.severity.to_string(),
+                severity: match diag.severity {
+                    Severity::Error => "Error",
+                    Severity::Warning => "Warning",
+                    Severity::Info => "Info",
+                }
+                .to_owned(),
                 message: diag.message.clone(),
                 code: None,
             }
