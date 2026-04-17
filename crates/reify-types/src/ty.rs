@@ -77,6 +77,15 @@ pub enum Type {
         n: usize,
         quantity: Box<Type>,
     },
+    /// Sentinel for a type-inference failure ("poison value").
+    ///
+    /// Operations that see a `Type::Error` operand must propagate `Type::Error`
+    /// (not fall back to `Type::Real`) so that a single root-cause error does
+    /// not trigger cascading type-mismatch diagnostics downstream. Producers
+    /// that emit an error diagnostic should pair it with a `Type::Error`
+    /// result type; consumer sites (binary operators, index access, member
+    /// access, quantifiers, etc.) guard on `is_error()` and short-circuit.
+    Error,
 }
 
 impl Type {
@@ -196,6 +205,14 @@ impl Type {
         matches!(self, Type::Int | Type::Real | Type::Scalar { .. })
     }
 
+    /// Is this the poison-value sentinel `Type::Error`?
+    ///
+    /// Consumer sites should short-circuit to `Type::Error` when any operand's
+    /// type returns `true` here, to prevent cascading diagnostics.
+    pub fn is_error(&self) -> bool {
+        matches!(self, Type::Error)
+    }
+
     /// Returns the inner name for name-carrying variants without allocating.
     /// Used for registry lookups instead of Display formatting.
     pub fn as_name(&self) -> Option<&str> {
@@ -248,6 +265,7 @@ impl std::fmt::Display for Type {
             Type::Axis => write!(f, "Axis"),
             Type::BoundingBox => write!(f, "BoundingBox"),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
+            Type::Error => write!(f, "<error>"),
         }
     }
 }
