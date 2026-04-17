@@ -1726,6 +1726,8 @@ fn test_expect_binop_extracts_op_and_operands() {
 /// under `ModulePath::single(name)`. Panics on any parse or compile errors so
 /// callers get a descriptive failure site instead of a silent misconfiguration.
 fn prelude_module(name: &str, factor: f64) -> reify_compiler::CompiledModule {
+    // Debug fmt preserves the decimal point so the source lexes as a float literal
+    // (Display would emit '1' for 1.0, which could lex as an integer literal).
     let source = format!("pub unit foo : Length = {factor:?}");
     let parsed = reify_syntax::parse(&source, ModulePath::single(name));
     assert!(
@@ -1779,19 +1781,14 @@ fn prelude_module_unit_collision_emits_warning() {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Warning)
         .collect();
+    let collision_warns: Vec<_> = warnings.iter().filter(|w| w.message.contains("foo")).collect();
     assert_eq!(
-        warnings.iter().filter(|w| w.message.contains("foo")).count(),
+        collision_warns.len(),
         1,
         "expected exactly 1 collision warning, got: {:?}",
         warnings
     );
-    let collision_warn = warnings.iter().find(|d| d.message.contains("foo"));
-    assert!(
-        collision_warn.is_some(),
-        "expected a warning mentioning 'foo', got warnings: {:?}",
-        warnings
-    );
-    let collision_warn = collision_warn.unwrap();
+    let collision_warn = collision_warns[0];
 
     // (b) Warning names both conflicting module paths
     assert!(
