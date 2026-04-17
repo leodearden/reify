@@ -629,3 +629,92 @@ structure S {
         );
     }
 }
+
+// ── Test 14: constraint_defs field reflects all local definitions (pub + non-pub) ──
+
+/// Verify that `CompiledModule.constraint_defs` contains ALL local constraint defs —
+/// both pub and non-pub — with correct names, `is_pub` flags, param names, and
+/// predicate counts.
+///
+/// Covers task 878 subtest "field contents" (name/params/predicates surfaced)
+/// and "non-pub visibility (local)" (non-pub defs remain reachable inside the
+/// owning module's compiled output).
+#[test]
+fn module_constraint_defs_field_contents_reflect_definitions() {
+    let source = r#"
+pub constraint def PubDef {
+    param t: Length
+    t > 0mm
+}
+constraint def PrivDef {
+    param x: Length
+    param y: Length
+    x > y
+}
+"#;
+    let module = compile_source(source);
+    let errors = error_diags(&module.diagnostics);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    // Both defs (pub and non-pub) should be present in constraint_defs.
+    assert_eq!(
+        module.constraint_defs.len(),
+        2,
+        "expected 2 constraint defs (1 pub + 1 non-pub), got {}",
+        module.constraint_defs.len()
+    );
+
+    // --- PubDef assertions (is_pub = true, 1 param 't', 1 predicate) ---
+    let pub_def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "PubDef")
+        .expect("expected 'PubDef' in module.constraint_defs");
+
+    assert!(pub_def.is_pub, "PubDef should have is_pub = true");
+
+    assert_eq!(
+        pub_def.params.len(),
+        1,
+        "PubDef should have 1 param, got {}",
+        pub_def.params.len()
+    );
+
+    // Verify CompiledConstraintParam is the concrete type in the params Vec.
+    let pub_param: &CompiledConstraintParam = &pub_def.params[0];
+    assert_eq!(
+        pub_param.name, "t",
+        "PubDef param[0] should be named 't', got '{}'",
+        pub_param.name
+    );
+
+    assert_eq!(
+        pub_def.predicates.len(),
+        1,
+        "PubDef should have 1 predicate, got {}",
+        pub_def.predicates.len()
+    );
+
+    // --- PrivDef assertions (is_pub = false, 2 params, 1 predicate) ---
+    let priv_def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == "PrivDef")
+        .expect("expected 'PrivDef' in module.constraint_defs");
+
+    assert!(!priv_def.is_pub, "PrivDef should have is_pub = false");
+
+    assert_eq!(
+        priv_def.params.len(),
+        2,
+        "PrivDef should have 2 params, got {}",
+        priv_def.params.len()
+    );
+
+    assert_eq!(
+        priv_def.predicates.len(),
+        1,
+        "PrivDef should have 1 predicate, got {}",
+        priv_def.predicates.len()
+    );
+}
