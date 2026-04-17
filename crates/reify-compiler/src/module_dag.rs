@@ -12,30 +12,6 @@ use reify_types::Diagnostic;
 
 use crate::CompiledModule;
 
-/// Collect the already-compiled modules that correspond to the import declarations
-/// in `parsed`, returning references into `modules`.
-///
-/// For each import declaration in `parsed`, looks up `import.path` in `modules`.
-/// Returns a `Vec` of references to the compiled modules that were found.
-/// Missing entries (not yet compiled) are silently skipped — the caller is
-/// responsible for ensuring dependencies are compiled before calling this.
-fn collect_import_preludes<'a>(
-    parsed: &reify_syntax::ParsedModule,
-    modules: &'a HashMap<String, CompiledModule>,
-) -> Vec<&'a CompiledModule> {
-    parsed
-        .declarations
-        .iter()
-        .filter_map(|d| {
-            if let reify_syntax::Declaration::Import(import) = d {
-                modules.get(&import.path)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 /// Resolves import dot-paths to filesystem paths.
 ///
 /// Conventions:
@@ -285,7 +261,20 @@ pub fn compile_project(
     // Block-scope the preludes so the shared borrows of dag.modules are
     // dropped before the mutable borrow in dag.modules.insert below.
     let compiled_entry = {
-        let preludes = collect_import_preludes(&parsed, &dag.modules);
+        // Inline the same prelude-collection pattern used by compile_module:
+        // iterate import declarations once, filter_map to look up compiled modules.
+        // All imports were recursively compiled above, so every lookup succeeds.
+        let preludes: Vec<&CompiledModule> = parsed
+            .declarations
+            .iter()
+            .filter_map(|d| {
+                if let reify_syntax::Declaration::Import(import) = d {
+                    dag.modules.get(&import.path)
+                } else {
+                    None
+                }
+            })
+            .collect();
         crate::compile_with_prelude_refs(&parsed, &preludes)
     };
     let entry_key = entry_name.to_string();

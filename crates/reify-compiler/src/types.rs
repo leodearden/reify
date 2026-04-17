@@ -591,10 +591,6 @@ pub struct CompiledTypeAlias {
 #[derive(Debug, Clone)]
 pub struct CompiledConstraintParam {
     pub name: String,
-    /// Resolved cell type — `Some` when the type expression resolves to a built-in or
-    /// alias-visible type at def-compile time; `None` if resolution failed (the
-    /// instantiation site surfaces a clearer error in that case).
-    pub cell_type: Option<reify_types::Type>,
     /// Original default expression, kept as AST so it can be substituted into the
     /// calling entity's scope at instantiation time.
     pub default: Option<reify_syntax::Expr>,

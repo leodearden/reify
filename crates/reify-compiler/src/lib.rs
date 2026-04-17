@@ -83,17 +83,20 @@ fn compile_constraint_def(
     let type_param_names: std::collections::HashSet<String> =
         type_params.iter().map(|tp| tp.name.clone()).collect();
 
-    // Compile each param: resolve the cell type if possible, keep the default as AST.
+    // Compile each param: resolve the cell type for its diagnostic side-effect (catches
+    // typoed param types at def-compile time), then keep only the name/default/span.
+    // The resolved type is not stored because entity.rs only reads `param.name` and
+    // `param.default` at instantiation time; storing it would be dead weight.
     let params: Vec<CompiledConstraintParam> = c
         .params
         .iter()
         .map(|param| {
-            let cell_type = param.type_expr.as_ref().and_then(|te| {
-                resolve_type_expr_with_aliases(te, &type_param_names, alias_registry, diagnostics)
-            });
+            // Run resolution purely for diagnostics — drop the returned Option<Type>.
+            if let Some(te) = &param.type_expr {
+                resolve_type_expr_with_aliases(te, &type_param_names, alias_registry, diagnostics);
+            }
             CompiledConstraintParam {
                 name: param.name.clone(),
-                cell_type,
                 default: param.default.clone(),
                 span: param.span,
             }

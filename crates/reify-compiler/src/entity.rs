@@ -1196,13 +1196,10 @@ pub(crate) fn compile_entity(
                     continue;
                 }
 
-                // Propagate the constraint def's `@optimized("target")` annotation (if any)
-                // onto each compiled predicate so the Engine's dispatch shim can route it.
-                // The value was extracted once during `compile_constraint_def`; no re-scan needed.
-                let def_optimized_target = def.annotations_optimized_target.clone();
-
                 // For each predicate in the constraint def, substitute params with args
                 // and compile the resulting expression in the calling entity's scope.
+                // `annotations_optimized_target` was cached at def-compile time; clone it
+                // directly per predicate rather than creating an extra intermediate clone.
                 for (pred_idx, predicate) in def.predicates.iter().enumerate() {
                     let substituted = substitute_expr(predicate, &arg_map);
                     let compiled_expr =
@@ -1215,7 +1212,7 @@ pub(crate) fn compile_entity(
                         expr: compiled_expr,
                         span: ci.span,
                         domain: None,
-                        optimized_target: def_optimized_target.clone(),
+                        optimized_target: def.annotations_optimized_target.clone(),
                     };
                     constraint_index += 1;
 

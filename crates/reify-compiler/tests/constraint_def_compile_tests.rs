@@ -783,19 +783,60 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
 
     let compiled_main = dag.modules.get("main").expect("compiled module 'main' not found");
 
-    // Must have at least one Warning diagnostic mentioning "MinThickness"
-    let warnings: Vec<_> = compiled_main
+    // No Error-level diagnostics: collision is a warning, not a hard failure.
+    let errors: Vec<_> = compiled_main
         .diagnostics
         .iter()
-        .filter(|d| d.severity == reify_types::Severity::Warning)
+        .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-
-    let shadow_warning = warnings.iter().any(|d| d.message.contains("MinThickness"));
     assert!(
-        shadow_warning,
-        "expected a Warning diagnostic mentioning 'MinThickness' for the name collision, \
-         got diagnostics: {:?}",
+        errors.is_empty(),
+        "expected no errors (shadow collision is a warning), got errors: {:?}",
+        errors
+    );
+
+    // Exactly one shadow warning must name both contributing module paths ('a' and 'b').
+    // The message format is: "constraint def 'MinThickness' imported from 'b' shadows
+    // definition from 'a'" — so it must mention both path strings.
+    let shadow_warnings: Vec<_> = compiled_main
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_types::Severity::Warning
+                && d.message.contains("MinThickness")
+                && d.message.contains("'a'")
+                && d.message.contains("'b'")
+        })
+        .collect();
+    assert_eq!(
+        shadow_warnings.len(),
+        1,
+        "expected exactly one shadow warning mentioning MinThickness and both module paths, \
+         got: {:?}",
         compiled_main.diagnostics
+    );
+
+    // First-import-wins: module 'a' was imported first, so its def (t > 0mm) should win.
+    // The compiled structure S should have one constraint whose label starts "MinThickness".
+    // (The predicate expression is internal, so we verify the label rather than the AST.)
+    assert_eq!(
+        compiled_main.templates.len(),
+        1,
+        "expected one structure template (S), got: {:?}",
+        compiled_main.templates
+    );
+    let s_template = &compiled_main.templates[0];
+    assert_eq!(
+        s_template.constraints.len(),
+        1,
+        "expected one compiled constraint in S (MinThickness has one predicate), got: {:?}",
+        s_template.constraints
+    );
+    let c = &s_template.constraints[0];
+    assert!(
+        c.label.as_deref().map_or(false, |l| l.starts_with("MinThickness")),
+        "expected constraint label starting with 'MinThickness', got: {:?}",
+        c.label
     );
 }
 
@@ -873,12 +914,15 @@ fn non_pub_constraint_def_not_instantiable_cross_module() {
          got no errors (diagnostics: {:?})",
         compiled_b.diagnostics
     );
+    // The error must specifically say "unknown constraint definition" — not merely
+    // mention "unknown" or the def name in an unrelated error. This proves the
+    // resolution path (not an incidental type error or name mention) was triggered.
     let has_unknown_msg = b_errors
         .iter()
-        .any(|d| d.message.to_lowercase().contains("unknown") || d.message.contains("MinThickness"));
+        .any(|d| d.message.contains("unknown constraint definition"));
     assert!(
         has_unknown_msg,
-        "expected error mentioning 'unknown' or 'MinThickness', got: {:?}",
+        "expected error containing 'unknown constraint definition', got: {:?}",
         b_errors
     );
 }
