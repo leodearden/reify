@@ -324,6 +324,62 @@ fn solid_param_default_aliasing_geometry_let_is_realization() {
     );
 }
 
+// ─── step-1: Nested-guard regression ─────────────────────────────────────────
+
+/// Two-level `where` guard nesting: `where a { where b { param g : Solid = cylinder(...) } }`.
+///
+/// `register_guarded_names` in guards.rs already recurses correctly, so `g` ends
+/// up in `known_geometry_lets`. However, both the `geometry_lets` lookup-table
+/// builder and the realization-emission loop in entity.rs iterate only ONE level
+/// deep, so `g` is silently skipped and no `RealizationDecl` is produced.
+///
+/// Expected failure: assertion (d) — `template.realizations` is empty.
+#[test]
+fn nested_guarded_solid_param_compiles_as_realization() {
+    let source = r#"structure def W {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        where b {
+            param g : Solid = cylinder(10mm, 20mm)
+        }
+    }
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "W")
+        .expect("W template not found");
+
+    // (a) No error diagnostics — already checked by compile_no_errors.
+
+    // (b) `g` must NOT appear as a ValueCellDecl in top-level value_cells.
+    assert!(
+        !template.value_cells.iter().any(|c| c.id.member == "g"),
+        "top-level ValueCellDecl for 'g' must not exist"
+    );
+
+    // (c) `g` must NOT appear in any guarded group's members or else_members.
+    for group in &template.guarded_groups {
+        assert!(
+            !group.members.iter().any(|m| m.id.member == "g"),
+            "guarded ValueCellDecl for 'g' must not exist in members"
+        );
+        assert!(
+            !group.else_members.iter().any(|m| m.id.member == "g"),
+            "guarded ValueCellDecl for 'g' must not exist in else_members"
+        );
+    }
+
+    // (d) At least one RealizationDecl must be emitted for the nested geometry param.
+    assert!(
+        !template.realizations.is_empty(),
+        "expected at least one RealizationDecl for nested `param g : Solid = cylinder(...)`, \
+         got none — nested GuardedGroup recursion in entity.rs is broken"
+    );
+}
+
 // ─── coverage: Solid param with non-geometry default (pin-down) ───────────────
 
 /// PIN-DOWN REGRESSION LOCK (task 1878).
