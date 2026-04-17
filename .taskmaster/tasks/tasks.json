@@ -40096,11 +40096,11 @@
         "description": "Follow-up from task 1915 review (esc-1915-178). The post-commit hook only fires when developers have `git config core.hooksPath hooks` set, which is not auto-installed by setup-dev.sh nor documented in CLAUDE.md. Without this, fresh clones bypass the normalizer entirely and depend on test_tasks_json_id_types.sh as the only safety net. Also: the hook silently swallows python3-missing or normalizer crashes (returns 0 with stderr warning), so a broken normalize step surfaces only via the post-rebase verify gate. Improve robustness with defensive isinstance checks in scripts/normalize_tasks_json.py walker (currently crashes on AttributeError if a future tag namespace stores tasks/subtasks as a non-list).",
         "details": "Three things bundled here because they all concern the post-commit hook actually doing its job in the wild:\n\n1. (suggestion 1) Update scripts/setup-dev.sh to run `git config core.hooksPath hooks` (or symlink into .git/hooks). Add a sentence in CLAUDE.md under \"Local Dev Setup\" noting the hook convention.\n\n2. (suggestion 2) Make python3-missing a louder failure in hooks/post-commit:41-44. Either fail-loud (post-commit allows non-zero) or write a marker like .git/normalize-failed so it shows up at next `git status`.\n\n3. (suggestion 4) Add `if not isinstance(tasks_list, list): continue` guards in scripts/normalize_tasks_json.py:36-43 around the tasks_list and subtasks iterations.\n\nmemory_hints: search \"hooks/post-commit normalize tasks.json\", search \"task 1915 setup-dev hooks\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T04:51:17.198Z",
+        "updatedAt": "2026-04-17T05:03:40.121Z",
         "metadata": {
           "modules": [
             "CLAUDE.md",
@@ -40138,7 +40138,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:03:24.656Z",
+      "lastModified": "2026-04-17T05:03:40.124Z",
       "taskCount": 1912,
       "completedCount": 1645,
       "tags": [
