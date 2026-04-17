@@ -92,6 +92,16 @@ assert "hook: subtask ids are digit-strings in HEAD after auto-commit" \
 # ==============================================================================
 # Check 2: RECURSION GUARD — hook is a no-op when guard env var is set
 # ==============================================================================
+# This check is carefully constructed so that removing the guard from the hook
+# would cause BOTH assertions to FAIL.  The key trick: we disable the hook
+# during the initial commit so HEAD actually stores numeric IDs.  Then we
+# invoke the hook with the guard env var set and verify it did nothing.
+#
+# Without the guard:
+#   - step (5) of the hook would normalise the disk file to digit-strings  → Assert A fails
+#   - step (6) would amend HEAD because disk≠HEAD                          → Assert B fails
+# With the guard:
+#   - hook exits at step (1) before touching anything                       → both pass
 echo ""
 echo "--- Check 2: recursion guard ---"
 
@@ -101,22 +111,39 @@ cat > "$_repo2/.taskmaster/tasks/tasks.json" <<'JSON'
 {"master":{"tasks":[{"id":"1","subtasks":[{"id":99}]}]}}
 JSON
 
-# Commit numeric IDs so we have a base commit.
-git -C "$_repo2" add .taskmaster/tasks/tasks.json
-git -C "$_repo2" commit --no-verify -m "initial" -q
+# Disable the hook so the initial commit records genuine numeric IDs in HEAD.
+mv "$_repo2/hooks/post-commit" "$_repo2/hooks/post-commit.off"
 
-# Capture HEAD sha before invoking hook directly with guard set.
+git -C "$_repo2" add .taskmaster/tasks/tasks.json
+git -C "$_repo2" commit --no-verify -m "initial (hook disabled)" -q
+
+# Restore the hook for the guard test.
+mv "$_repo2/hooks/post-commit.off" "$_repo2/hooks/post-commit"
+
+# Sanity: on-disk file must be numeric (proves the hook didn't run during commit).
+assert "recursion guard setup: on-disk tasks.json is numeric before guard test" \
+    bash -c "jq -e '.master.tasks[0].subtasks[0].id | type == \"number\"' \
+             '$_repo2/.taskmaster/tasks/tasks.json' >/dev/null"
+
+# Sanity: HEAD's committed copy must also be numeric.
+assert "recursion guard setup: HEAD tasks.json has numeric subtask id" \
+    bash -c "git -C '$_repo2' show HEAD:.taskmaster/tasks/tasks.json \
+             | jq -e '.master.tasks[0].subtasks[0].id | type == \"number\"' >/dev/null"
+
 _guard_sha_before="$(git -C "$_repo2" rev-parse HEAD)"
 
 # Invoke the hook directly with the guard env var set.
-# It should exit immediately without amending anything.
-_REIFY_TASKS_NORMALIZE_AMEND=1 bash "$_repo2/hooks/post-commit" || true
+# cwd must be inside the repo so git rev-parse --show-toplevel resolves correctly.
+(cd "$_repo2" && _REIFY_TASKS_NORMALIZE_AMEND=1 bash hooks/post-commit) || true
 
-# HEAD sha must be unchanged (no amend fired).
-_guard_sha_after="$(git -C "$_repo2" rev-parse HEAD)"
+# Assert A: on-disk tasks.json is still numeric (hook exited before normalizing).
+assert "recursion guard: on-disk tasks.json stays numeric when guard env var is set" \
+    bash -c "jq -e '.master.tasks[0].subtasks[0].id | type == \"number\"' \
+             '$_repo2/.taskmaster/tasks/tasks.json' >/dev/null"
 
+# Assert B: HEAD sha unchanged (no amend fired).
 assert "recursion guard: HEAD sha unchanged when guard env var is set" \
-    test "$_guard_sha_before" = "$_guard_sha_after"
+    test "$_guard_sha_before" = "$(git -C "$_repo2" rev-parse HEAD)"
 
 # ==============================================================================
 # Check 3: NON-TASKS COMMIT — hook is a no-op when tasks.json not in commit
