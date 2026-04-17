@@ -21216,7 +21216,7 @@
         "testStrategy": "Ensure that the .catch() block correctly handles RangeError and that the bounds check prevents out-of-bounds access.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Add .catch() to handle RangeError",
             "description": "Implement a .catch() block in the requestDefinition promise chain to handle stale document RangeError.",
             "dependencies": [],
@@ -21226,7 +21226,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add bounds check after isConnected guard",
             "description": "Implement a bounds check `if (line+1 > view.state.doc.lines) return;` after the isConnected guard.",
             "dependencies": [],
@@ -33775,7 +33775,7 @@
         "testStrategy": "1. Verify the existence of make_analytical_field. 2. Test run_dim_metadata_test to ensure it correctly uses make_analytical_field with the new source parameter. 3. Validate memory_hints integration by checking execution context behavior.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Verify existence of make_analytical_field",
             "description": "Check if make_analytical_field is implemented in the codebase.",
             "dependencies": [],
@@ -33786,7 +33786,7 @@
             "updatedAt": "2026-04-13T23:43:38.636Z"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add memory_hints for execution context",
             "description": "Integrate memory_hints to improve execution context handling.",
             "dependencies": [],
@@ -35331,7 +35331,7 @@
         "testStrategy": "Ensure that the 'Fillet' needle is correctly restored by running tests that check for missing geometry arguments. Verify the generalized assert_rejected_at_compile by testing both scenarios: with None and Some(f) options, ensuring correct behavior in each case.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Restore 'Fillet' needle",
             "description": "Add 'Fillet' back to warning_needles in build_modify_missing_arg_no_kernel_error and update the doc comment.",
             "dependencies": [],
@@ -35341,7 +35341,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Generalize assert_rejected_at_compile",
             "description": "Modify the helper to accept Option for primitive check.",
             "dependencies": [],
@@ -38299,7 +38299,7 @@
         "testStrategy": "1. Verify that the updated comment in Editor.test.tsx:163 accurately describes the behavior by reviewing the code logic. 2. Ensure the waitFor pattern in App.test.tsx:~1340 is correctly implemented by running the test and confirming it passes consistently.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Update misleading comment in Editor.test.tsx",
             "description": "Change the comment at Editor.test.tsx:163 to correctly describe the debounce timer mechanism.",
             "dependencies": [],
@@ -38309,7 +38309,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add defensive waitFor in App.test.tsx",
             "description": "Add await waitFor(() => expect(capturedEditorStore).toBeTruthy()) in App.test.tsx:~1340.",
             "dependencies": [],
@@ -40216,11 +40216,11 @@
         "description": "In crates/reify-compiler/src/expr.rs, the \"unknown member on self\" branch (~lines 731-737) now returns `CompiledExpr::literal(Value::Undef, Type::Error)` to activate the anti-cascade guard (task-448 / task-1912). However, other diagnostic-producing sites in `compile_expr_guarded` may still return `CompiledExpr::literal(Value::Undef, Type::Real)` alongside a `diagnostics.push(Diagnostic::error(...))`. Asymmetric producer coverage means cascades will still fire whenever those other producers run. Action: grep `crates/reify-compiler/src/expr.rs` for `Value::Undef, Type::Real` pairs adjacent to `Diagnostic::error` pushes, and either (a) convert each producer to emit `Type::Error`, or (b) document in the module header which producers intentionally keep `Type::Real` and why. Related: task 448 (parent anti-cascade work), task 936 (trait conformance sentinel). Review followup from task 1912; suggestion S5.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:15:31.298Z",
+        "updatedAt": "2026-04-17T12:45:59.761Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/expr.rs",
@@ -40263,11 +40263,11 @@
         "description": "In crates/reify-eval/src/lib.rs (~line 101-143, `value_type_kind_matches`), every value/type predicate (e.g. `Value::Real(_) => matches!(ty, Type::Real | Type::Int)`) enumerates concrete Type variants but never accepts Type::Error. Since Type::Error now propagates further into compiled expressions (task-448, task-1912), a CompiledExpr carrying Type::Error could reach evaluation during incremental/LSP scenarios and produce spurious TypeKindMismatch diagnostics or panics. Either add an explicit Type::Error arm in each predicate (returning true as \"don't second-guess a poisoned type\"), or guard the evaluator to refuse evaluation when diagnostics contain errors, and document the contract. Related: tasks 1867, 1893, 1913. Review followup from task 1912 (S6).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:18:40.548Z",
+        "updatedAt": "2026-04-17T12:45:59.867Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs"
@@ -40280,11 +40280,11 @@
         "description": "The `viewStateStore — source comments` test in gui/src/__tests__/viewStateStore.test.ts (lines 710-726) asserts on the *text* of a code comment rather than any runtime behavior. It has two reviewer-flagged problems:\n\n1. **Typography-only assertion.** The regex `/-{5,}\\n\\s*\\/\\/ Mutations\\n\\s*\\/\\/ -{5,}/` matches the decorative divider header only; the test still passes even if the mutation functions below it are deleted. It will also spuriously fail if anyone re-styles section headers. Options:\n   - Remove the test (trust code review / the commit that added the neutral header).\n   - Convert it to an ESLint custom rule (behaves like a lint rule, not a unit test).\n   - Anchor the regex to the actual function definition, e.g. `/-{5,}\\n\\s*\\/\\/ Mutations\\n\\s*\\/\\/ -{5,}\\n\\s*\\n\\s*function setVisibility\\(/` so a deletion of the mutations block breaks the guard.\n\n2. **Top-level `readFileSync` breaks suite isolation.** `const src = readFileSync(SRC_PATH, 'utf-8');` runs at module load time. If viewStateStore.ts is renamed/moved, the *entire* test file fails to load and every other test in the suite becomes unreported instead of producing a single localized failure on the guard test. Move `SRC_PATH` and `readFileSync` inside the `it(...)` callback so only this one test fails.\n\nPick option 1.3 (anchor to function) + move readFileSync inside `it`, OR delete the test entirely and accept code review as the guard. Source: review of task 1902 (esc-1902-177).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T06:46:39.005Z",
+        "updatedAt": "2026-04-17T12:46:00.003Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -40306,11 +40306,11 @@
         "description": "gui/src/__tests__/editor-perf.test.tsx lines 118-147 — the `Editor wall-clock latency` test had its budget raised from 500ms to 2000ms (4×) to stabilize it under concurrent suite load (48-task parallelism). As-written the comment concedes catastrophic regressions are \"hundreds of ms each\"; a ~10ms/keystroke per-hot-path regression (firmly into perceptibly laggy territory) would slip through silently.\n\nReviewer-suggested fixes that keep the guard meaningful:\n- **(a) Serialize this test.** Move it to its own file run with `--pool=forks --poolOptions.forks.singleFork`, or put it in a `describe.sequential` block, or tag with Vitest's serial pool config. Then restore a tight 500–800ms budget.\n- **(b) Switch to median-per-keystroke.** Record each `view.dispatch(...)` cost, assert `median(perKeystroke) < 15ms`. Medians are robust to tail latency spikes from parallel suites, so the threshold can stay tight without flakes.\n\nEither approach is acceptable; the current 2000ms total budget is not. Source: review of task 1902 (esc-1902-177).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:22:18.451Z",
+        "updatedAt": "2026-04-17T12:46:00.102Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/editor-perf.test.tsx",
@@ -40526,7 +40526,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T12:45:59.542Z",
+      "lastModified": "2026-04-17T12:46:00.102Z",
       "taskCount": 1932,
       "completedCount": 1659,
       "tags": [
