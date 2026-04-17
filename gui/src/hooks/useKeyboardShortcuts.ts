@@ -54,8 +54,7 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
     for (const shortcut of SHORTCUTS) {
       if (!shortcut.bind) continue;
       if (!matchesEvent(shortcut.bind, e)) continue;
-      // ShortcutId cast is safe: unknown IDs return undefined (handled below)
-      const callbackKey = ID_TO_CALLBACK[shortcut.id as ShortcutId];
+      const callbackKey = ID_TO_CALLBACK[shortcut.id];
       if (!callbackKey) continue;
       e.preventDefault();
       callbacks[callbackKey]?.();
