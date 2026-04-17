@@ -2860,11 +2860,12 @@ impl Engine {
         // Execute geometry operations
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
-            let mut had_realization_ops = false;
+            let had_realization_ops = module.templates.iter()
+                .flat_map(|t| &t.realizations)
+                .any(|r| !r.operations.is_empty());
 
             for template in &module.templates {
                 for realization in &template.realizations {
-                    had_realization_ops |= !realization.operations.is_empty();
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
                         &realization.operations,
@@ -2916,11 +2917,12 @@ impl Engine {
         let geometry_output = if let Some(ref mut kernel) = self.geometry_kernel {
             // Execute geometry operations from realizations
             let mut step_handles: Vec<GeometryHandleId> = Vec::new();
-            let mut had_realization_ops = false;
+            let had_realization_ops = module.templates.iter()
+                .flat_map(|t| &t.realizations)
+                .any(|r| !r.operations.is_empty());
 
             for template in &module.templates {
                 for realization in &template.realizations {
-                    had_realization_ops |= !realization.operations.is_empty();
                     Engine::execute_realization_ops(
                         kernel.as_mut(),
                         &realization.operations,
@@ -3534,7 +3536,11 @@ mod tests {
         let values = ValueMap::new();
         let functions: Vec<CompiledFunction> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut step_handles: Vec<GeometryHandleId> = vec![];
+        // Pre-seed with a sentinel so we can assert truncation went back to exactly
+        // this pre-call length, distinguishing "INVALID pushed then truncated" from
+        // "INVALID never pushed at all".
+        let pre_existing = GeometryHandleId(0xCAFE);
+        let mut step_handles: Vec<GeometryHandleId> = vec![pre_existing];
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
         Engine::execute_realization_ops(
@@ -3547,9 +3553,15 @@ mod tests {
             &mut diagnostics,
         );
 
-        assert!(
-            step_handles.is_empty(),
-            "handles should be truncated back to handle_start (0)"
+        assert_eq!(
+            step_handles.len(),
+            1,
+            "step_handles should be truncated back to pre-call length of 1; \
+             the INVALID sentinel must not remain"
+        );
+        assert_eq!(
+            step_handles[0], pre_existing,
+            "the pre-existing handle must be preserved unchanged"
         );
         let compile_failures = diagnostics
             .iter()
