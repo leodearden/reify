@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Post-commit hook: normalize .taskmaster/tasks/tasks.json task and subtask IDs
+# from JSON integers to digit-strings after any commit that touches that file.
+#
+# The Taskmaster CLI (Node.js) serialises new IDs as integers.  This hook
+# detects such commits and amends them with the corrected file so the
+# regression test test_tasks_json_id_types.sh stays GREEN.
+#
+# Recursion guard: the amend itself triggers another post-commit invocation.
+# We break the loop with an environment variable that is set only for the
+# amend subprocess and is invisible to parent or sibling processes.
+
+set -eu
+
+# (1) Recursion guard — must be the first executable line after set.
+if [ "${_REIFY_TASKS_NORMALIZE_AMEND:-}" != "" ]; then
+    exit 0
+fi
+
+# (2) Repo root.
+ROOT="$(git rev-parse --show-toplevel)"
+
+# (3) Nothing to do if the file doesn't exist on disk.
+TASKS_JSON="$ROOT/.taskmaster/tasks/tasks.json"
+if [ ! -f "$TASKS_JSON" ]; then
+    exit 0
+fi
+
+# (4) Exit early if this commit didn't touch tasks.json.
+# --root is required so that root (first) commits are compared against the
+# empty tree rather than producing no output (which would cause a false exit).
+# -m is required so that merge commits are diffed against each parent; without
+# it, git diff-tree emits no output for merges and normalization would be
+# silently skipped on a merge that introduces numeric IDs.
+if ! git diff-tree -m --root -r --no-commit-id --name-only HEAD | grep -qFx '.taskmaster/tasks/tasks.json'; then
+    exit 0
+fi
+
+# (5) Run the normalizer.  On script error, do NOT block the commit — emit a
+# warning and exit so the user is notified rather than failing silently.
+python3 "$ROOT/scripts/normalize_tasks_json.py" "$TASKS_JSON" || {
+    echo "post-commit: normalize_tasks_json.py failed; skipping normalization" >&2
+    exit 0
+}
+
+# (6) If the file changed on disk vs HEAD, stage it and amend.
+# --no-verify skips pre-commit/commit-msg hooks on the amend.  This applies
+# to ALL tasks.json-touching commits, not only auto-commits from the Taskmaster
+# pipeline — a manual edit that happens to touch tasks.json will also have its
+# pre-commit hooks bypassed on the amend.  This is intentional: the only change
+# introduced by the amend is int→str ID normalization, which cannot violate any
+# structural invariant checked by pre-commit.
+if ! git diff --quiet -- "$TASKS_JSON"; then
+    git add -- "$TASKS_JSON"
+    _REIFY_TASKS_NORMALIZE_AMEND=1 git commit --amend --no-edit --no-verify -q
+fi
