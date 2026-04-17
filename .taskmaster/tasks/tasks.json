@@ -40104,16 +40104,16 @@
         "description": "Follow-up from task 1915 review (esc-1915-178, suggestion 6). hooks/post-commit explicitly handles --root and -m (merge commits) and explicitly bails out on python3 failure, but tests/infra/test_post_commit_hook.sh exercises none of those paths. A regression that drops `-m` would silently miss merges that introduce numeric IDs — exactly the silent-pass class the surrounding tests are written to defend against.",
         "details": "Add two checks to tests/infra/test_post_commit_hook.sh:\n\n1. MERGE COMMIT check: create two branches in a fixture repo that both touch tasks.json with numeric IDs, merge them, verify the merge commit's subtask IDs were normalized.\n\n2. PYTHON3-FAIL check: swap in a normalize_tasks_json.py stub that exits 1 (e.g., overwrite the copied script in the fixture). Make a commit that touches tasks.json. Assert the commit succeeded (post-commit hook returned 0 from python3 failure path) and the warning was emitted to stderr.\n\nmemory_hints: search \"test_post_commit_hook.sh\", search \"task 1915 hooks post-commit\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T04:45:54.938Z"
+        "updatedAt": "2026-04-17T04:48:35.387Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T04:47:33.231Z",
+      "lastModified": "2026-04-17T04:48:35.387Z",
       "taskCount": 1912,
       "completedCount": 1642,
       "tags": [
