@@ -40255,23 +40255,21 @@
         "description": "gui/src/__tests__/editor-perf.test.tsx lines 118-147 — the `Editor wall-clock latency` test had its budget raised from 500ms to 2000ms (4×) to stabilize it under concurrent suite load (48-task parallelism). As-written the comment concedes catastrophic regressions are \"hundreds of ms each\"; a ~10ms/keystroke per-hot-path regression (firmly into perceptibly laggy territory) would slip through silently.\n\nReviewer-suggested fixes that keep the guard meaningful:\n- **(a) Serialize this test.** Move it to its own file run with `--pool=forks --poolOptions.forks.singleFork`, or put it in a `describe.sequential` block, or tag with Vitest's serial pool config. Then restore a tight 500–800ms budget.\n- **(b) Switch to median-per-keystroke.** Record each `view.dispatch(...)` cost, assert `median(perKeystroke) < 15ms`. Medians are robust to tail latency spikes from parallel suites, so the threshold can stay tight without flakes.\n\nEither approach is acceptable; the current 2000ms total budget is not. Source: review of task 1902 (esc-1902-177).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:22:18.451Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:22:00.844Z",
-      "taskCount": 1920,
+      "lastModified": "2026-04-17T05:22:18.451Z",
+      "taskCount": 1921,
       "completedCount": 1647,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-17T05:22:14.852Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-17T05:22:14.893Z"
+      ]
     }
   }
 }
