@@ -739,10 +739,14 @@ constraint def PrivDef {
 // ── Test 15: name collision from two prelude modules emits shadow warning ────────
 
 /// Two imported modules each declare `pub constraint def MinThickness`; compiling
-/// a main module that imports both must emit at least one Warning-severity diagnostic
-/// mentioning "MinThickness" and both module names/paths.
+/// a main module that imports both must emit a Warning-severity diagnostic mentioning
+/// "MinThickness" and both module paths.  The warning must be *directional*: it names
+/// the first-imported module (the winner, 'a') before the later-imported module (the
+/// loser, 'b'), and includes the phrase "first-imported" or "wins".  A structural
+/// check distinguishes the two modules: module 'a' has 1 predicate; module 'b' has 2.
+/// Exactly 1 compiled constraint in S proves module 'a' (first-import) won the registry.
 ///
-/// Covers task 880 #1 (prelude shadow warning).
+/// Covers task 880 #1 (prelude shadow warning) and reviewer blocker on direction.
 #[test]
 fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
     use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
@@ -751,17 +755,18 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().to_path_buf();
 
-    // Module a: defines pub MinThickness
+    // Module a: defines pub MinThickness — ONE predicate (t > 0mm).
     fs::write(
         dir.join("a.ri"),
         "pub constraint def MinThickness {\n    param t: Length\n    t > 0mm\n}\n",
     )
     .unwrap();
 
-    // Module b: also defines pub MinThickness (same name, different module)
+    // Module b: also defines pub MinThickness — TWO predicates so we can tell which
+    // module's def won by counting compiled constraints (a wins → 1, b wins → 2).
     fs::write(
         dir.join("b.ri"),
-        "pub constraint def MinThickness {\n    param t: Length\n    t > 1mm\n}\n",
+        "pub constraint def MinThickness {\n    param t: Length\n    t > 1mm\n    t < 1000mm\n}\n",
     )
     .unwrap();
 
@@ -796,30 +801,51 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
         errors
     );
 
-    // Exactly one shadow warning must name both contributing module paths ('a' and 'b').
-    // The message format is: "constraint def 'MinThickness' imported from 'b' shadows
-    // definition from 'a'" — so it must mention both path strings.
+    // The shadow warning must name both module paths AND be directional: the winner
+    // ('a', first-imported) must appear before the loser ('b') in the message.
     let shadow_warnings: Vec<_> = compiled_main
         .diagnostics
         .iter()
         .filter(|d| {
             d.severity == reify_types::Severity::Warning
                 && d.message.contains("MinThickness")
-                && d.message.contains("'a'")
-                && d.message.contains("'b'")
+                && d.message.contains("from 'a'")
+                && d.message.contains("from 'b'")
         })
         .collect();
     assert_eq!(
         shadow_warnings.len(),
         1,
-        "expected exactly one shadow warning mentioning MinThickness and both module paths, \
-         got: {:?}",
+        "expected exactly one shadow warning mentioning MinThickness and both module paths \
+         (with 'from' prefix), got: {:?}",
         compiled_main.diagnostics
     );
 
-    // First-import-wins: module 'a' was imported first, so its def (t > 0mm) should win.
-    // The compiled structure S should have one constraint whose label starts "MinThickness".
-    // (The predicate expression is internal, so we verify the label rather than the AST.)
+    // Directional check: winner ('a', first-imported) must be named BEFORE loser ('b').
+    let msg = &shadow_warnings[0].message;
+    let pos_a = msg
+        .find("from 'a'")
+        .expect("shadow warning should contain \"from 'a'\"");
+    let pos_b = msg
+        .find("from 'b'")
+        .expect("shadow warning should contain \"from 'b'\"");
+    assert!(
+        pos_a < pos_b,
+        "expected winner ('a') to appear before loser ('b') in shadow warning, got: {:?}",
+        msg
+    );
+
+    // Semantic-clarity check: message must include "first-imported" or "wins" so users
+    // understand which definition is retained without having to guess.
+    assert!(
+        msg.contains("first-imported") || msg.contains("wins"),
+        "shadow warning should contain 'first-imported' or 'wins' to clarify semantics, \
+         got: {:?}",
+        msg
+    );
+
+    // Structural first-import-wins check: 'a' has 1 predicate, 'b' has 2.
+    // constraints.len() == 1 proves module 'a' won; 2 would mean 'b' incorrectly won.
     assert_eq!(
         compiled_main.templates.len(),
         1,
@@ -830,7 +856,8 @@ fn cross_module_constraint_def_name_collision_emits_shadow_warning() {
     assert_eq!(
         s_template.constraints.len(),
         1,
-        "expected one compiled constraint in S (MinThickness has one predicate), got: {:?}",
+        "expected 1 compiled constraint in S (module 'a' wins with 1 predicate; \
+         2 would indicate module 'b' incorrectly won), got: {:?}",
         s_template.constraints
     );
     let c = &s_template.constraints[0];
