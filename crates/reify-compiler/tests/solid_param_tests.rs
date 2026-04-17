@@ -333,7 +333,10 @@ fn solid_param_default_aliasing_geometry_let_is_realization() {
 /// builder and the realization-emission loop in entity.rs iterate only ONE level
 /// deep, so `g` is silently skipped and no `RealizationDecl` is produced.
 ///
-/// Expected failure: assertion (d) — `template.realizations` is empty.
+/// Regression: prior to the fix in this change, assertion (d) failed because
+/// entity.rs only recursed one level into `GuardedGroupDecl`, so the nested
+/// `g` was registered in `known_geometry_lets` but never made it into
+/// `geometry_lets` and never produced a `RealizationDecl`.
 #[test]
 fn nested_guarded_solid_param_compiles_as_realization() {
     let source = r#"structure def W {
@@ -380,16 +383,14 @@ fn nested_guarded_solid_param_compiles_as_realization() {
     );
 }
 
-// ─── step-3: Intermediate white-box: nested guard lookup-table ───────────────
+// ─── step-3: Intermediate: nested guard emits exactly one realization ────────
 
 /// Simpler variant using `where true { where true { ... } }` (no bool param
-/// overhead) to pin the lookup-table recursion specifically.
-///
-/// Both this test and `nested_guarded_solid_param_compiles_as_realization` fail
-/// for the same root cause: entity.rs only iterates one level deep in both the
-/// `geometry_lets` builder and the realization-emission loop.
+/// overhead). Asserts exactly-one `RealizationDecl` for the nested geometry
+/// param so a regression either drops the realization (recursion broken) or
+/// double-emits it (recursive walk visits both sides of the same guard).
 #[test]
-fn nested_guarded_solid_param_registered_in_geometry_lets() {
+fn nested_guarded_solid_param_emits_exactly_one_realization() {
     let source = r#"structure def X {
     where true {
         where true {
