@@ -143,10 +143,7 @@ pub(crate) fn register_guarded_names<'a>(
                 };
                 // Solid-typed params with a geometry-call default are treated
                 // symmetrically to geometry lets (mirrors entity.rs pre-pass, step-4).
-                if ty == Type::Geometry
-                    && let Some(default_expr) = &param.default
-                    && is_geometry_let(default_expr, functions, known_geometry_lets)
-                {
+                if is_solid_geometry_param(&ty, param.default.as_ref(), functions, known_geometry_lets) {
                     scope.has_geometry = true;
                     known_geometry_lets.insert(param.name.as_str());
                 }
@@ -323,13 +320,7 @@ pub(crate) fn compile_guarded_members(
 
                 // Solid-typed params with a geometry-call default are lowered as
                 // realizations (not scalar cells) — mirrors entity.rs main loop (step-6).
-                if cell_type == Type::Geometry
-                    && param
-                        .default
-                        .as_ref()
-                        .map(|e| is_geometry_let(e, functions, known_geometry_lets))
-                        .unwrap_or(false)
-                {
+                if is_solid_geometry_param(&cell_type, param.default.as_ref(), functions, known_geometry_lets) {
                     continue;
                 }
 

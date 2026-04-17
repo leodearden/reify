@@ -477,10 +477,9 @@ fn compile_project_detects_cross_module_unit_collision() {
         dup_diag.message
     );
 
-    // (c) Exactly one label with a non-empty span — the user-module branch
-    // emits only the duplicate decl span and omits the original's
-    // SourceSpan::empty(0) to avoid a misleading byte-0 label.
-    common::assert_single_non_empty_label(dup_diag);
+    // (c) Two labels: labels[0] is the user's in-file dup decl span;
+    // labels[1] is the prelude sentinel with provenance in its message.
+    common::assert_prelude_collision_labels(dup_diag);
 }
 
 // ── step-3 (task-1575): compile_project-level stdlib unit collision mentions stdlib ───
@@ -542,24 +541,27 @@ fn compile_project_stdlib_unit_collision_mentions_stdlib() {
         dup_diag.message
     );
 
-    // (c) Exactly one label — the implementation omits the misleading
-    // SourceSpan::empty(0) prelude label and emits only the user's dup span.
+    // (c) Two labels: labels[0] is the user's in-file dup decl (non-empty, not
+    //     empty(0)); labels[1] is the prelude sentinel carrying provenance text.
     assert_eq!(
         dup_diag.labels.len(),
-        1,
-        "stdlib collision should emit a single label on the user's duplicate decl, got {:?}",
+        2,
+        "stdlib collision should emit two labels, got {:?}",
         dup_diag.labels
     );
-
-    // (c) … and that single label must not use SourceSpan::empty(0).
     let empty_span = reify_types::SourceSpan::empty(0);
-    for label in &dup_diag.labels {
-        assert_ne!(
-            label.span, empty_span,
-            "diagnostic label '{}' has SourceSpan::empty(0) — misleading prelude offset",
-            label.message
-        );
-    }
+    assert_ne!(
+        dup_diag.labels[0].span,
+        empty_span,
+        "first label '{}' must not be SourceSpan::empty(0)",
+        dup_diag.labels[0].message
+    );
+    assert!(
+        dup_diag.labels[1].span.is_prelude(),
+        "second label '{}' must have is_prelude() span, got {:?}",
+        dup_diag.labels[1].message,
+        dup_diag.labels[1].span
+    );
 }
 
 // ── step-1 (task-1392): prelude propagation via compile_module ────────────────

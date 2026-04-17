@@ -324,6 +324,165 @@ fn solid_param_default_aliasing_geometry_let_is_realization() {
     );
 }
 
+// ─── step-1: Nested-guard regression ─────────────────────────────────────────
+
+/// Two-level `where` guard nesting: `where a { where b { param g : Solid = cylinder(...) } }`.
+///
+/// `register_guarded_names` in guards.rs already recurses correctly, so `g` ends
+/// up in `known_geometry_lets`. However, both the `geometry_lets` lookup-table
+/// builder and the realization-emission loop in entity.rs iterate only ONE level
+/// deep, so `g` is silently skipped and no `RealizationDecl` is produced.
+///
+/// Regression: prior to the fix in this change, assertion (d) failed because
+/// entity.rs only recursed one level into `GuardedGroupDecl`, so the nested
+/// `g` was registered in `known_geometry_lets` but never made it into
+/// `geometry_lets` and never produced a `RealizationDecl`.
+#[test]
+fn nested_guarded_solid_param_compiles_as_realization() {
+    let source = r#"structure def W {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        where b {
+            param g : Solid = cylinder(10mm, 20mm)
+        }
+    }
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "W")
+        .expect("W template not found");
+
+    // (a) No error diagnostics — already checked by compile_no_errors.
+
+    // (b) `g` must NOT appear as a ValueCellDecl in top-level value_cells.
+    assert!(
+        !template.value_cells.iter().any(|c| c.id.member == "g"),
+        "top-level ValueCellDecl for 'g' must not exist"
+    );
+
+    // (c) `g` must NOT appear in any guarded group's members or else_members.
+    for group in &template.guarded_groups {
+        assert!(
+            !group.members.iter().any(|m| m.id.member == "g"),
+            "guarded ValueCellDecl for 'g' must not exist in members"
+        );
+        assert!(
+            !group.else_members.iter().any(|m| m.id.member == "g"),
+            "guarded ValueCellDecl for 'g' must not exist in else_members"
+        );
+    }
+
+    // (d) Exactly one RealizationDecl must be emitted for the nested geometry
+    // param. Using `== 1` (not `>= 1`) prevents a future double-emit regression
+    // if the recursive walk mistakenly visits the same guard twice.
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 RealizationDecl for nested `param g : Solid = cylinder(...)`, \
+         got {} — nested GuardedGroup recursion in entity.rs is broken",
+        template.realizations.len()
+    );
+}
+
+// ─── step-3: Intermediate: nested guard emits exactly one realization ────────
+
+/// Simpler variant using `where true { where true { ... } }` (no bool param
+/// overhead). Asserts exactly-one `RealizationDecl` for the nested geometry
+/// param so a regression either drops the realization (recursion broken) or
+/// double-emits it (recursive walk visits both sides of the same guard).
+///
+/// Note: bare boolean-literal guard conditions (`where true`) are a supported
+/// and stable syntactic form in the Reify compiler — they are handled by the
+/// same guard-condition lowering path as param-reference guards and are not
+/// subject to future tightening.
+#[test]
+fn nested_guarded_solid_param_emits_exactly_one_realization() {
+    let source = r#"structure def X {
+    where true {
+        where true {
+            param g : Solid = cylinder(1mm, 1mm)
+        }
+    }
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "X")
+        .expect("X template not found");
+
+    // Exactly one RealizationDecl must be emitted — one geometry param, one
+    // realization. Using `== 1` (not `>= 1`) prevents a future double-emit
+    // if the recursive walk mistakenly visits both members and else_members
+    // of the same guard at the same nesting level.
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 RealizationDecl for nested guarded \
+         `param g : Solid = cylinder(...)`"
+    );
+}
+
+// ─── coverage: else_members recursion at depth ≥2 ────────────────────────────
+
+/// Regression guard for the `else_members` branch of the recursive walkers in
+/// `collect_geometry_exprs` and `emit_guarded_geometry_realizations`.
+///
+/// A Solid-typed param inside a nested `else { ... }` block (`where a { where b
+/// { } else { param g : Solid = cylinder(...) } }`) exercises the
+/// `g.else_members` recursive call at depth 2. A regression that dropped
+/// `else_members` recursion would leave `g` unregistered in `geometry_lets` and
+/// emit no `RealizationDecl`, causing assertion (b) to fail.
+#[test]
+fn nested_guarded_solid_param_in_else_branch_compiles_as_realization() {
+    let source = r#"structure def W5 {
+    param a : Bool = true
+    param b : Bool = true
+    where a {
+        where b {
+        } else {
+            param g : Solid = cylinder(10mm, 20mm)
+        }
+    }
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "W5")
+        .expect("W5 template not found");
+
+    // (a) `g` must NOT appear as a ValueCellDecl anywhere.
+    assert!(
+        !template.value_cells.iter().any(|c| c.id.member == "g"),
+        "top-level ValueCellDecl for 'g' must not exist"
+    );
+    for group in &template.guarded_groups {
+        assert!(
+            !group.members.iter().any(|m| m.id.member == "g"),
+            "guarded ValueCellDecl for 'g' must not exist in members"
+        );
+        assert!(
+            !group.else_members.iter().any(|m| m.id.member == "g"),
+            "guarded ValueCellDecl for 'g' must not exist in else_members"
+        );
+    }
+
+    // (b) Exactly one RealizationDecl must be emitted for `g` (from the else
+    // branch). Using `== 1` guards against both recursion failure (0) and
+    // double-emit regressions (≥2).
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected exactly 1 RealizationDecl for `param g : Solid = cylinder(...)` \
+         declared inside a nested else_members branch, got {} — else_members recursion may be broken",
+        template.realizations.len()
+    );
+}
+
 // ─── coverage: Solid param with non-geometry default (pin-down) ───────────────
 
 /// PIN-DOWN REGRESSION LOCK (task 1878).
