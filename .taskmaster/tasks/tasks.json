@@ -40364,6 +40364,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-17T05:50:59.008Z"
+      },
+      {
+        "id": "1932",
+        "title": "Prelude collision tests: extract helper + pin single-collision count",
+        "description": "Follow-up from task 765 review. Two small test-quality improvements in `crates/reify-compiler/tests/unit_registry_tests.rs`:\n\n1. **De-duplicate boilerplate** (lines 1722-1932): `prelude_module_unit_collision_emits_warning` and `three_prelude_collision_emits_two_chained_warnings` share ~20 lines of boilerplate per prelude module (parse / assert no parse errors / compile / assert no compile errors). Extract a helper like\n   ```rust\n   fn prelude_module(name: &str, factor: f64) -> CompiledModule { ... }\n   ```\n   either in the test file or in `tests/common/mod.rs` (matches the style of existing `common::` helpers), and reuse it across both tests.\n\n2. **Pin the count in the single-collision case** (lines 1775-1785): `prelude_module_unit_collision_emits_warning` currently asserts that *some* warning mentions 'foo', but never pins the *count*. A future refactor that accidentally duplicates warning emission (double-push) would still pass. The three-prelude test already pins the count to 2. Add:\n   ```rust\n   assert_eq!(\n       warnings.iter().filter(|w| w.message.contains(\"foo\")).count(),\n       1,\n       \"expected exactly 1 collision warning, got: {:?}\", warnings\n   );\n   ```\n\nAcceptance: both tests still pass, boilerplate reduced, single-collision count is pinned.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -40373,7 +40384,10 @@
       "completedCount": 1654,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T05:51:21.631Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-17T05:51:22.088Z"
     }
   }
 }
