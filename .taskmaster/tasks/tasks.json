@@ -40153,23 +40153,21 @@
         "description": "In crates/reify-compiler/tests/implicit_conversion_tests.rs at line 816, `type_compatible_error_wildcard_error_error` asserts `type_compatible(Type::Error, Type::Error) == true`. This case is also satisfied by the identity arm (`param_ty == arg_ty`), so it does NOT discriminate between guard-present and guard-removed — a future refactor could delete the wildcard guard and this test would still pass. The sibling test `error_wildcard_implicit_error_to_error` (line ~617) was fixed in commit 2b2be6f0b to include an explanatory comment making its non-pinning status explicit; apply the same annotation (or delete the test outright) to `type_compatible_error_wildcard_error_error`. The actual guard-pinning tests for this path are `type_compatible_error_wildcard_real` and `type_compatible_error_wildcard_mirror_real`. Review followup from task 1912; suggestion S3.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:14:06.913Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:13:16.630Z",
-      "taskCount": 1913,
+      "lastModified": "2026-04-17T05:14:06.913Z",
+      "taskCount": 1914,
       "completedCount": 1645,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-17T05:13:50.345Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-17T05:13:50.380Z"
+      ]
     }
   }
 }
