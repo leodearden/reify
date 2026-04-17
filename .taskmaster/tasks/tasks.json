@@ -6522,7 +6522,7 @@
         "dependencies": [
           "307"
         ],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6536,10 +6536,16 @@
             "crates/reify-kernel-occt/src/lib.rs",
             "crates/reify-eval/src/lib.rs",
             "crates/reify-compiler/src/geometry.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stdlib: offset_solid, shell_open, split operations"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:26:58.023Z"
+        "updatedAt": "2026-04-17T13:28:46.841Z"
       },
       {
         "id": "317",
@@ -40612,9 +40618,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:26:58.024Z",
+      "lastModified": "2026-04-17T13:28:46.841Z",
       "taskCount": 1937,
-      "completedCount": 1666,
+      "completedCount": 1667,
       "tags": [
         "master"
       ]
