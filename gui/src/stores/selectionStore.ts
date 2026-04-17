@@ -4,6 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 
 export interface SelectionState {
   selectedEntity: string | null;
+  selectedEntities: string[];
+  anchorEntity: string | null;
   hoveredEntity: string | null;
   highlightedParams: string[];
 }
@@ -11,6 +13,8 @@ export interface SelectionState {
 export function createSelectionStore() {
   const [state, setState] = createStore<SelectionState>({
     selectedEntity: null,
+    selectedEntities: [],
+    anchorEntity: null,
     hoveredEntity: null,
     highlightedParams: [],
   });
