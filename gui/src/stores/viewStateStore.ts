@@ -1,5 +1,6 @@
 import { createStore, produce } from 'solid-js/store';
 import type { EntityTreeNode, ExplicitVisibility, VisibilityState } from '../types';
+import type { ViewDefinition } from './autoViewGenerator';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -7,6 +8,8 @@ import type { EntityTreeNode, ExplicitVisibility, VisibilityState } from '../typ
 
 export interface ViewState {
   explicit: Record<string, ExplicitVisibility>;
+  views: Record<string, ViewDefinition>;
+  activeViewId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +58,8 @@ function defaultRuleFor(node: EntityTreeNode): VisibilityState {
 export function createViewStateStore() {
   const [state, setState] = createStore<ViewState>({
     explicit: {},
+    views: {},
+    activeViewId: 'auto:default',
   });
 
   // Internal non-reactive maps (rebuilt on setTree).
@@ -189,6 +194,38 @@ export function createViewStateStore() {
     setVisibility(path, next, true);
   }
 
+  // ---------------------------------------------------------------------------
+  // View management
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Seed a view into state.views (used by regenerateAutoViews and tests).
+   * Overwrites any existing entry with the same id.
+   */
+  function seedView(view: ViewDefinition): void {
+    setState(produce((s) => {
+      s.views[view.id] = view;
+    }));
+  }
+
+  /**
+   * Switch the active view.  If the view doesn't exist in state.views this
+   * is a no-op (the caller should ensure views are populated before
+   * switching, e.g. via regenerateAutoViews).
+   *
+   * When the view exists its `visibility` map is copied into `state.explicit`
+   * so that `getEffectiveVisibility` / `getAllEffective` reflect the view.
+   */
+  function setActiveView(viewId: string): void {
+    const view = state.views[viewId];
+    if (!view) return;
+    setState(produce((s) => {
+      s.activeViewId = viewId;
+      // Replace explicit with the view's full visibility map.
+      s.explicit = { ...view.visibility };
+    }));
+  }
+
   function hasOverride(path: string): boolean {
     const exp = state.explicit[path];
     if (exp == null) return false;
@@ -219,5 +256,8 @@ export function createViewStateStore() {
     resetToInherit,
     showOnly,
     cycleCascading,
+    // View management
+    seedView,
+    setActiveView,
   };
 }
