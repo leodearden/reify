@@ -259,10 +259,11 @@ describe('useKeyboardShortcuts', () => {
 });
 
 describe('ID_TO_CALLBACK wiring invariant', () => {
+  // Shortcuts that declare a `bind` but intentionally have no callback entry:
+  // the filter below already excludes shortcuts with no `bind` at all (e.g. fitToView).
   const NO_CALLBACK_IDS = new Set<ShortcutId>([
-    'undo',      // disabled: true — key reserved, no functional callback
-    'redo',      // disabled: true — key reserved, no functional callback
-    'fitToView', // no bind at all — menu-only action
+    'undo', // disabled: true — key reserved, no functional callback
+    'redo', // disabled: true — key reserved, no functional callback
   ]);
 
   it('every shortcut with a bind — minus known no-callback IDs — has an ID_TO_CALLBACK entry', () => {
