@@ -711,13 +711,12 @@ describe('viewStateStore — full PRD integration scenario', () => {
 // Source-text regression guard
 // ---------------------------------------------------------------------------
 
-const SRC_PATH = join(__dirname, '../stores/viewStateStore.ts');
-const src = readFileSync(SRC_PATH, 'utf-8');
-
 describe('viewStateStore — source comments', () => {
-  const GUARD_REGEX = /-{5,}\n\s*\/\/ Mutations\n\s*\/\/ -{5,}/;
+  const GUARD_REGEX = /-{5,}\n\s*\/\/ Mutations\n\s*\/\/ -{5,}\n\s*\n\s*function setVisibility\(/;
 
   it('section header uses bare // Mutations form without stale "stubs" phrasing', () => {
+    const SRC_PATH = join(__dirname, '../stores/viewStateStore.ts');
+    const src = readFileSync(SRC_PATH, 'utf-8');
     // Guard against re-introduction of the historical scaffolding comment
     // "Mutations (stubs — fully implemented in later steps)".
     // The regex anchors against surrounding divider lines to avoid false positives
