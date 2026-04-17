@@ -133,15 +133,18 @@ describe('Editor wall-clock latency', () => {
     const view = getEditorView(container);
 
     const perKeystroke: number[] = [];
-    for (let i = 0; i < 100; i++) {
-      const t0 = performance.now();
-      view.dispatch({ changes: { from: 0, insert: 'x' } });
-      perKeystroke.push(performance.now() - t0);
+    try {
+      for (let i = 0; i < 100; i++) {
+        const t0 = performance.now();
+        view.dispatch({ changes: { from: 0, insert: 'x' } });
+        perKeystroke.push(performance.now() - t0);
+      }
+    } finally {
+      // Unmount in a finally block so the 300ms debounce timer is always
+      // cancelled via Editor.tsx's onCleanup → clearTimeout(debounceTimer),
+      // even if an unexpected error is thrown inside the loop.
+      unmount();
     }
-
-    // Unmount immediately to cancel the pending 300ms debounce timer via
-    // Editor.tsx's onCleanup → clearTimeout(debounceTimer)
-    unmount();
 
     // Guard: median per-keystroke dispatch must stay under 15ms.
     //
