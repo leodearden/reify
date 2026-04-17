@@ -130,3 +130,27 @@ fn circular_pattern_arg_count_diagnostic_has_span_label() {
     assert!(!first.labels.is_empty(), "expected at least one label on circular_pattern arg-count diagnostic");
     assert!(!first.labels[0].span.is_empty(), "expected non-empty span on circular_pattern arg-count label");
 }
+
+// ── mirror() ───────────────────────────────────────────────────────────
+
+#[test]
+fn mirror_arg_count_diagnostic_has_span_label() {
+    // mirror() expects 7 arguments — passing 2 should produce a labeled diagnostic
+    let source = r#"
+        structure S {
+            let m = mirror(box(10mm, 10mm, 10mm), 1.0)
+        }
+    "#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let first = errors
+        .iter()
+        .find(|d| d.message.contains("mirror() expects 7 arguments"))
+        .unwrap_or_else(|| panic!(
+            "expected 'mirror() expects 7 arguments' error, got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        ));
+    assert!(!first.labels.is_empty(), "expected at least one label on mirror arg-count diagnostic");
+    assert!(!first.labels[0].span.is_empty(), "expected non-empty span on mirror arg-count label");
+}
