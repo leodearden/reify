@@ -1002,6 +1002,121 @@ describe('viewStateStore — setTree pruning', () => {
 });
 
 // ---------------------------------------------------------------------------
+// defaultRuleFor parity with defaultVisibilityFor (no flicker between views)
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no flicker between views)', () => {
+  /**
+   * These tests must FAIL before step-16 because viewStateStore.defaultRuleFor
+   * only hides 'Solid' lets while autoViewGenerator.defaultVisibilityFor also
+   * hides 'Surface' and 'Curve' lets.  After step-16 they will pass because
+   * defaultRuleFor delegates to defaultVisibilityFor.
+   */
+
+  it('(a) let node with type_name="Surface3D" and no explicit entry → getEffectiveVisibility returns "hidden"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const leaf = 'Root.surf';
+      store.setTree([
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'Surface3D' }),
+          ],
+        }),
+      ]);
+      // No explicit entry — falls through to defaultRuleFor.
+      expect(store.getEffectiveVisibility(leaf)).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('(b) let node with type_name="Curve3D" and no explicit entry → getEffectiveVisibility returns "hidden"', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const leaf = 'Root.crv';
+      store.setTree([
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'Curve3D' }),
+          ],
+        }),
+      ]);
+      expect(store.getEffectiveVisibility(leaf)).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('(c) let node with type_name="SolidBody" and no explicit entry → still "hidden" (regression guard)', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const leaf = 'Root.solid';
+      store.setTree([
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'SolidBody' }),
+          ],
+        }),
+      ]);
+      expect(store.getEffectiveVisibility(leaf)).toBe('hidden');
+      dispose();
+    });
+  });
+
+  it('(d) no flicker when switching from auto:default to a sparse user view for a let-Surface node', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      const leaf = 'Root.surf';
+      const tree = [
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: leaf, kind: 'let', type_name: 'MySurface' }),
+          ],
+        }),
+      ];
+      store.setTree(tree);
+
+      // Seed an auto:default view that explicitly marks the leaf as 'hidden'.
+      const defaultView: ViewDefinition = {
+        id: 'auto:default',
+        name: 'Default',
+        auto: true,
+        modified: false,
+        visibility: { Root: 'show', [leaf]: 'hidden' },
+      };
+      store.seedView(defaultView);
+      store.setActiveView('auto:default');
+      // explicit is now { Root: 'show', [leaf]: 'hidden' } → 'hidden'
+      expect(store.getEffectiveVisibility(leaf)).toBe('hidden');
+
+      // Now switch to a sparse user view with NO entry for the leaf.
+      const userView: ViewDefinition = {
+        id: 'user:sparse',
+        name: 'Sparse',
+        auto: false,
+        modified: false,
+        visibility: {}, // intentionally no entry for leaf
+      };
+      store.seedView(userView);
+      store.setActiveView('user:sparse');
+      // explicit is now {} → falls through to defaultRuleFor.
+      // After step-16: defaultRuleFor('let', 'MySurface') → 'hidden' (same as above, no flicker).
+      // Before step-16: defaultRuleFor only hides 'Solid' → returns 'show' (flicker!).
+      expect(store.getEffectiveVisibility(leaf)).toBe('hidden');
+
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integration sanity: generator↔store wiring
 // ---------------------------------------------------------------------------
 
