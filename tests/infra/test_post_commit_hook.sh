@@ -357,5 +357,38 @@ assert "normalizer-crash: stderr contains ERROR:" \
 assert "normalizer-crash: .git/NORMALIZE_FAILED marker file exists" \
     test -f "$_repo7/.git/NORMALIZE_FAILED"
 
+# ==============================================================================
+# Check 8: MARKER CLEARING — a stale NORMALIZE_FAILED is removed on success
+# ==============================================================================
+# The hook's rm -f on the marker file runs only when both normalization AND
+# the amend step succeed.  This check guards the clearing behaviour: a
+# regression that moved the rm before python3 (losing the crash-marker
+# semantics) or dropped it entirely (making the marker permanent) would be
+# caught here.
+echo ""
+echo "--- Check 8: stale marker cleared on successful normalization ---"
+
+mk_repo_fixture _repo8
+mkdir -p "$_repo8/.taskmaster/tasks" "$_repo8/.git"
+cat > "$_repo8/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":"1","subtasks":[{"id":42}]}]}}
+JSON
+
+# Pre-create the marker to simulate a previous failed attempt.  The hook
+# must remove this on a successful run.
+printf 'stale\tprior-run\tfeedeadbeef\n' > "$_repo8/.git/NORMALIZE_FAILED"
+assert "clearing: stale marker file exists before commit (test setup)" \
+    test -f "$_repo8/.git/NORMALIZE_FAILED"
+
+# Commit with numeric subtask id — hook normalizes + amends + clears marker.
+git -C "$_repo8" add .taskmaster/tasks/tasks.json
+git -C "$_repo8" commit --no-verify -m "chore(tasks): commit with stale marker present" -q
+
+assert "clearing: .git/NORMALIZE_FAILED removed after successful hook run" \
+    test ! -e "$_repo8/.git/NORMALIZE_FAILED"
+assert "clearing: subtask ids normalized in HEAD (hook actually ran)" \
+    bash -c "! git -C '$_repo8' show HEAD:.taskmaster/tasks/tasks.json \
+             | jq -r '.master.tasks[].subtasks[].id | type' | grep -q 'number'"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
