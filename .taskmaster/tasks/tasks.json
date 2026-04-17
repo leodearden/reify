@@ -40568,15 +40568,16 @@
         "description": "The renamed test `compile_modify_op_chamfer_non_geometry_target_fallback` (crates/reify-compiler/src/lib.rs:2395) compiles at the top level with step_offset=0, so asserting `GeomRef::Step(0)` is indistinguishable from the old bug-preserving behavior. Add a companion test that places `chamfer(scalar_param, dist)` in a context where step_offset > 0 (e.g. nested inside a boolean op / let chain after prior ops in the same realization) and assert the target is `GeomRef::Step(step_offset)`, not `Step(0)`. This will catch a future regression where geom_ref fell back to `Step(0)` unconditionally. Follow-up from task 1823 review.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T13:11:39.141Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:11:22.903Z",
+      "lastModified": "2026-04-17T13:11:39.141Z",
       "taskCount": 1935,
       "completedCount": 1663,
       "tags": [
