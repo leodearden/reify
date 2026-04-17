@@ -2489,6 +2489,53 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
   });
 });
 
+describe('App Escape clears multi-selection', () => {
+  it('pressing Escape after multi-selection empties selectedEntities', async () => {
+    await renderAndWaitForReady();
+
+    await waitFor(() => {
+      expect(capturedViewportProps.onSelect).toBeDefined();
+    });
+
+    // Build up a multi-selection via Ctrl+clicks
+    capturedViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
+    capturedViewportProps.onSelect('EntityB', { ctrl: true, shift: false });
+
+    await waitFor(() => {
+      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA', 'EntityB']);
+    });
+
+    // Press Escape — should clear selection
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(capturedViewportProps.selectedEntities).toEqual([]);
+    });
+  });
+
+  it('pressing Escape after multi-selection also clears selectedEntity', async () => {
+    await renderAndWaitForReady();
+
+    await waitFor(() => {
+      expect(capturedViewportProps.onSelect).toBeDefined();
+    });
+
+    capturedViewportProps.onSelect('EntityA', { ctrl: true, shift: false });
+
+    await waitFor(() => {
+      expect(capturedViewportProps.selectedEntities).toEqual(['EntityA']);
+      expect(capturedViewportProps.selectedEntity).toBe('EntityA');
+    });
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(capturedViewportProps.selectedEntities).toEqual([]);
+      expect(capturedViewportProps.selectedEntity).toBeNull();
+    });
+  });
+});
+
 describe('App viewport multi-selection modifier routing', () => {
   it('selectedEntities prop is passed from App to Viewport as an array', async () => {
     await renderAndWaitForReady();
