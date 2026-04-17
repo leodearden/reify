@@ -106,7 +106,7 @@ describe('Editor doc change handling', () => {
     expect(updateSpy).not.toHaveBeenCalled();
 
     // After 300ms debounce
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
     expect(updateSpy).toHaveBeenCalledWith(file1.path, expect.stringContaining('// comment'));
   });
 
@@ -128,7 +128,7 @@ describe('Editor doc change handling', () => {
     expect(updateSpy).not.toHaveBeenCalled();
 
     // 300ms after last edit
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -148,7 +148,7 @@ describe('Editor doc change handling', () => {
     expect(markDirtySpy).not.toHaveBeenCalled();
 
     // Advance past the debounce timer — updateSource must also not be called
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
     expect(updateSpy).not.toHaveBeenCalled();
   });
 
@@ -167,7 +167,7 @@ describe('Editor doc change handling', () => {
     store.closeFile(file1.path);
 
     // When closeFile sets activeFile to null, the createEffect (Editor.tsx:218) fires and clears the debounce timer, preventing the updateSource call.
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
     expect(updateSpy).not.toHaveBeenCalled();
   });
 });
@@ -614,7 +614,7 @@ describe('Editor debounce timer cancellation on file switch (RC-04)', () => {
     store.setActiveFile(file2.path);
 
     // Advance timers past the debounce period
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
 
     // The debounced updateSource should NOT have fired for the stale edit
     expect(updateSpy).not.toHaveBeenCalled();
@@ -733,7 +733,7 @@ describe('Editor integration: rapid file switch with diagnostics mid-switch', ()
     });
 
     // (4) Advance timers past debounce period
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
 
     // Verify: diagnostics NOT applied to B's editor (E-05 fix)
     const viewB = getEditorView(container);
