@@ -39622,11 +39622,11 @@
         "description": "In gui/src/__tests__/App.test.tsx around line 2429, the save error-path test uses `expect(errorSpy).not.toHaveBeenCalled()`, a strict global check. If any unrelated async code (engine subscriptions, toast rendering, etc.) logs to console.error during the test, the assertion fails in a way that looks like a regression in save-error handling but is actually unrelated noise.\n\nReplace with a targeted check that preserves the test's intent (\"errors route through showToast, not console\") while being robust:\n\n  expect(\n    errorSpy.mock.calls.flat().some(\n      (arg) => String(arg).includes('Save failed') || String(arg).includes('disk full')\n    )\n  ).toBe(false);\n\nThis asserts the specific error message was not logged to console while tolerating incidental console.error from unrelated paths.\n\nFrom task 1793 review (reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:45:58.983Z",
+        "updatedAt": "2026-04-17T13:23:21.664Z",
         "metadata": {
           "modules": [
             "gui/src/__tests__/App.test.tsx"
@@ -40612,7 +40612,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:23:17.652Z",
+      "lastModified": "2026-04-17T13:23:21.665Z",
       "taskCount": 1937,
       "completedCount": 1666,
       "tags": [
