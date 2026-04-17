@@ -1138,4 +1138,46 @@ mod tests {
     fn type_bounding_box_as_name_none() {
         assert_eq!(Type::BoundingBox.as_name(), None);
     }
+
+    // ── Error tests (task-448) ───────────────────────────────────────────────
+
+    #[test]
+    fn type_error_construction_and_equality() {
+        // (a) Construction and equality
+        assert_eq!(Type::Error, Type::Error);
+        assert_ne!(Type::Error, Type::Real);
+        assert_ne!(Type::Error, Type::Int);
+    }
+
+    #[test]
+    fn type_error_is_error_true() {
+        // (b) Type::Error.is_error() returns true
+        assert!(Type::Error.is_error());
+    }
+
+    #[test]
+    fn type_error_is_error_false_for_others() {
+        // (c) Other types return false from is_error()
+        assert!(!Type::Real.is_error());
+        assert!(!Type::Int.is_error());
+        assert!(!Type::List(Box::new(Type::Int)).is_error());
+    }
+
+    #[test]
+    fn type_error_not_numeric() {
+        // (d) Type::Error.is_numeric() returns false
+        assert!(!Type::Error.is_numeric());
+    }
+
+    #[test]
+    fn type_error_as_name_none() {
+        // (e) Type::Error.as_name() returns None
+        assert_eq!(Type::Error.as_name(), None);
+    }
+
+    #[test]
+    fn type_error_display() {
+        // (f) Display is "<error>"
+        assert_eq!(format!("{}", Type::Error), "<error>");
+    }
 }
