@@ -214,10 +214,13 @@ pub(crate) fn compile_geometry_call(
         }
         "cylinder" => {
             if compiled_args.len() != 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "cylinder() expects 2 arguments, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "cylinder() expects 2 arguments, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             let mut it = compiled_args.into_iter();
