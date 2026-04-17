@@ -41,7 +41,7 @@
 //! the wildcard call-site that task-1936 targets.
 
 use reify_test_support::compile_source;
-use reify_types::Severity;
+use reify_types::{Diagnostic, Severity};
 
 // ── Scenario A: structure's own poisoned annotated let ────────────────────────
 
@@ -154,4 +154,23 @@ structure def S : HasX {}
          producer diagnostic from expr.rs); got: {:?}",
         errors,
     );
+}
+
+// ── Severity-robustness regression test ──────────────────────────────────────
+
+/// Robustness test: check (b) must catch a "type mismatch for trait" cascade
+/// even when emitted at `Severity::Warning` (not just `Severity::Error`).
+///
+/// If the helper only filtered `module.diagnostics` by `Severity::Error` before
+/// searching for the cascade message, a Warning-severity offender would be
+/// invisible and the test would silently pass — the invariant inverted.
+#[test]
+#[should_panic(expected = "type mismatch for trait")]
+fn helper_flags_cascade_at_warning_severity() {
+    let mut module = compile_source("structure def Dummy {}");
+    module.diagnostics = vec![
+        Diagnostic::error("unknown member 'unsupported' in scope S"),
+        Diagnostic::warning("type mismatch for trait let x: expected Length, got Error"),
+    ];
+    assert_poisoned_conformance_invariant(&module);
 }
