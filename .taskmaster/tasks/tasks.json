@@ -39073,15 +39073,9 @@
             "gui/src/shortcuts.ts"
           ],
           "memory_hints": {
-            "entities": [
-              "shortcuts.ts",
-              "ShortcutDef",
-              "ShortcutId"
-            ],
+            "entities": [],
             "queries": [
-              "shortcuts SHORTCUTS element type narrowing ShortcutId literal",
-              "SHORTCUT_IDS export redundant as const satisfies",
-              "useKeyboardShortcuts ShortcutId cast removal"
+              "resolution for: shortcuts: tighten SHORTCUTS element type to eliminate SHORTCUT_IDS + remaining ShortcutId cast"
             ]
           }
         }
@@ -40195,7 +40189,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:14:41.168Z"
+        "updatedAt": "2026-04-17T05:14:41.168Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/type_error_propagation_tests.rs"
+          ]
+        }
       },
       {
         "id": "1921",
@@ -40300,7 +40299,9 @@
       "completedCount": 1651,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T05:30:18.576Z",
+      "description": "Tasks for master context"
     }
   }
 }
