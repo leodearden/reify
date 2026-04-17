@@ -39986,13 +39986,13 @@
         "description": "In crates/reify-compiler/tests/type_error_propagation_tests.rs, the local `find_node` helper (lines 14-43) re-implements a recursive walk over CompiledExprKind, duplicating the canonical `CompiledExpr::walk` (crates/reify-types/src/expr.rs:255). The duplicated traversal is incomplete (omits ListLiteral, SetLiteral, MapLiteral, Quantifier, Match, OptionSome, RangeConstructor, AdHocSelector, Lambda, UserFunctionCall), so new variants silently break the test (found.is_some() fails). Refactor to collect nodes via `CompiledExpr::walk` then `.find(pred)`. Additionally, the relaxed integration test (lines 158-186) keys on substring `mismatch`/`incompatible` for cascade detection but misses canonical cascade phrases like 'no matching overload', 'expected ... got ...', 'cannot apply'. Either reinstate `errors.len() == 1` exact-count assertion or expand the negative substring list. (Review followup from task 448; bundles S1+S3.)",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [
           "448"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T04:09:46.891Z",
+        "updatedAt": "2026-04-17T05:02:58.039Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests/type_error_propagation_tests.rs"
@@ -40138,9 +40138,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T04:59:13.232Z",
+      "lastModified": "2026-04-17T05:02:58.041Z",
       "taskCount": 1912,
-      "completedCount": 1643,
+      "completedCount": 1644,
       "tags": [
         "master"
       ]
