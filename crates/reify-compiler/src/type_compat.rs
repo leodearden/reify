@@ -337,6 +337,28 @@ mod tests {
     /// is added.
     #[test]
     fn every_binop_variant_propagates_error_from_either_operand() {
+        // Compile-time exhaustiveness guard: adding a new BinOp variant to
+        // the enum is a build error here until the `ops` list below is also
+        // updated. Keeps the test's enumeration honest as the enum grows.
+        #[allow(dead_code)]
+        fn _exhaustive_binop_check(op: BinOp) {
+            match op {
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Mod
+                | BinOp::Pow
+                | BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::And
+                | BinOp::Or => {}
+            }
+        }
         // (op, expected_non_error_result_for_(Real, Real))_label — the second
         // tuple element is just a documentation aid for the reviewer; we
         // never assert on it. We only assert that, with at least one operand

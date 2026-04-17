@@ -11,11 +11,15 @@ const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "value
 /// the diagnostics buffer already contains at least one error-severity entry.
 ///
 /// Anti-cascade contract (task-448, amendment-round-2 S1): every producer of
-/// `Type::Error` must be paired with a root-cause `Severity::Error` diagnostic
-/// — either pushed immediately by the caller, or emitted earlier by a
-/// recursive sub-expression compile. Routing all poison emissions through this
-/// helper makes "silent poison leak" bugs (poison without a diagnostic) caught
-/// in tests rather than silently degrading downstream compatibility checks.
+/// a standalone `Type::Error` *literal node* must be paired with a root-cause
+/// `Severity::Error` diagnostic — either pushed immediately by the caller, or
+/// emitted earlier by a recursive sub-expression compile. Routing every
+/// poison *literal emission* through this helper makes "silent poison leak"
+/// bugs (poison without a diagnostic) caught in tests rather than silently
+/// degrading downstream compatibility checks. Inline `Type::Error` used as a
+/// compound node's type *field* (e.g. IndexAccess result_type, quantifier
+/// elem_type) is not covered by this helper — those sites rely on their
+/// compiled sub-expression already having pushed the diagnostic.
 ///
 /// Note: this only enforces "AT LEAST one error somewhere in `diagnostics`",
 /// not "EXACTLY this poison was paired with EXACTLY that diagnostic" — the

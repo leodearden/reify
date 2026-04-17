@@ -81,6 +81,15 @@ structure S {
         "expected .sum on Type::Error object to propagate Type::Error, got {:?}",
         expr.result_type,
     );
+    // Amendment S4 invariant: the poisoned aggregation is emitted as a
+    // Literal (via make_poison_literal), not as a dead MethodCall — so any
+    // downstream pass pattern-matching on MethodCall cannot try to evaluate
+    // it. Pin the node kind so a revert to MethodCall fails this test.
+    assert!(
+        matches!(expr.kind, CompiledExprKind::Literal { .. }),
+        "expected poisoned aggregation to be emitted as a Literal node (S4 invariant), got {:?}",
+        expr.kind,
+    );
 }
 
 // ── step-7: index access on error-typed object ───────────────────────────────
