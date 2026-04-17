@@ -21,6 +21,22 @@ describe('selectionStore', () => {
     });
   });
 
+  it('has empty selectedEntities array initially', () => {
+    createRoot((dispose) => {
+      const { state } = createSelectionStore();
+      expect(state.selectedEntities).toEqual([]);
+      dispose();
+    });
+  });
+
+  it('has null anchorEntity initially', () => {
+    createRoot((dispose) => {
+      const { state } = createSelectionStore();
+      expect(state.anchorEntity).toBeNull();
+      dispose();
+    });
+  });
+
   it('selectEntity sets selectedEntity', () => {
     createRoot((dispose) => {
       const { state, selectEntity } = createSelectionStore();
