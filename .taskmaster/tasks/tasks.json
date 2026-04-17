@@ -39976,7 +39976,12 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T03:33:16.170Z"
+        "updatedAt": "2026-04-17T03:33:16.170Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests/type_error_propagation_tests.rs"
+          ]
+        }
       },
       {
         "id": 1911,
