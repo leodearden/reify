@@ -171,6 +171,22 @@ pub(crate) fn check_trait_conformance(
     // (task 1834 step-8) so unannotated let defaults contribute their *inferred*
     // type to requirement-matching, instead of the previous `Type::Real` fallback.
     //
+    // INVARIANTS that make the name-only key safe (no `AvailableDefaultKind`
+    // discriminator, unlike `available_defaults` below):
+    //   1. Only `DefaultKind::Let { cell_type: None }` inserts into this cache —
+    //      no cross-kind writes, so a `Param`-named `x` and a `Let`-named `x`
+    //      never collide on this map.
+    //   2. Only the `DefaultKind::Let` arm of the injection loop reads from
+    //      this cache — reads are kind-guarded by the enclosing match, so
+    //      the lookup cannot be satisfied by a non-Let entry.
+    //   3. `collect_all_requirements` deduplicates defaults by (name, kind)
+    //      across the trait-bound set, so at most one unannotated-let default
+    //      with a given name reaches this loop.
+    //
+    // If any of these ever drift, key the cache on
+    // `(String, AvailableDefaultKind)` to match `available_defaults` for
+    // symmetry and explicit kind discrimination.
+    //
     // DESIGN LIMITATION (acknowledged simplification): type inference for
     // unannotated lets proceeds in `ctx.defaults` iteration order.  Two
     // unannotated lets that forward-reference each other — e.g., `let a = b + 1mm`
@@ -434,17 +450,20 @@ pub(crate) fn check_trait_conformance(
                     // branches: unannotated lets always populate the cache there,
                     // annotated lets never do.
                     //
-                    // Cache miss safety (task 1834 amendment —
-                    // reviewer_comprehensive robustness fix): `.expect` would
-                    // panic on user input if a future refactor ever decoupled the
+                    // Cache miss handling (task 1834 reviewer_comprehensive
+                    // robustness fix): a cache miss on the `None` arm means the
+                    // pre-register pass did not compile this expression, which
+                    // would only happen if a future refactor decoupled the
                     // pre-register guard (`!structure_members.contains_key(name)`)
-                    // from the injection guard, or if the cache key — currently a
-                    // name-only string — collided with another slot (no kind
-                    // discriminator today).  Fall back to recompiling the
-                    // expression (equivalent to old behavior) to surface any
-                    // drift as a diagnostic, not a panic.  `debug_assert!`
-                    // upholds the invariant in test/dev builds so the refactor
-                    // is caught before reaching release.
+                    // from the injection guard or changed the cache key (today
+                    // name-only, keyed on the invariants documented beside the
+                    // cache declaration above).  Emit a single
+                    // internal-consistency diagnostic and skip injection rather
+                    // than silently recompiling — a recompile would risk
+                    // duplicating diagnostics that the pre-register pass already
+                    // pushed for the same AST node if the invariants ever drift
+                    // such that both passes run for one name.  `debug_assert!`
+                    // still trips in dev/test so the drift is caught early.
                     let compiled_expr = match cell_type {
                         Some(_) => {
                             compile_expr(&let_decl.value, scope, enum_defs, functions, diagnostics)
@@ -457,15 +476,27 @@ pub(crate) fn check_trait_conformance(
                                  drift between the pre-register guard and the injection guard",
                                 name
                             );
-                            inferred_let_exprs.remove(name).unwrap_or_else(|| {
-                                compile_expr(
-                                    &let_decl.value,
-                                    scope,
-                                    enum_defs,
-                                    functions,
-                                    diagnostics,
-                                )
-                            })
+                            match inferred_let_exprs.remove(name) {
+                                Some(ce) => ce,
+                                None => {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "internal error: compiled expression for unannotated \
+                                             trait let '{}' was not cached by the pre-register \
+                                             pass; this indicates a drift between the pre-register \
+                                             and injection guards in conformance.rs",
+                                            name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            default.span,
+                                            "internal consistency",
+                                        )),
+                                    );
+                                    // Skip injection for this default rather than
+                                    // silently recompiling (see comment block above).
+                                    continue;
+                                }
+                            }
                         }
                     };
 
