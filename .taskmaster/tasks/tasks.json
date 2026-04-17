@@ -39818,7 +39818,7 @@
         "description": "gui/src/stores/viewStateStore.ts line 122 has a misleading comment:\n\n  // Mutations (stubs — fully implemented in later steps)\n\nBut all four mutations below it (setVisibility, setVisibilityWithoutCascade, resetToInherit, showOnly, cycleCascading) are fully implemented and covered by tests in gui/src/__tests__/viewStateStore.test.ts. The \"stubs — fully implemented in later steps\" phrasing is a leftover from initial scaffolding and will mislead future readers into thinking the section is incomplete.\n\nFix: replace the comment with a neutral section header such as:\n\n  // Mutations\n\nOr drop the parenthetical and keep \"Mutations\".",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -39836,7 +39836,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-17T03:45:13.392Z"
+        "updatedAt": "2026-04-17T03:47:24.659Z"
       },
       {
         "id": "1903",
@@ -40051,7 +40051,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T03:45:56.367Z",
+      "lastModified": "2026-04-17T03:47:24.662Z",
       "taskCount": 1909,
       "completedCount": 1641,
       "tags": [
