@@ -233,30 +233,75 @@ export function createViewStateStore() {
 
   /**
    * Regenerate all `auto:*` views from the current tree and active purposes,
-   * then preserve any `user:*` views unchanged.
+   * preserve any `user:*` views, then reconcile the active view:
    *
-   * Step-10 version: populates views only, does NOT yet reconcile explicit
-   * state against the active view (that is added in step-12).
+   * - active is `auto:*` and view still exists → copy its visibility into explicit.
+   * - active is `auto:*` and view was removed (purpose deactivated) → fall back
+   *   to `auto:default` and copy its visibility.
+   * - active is `user:*` and view exists → keep explicit entries for paths that
+   *   are still in the tree; leave NEW paths unset so defaultRuleFor handles them.
+   * - active references a missing view → fall back to `auto:default`.
    */
   function regenerateAutoViews(tree: EntityTreeNode[], activePurposes: string[] = []): void {
     const freshDefault = generateDefaultView(tree);
     const freshAllGeo = generateAllGeometryView(tree);
     const freshPurpose = generatePurposeViews(tree, activePurposes);
 
+    // Build set of all paths in the new tree for user-view pruning.
+    const treePathSet = new Set(Object.keys(freshDefault.visibility));
+
     setState(produce((s) => {
-      // Delete all stale auto:* entries.
+      // ------------------------------------------------------------------
+      // 1. Replace all auto:* views with fresh ones.
+      // ------------------------------------------------------------------
       for (const key of Object.keys(s.views)) {
         if (key.startsWith('auto:')) {
           delete s.views[key];
         }
       }
-      // Insert fresh auto views.
       s.views[freshDefault.id] = freshDefault;
       s.views[freshAllGeo.id] = freshAllGeo;
       for (const pv of freshPurpose) {
         s.views[pv.id] = pv;
       }
-      // user:* views are left untouched (not touched above).
+      // user:* views are left untouched.
+
+      // ------------------------------------------------------------------
+      // 2. Reconcile active view.
+      // ------------------------------------------------------------------
+      const activeId = s.activeViewId;
+
+      if (activeId.startsWith('auto:')) {
+        // Active is an auto view. If it still exists, apply it; otherwise fall back.
+        const target = s.views[activeId] ?? s.views['auto:default'];
+        const targetId = s.views[activeId] ? activeId : 'auto:default';
+        s.activeViewId = targetId;
+        s.explicit = { ...target.visibility };
+
+      } else if (activeId.startsWith('user:')) {
+        // Active is a user view. Keep entries for paths still in the tree;
+        // remove entries for paths that are no longer in the tree;
+        // leave new paths unset so defaultRuleFor applies via walk-up.
+        const userView = s.views[activeId];
+        if (!userView) {
+          // User view was somehow deleted — fall back to default.
+          s.activeViewId = 'auto:default';
+          s.explicit = { ...freshDefault.visibility };
+        } else {
+          // Prune explicit entries for paths no longer in tree.
+          for (const path of Object.keys(s.explicit)) {
+            if (!treePathSet.has(path)) {
+              delete s.explicit[path];
+            }
+          }
+          // Do NOT add entries for new paths — leave them unset.
+        }
+
+      } else {
+        // Unknown active view — fall back to default.
+        s.activeViewId = 'auto:default';
+        s.explicit = { ...freshDefault.visibility };
+      }
     }));
   }
 
