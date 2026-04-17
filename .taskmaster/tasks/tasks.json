@@ -21222,7 +21222,7 @@
         "testStrategy": "Ensure that the .catch() block correctly handles RangeError and that the bounds check prevents out-of-bounds access.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Add .catch() to handle RangeError",
             "description": "Implement a .catch() block in the requestDefinition promise chain to handle stale document RangeError.",
             "dependencies": [],
@@ -21232,7 +21232,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add bounds check after isConnected guard",
             "description": "Implement a bounds check `if (line+1 > view.state.doc.lines) return;` after the isConnected guard.",
             "dependencies": [],
@@ -33781,7 +33781,7 @@
         "testStrategy": "1. Verify the existence of make_analytical_field. 2. Test run_dim_metadata_test to ensure it correctly uses make_analytical_field with the new source parameter. 3. Validate memory_hints integration by checking execution context behavior.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Verify existence of make_analytical_field",
             "description": "Check if make_analytical_field is implemented in the codebase.",
             "dependencies": [],
@@ -33792,7 +33792,7 @@
             "updatedAt": "2026-04-13T23:43:38.636Z"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add memory_hints for execution context",
             "description": "Integrate memory_hints to improve execution context handling.",
             "dependencies": [],
@@ -35337,7 +35337,7 @@
         "testStrategy": "Ensure that the 'Fillet' needle is correctly restored by running tests that check for missing geometry arguments. Verify the generalized assert_rejected_at_compile by testing both scenarios: with None and Some(f) options, ensuring correct behavior in each case.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Restore 'Fillet' needle",
             "description": "Add 'Fillet' back to warning_needles in build_modify_missing_arg_no_kernel_error and update the doc comment.",
             "dependencies": [],
@@ -35347,7 +35347,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Generalize assert_rejected_at_compile",
             "description": "Modify the helper to accept Option for primitive check.",
             "dependencies": [],
@@ -38320,7 +38320,7 @@
         "testStrategy": "1. Verify that the updated comment in Editor.test.tsx:163 accurately describes the behavior by reviewing the code logic. 2. Ensure the waitFor pattern in App.test.tsx:~1340 is correctly implemented by running the test and confirming it passes consistently.",
         "subtasks": [
           {
-            "id": "1",
+            "id": 1,
             "title": "Update misleading comment in Editor.test.tsx",
             "description": "Change the comment at Editor.test.tsx:163 to correctly describe the debounce timer mechanism.",
             "dependencies": [],
@@ -38330,7 +38330,7 @@
             "parentId": "undefined"
           },
           {
-            "id": "2",
+            "id": 2,
             "title": "Add defensive waitFor in App.test.tsx",
             "description": "Add await waitFor(() => expect(capturedEditorStore).toBeTruthy()) in App.test.tsx:~1340.",
             "dependencies": [],
@@ -40535,7 +40535,13 @@
           "modules": [
             "crates/reify-compiler/tests",
             "crates/reify-compiler/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add conformance regression test for Type::Error wildcard in type_compat"
+            ]
+          }
         }
       },
       {
@@ -40691,16 +40697,23 @@
         "description": "Two review follow-ups from task 1930:\n\n(1) Code reuse: Replace the raw `u32::MAX as usize` literal at `crates/reify-types/src/source_location.rs:45` with `crate::SourceSpan::PRELUDE_SENTINEL_OFFSET` (both symbols live in the same `reify-types` crate, so the migration is trivial). Update the companion test `byte_offset_to_line_col_prelude_sentinel_returns_fallback` to reference the constant. Drop the \"a follow-up can migrate it to reference this constant\" caveat from the `PRELUDE_SENTINEL_OFFSET` rustdoc at `crates/reify-types/src/diagnostics.rs:44-46` once done.\n\n(2) Test quality: In `offset_to_line_col_fast_matches_original_every_offset` (`gui/src-tauri/src/tests/engine_tests.rs:1397-1411`), the sentinel convergence assertion `fast_sentinel == orig_sentinel` is effectively `(1,1) == (1,1)` by construction — a regression that broke both functions identically (e.g. someone changed both early-return values) would still pass. Strengthen by also asserting the literal `assert_eq!(fast_sentinel, (1, 1))` so the expected value is pinned in the convergence test too.\n\nAcceptance:\n- `source_location.rs` imports/uses `crate::SourceSpan::PRELUDE_SENTINEL_OFFSET` (no remaining `u32::MAX as usize` literal at the sentinel check).\n- Caveat removed from `PRELUDE_SENTINEL_OFFSET` rustdoc.\n- Convergence test pins the literal `(1, 1)` for the sentinel in addition to the cross-check.\n- `cargo test -p reify-types` and GUI engine tests green.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:43:42.843Z"
+        "updatedAt": "2026-04-17T13:47:02.921Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src/diagnostics.rs",
+            "crates/reify-types/src/source_location.rs",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:46:30.416Z",
+      "lastModified": "2026-04-17T13:47:02.925Z",
       "taskCount": 1943,
       "completedCount": 1673,
       "tags": [
