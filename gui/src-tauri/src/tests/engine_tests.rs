@@ -3117,6 +3117,39 @@ fn all_new_commands_callable_on_bracket_fixture() {
     );
 }
 
+/// In debug builds, build_template_node must panic (via debug_assert) when the
+/// compiled module contains duplicate template names.
+///
+/// The compiler guarantees unique names within a well-formed module; this test
+/// pins the invariant so future changes that accidentally produce duplicates
+/// surface loudly in development builds.  Release builds retain the graceful
+/// first-match behaviour.
+///
+/// This test pins the invariant so future changes that violate it surface loudly.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "template names must be unique")]
+fn build_template_node_panics_on_duplicate_template_names_in_debug() {
+    use reify_types::ModulePath;
+
+    let dup1 = TopologyTemplateBuilder::new("Dup").build();
+    let dup2 = TopologyTemplateBuilder::new("Dup").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("m"))
+        .template(dup1)
+        .template(dup2)
+        .build();
+
+    let first = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Dup")
+        .expect("Dup template must be in the module");
+
+    // With the current impl (no debug_assert), this does NOT panic, so
+    // #[should_panic] makes the test FAIL — that is the intended red-phase state.
+    build_template_node(first, "Dup", &compiled);
+}
+
 // ---- Cache tests: parsed_cache + line_offsets_cache ----
 
 /// Fresh session returns None from parsed_cache_for_test.
