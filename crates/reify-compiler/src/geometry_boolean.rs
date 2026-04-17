@@ -100,11 +100,14 @@ pub(crate) fn compile_boolean_op(
         }
         "union_all" | "intersection_all" => {
             if args.len() < 2 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "{}() expects at least 2 arguments, got {}",
-                    name,
-                    args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "{}() expects at least 2 arguments, got {}",
+                        name,
+                        args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+                );
                 return None;
             }
             let bool_op = match name {
