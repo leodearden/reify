@@ -708,6 +708,20 @@ pub struct TypeExpr {
     pub span: SourceSpan,
 }
 
+impl TypeExpr {
+    /// If this is a [`TypeExprKind::Named`] variant, return the name and type args.
+    ///
+    /// Returns `None` for [`TypeExprKind::DimensionalOp`]. Callers that need to handle
+    /// the DimensionalOp case should match on `self.kind` directly to ensure the
+    /// dimensional-expression diagnostic is emitted.
+    pub fn as_named(&self) -> Option<(&str, &[TypeExpr])> {
+        match &self.kind {
+            TypeExprKind::Named { name, type_args } => Some((name.as_str(), type_args.as_slice())),
+            TypeExprKind::DimensionalOp { .. } => None,
+        }
+    }
+}
+
 impl fmt::Display for TypeExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {

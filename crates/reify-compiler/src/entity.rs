@@ -540,7 +540,17 @@ pub(crate) fn compile_entity(
                                 }
                             })
                         } else {
-                            Type::Real // DimensionalOp shouldn't appear as a trait bound type arg
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unexpected dimensional expression in type argument: {}",
+                                    ta
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    ta.span,
+                                    "unexpected dimensional expression in type argument",
+                                )),
+                            );
+                            Type::Real
                         }
                     })
                     .collect();
@@ -804,7 +814,17 @@ pub(crate) fn compile_entity(
                                 }
                             })
                         } else {
-                            Type::Real // DimensionalOp shouldn't appear as a subcomponent type arg
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unexpected dimensional expression in type argument: {}",
+                                    ta
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    ta.span,
+                                    "unexpected dimensional expression in type argument",
+                                )),
+                            );
+                            Type::Real
                         }
                     })
                     .collect();
