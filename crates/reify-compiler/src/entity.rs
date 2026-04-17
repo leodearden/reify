@@ -232,7 +232,7 @@ pub(crate) fn compile_entity(
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
     field_registry: &HashMap<String, &CompiledField>,
-    constraint_def_registry: &HashMap<String, &reify_syntax::ConstraintDef>,
+    constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
     unit_registry: &UnitRegistry,
     alias_registry: &TypeAliasRegistry,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
@@ -1198,8 +1198,8 @@ pub(crate) fn compile_entity(
 
                 // Propagate the constraint def's `@optimized("target")` annotation (if any)
                 // onto each compiled predicate so the Engine's dispatch shim can route it.
-                let def_optimized_target =
-                    crate::annotations::optimized_target(&def.annotations);
+                // The value was extracted once during `compile_constraint_def`; no re-scan needed.
+                let def_optimized_target = def.annotations_optimized_target.clone();
 
                 // For each predicate in the constraint def, substitute params with args
                 // and compile the resulting expression in the calling entity's scope.

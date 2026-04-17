@@ -57,6 +57,63 @@ use reify_types::{
     UnOp, Value, ValueCellId,
 };
 
+/// Compile a single `constraint def` declaration into a [`CompiledConstraintDef`].
+///
+/// Runs annotation/pragma lowering and validation exactly once per declaration,
+/// resolves param types where possible, and caches the `@optimized` target so
+/// instantiation sites can read it without re-scanning annotations.
+fn compile_constraint_def(
+    c: &reify_syntax::ConstraintDef,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledConstraintDef {
+    // Extract @optimized target from raw syntax annotations BEFORE lowering so the
+    // raw-annotation extractor sees the original parse tree.
+    let annotations_optimized_target = crate::annotations::optimized_target(&c.annotations);
+
+    // Lower and validate annotations/pragmas (emits diagnostics for unknown/misplaced items).
+    let annotations = lower_annotations(&c.annotations, diagnostics);
+    validate_annotations(&annotations, "constraint_def", diagnostics);
+    validate_pragmas(&c.pragmas, "constraint_def", diagnostics);
+
+    // Convert syntax TypeParamDecls to compiled TypeParams.
+    let type_params = convert_type_params(&c.type_params);
+
+    // Build a set of type parameter names so param type resolution can accept them.
+    let type_param_names: std::collections::HashSet<String> =
+        type_params.iter().map(|tp| tp.name.clone()).collect();
+
+    // Compile each param: resolve the cell type if possible, keep the default as AST.
+    let params: Vec<CompiledConstraintParam> = c
+        .params
+        .iter()
+        .map(|param| {
+            let cell_type = param.type_expr.as_ref().and_then(|te| {
+                resolve_type_expr_with_aliases(te, &type_param_names, alias_registry, diagnostics)
+            });
+            CompiledConstraintParam {
+                name: param.name.clone(),
+                cell_type,
+                default: param.default.clone(),
+                span: param.span,
+            }
+        })
+        .collect();
+
+    CompiledConstraintDef {
+        name: c.name.clone(),
+        is_pub: c.is_pub,
+        type_params,
+        params,
+        predicates: c.predicates.clone(),
+        span: c.span,
+        content_hash: c.content_hash.clone(),
+        pragmas: c.pragmas.clone(),
+        annotations,
+        annotations_optimized_target,
+    }
+}
+
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.
@@ -506,39 +563,31 @@ pub(crate) fn compile_with_prelude_refs(
     let field_registry: HashMap<String, &CompiledField> =
         fields.iter().map(|f| (f.name.clone(), f)).collect();
 
-    // Collect owned clones of pub constraint defs from prelude modules.
-    // These must outlive the registry borrow below.
-    let prelude_constraint_defs: Vec<reify_syntax::ConstraintDef> = prelude
-        .iter()
-        .flat_map(|m| m.constraint_defs.iter().filter(|c| c.is_pub).cloned())
-        .collect();
-
-    // Build a constraint def registry so entity scopes can resolve constraint instantiations.
-    // Prelude defs (from imported modules) are seeded first; module-local defs override them.
-    let mut constraint_def_registry: HashMap<String, &reify_syntax::ConstraintDef> =
-        prelude_constraint_defs
-            .iter()
-            .map(|c| (c.name.clone(), c))
-            .collect();
-    for decl in &parsed.declarations {
-        if let reify_syntax::Declaration::Constraint(c) = decl {
-            constraint_def_registry.insert(c.name.clone(), c);
-        }
-    }
-
-    // Collect constraint defs from the current module so they can be propagated
-    // to downstream modules that import this one.
-    let constraint_defs: Vec<reify_syntax::ConstraintDef> = parsed
+    // Compile all local constraint defs in a single pass.
+    // Results are used both to populate the module output and to seed the registry.
+    let constraint_defs: Vec<CompiledConstraintDef> = parsed
         .declarations
         .iter()
         .filter_map(|d| {
             if let reify_syntax::Declaration::Constraint(c) = d {
-                Some(c.clone())
+                Some(compile_constraint_def(c, &alias_registry, &mut diagnostics))
             } else {
                 None
             }
         })
         .collect();
+
+    // Build a constraint def registry so entity scopes can resolve constraint instantiations.
+    // Prelude defs (pub-only, from imported modules) are seeded first; local defs override.
+    let mut constraint_def_registry: HashMap<String, &CompiledConstraintDef> = prelude
+        .iter()
+        .flat_map(|m| m.constraint_defs.iter().filter(|c| c.is_pub))
+        .map(|c| (c.name.clone(), c))
+        .collect();
+    // Local defs override prelude defs silently (by design: local always wins).
+    for cd in &constraint_defs {
+        constraint_def_registry.insert(cd.name.clone(), cd);
+    }
 
     let mut pending_bound_checks: Vec<PendingBoundCheck> = Vec::new();
 
@@ -624,13 +673,9 @@ pub(crate) fn compile_with_prelude_refs(
             reify_syntax::Declaration::Purpose(_) => {
                 // Compiled in dedicated purpose pass below.
             }
-            reify_syntax::Declaration::Constraint(c) => {
-                // Constraint definitions: lowering/compilation not yet implemented.
-                // However, validate annotations and pragmas so that unknown or
-                // misplaced annotations are reported the same as for other decls.
-                let lowered_anns = lower_annotations(&c.annotations, &mut diagnostics);
-                validate_annotations(&lowered_anns, "constraint_def", &mut diagnostics);
-                validate_pragmas(&c.pragmas, "constraint_def", &mut diagnostics);
+            reify_syntax::Declaration::Constraint(_) => {
+                // Already compiled by the constraint_defs pre-pass above;
+                // annotation/pragma validation ran there too.
             }
             reify_syntax::Declaration::Unit(_) => {
                 // Already compiled in unit pre-pass above.
