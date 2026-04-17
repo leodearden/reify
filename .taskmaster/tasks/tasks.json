@@ -40414,6 +40414,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-17T05:51:28.630Z"
+      },
+      {
+        "id": "1933",
+        "title": "Consolidate overlapping Editor debounce tests",
+        "description": "The new 'Editor debounce constant' describe block in gui/src/__tests__/Editor.test.tsx:71-89 overlaps with the existing 'calls bridge.updateSource after 300ms debounce' test at line 110 — both dispatch an edit and assert updateSource fires after the debounce. The unique value of the new test is the (EDITOR_DEBOUNCE_MS-1)ms negative-boundary assertion. Fold the negative-boundary assertion into the existing test and remove the duplicate describe block, OR keep the new test and delete/retitle the older one. Also update the older test's title and inline '// After 300ms debounce' comment to reference EDITOR_DEBOUNCE_MS for consistency.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -40423,7 +40434,10 @@
       "completedCount": 1657,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T06:29:44.706Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-17T06:29:44.820Z"
     }
   }
 }
