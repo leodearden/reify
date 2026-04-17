@@ -1555,4 +1555,104 @@ describe('createSelection', () => {
       expect(wireframe2.geometry.sourceGeometry).toBe(newGeom);
     });
   });
+
+  describe('refreshSelected rAF coalescing', () => {
+    function setupWithAsyncRaf(meshMap?: Map<string, any>) {
+      // Install async rAF mock before creating selection
+      globalThis.requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
+        rafCallbacks.push(cb);
+        return rafIdCounter++;
+      }) as unknown as typeof requestAnimationFrame;
+      globalThis.cancelAnimationFrame = vi.fn((_id: number) => {}) as unknown as typeof cancelAnimationFrame;
+
+      const result = setup(meshMap);
+      return result;
+    }
+
+    afterEach(() => {
+      // Restore synchronous rAF/cAF for other test sections
+      globalThis.requestAnimationFrame = syncRAF;
+      globalThis.cancelAnimationFrame = syncCAF;
+    });
+
+    it('multiple rapid refreshSelected calls coalesce into one rebuild per frame', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setupWithAsyncRaf(meshMap);
+
+      selection.setSelected('A');
+
+      mockSceneAdd.mockClear();
+      mockSceneRemove.mockClear();
+
+      // Call refreshSelected three times in the same frame
+      selection.refreshSelected();
+      selection.refreshSelected();
+      selection.refreshSelected();
+
+      // No rebuild should have happened yet (rAF pending)
+      expect(mockSceneRemove).not.toHaveBeenCalled();
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+
+      // Only one rAF should have been scheduled (coalescing)
+      expect(globalThis.requestAnimationFrame).toHaveBeenCalledTimes(1);
+
+      // Fire the single rAF callback
+      rafCallbacks[0](performance.now());
+
+      // Exactly one rebuild: remove + re-add
+      expect(mockSceneRemove).toHaveBeenCalledTimes(1);
+      expect(mockSceneAdd).toHaveBeenCalledTimes(1);
+    });
+
+    it('dispose cancels outstanding refreshSelected rAF', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setupWithAsyncRaf(meshMap);
+
+      selection.setSelected('A');
+
+      mockSceneAdd.mockClear();
+      mockSceneRemove.mockClear();
+
+      selection.refreshSelected();
+      expect(globalThis.requestAnimationFrame).toHaveBeenCalledTimes(1);
+      const rafId = (globalThis.requestAnimationFrame as any).mock.results[0].value;
+
+      selection.dispose();
+
+      // cancelAnimationFrame must be called with the refresh rAF id
+      expect(globalThis.cancelAnimationFrame).toHaveBeenCalledWith(rafId);
+
+      // If someone were to fire the rAF callback after dispose, nothing should rebuild
+      // (isDisposed guard prevents work)
+      rafCallbacks[0]?.(performance.now());
+      expect(mockSceneAdd).not.toHaveBeenCalled();
+    });
+
+    it('second refreshSelected call after rAF fires schedules a new rAF', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setupWithAsyncRaf(meshMap);
+
+      selection.setSelected('A');
+      mockSceneAdd.mockClear();
+      mockSceneRemove.mockClear();
+
+      // First refresh cycle
+      selection.refreshSelected();
+      rafCallbacks[0](performance.now()); // fire first rAF
+      expect(mockSceneRemove).toHaveBeenCalledTimes(1);
+
+      mockSceneRemove.mockClear();
+      mockSceneAdd.mockClear();
+      rafCallbacks = [];
+
+      // Second refresh cycle after the first completed
+      selection.refreshSelected();
+      expect(globalThis.requestAnimationFrame).toHaveBeenCalledTimes(2); // total
+      rafCallbacks[0](performance.now());
+      expect(mockSceneRemove).toHaveBeenCalledTimes(1);
+    });
+  });
 });

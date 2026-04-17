@@ -87,6 +87,8 @@ export function createSelection(options: SelectionOptions): SelectionContext {
   let pendingMoveEvent: MouseEvent | null = null;
   let hoverRafPending = false;
   let hoverRafId = 0;
+  let refreshRafPending = false;
+  let refreshRafId = 0;
 
   function processHover(): void {
     hoverRafPending = false;
@@ -210,13 +212,24 @@ export function createSelection(options: SelectionOptions): SelectionContext {
 
   function refreshSelected(): void {
     if (wireframes.size === 0) return;
-    // Rebuild all active wireframes (e.g. after geometry update)
-    const paths = Array.from(wireframes.keys());
-    for (const path of paths) {
-      removeWireframeFor(path);
-    }
-    for (const path of paths) {
-      addWireframeFor(path);
+    // Coalesce rapid calls (e.g. from meshManager sync ticks) into a single
+    // rebuild per animation frame so we don't churn GPU buffers on every tick
+    // when N entities are selected.
+    if (!refreshRafPending) {
+      refreshRafPending = true;
+      refreshRafId = requestAnimationFrame(() => {
+        refreshRafPending = false;
+        refreshRafId = 0;
+        if (isDisposed) return;
+        // Rebuild all active wireframes (e.g. after geometry update)
+        const paths = Array.from(wireframes.keys());
+        for (const path of paths) {
+          removeWireframeFor(path);
+        }
+        for (const path of paths) {
+          addWireframeFor(path);
+        }
+      });
     }
   }
 
@@ -290,6 +303,11 @@ export function createSelection(options: SelectionOptions): SelectionContext {
       cancelAnimationFrame(hoverRafId);
       hoverRafPending = false;
       hoverRafId = 0;
+    }
+    if (refreshRafPending) {
+      cancelAnimationFrame(refreshRafId);
+      refreshRafPending = false;
+      refreshRafId = 0;
     }
     domElement.removeEventListener('pointermove', handlePointerMove);
     domElement.removeEventListener('pointerdown', handlePointerDown);
