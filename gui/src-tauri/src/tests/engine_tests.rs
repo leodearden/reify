@@ -2,7 +2,7 @@ use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
-    MockGeometryKernel, bracket_source, bracket_source_with_width,
+    FailingMockGeometryKernel, MockGeometryKernel, bracket_source, bracket_source_with_width,
     warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
 };
 use reify_types::ExportFormat;
@@ -3342,5 +3342,48 @@ fn build_gui_state_tessellation_diagnostics_empty_on_clean_source() {
         state.tessellation_diagnostics.is_empty(),
         "expected empty tessellation_diagnostics after successful tessellation, got {:?}",
         state.tessellation_diagnostics
+    );
+}
+
+#[test]
+fn build_gui_state_captures_tessellation_errors_from_failing_kernel() {
+    let checker = SimpleConstraintChecker;
+    // FailingMockGeometryKernel::execute always returns Err, causing the eval
+    // pipeline to emit Diagnostic::error("geometry error: ...") via
+    // tessellate_from_values.
+    let kernel = FailingMockGeometryKernel;
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed even with failing geometry kernel");
+
+    // The failing kernel forces tessellation errors to be captured.
+    assert!(
+        !state.tessellation_diagnostics.is_empty(),
+        "expected non-empty tessellation_diagnostics from failing kernel"
+    );
+
+    // Every diagnostic must have severity == "Error"
+    for diag in &state.tessellation_diagnostics {
+        assert_eq!(
+            diag.severity, "Error",
+            "expected severity 'Error', got '{}'",
+            diag.severity
+        );
+    }
+
+    // At least one diagnostic message must mention "geometry"
+    assert!(
+        state
+            .tessellation_diagnostics
+            .iter()
+            .any(|d| d.message.to_lowercase().contains("geometry")),
+        "expected at least one diagnostic message containing 'geometry', got: {:?}",
+        state
+            .tessellation_diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
