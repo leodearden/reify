@@ -234,10 +234,13 @@ pub(crate) fn compile_geometry_call(
         }
         "sphere" => {
             if compiled_args.len() != 1 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "sphere() expects 1 argument, got {}",
-                    compiled_args.len()
-                )));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "sphere() expects 1 argument, got {}",
+                        compiled_args.len()
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
+                );
                 return None;
             }
             Some(vec![CompiledGeometryOp::Primitive {
