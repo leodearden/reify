@@ -1719,3 +1719,122 @@ fn test_expect_binop_extracts_op_and_operands() {
     );
     assert_eq!(dimension, DimensionVector::LENGTH);
 }
+
+// ── step-7 (task-765): cross-prelude collision emits a warning ─────────────────
+
+/// When two prelude modules export the same pub unit name, `compile_with_prelude`
+/// should emit exactly one `Severity::Warning` diagnostic whose message:
+/// (a) mentions the unit name 'foo',
+/// (b) names both conflicting module paths ('mod_a' and 'mod_b'),
+/// (c) mentions 'prelude' (in message or label).
+///
+/// The compilation must still succeed (no Error diagnostics), and last-wins
+/// ordering is preserved: the later module's (mod_b's) factor 2.0 is used.
+#[test]
+fn prelude_module_unit_collision_emits_warning() {
+    // mod_a: pub unit foo with SI factor 1.0 m
+    let mod_a_parsed = reify_syntax::parse(
+        "pub unit foo : Length = 1.0",
+        ModulePath::single("mod_a"),
+    );
+    assert!(
+        mod_a_parsed.errors.is_empty(),
+        "parse errors in mod_a: {:?}",
+        mod_a_parsed.errors
+    );
+    let mod_a = compile(&mod_a_parsed);
+    assert!(
+        errors_only(&mod_a).is_empty(),
+        "mod_a compilation errors: {:?}",
+        errors_only(&mod_a)
+    );
+
+    // mod_b: pub unit foo with SI factor 2.0 m — same name, different factor
+    let mod_b_parsed = reify_syntax::parse(
+        "pub unit foo : Length = 2.0",
+        ModulePath::single("mod_b"),
+    );
+    assert!(
+        mod_b_parsed.errors.is_empty(),
+        "parse errors in mod_b: {:?}",
+        mod_b_parsed.errors
+    );
+    let mod_b = compile(&mod_b_parsed);
+    assert!(
+        errors_only(&mod_b).is_empty(),
+        "mod_b compilation errors: {:?}",
+        errors_only(&mod_b)
+    );
+
+    // User module uses `foo` (which will resolve to mod_b's definition via last-wins).
+    // `unit bar : Length = 1foo` means bar's SI factor = 1 * foo's factor.
+    let user_parsed = reify_syntax::parse(
+        "unit bar : Length = 1foo",
+        ModulePath::single("user_module"),
+    );
+    assert!(
+        user_parsed.errors.is_empty(),
+        "parse errors in user: {:?}",
+        user_parsed.errors
+    );
+    let user_module = compile_with_prelude(&user_parsed, &[mod_a, mod_b]);
+
+    // (a) Exactly one Warning diagnostic mentioning 'foo'
+    let warnings: Vec<_> = user_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Warning)
+        .collect();
+    let collision_warn = warnings.iter().find(|d| d.message.contains("foo"));
+    assert!(
+        collision_warn.is_some(),
+        "expected a warning mentioning 'foo', got warnings: {:?}",
+        warnings
+    );
+    let collision_warn = collision_warn.unwrap();
+
+    // (b) Warning names both conflicting module paths
+    assert!(
+        collision_warn.message.contains("mod_a"),
+        "warning must name first module 'mod_a', got: {:?}",
+        collision_warn.message
+    );
+    assert!(
+        collision_warn.message.contains("mod_b"),
+        "warning must name winning module 'mod_b', got: {:?}",
+        collision_warn.message
+    );
+
+    // (c) Warning mentions 'prelude' (in message or in a label)
+    let mentions_prelude = collision_warn.message.contains("prelude")
+        || collision_warn
+            .labels
+            .iter()
+            .any(|l| l.message.contains("prelude"));
+    assert!(
+        mentions_prelude,
+        "warning must mention 'prelude', got: {:?}",
+        collision_warn
+    );
+
+    // No Error-severity diagnostics — user compilation succeeds
+    let errors = errors_only(&user_module);
+    assert!(
+        errors.is_empty(),
+        "user compilation should succeed (no errors), got: {:?}",
+        errors
+    );
+
+    // Last-wins: mod_b's foo (factor 2.0 SI) wins, so bar's factor = 2.0
+    let bar = user_module.units.iter().find(|u| u.name == "bar");
+    assert!(
+        bar.is_some(),
+        "'bar' should be compiled successfully"
+    );
+    let bar = bar.unwrap();
+    assert!(
+        (bar.factor - 2.0).abs() < common::UNIT_EPSILON,
+        "bar's SI factor should be 2.0 (mod_b's foo wins last-wins), got {}",
+        bar.factor
+    );
+}
