@@ -3145,6 +3145,60 @@ impl Engine {
         meshes
     }
 
+    /// Execute the per-realization geometry operation loop and perform rollback
+    /// on partial failure.
+    ///
+    /// Captures `handle_start = step_handles.len()` on entry.  For each op in
+    /// `operations`, evaluates it via `compile_geometry_op` and dispatches to
+    /// the kernel:
+    ///
+    /// - `Some(Ok(handle))` — pushes `handle.id` to `step_handles`.
+    /// - `Some(Err(e))` — emits a geometry-error diagnostic and breaks the loop.
+    ///   Kernel errors break immediately: a geometry engine failure is often
+    ///   unrecoverable (e.g. corrupt state), and subsequent ops that depend on
+    ///   the failed handle would fail too.
+    /// - `None` — pushes `GeometryHandleId::INVALID` sentinel, emits a
+    ///   compile-error diagnostic, sets `had_failure = true`, and continues.
+    ///   Compile errors are cheaper to continue past because the sentinel lets
+    ///   independent ops proceed.
+    ///
+    /// After the op loop, if `had_failure` or fewer handles were produced than
+    /// there are `operations`, truncates `step_handles` to `handle_start` (discards
+    /// all partial handles from this realization) and returns `true`.
+    /// Returns `false` when all operations succeeded.
+    fn execute_realization_ops(
+        kernel: &mut dyn GeometryKernel,
+        operations: &[reify_compiler::CompiledGeometryOp],
+        values: &ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+        step_handles: &mut Vec<GeometryHandleId>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> bool {
+        let handle_start = step_handles.len();
+        for op in operations {
+            let geom_op = compile_geometry_op(
+                op,
+                values,
+                &step_handles[handle_start..],
+                functions,
+                meta_map,
+                diagnostics,
+            );
+            if let Some(geom_op) = geom_op {
+                match kernel.execute(&geom_op) {
+                    Ok(handle) => {
+                        step_handles.push(handle.id);
+                    }
+                    Err(_) => {
+                        break;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Tessellate realizations from the current snapshot values, without
     /// re-calling eval().
     ///
