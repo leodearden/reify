@@ -243,6 +243,37 @@ describe('selectionStore', () => {
     });
   });
 
+  describe('selectAll', () => {
+    it('replaces selectedEntities with provided list (dedup)', () => {
+      createRoot((dispose) => {
+        const { state, selectAll } = createSelectionStore();
+        selectAll(['A', 'B', 'A', 'C']);
+        expect(state.selectedEntities).toEqual(['A', 'B', 'C']);
+        dispose();
+      });
+    });
+
+    it('sets selectedEntity to last item', () => {
+      createRoot((dispose) => {
+        const { state, selectAll } = createSelectionStore();
+        selectAll(['A', 'B', 'C']);
+        expect(state.selectedEntity).toBe('C');
+        dispose();
+      });
+    });
+
+    it('does not change anchorEntity', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, selectAll } = createSelectionStore();
+        selectSingle('X');
+        expect(state.anchorEntity).toBe('X');
+        selectAll(['A', 'B', 'C']);
+        expect(state.anchorEntity).toBe('X');
+        dispose();
+      });
+    });
+  });
+
   it('selectEntity(null) clears selection', () => {
     createRoot((dispose) => {
       const { state, selectEntity } = createSelectionStore();
