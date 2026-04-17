@@ -3470,6 +3470,76 @@ mod tests {
         );
     }
 
+    // ── value_type_kind_matches: Type::Error anti-cascade guard (task-1922 / task-448) ──
+
+    /// `Value::Real` paired with `Type::Error` must return `true`.
+    ///
+    /// Anti-cascade invariant (task-1922 / task-448): when a cell's declared type is
+    /// the `Type::Error` poison sentinel the kind-check must not emit a spurious
+    /// `TypeKindMismatch` on top of the root-cause compile error.  Returning `true`
+    /// means "accept any value against a poisoned type" — the compiler already
+    /// reported the defect.  Mirrors the guard in
+    /// `reify_compiler::type_compat::{implicitly_converts_to, type_compatible}`.
+    #[test]
+    fn value_type_kind_matches_real_value_into_error_type_returns_true() {
+        use reify_types::{Type, Value};
+        let v = Value::Real(1.0);
+        let t = Type::Error;
+        assert!(
+            value_type_kind_matches(&v, &t),
+            "Value::Real against Type::Error must return true (anti-cascade guard)"
+        );
+    }
+
+    /// `Value::Bool` paired with `Type::Error` must return `true`.
+    ///
+    /// Anti-cascade invariant (task-1922 / task-448): covers the non-numeric
+    /// primitive arm — `Value::Bool` would normally only be accepted by `Type::Bool`,
+    /// but a poisoned cell type must not trigger `TypeKindMismatch`.
+    #[test]
+    fn value_type_kind_matches_bool_value_into_error_type_returns_true() {
+        use reify_types::{Type, Value};
+        let v = Value::Bool(true);
+        let t = Type::Error;
+        assert!(
+            value_type_kind_matches(&v, &t),
+            "Value::Bool against Type::Error must return true (anti-cascade guard)"
+        );
+    }
+
+    /// `Value::List` paired with `Type::Error` must return `true`.
+    ///
+    /// Anti-cascade invariant (task-1922 / task-448): covers the compound-value
+    /// arm — `Value::List` would normally only be accepted by `Type::List(_)`,
+    /// but a poisoned cell type must not trigger `TypeKindMismatch`.
+    #[test]
+    fn value_type_kind_matches_list_value_into_error_type_returns_true() {
+        use reify_types::{Type, Value};
+        let v = Value::List(vec![Value::Int(1)]);
+        let t = Type::Error;
+        assert!(
+            value_type_kind_matches(&v, &t),
+            "Value::List against Type::Error must return true (anti-cascade guard)"
+        );
+    }
+
+    /// `Value::Undef` paired with `Type::Error` must return `true`.
+    ///
+    /// Regression lock (task-1922): `Value::Undef` is the Auto/no-value sentinel
+    /// and is always accepted regardless of the cell type.  This test confirms
+    /// that adding the early `Type::Error` guard does not perturb the already-true
+    /// `Undef` arm — the guard fires first but the end result must remain `true`.
+    #[test]
+    fn value_type_kind_matches_undef_value_into_error_type_returns_true() {
+        use reify_types::{Type, Value};
+        let v = Value::Undef;
+        let t = Type::Error;
+        assert!(
+            value_type_kind_matches(&v, &t),
+            "Value::Undef against Type::Error must return true (Undef sentinel always accepted)"
+        );
+    }
+
     // ── execute_realization_ops unit tests ────────────────────────────────────
 
     /// Happy path: all operations compile and execute successfully.
