@@ -98,8 +98,25 @@ impl std::error::Error for EngineError {}
 /// This is a shallow kind-level check — it does NOT validate dimension, inner
 /// element types, or structural fields.  `Value::Undef` is accepted for any
 /// type because it is the universal "no value / Auto" sentinel.
+///
+/// If `ty` is `Type::Error` (the type-inference poison sentinel), this returns
+/// `true` unconditionally to avoid a second diagnostic on top of the root-cause
+/// compile error.  The compiler already emitted the defect at the point it
+/// produced `Type::Error`; rejecting here with `EngineError::TypeKindMismatch`
+/// would be a cascade.  Mirrors the guards in
+/// `reify_compiler::type_compat::{implicitly_converts_to, type_compatible}`
+/// (task-448 / task-1922).
 fn value_type_kind_matches(value: &reify_types::Value, ty: &reify_types::Type) -> bool {
     use reify_types::{Type, Value};
+    // Anti-cascade guard (task-1922 / task-448): accept any supplied value when
+    // the declared cell type is the `Type::Error` poison sentinel.  The compiler
+    // already emitted a root-cause diagnostic at the point it produced
+    // `Type::Error`; rejecting here with `TypeKindMismatch` would be a cascade.
+    // Mirrors the guards in `reify_compiler::type_compat::{implicitly_converts_to,
+    // type_compatible}`.
+    if ty.is_error() {
+        return true;
+    }
     match value {
         // Undef is the Auto/no-value sentinel — always accepted.
         Value::Undef => true,
