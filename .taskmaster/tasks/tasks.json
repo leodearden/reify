@@ -40733,10 +40733,11 @@
         "description": "`Value::Field`'s doc in crates/reify-types/src/value.rs:205 references `reify_expr::calculus::detect_single_point_param`, but that function is a private `fn` (not `pub fn`) in crates/reify-expr/src/calculus.rs:526. Readers outside reify-expr cannot jump to it from rustdoc, and any intra-doc link would not resolve.",
         "details": "Pick one of:\n1. Make `detect_single_point_param` `pub(crate)` plus a `#[doc(hidden)] pub` re-export so the rustdoc link resolves across crates, or\n2. Soften the cross-reference in value.rs:205 to clarify it's an internal helper — e.g. \"See the private `detect_single_point_param` helper in `crates/reify-expr/src/calculus.rs` for the reference implementation of this heuristic; keep this doc in sync with that function.\"\n\nOption 2 is lower-risk and preserves encapsulation; option 1 enables navigation at the cost of widening the surface.\n\nSource: review escalation esc-1002-30, suggestion 2.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T13:54:31.407Z"
       },
       {
         "id": "1951",
@@ -40753,7 +40754,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:54:30.904Z",
+      "lastModified": "2026-04-17T13:54:31.407Z",
       "taskCount": 1946,
       "completedCount": 1673,
       "tags": [
