@@ -8,9 +8,13 @@
  *    or bridge.updateSource per keystroke — only the 300ms-debounced path does.
  *
  * 2. Wall-clock micro-benchmark (step 5)
- *    Feeds 100 keystrokes into a 10k-line document and asserts total elapsed time
- *    is under 500ms (≈5ms/keystroke — 30× more generous than the 16ms
- *    perceptible-lag threshold, accommodating JSDOM overhead).
+ *    Feeds 100 keystrokes into a 10k-line document and asserts that the
+ *    median per-keystroke dispatch time stays under 15ms. Using the median
+ *    rather than a total budget makes the guard robust to tail-latency spikes
+ *    from 48-task parallel suite load — the median stays dominated by actual
+ *    in-process work, not system-load outliers — while keeping the threshold
+ *    tight enough to catch any sub-perceptible-lag regression (15ms sits just
+ *    below the 16ms ≈ 60fps frame budget).
  *
  * Reuses the @tauri-apps mocking pattern, setupStore helpers, and getEditorView
  * from Editor.test.tsx.
@@ -21,6 +25,7 @@ import { EditorView } from '@codemirror/view';
 import { createEditorStore } from '../stores/editorStore';
 import * as bridge from '../bridge';
 import type { FileData } from '../types';
+import { median } from './test-utils';
 
 // Mock Tauri API modules before importing Editor (same pattern as Editor.test.tsx)
 vi.mock('@tauri-apps/api/core', () => ({
@@ -115,7 +120,7 @@ describe('Editor per-keystroke invariants', () => {
 
 // ─── Step 5: wall-clock micro-benchmark ───────────────────────────────────
 describe('Editor wall-clock latency', () => {
-  it('100 keystrokes on a 10k-line doc complete in under 2000ms', () => {
+  it('median per-keystroke dispatch on a 10k-line doc stays under 15ms', () => {
     // Switch to real timers so performance.now() measures genuine wall-clock time
     vi.useRealTimers();
 
@@ -127,23 +132,31 @@ describe('Editor wall-clock latency', () => {
     const container = screen.getByTestId('editor-container');
     const view = getEditorView(container);
 
-    const t0 = performance.now();
+    const perKeystroke: number[] = [];
     for (let i = 0; i < 100; i++) {
+      const t0 = performance.now();
       view.dispatch({ changes: { from: 0, insert: 'x' } });
+      perKeystroke.push(performance.now() - t0);
     }
-    const elapsed = performance.now() - t0;
 
     // Unmount immediately to cancel the pending 300ms debounce timer via
     // Editor.tsx's onCleanup → clearTimeout(debounceTimer)
     unmount();
 
-    // 2000ms = 20ms/keystroke average.
-    // Generous enough to remain stable when the full suite runs concurrently
-    // (system load can push individual keystroke dispatch from ~5ms to ~15ms
-    // under 48-task parallelism), while still catching catastrophic regressions
-    // such as per-keystroke doc.toString() on a 90KB document or per-keystroke
-    // setState with full content (those would be hundreds of ms each).
-    expect(elapsed).toBeLessThan(2000);
+    // Guard: median per-keystroke dispatch must stay under 15ms.
+    //
+    // Why median, not total elapsed?  The median is robust to tail-latency
+    // spikes from 48-task parallel suite load — a few outlier keystrokes do
+    // not inflate the median, so the threshold can remain tight and still be
+    // stable under system load.
+    //
+    // Why 15ms?  It sits just below the 16ms ≈ 60fps perceptible-lag frame
+    // budget, so any regression that pushes the hot-path cost into visible-lag
+    // territory will fail the guard.  Under normal conditions a single
+    // view.dispatch on a 10k-line doc costs ~1–5ms (JSDOM, no layout), giving
+    // a 3–5× safety margin; the margin holds even under heavy parallelism
+    // because the median is dominated by in-process work, not system-load tails.
+    expect(median(perKeystroke)).toBeLessThan(15);
   });
 });
 
