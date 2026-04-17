@@ -115,7 +115,7 @@ describe('Editor per-keystroke invariants', () => {
 
 // ─── Step 5: wall-clock micro-benchmark ───────────────────────────────────
 describe('Editor wall-clock latency', () => {
-  it('100 keystrokes on a 10k-line doc complete in under 500ms', () => {
+  it('100 keystrokes on a 10k-line doc complete in under 2000ms', () => {
     // Switch to real timers so performance.now() measures genuine wall-clock time
     vi.useRealTimers();
 
