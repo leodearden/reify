@@ -39547,11 +39547,11 @@
         "description": "Follow-up from Task 1866 review. Recent migrations of .taskmaster/tasks/tasks.json (string-ID normalization, dep-type alignment) relied on ad-hoc inspection but have no automated guard. With ~20 auto-commits per hour from the TaskInterceptor path writing tasks.json, int/string drift — the exact problem just migrated away — can silently recur.\n\nAdd a small schema-validator check (pre-commit hook, CI check, or inside the TaskInterceptor auto-commit path — the auto-commit is the natural seam) that loads tasks.json and asserts:\n1. Every task `id` is a string matching `^\\d+$`\n2. Every `dependencies[]` entry is a string in the set of existing task IDs (no orphans, no type mismatch)\n3. No duplicate ids across the task list\n4. (Stretch) subtask `id` and `dependencies[]` conform to the same rules — once Task [subtask-normalization task, spawn partner] resolves\n\nFailure mode should reject the write / fail the commit so drift is caught immediately rather than propagating.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T12:45:58.790Z",
+        "updatedAt": "2026-04-17T12:55:02.400Z",
         "metadata": {
           "files": [
             "scripts/validate-tasks-json.sh",
@@ -40550,15 +40550,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T12:54:08.813Z",
-      "taskCount": 1933,
-      "completedCount": 1660,
+      "lastModified": "2026-04-17T12:55:02.400Z",
+      "taskCount": 1934,
+      "completedCount": 1661,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-17T12:54:45.777Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-17T12:54:45.888Z"
+      ]
     }
   }
 }
