@@ -3,8 +3,8 @@
 //! Each arg-count error for the in-scope geometry functions (box, cylinder,
 //! sphere, linear_pattern, circular_pattern, mirror, union (+ siblings),
 //! shell, thicken, draft) must attach a `DiagnosticLabel` with a non-empty
-//! `SourceSpan` covering the full call expression. Pattern mirrors the
-//! assertions in `diagnostic_coverage_checkpoint.rs`.
+//! `SourceSpan`. Pattern mirrors the assertions in
+//! `diagnostic_coverage_checkpoint.rs`.
 //!
 //! shell/thicken/draft tests serve as regression guards — labels are already
 //! attached via `compile_modify_op`; these tests lock in that behavior.

@@ -271,53 +271,124 @@ assert "merge commit: HEAD is a merge commit (has two parents)" \
              | tr ' ' '\n' | grep -c .)\" = '2' ]"
 
 # ==============================================================================
-# Check 6: PYTHON3-FAIL — hook bails out gracefully when normalizer exits non-zero
+# Check 6: python3-MISSING is a loud failure (ERROR: + marker + non-zero exit)
 # ==============================================================================
-# Step (5) of the hook invokes python3 and catches failure with '|| { ... exit 0 }'.
-# If python3 fails, the hook must:
-#   (a) NOT block the commit (exit 0 from the hook itself), so `git commit` succeeds.
-#   (b) Leave tasks.json un-amended — numeric IDs remain in HEAD.
-#
-# Regression: removing the '|| { ... exit 0 }' guard would propagate the error
-# and potentially block/corrupt the commit.
+# Task 1916 replaced the old silent fallback (exit 0 on python3-missing) with
+# a loud failure: the hook now exits non-zero, logs ERROR: to stderr, and
+# writes .git/NORMALIZE_FAILED so a broken normalize step surfaces at the
+# next `git status` rather than being hidden until the post-rebase verify gate.
 echo ""
-echo "--- Check 6: python3-fail — hook bails out gracefully ---"
+echo "--- Check 6: python3-missing is a loud failure ---"
 
-mk_repo_fixture _repo6
-mkdir -p "$_repo6/.taskmaster/tasks"
-
-# Replace the normalize script with a stub that always exits 1.
-# The hook invokes python3 <script> and catches a non-zero exit; this stub
-# triggers that code path.
-cat > "$_repo6/scripts/normalize_tasks_json.py" <<'STUB'
-#!/usr/bin/env python3
-import sys
-print("stub: simulated normalizer failure", file=sys.stderr)
-sys.exit(1)
-STUB
-chmod +x "$_repo6/scripts/normalize_tasks_json.py"
-
-# Commit tasks.json with numeric IDs.  The post-commit hook fires, the
-# normalizer stub exits 1, and the hook should bail out gracefully (exit 0),
-# leaving the commit intact.
-cat > "$_repo6/.taskmaster/tasks/tasks.json" <<'JSON'
-{"master":{"tasks":[{"id":55,"subtasks":[{"id":88}]}]}}
+mk_repo_fixture _repo6py
+mkdir -p "$_repo6py/.taskmaster/tasks"
+cat > "$_repo6py/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":1,"subtasks":[]}]}}
 JSON
-git -C "$_repo6" add .taskmaster/tasks/tasks.json
-git -C "$_repo6" commit --no-verify -m "chore(tasks): commit with failing normalizer" -q
 
-# Assert A: commit succeeded and HEAD tasks.json retains numeric task id
-# (normalization was skipped because the stub failed).
-assert "python3-fail: commit succeeded and HEAD tasks.json has numeric task id" \
-    bash -c "git -C '$_repo6' show HEAD:.taskmaster/tasks/tasks.json \
-             | jq -e '.master.tasks[0].id | type == \"number\"' >/dev/null"
+# Set up a numeric-ID commit so the hook has work to do.
+git -C "$_repo6py" add .taskmaster/tasks/tasks.json
+git -C "$_repo6py" commit --no-verify -m "chore(tasks): numeric ids" -q
 
-# Assert B: no amend occurred — re-running the hook with the failing stub
-# still leaves HEAD sha unchanged.
-_py3fail_sha_before="$(git -C "$_repo6" rev-parse HEAD)"
-(cd "$_repo6" && bash hooks/post-commit) || true
-assert "python3-fail: HEAD sha unchanged after re-running hook with failing normalizer" \
-    test "$_py3fail_sha_before" = "$(git -C "$_repo6" rev-parse HEAD)"
+# Build a PATH where python3 is absent but standard tools remain.
+#
+# Why not PATH="$stub:$PATH" with a non-executable python3 placeholder?
+# bash's `command -v` skips non-executable files and continues searching
+# subsequent PATH directories, so a non-executable stub would not prevent
+# it from finding the real python3 in /usr/bin — the check would succeed
+# and we would never exercise the python3-missing code path.
+#
+# Instead we build a symlink stub for common tools and use it as the sole
+# PATH.  The list covers coreutils the hook and git helpers may call; extend
+# it if the hook gains new dependencies.
+_stub6py="$(mktemp -d -p "$_tmpdir")"
+for _bin6py in git grep date bash sh env printf cut tr awk sed cat wc; do
+    _loc6py="$(command -v "$_bin6py" 2>/dev/null || true)"
+    [ -n "$_loc6py" ] && ln -sf "$_loc6py" "$_stub6py/$_bin6py"
+done
+# GIT_EXEC_PATH ensures git can reach its built-in sub-commands (e.g.
+# git-diff-tree in /usr/lib/git-core) even when that directory is not
+# listed in the stub PATH.
+_git_exec_path6py="$(git --exec-path 2>/dev/null || true)"
+
+_stderr6py="$_tmpdir/stderr6py.txt"
+_hook6py_exit=0
+(cd "$_repo6py" && GIT_EXEC_PATH="$_git_exec_path6py" PATH="$_stub6py" \
+    bash hooks/post-commit 2>"$_stderr6py") || _hook6py_exit=$?
+
+assert "python3-missing: hook exits non-zero" \
+    test "$_hook6py_exit" -ne 0
+assert "python3-missing: stderr contains ERROR:" \
+    grep -q "ERROR:" "$_stderr6py"
+assert "python3-missing: .git/NORMALIZE_FAILED marker file exists" \
+    test -f "$_repo6py/.git/NORMALIZE_FAILED"
+
+# ==============================================================================
+# Check 7: normalizer-CRASH is a loud failure (ERROR: + marker + non-zero exit)
+# ==============================================================================
+# Symmetric to Check 6: when python3 is present but the normalizer script
+# itself exits non-zero, the hook must still surface that loudly.  This
+# replaces the prior silent '|| { ... exit 0 }' behaviour.
+echo ""
+echo "--- Check 7: normalizer-crash is a loud failure ---"
+
+mk_repo_fixture _repo7
+mkdir -p "$_repo7/.taskmaster/tasks"
+cat > "$_repo7/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":1,"subtasks":[]}]}}
+JSON
+
+# Set up a numeric-ID commit.
+git -C "$_repo7" add .taskmaster/tasks/tasks.json
+git -C "$_repo7" commit --no-verify -m "chore(tasks): numeric ids" -q
+
+# Replace the normalizer with a stub that always exits non-zero.
+printf '#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n' > "$_repo7/scripts/normalize_tasks_json.py"
+chmod +x "$_repo7/scripts/normalize_tasks_json.py"
+
+_stderr7="$_tmpdir/stderr7.txt"
+_hook7_exit=0
+(cd "$_repo7" && bash hooks/post-commit 2>"$_stderr7") || _hook7_exit=$?
+
+assert "normalizer-crash: hook exits non-zero" \
+    test "$_hook7_exit" -ne 0
+assert "normalizer-crash: stderr contains ERROR:" \
+    grep -q "ERROR:" "$_stderr7"
+assert "normalizer-crash: .git/NORMALIZE_FAILED marker file exists" \
+    test -f "$_repo7/.git/NORMALIZE_FAILED"
+
+# ==============================================================================
+# Check 8: MARKER CLEARING — a stale NORMALIZE_FAILED is removed on success
+# ==============================================================================
+# The hook's rm -f on the marker file runs only when both normalization AND
+# the amend step succeed.  This check guards the clearing behaviour: a
+# regression that moved the rm before python3 (losing the crash-marker
+# semantics) or dropped it entirely (making the marker permanent) would be
+# caught here.
+echo ""
+echo "--- Check 8: stale marker cleared on successful normalization ---"
+
+mk_repo_fixture _repo8
+mkdir -p "$_repo8/.taskmaster/tasks" "$_repo8/.git"
+cat > "$_repo8/.taskmaster/tasks/tasks.json" <<'JSON'
+{"master":{"tasks":[{"id":"1","subtasks":[{"id":42}]}]}}
+JSON
+
+# Pre-create the marker to simulate a previous failed attempt.  The hook
+# must remove this on a successful run.
+printf 'stale\tprior-run\tfeedeadbeef\n' > "$_repo8/.git/NORMALIZE_FAILED"
+assert "clearing: stale marker file exists before commit (test setup)" \
+    test -f "$_repo8/.git/NORMALIZE_FAILED"
+
+# Commit with numeric subtask id — hook normalizes + amends + clears marker.
+git -C "$_repo8" add .taskmaster/tasks/tasks.json
+git -C "$_repo8" commit --no-verify -m "chore(tasks): commit with stale marker present" -q
+
+assert "clearing: .git/NORMALIZE_FAILED removed after successful hook run" \
+    test ! -e "$_repo8/.git/NORMALIZE_FAILED"
+assert "clearing: subtask ids normalized in HEAD (hook actually ran)" \
+    bash -c "! git -C '$_repo8' show HEAD:.taskmaster/tasks/tasks.json \
+             | jq -r '.master.tasks[].subtasks[].id | type' | grep -q 'number'"
 
 # -- Summary ------------------------------------------------------------------
 test_summary

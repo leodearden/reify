@@ -1505,15 +1505,33 @@ fn prelude_unit_collision_diagnostic_mentions_stdlib() {
         dup_diag.message
     );
 
-    // (3) No label should have SourceSpan::empty(0) — the misleading prelude sentinel
+    // (3) Two labels: labels[0] is the user's in-file dup decl span (non-empty,
+    //     not SourceSpan::empty(0)); labels[1] is the prelude sentinel with a
+    //     message containing 'stdlib prelude'.
+    assert_eq!(
+        dup_diag.labels.len(),
+        2,
+        "stdlib collision should emit two labels, got {:?}",
+        dup_diag.labels
+    );
     let empty_span = reify_types::SourceSpan::empty(0);
-    for label in &dup_diag.labels {
-        assert_ne!(
-            label.span, empty_span,
-            "diagnostic label '{}' has SourceSpan::empty(0) — misleading prelude offset",
-            label.message
-        );
-    }
+    assert_ne!(
+        dup_diag.labels[0].span,
+        empty_span,
+        "first label '{}' must not be SourceSpan::empty(0)",
+        dup_diag.labels[0].message
+    );
+    assert!(
+        dup_diag.labels[1].span.is_prelude(),
+        "second label '{}' must have is_prelude() span, got {:?}",
+        dup_diag.labels[1].message,
+        dup_diag.labels[1].span
+    );
+    assert!(
+        dup_diag.labels[1].message.contains("stdlib prelude"),
+        "second label message must contain 'stdlib prelude', got: {:?}",
+        dup_diag.labels[1].message
+    );
 }
 
 // ── step-1 (task-1074): cross-module user unit collision blames source module ───
@@ -1580,10 +1598,9 @@ fn cross_module_user_unit_collision_blames_source_module() {
         dup_diag.message
     );
 
-    // (c) Exactly one label with a non-empty span — the user-module branch
-    // emits only the duplicate decl span and omits the original's
-    // SourceSpan::empty(0) to avoid a misleading byte-0 label.
-    common::assert_single_non_empty_label(dup_diag);
+    // (c) Two labels: labels[0] is the user's in-file dup decl span;
+    // labels[1] is the prelude sentinel with provenance in its message.
+    common::assert_prelude_collision_labels(dup_diag);
 }
 
 // ── step-7 (task-416): affine unit referencing another affine unit is rejected ─
@@ -1701,4 +1718,195 @@ fn test_expect_binop_extracts_op_and_operands() {
         si_value
     );
     assert_eq!(dimension, DimensionVector::LENGTH);
+}
+
+// ── step-7 (task-765): cross-prelude collision emits a warning ─────────────────
+
+/// Build a prelude `CompiledModule` that exports `pub unit foo : Length = <factor>`
+/// under `ModulePath::single(name)`. Panics on any parse or compile errors so
+/// callers get a descriptive failure site instead of a silent misconfiguration.
+fn prelude_module(name: &str, factor: f64) -> reify_compiler::CompiledModule {
+    // Debug fmt preserves the decimal point so the source lexes as a float literal
+    // (Display would emit '1' for 1.0, which could lex as an integer literal).
+    let source = format!("pub unit foo : Length = {factor:?}");
+    let parsed = reify_syntax::parse(&source, ModulePath::single(name));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in {}: {:?}",
+        name,
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "{} compilation errors: {:?}",
+        name,
+        errors_only(&compiled)
+    );
+    compiled
+}
+
+/// When two prelude modules export the same pub unit name, `compile_with_prelude`
+/// should emit exactly one `Severity::Warning` diagnostic whose message:
+/// (a) mentions the unit name 'foo',
+/// (b) names both conflicting module paths ('mod_a' and 'mod_b'),
+/// (c) mentions 'prelude' (in message or label).
+///
+/// The compilation must still succeed (no Error diagnostics), and last-wins
+/// ordering is preserved: the later module's (mod_b's) factor 2.0 is used.
+#[test]
+fn prelude_module_unit_collision_emits_warning() {
+    // mod_a: pub unit foo with SI factor 1.0 m
+    let mod_a = prelude_module("mod_a", 1.0);
+
+    // mod_b: pub unit foo with SI factor 2.0 m — same name, different factor
+    let mod_b = prelude_module("mod_b", 2.0);
+
+    // User module uses `foo` (which will resolve to mod_b's definition via last-wins).
+    // `unit bar : Length = 1foo` means bar's SI factor = 1 * foo's factor.
+    let user_parsed = reify_syntax::parse(
+        "unit bar : Length = 1foo",
+        ModulePath::single("user_module"),
+    );
+    assert!(
+        user_parsed.errors.is_empty(),
+        "parse errors in user: {:?}",
+        user_parsed.errors
+    );
+    let user_module = compile_with_prelude(&user_parsed, &[mod_a, mod_b]);
+
+    // (a) Exactly one Warning diagnostic mentioning 'foo'
+    let warnings: Vec<_> = user_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Warning)
+        .collect();
+    let collision_warns: Vec<_> = warnings.iter().filter(|w| w.message.contains("foo")).collect();
+    assert_eq!(
+        collision_warns.len(),
+        1,
+        "expected exactly 1 collision warning, got: {:?}",
+        warnings
+    );
+    let collision_warn = collision_warns[0];
+
+    // (b) Warning names both conflicting module paths
+    assert!(
+        collision_warn.message.contains("mod_a"),
+        "warning must name first module 'mod_a', got: {:?}",
+        collision_warn.message
+    );
+    assert!(
+        collision_warn.message.contains("mod_b"),
+        "warning must name winning module 'mod_b', got: {:?}",
+        collision_warn.message
+    );
+
+    // (c) Warning mentions 'prelude' (in message or in a label)
+    let mentions_prelude = collision_warn.message.contains("prelude")
+        || collision_warn
+            .labels
+            .iter()
+            .any(|l| l.message.contains("prelude"));
+    assert!(
+        mentions_prelude,
+        "warning must mention 'prelude', got: {:?}",
+        collision_warn
+    );
+
+    // No Error-severity diagnostics — user compilation succeeds
+    let errors = errors_only(&user_module);
+    assert!(
+        errors.is_empty(),
+        "user compilation should succeed (no errors), got: {:?}",
+        errors
+    );
+
+    // Last-wins: mod_b's foo (factor 2.0 SI) wins, so bar's factor = 2.0
+    let bar = user_module.units.iter().find(|u| u.name == "bar");
+    assert!(
+        bar.is_some(),
+        "'bar' should be compiled successfully"
+    );
+    let bar = bar.unwrap();
+    assert!(
+        (bar.factor - 2.0).abs() < common::UNIT_EPSILON,
+        "bar's SI factor should be 2.0 (mod_b's foo wins last-wins), got {}",
+        bar.factor
+    );
+}
+
+// ── amendment (task-765): three-prelude collision — two chained warnings ───────
+
+/// When three prelude modules all export the same unit name, the seeding loop
+/// fires two warnings (one per collision), each naming the pair of modules
+/// involved at that moment (chained last-wins).
+///
+/// Specifically:
+///  - mod_a seeds first (no collision yet)
+///  - mod_b collides with mod_a → warning #1 names "mod_a" and "mod_b"
+///  - mod_c collides with mod_b → warning #2 names "mod_b" and "mod_c"
+///  - Final winner is mod_c (factor 3.0)
+#[test]
+fn three_prelude_collision_emits_two_chained_warnings() {
+    // mod_a: pub unit foo with SI factor 1.0 m
+    let mod_a = prelude_module("mod_a", 1.0);
+
+    // mod_b: pub unit foo with SI factor 2.0 m
+    let mod_b = prelude_module("mod_b", 2.0);
+
+    // mod_c: pub unit foo with SI factor 3.0 m — final winner
+    let mod_c = prelude_module("mod_c", 3.0);
+
+    // User module: references foo (resolved via last-wins to mod_c)
+    let user_parsed = reify_syntax::parse(
+        "unit bar : Length = 1foo",
+        ModulePath::single("user_module"),
+    );
+    assert!(user_parsed.errors.is_empty(), "parse errors in user: {:?}", user_parsed.errors);
+
+    let user_module = compile_with_prelude(&user_parsed, &[mod_a, mod_b, mod_c]);
+
+    // (a) Exactly two Warning diagnostics mentioning 'foo'
+    let warnings: Vec<_> = user_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Warning && d.message.contains("foo"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        2,
+        "expected exactly 2 warnings about 'foo', got: {:?}",
+        warnings
+    );
+
+    // (b) Warning #1 names mod_a and mod_b (the first collision pair)
+    let warn1 = warnings.iter().find(|w| w.message.contains("mod_a") && w.message.contains("mod_b"));
+    assert!(
+        warn1.is_some(),
+        "expected a warning naming both 'mod_a' and 'mod_b', warnings: {:?}",
+        warnings
+    );
+
+    // (c) Warning #2 names mod_b and mod_c (the second collision pair)
+    let warn2 = warnings.iter().find(|w| w.message.contains("mod_b") && w.message.contains("mod_c"));
+    assert!(
+        warn2.is_some(),
+        "expected a warning naming both 'mod_b' and 'mod_c', warnings: {:?}",
+        warnings
+    );
+
+    // No Error-severity diagnostics — user compilation succeeds
+    let errors = errors_only(&user_module);
+    assert!(errors.is_empty(), "user compilation should succeed, got: {:?}", errors);
+
+    // (d) Last-wins: mod_c's foo (factor 3.0) is the final winner
+    let bar = user_module.units.iter().find(|u| u.name == "bar");
+    assert!(bar.is_some(), "'bar' should be compiled successfully");
+    let bar = bar.unwrap();
+    assert!(
+        (bar.factor - 3.0).abs() < common::UNIT_EPSILON,
+        "bar's SI factor should be 3.0 (mod_c's foo wins last-wins), got {}",
+        bar.factor
+    );
 }

@@ -33,11 +33,21 @@ def normalize(data: dict) -> bool:
     for tag_data in data.values():
         if not isinstance(tag_data, dict):
             continue
-        for task in tag_data.get("tasks", []):
+        tasks_list = tag_data.get("tasks", [])
+        if not isinstance(tasks_list, list):
+            continue
+        for task in tasks_list:
+            if not isinstance(task, dict):
+                continue
             if isinstance(task.get("id"), int):
                 task["id"] = str(task["id"])
                 changed = True
-            for subtask in task.get("subtasks", []):
+            subtasks_list = task.get("subtasks", [])
+            if not isinstance(subtasks_list, list):
+                continue
+            for subtask in subtasks_list:
+                if not isinstance(subtask, dict):
+                    continue
                 if isinstance(subtask.get("id"), int):
                     subtask["id"] = str(subtask["id"])
                     changed = True

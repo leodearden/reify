@@ -16988,11 +16988,11 @@
         "description": "Two related issues with prelude unit handling:\n\n1. **Misleading error spans**: Prelude units are seeded with `SourceSpan::empty(0)`. When a module-local unit duplicates a prelude name, the \"first declared here\" label points to byte 0 of the user's file — misleading. Fix: introduce a `SourceSpan::prelude()` sentinel that the diagnostic renderer shows as \"defined in stdlib prelude\" instead of a raw offset.\n\n2. **Silent cross-module collision**: `seed_prelude_unit` uses last-wins overwrite with no diagnostic when two prelude modules define a unit with the same name. Fix: in compile_with_prelude's seeding loop, detect when `unit_registry.lookup(&cu.name)` already returns Some before calling seed_prelude_unit, and emit a Severity::Warning naming both conflicting prelude modules.\n\nLocations: crates/reify-compiler/src/lib.rs:543-552 (seed_prelude_unit), lib.rs:2800-2816 (seeding loop), SourceSpan definition.\n\nmemory_hints: search \"SourceSpan definition\" and \"UnitRegistry seed_prelude_unit\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T04:59:13.232Z",
+        "updatedAt": "2026-04-17T05:51:39.777Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -19235,11 +19235,11 @@
         "description": "Consolidates CompiledConstraintDef struct introduction, visibility-semantics fix, alloc/iter cleanup, tempfile-based cross-module test isolation, missing coverage (non-pub/field/second-predicate/active-guard), test-name polish, and name-collision diagnostic with module_dag invariant doc.",
         "details": "**BUNDLED TASK** (bundle consolidation 2026-04-11). This task consolidates task 872 plus 7 sibling polish task(s) that share a module footprint. Original per-task content preserved verbatim below; implement all sections in one PR.\n\n\n### Original task 872: Introduce CompiledConstraintDef to eliminate AST nodes from CompiledModule\n\n\nReplace `pub constraint_defs: Vec<reify_syntax::ConstraintDef>` with a new `CompiledConstraintDef` struct (in reify-compiler or reify-types) that captures name, is_pub, compiled param descriptors, and compiled predicates. Update compile_with_prelude to produce CompiledConstraintDef at definition-compile time rather than cloning raw AST nodes. This maintains the abstraction boundary where CompiledModule only contains compiler-crate or semantic types, not raw syntax AST nodes.\n\nmemory_hints: search \"CompiledConstraintDef constraint_defs CompiledModule\" for prior context; get_entity \"CompiledModule\" for field structure\n\n### Absorbed from task 873: Fix constraint_defs visibility semantics and doc comment\nEither filter constraint_defs to only pub defs at collection time (lib.rs:3812-3822) so non-pub defs never appear in the compiled artifact, or explicitly document that the field contains all local defs and callers must apply is_pub filtering themselves. Update the doc comment from 'Stored so downstream modules can reference them' to accurately describe visibility behavior: only is_pub==true defs are propagated to downstream modules.\n\nmemory_hints: search \"constraint_defs is_pub visibility\" for prior context on pub visibility implementation\n\n### Absorbed from task 874: Eliminate redundant allocations and iterations in constraint def compilation\nThree performance improvements: (1) module_dag.rs:168-178 — change compile_with_prelude to accept &[&[ConstraintDef]] or equivalent instead of &[CompiledModule] to avoid full module clones; (2) module_dag.rs:161-178 — merge the two Declaration::Import iteration passes into one that both compiles dependencies and collects prelude defs; (3) lib.rs:3804-3822 — merge the two Declaration::Constraint passes in compile_with_prelude into one that simultaneously inserts into the registry and pushes to the output vec.\n\nmemory_hints: search \"compile_with_prelude constraint def compilation\" for implementation context\n\n### Absorbed from task 875: Fix non-asserting test 13 (type_mismatch_bool_for_length)\nTest 13 in constraint_def_compile_tests.rs (line ~607-641) always passes regardless of compiler behavior — it branches on diagnostics.is_empty() and passes in both branches. Mark it #[ignore = \"known gap: param-level type checking not implemented\"] and add a failing assertion inside (e.g. assert!(!errors.is_empty(), ...)), so when type checking is implemented the test is explicitly re-enabled rather than silently passing.\n\nmemory_hints: search \"type_mismatch_bool_for_length constraint def test\" for context\n\n### Absorbed from task 877: Fix cross-module test temp dir: use tempfile::TempDir for thread safety\nIn constraint_def_compile_tests.rs (lines ~469-520), replace the PID-based temp dir path with tempfile::TempDir::new() which generates a unique path per call and cleans up automatically on drop. This fixes thread-isolation race conditions where parallel test runs in the same process derive the same path. Consider extracting the write-files-to-temp-dir pattern into a reify-test-support::fixtures helper for reuse by other cross-module tests.\n\nmemory_hints: search \"tempfile TempDir test temp directory\" for established convention\n\n### Absorbed from task 878: Add missing test coverage: non-pub visibility, field contents, second predicate, active guard\nFour additive tests across two files: (1) constraint_def_compile_tests.rs — add test that a non-pub constraint def in module A is NOT instantiable in module B (guards the is_pub filter at lib.rs:3792); (2) same file — add test asserting module.constraint_defs.len(), each entry's .name and .is_pub after compile_module; (3) same file, test 4 (named_args_different_order, line 173) — add assertions for tmpl.constraints[1]: op==Le, left==ValueRef(d), right==100mm literal; (4) m9_constraint_def.rs — add guarded_constraint_active test filtering constraint_results for ActiveWall, asserting exactly 1 Satisfied result labeled MinThickness[0].\n\nmemory_hints: search \"constraint def compile test coverage\" for context\n\n### Absorbed from task 879: Fix misleading test name and strengthen single-char error assertions\nTwo improvements: (1) Rename wrong_arg_count_zero (line 368) to wrong_arg_name_single or misnamed_single_arg_produces_two_errors to accurately describe the scenario; (2) In tests 7, 8, and 9 (lines ~350, ~387, ~430), replace single-char char-literal contains checks (contains('c'), contains('y'), contains('b')) with multi-char quoted strings like \"'c'\" or \"arg 'c'\" to prevent false-positives on any English word containing those characters.\n\nmemory_hints: search \"constraint def compile test error assertions\" for context\n\n### Absorbed from task 880: Emit diagnostic on constraint def name collision and document module_dag invariant\nTwo improvements: (1) lib.rs:3799-3803 — Before inserting a prelude def into constraint_def_registry, check if the name is already present from a different module; if so, emit a warning-level diagnostic (e.g. 'constraint def X from module b shadows import from module a') so the ambiguity is visible rather than silently discarding the first definition. (2) module_dag.rs:167 — Add a debug_assert or explanatory comment before the preludes collection pass making explicit that all imports were compiled successfully above (via early-return ?) and are therefore guaranteed to be present in self.modules.\n\nmemory_hints: search \"constraint def registry name collision shadow\" for context\n",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T04:59:12.214Z",
+        "updatedAt": "2026-04-17T05:51:53.112Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -36912,11 +36912,11 @@
         "description": "Two small robustness improvements for the INVALID sentinel pattern introduced in task 612:\n\n1. **INVALID handle hash guard** (crates/reify-types/src/geometry.rs:17): The INVALID sentinel (u64::MAX) has no compile-time enforcement. If it accidentally reaches content_hash() or the caching layer, it produces a valid-looking hash causing subtle cache corruption. Add: `debug_assert_ne!(self.0, u64::MAX, \"INVALID handle must not be hashed\");` in content_hash().\n\n2. **Saturating subtraction in rollback** (crates/reify-eval/src/lib.rs ~line 3128): The rollback condition `step_handles.len() - handle_start < realization.operations.len()` performs unsigned subtraction. If a bug causes step_handles to be truncated below handle_start, this would underflow. Rewrite defensively: `if had_failure || (step_handles.len().saturating_sub(handle_start)) < realization.operations.len()`\n\nmemory_hints: search \"INVALID sentinel GeometryHandle content_hash\", search \"step_handles rollback saturating_sub\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:44:36.156Z",
+        "updatedAt": "2026-04-17T05:59:37.297Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs",
@@ -37507,11 +37507,11 @@
         "description": "In gui/src-tauri/src/engine.rs: (1) Replace the empty parent field in structural_fingerprint for template roots (line 515) with a sentinel like 'root' to avoid the double-colon ambiguity 'structure::3:hash'. (2) Add a debug_assert! or doc comment in build_template_node (lines 695-716) asserting template names are unique within a compiled module. (3) Rename or document the content_hash field in EntityIdentity for value-cell entries (line 537) — it hashes the cell ID, not its content, which is inconsistent with template-level content_hash semantics; rename to identity_hash or add a doc comment explaining the distinction. Update any affected tests in engine_tests.rs.\n\n### memory_hints\n- search: \"structural_fingerprint content_hash EntityIdentity\"\n- search: \"build_template_node template names unique\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T04:44:59.877Z",
+        "updatedAt": "2026-04-17T05:47:15.734Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src/engine.rs",
@@ -38939,7 +38939,7 @@
         "description": "Three improvements from task 385 review:\n\n1. conformance.rs:517-530 — When structure overrides a let-binding name, populate seen_let_hashes so 3+ traits providing same `let x` don't produce O(N) redundant entries. Bookkeeping consistency.\n\n2. trait_merge_tests.rs:1232-1251 (three_way_let_conflict_emits_single_diagnostic) — Assert errors[0].message contains both conflicting trait names (TraitX, TraitY), matching two-way conflict tests.\n\n3. trait_merge_eval.rs:154-218 (multi_trait_constraints_partial_violation) — Add assert_no_eval_errors(&result) for consistency with step-15 sibling test.\n\nFiles: crates/reify-compiler/src/conformance.rs, crates/reify-compiler/src/conformance/trait_merge_tests.rs, crates/reify-eval/tests/trait_merge_eval.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -38953,9 +38953,15 @@
             "crates/reify-compiler/src",
             "crates/reify-compiler/src/conformance",
             "crates/reify-eval/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Trait merge: seen_let_hashes bookkeeping + three-way conflict test + assert_no_eval_errors"
+            ]
+          }
         },
-        "updatedAt": "2026-04-17T05:38:36.358Z"
+        "updatedAt": "2026-04-17T06:20:57.228Z"
       },
       {
         "id": "1860",
@@ -39577,11 +39583,11 @@
         "description": "In crates/reify-compiler/src/conformance.rs around line 273, `ty.clone()` is unconditionally called inside the default pre-registration loop. The clone is only *consumed* on the cold `!was_new` (trait-merge conflict) path for the debug event, but runs on every iteration (hot path). The existing inline comment acknowledges the clone is compile-time-only so cost is negligible, but this can be avoided.\n\nTwo suggested approaches:\n(a) Probe first: check `scope.names.contains_key(name)` — if present, clone `ty` for the debug emission before calling `register_if_absent(name, ty)`; otherwise move `ty` directly into `register_if_absent` without cloning.\n(b) Change `scope::register_if_absent` to return `Result<(), Type>` (or `Option<Type>`) that hands back the rejected `Type` on conflict, so the caller can log `ignored_ty` without cloning on either path.\n\nOption (b) is preferable because it removes the probe race/duplication and centralises the \"rejected type\" return in the API. Option (a) is mechanically simpler but duplicates the lookup.\n\nEither way, keep (or update) the inline comment to reflect the new ownership story and ensure the `trait_merge_name_conflict_emits_debug_event` test still passes (debug event still emits `ignored_ty`).\n\nmemory_hints:\n- search: \"register_if_absent scope trait merge conformance\"\n- entity: \"Scope\", \"register_if_absent\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T22:59:26.748Z",
+        "updatedAt": "2026-04-17T06:20:59.009Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src/conformance.rs",
@@ -39800,7 +39806,7 @@
         "description": "The DesignTree component (gui/src/panels/DesignTree.tsx) and viewStateStore (gui/src/stores/viewStateStore.ts) are fully implemented and exported from panels/index.ts and stores/index.ts respectively, and the backend get_entity_tree Tauri command is registered and working. However, App.tsx never imports DesignTree, never creates a viewStateStore instance, never subscribes to the `entity-tree-update` event, and never renders the DesignTree component. As a result the Design Tree UI is entirely non-functional end-to-end, even though the pieces are done. Task #1741 was marked done with an explicit instruction to \"Modify App.tsx — Add tab bar for Tree / Properties in right panel area; Wire up DesignTree component\", but the App.tsx wire-up was dropped during the 2026-04-16 merge that \"accepted origin/main's parallel Design Tree implementation\" (note on cancelled task #1862).\n\nRequired wiring:\n1. In App.tsx, import { DesignTree } from './panels' and { createViewStateStore } from './stores/viewStateStore'.\n2. Create a viewStateStore instance next to the other stores (engineStore, editorStore, etc.).\n3. Subscribe to the backend `entity-tree-update` event (or poll via `get_entity_tree` on relevant engine state changes) and pass the tree data to the viewStateStore / DesignTree.\n4. Add a tab bar or panel slot in the right-side panel region (alongside PropertyEditor / ConstraintPanel) and render <DesignTree tree={tree} viewStateStore={store} />.\n5. Verify the DesignTree appears in the live app (not only unit tests) and that eye-icon visibility toggling propagates back to meshManager (viewport/meshManager.ts already consults visibility).\n\nVerification:\n- Launch `npm run tauri dev` with a .ri file loaded and confirm the Design Tree renders real entity nodes.\n- Confirm eye-icon clicks hide/ghost the mesh in the viewport.\n- Re-check App.test.tsx for DesignTree integration coverage — currently App.test.tsx exists but does not cover DesignTree mounting.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -39818,9 +39824,15 @@
             "gui/src/stores",
             "gui/src/panels",
             "gui/src/__tests__"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Wire DesignTree panel into App.tsx main layout"
+            ]
+          }
         },
-        "updatedAt": "2026-04-17T05:46:00.716Z"
+        "updatedAt": "2026-04-17T05:56:15.065Z"
       },
       {
         "id": "1902",
@@ -40107,11 +40119,11 @@
         "description": "Follow-up from task 1915 review (esc-1915-178). The post-commit hook only fires when developers have `git config core.hooksPath hooks` set, which is not auto-installed by setup-dev.sh nor documented in CLAUDE.md. Without this, fresh clones bypass the normalizer entirely and depend on test_tasks_json_id_types.sh as the only safety net. Also: the hook silently swallows python3-missing or normalizer crashes (returns 0 with stderr warning), so a broken normalize step surfaces only via the post-rebase verify gate. Improve robustness with defensive isinstance checks in scripts/normalize_tasks_json.py walker (currently crashes on AttributeError if a future tag namespace stores tasks/subtasks as a non-list).",
         "details": "Three things bundled here because they all concern the post-commit hook actually doing its job in the wild:\n\n1. (suggestion 1) Update scripts/setup-dev.sh to run `git config core.hooksPath hooks` (or symlink into .git/hooks). Add a sentence in CLAUDE.md under \"Local Dev Setup\" noting the hook convention.\n\n2. (suggestion 2) Make python3-missing a louder failure in hooks/post-commit:41-44. Either fail-loud (post-commit allows non-zero) or write a marker like .git/normalize-failed so it shows up at next `git status`.\n\n3. (suggestion 4) Add `if not isinstance(tasks_list, list): continue` guards in scripts/normalize_tasks_json.py:36-43 around the tasks_list and subtasks iterations.\n\nmemory_hints: search \"hooks/post-commit normalize tasks.json\", search \"task 1915 setup-dev hooks\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:03:40.121Z",
+        "updatedAt": "2026-04-17T05:49:56.726Z",
         "metadata": {
           "modules": [
             "CLAUDE.md",
@@ -40222,11 +40234,11 @@
         "description": "In crates/reify-eval/src/lib.rs (~line 101-143, `value_type_kind_matches`), every value/type predicate (e.g. `Value::Real(_) => matches!(ty, Type::Real | Type::Int)`) enumerates concrete `Type` variants but never accepts `Type::Error`. Since the Type::Error sentinel now propagates further into compiled expressions (task-448 / task-1912), a CompiledExpr carrying `Type::Error` could reach evaluation — particularly in incremental/LSP scenarios where the evaluator may proceed despite compiler errors. In that case, every value/type predicate would report `false` and downstream logic may surface spurious TypeKindMismatch diagnostics or panic. Either: (a) add an explicit `Type::Error` arm in each predicate (likely returning `true` as \"don't second-guess a poisoned type\"), or (b) guard the evaluator to refuse evaluation of any module whose diagnostics contain errors before walking expressions, and document that contract. Related: task 1867 (value_type_kind_matches TypeParam/StructureRef/Geometry verification), task 1893 (Bool arm unit tests), task 1913 (nested is_error). Review followup from task 1912; suggestion S6.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:22:00.844Z"
+        "updatedAt": "2026-04-17T06:29:01.330Z"
       },
       {
         "id": "1923",
@@ -40234,11 +40246,11 @@
         "description": "In crates/reify-eval/src/lib.rs (~line 101-143, `value_type_kind_matches`), every value/type predicate (e.g. `Value::Real(_) => matches!(ty, Type::Real | Type::Int)`) enumerates concrete `Type` variants but never accepts `Type::Error`. Since the Type::Error sentinel now propagates further into compiled expressions (task-448 / task-1912), a CompiledExpr carrying `Type::Error` could reach evaluation — particularly in incremental/LSP scenarios where the evaluator may proceed despite compiler errors. In that case, every value/type predicate would report `false` and downstream logic may surface spurious TypeKindMismatch diagnostics or panic. Either: (a) add an explicit `Type::Error` arm in each predicate (likely returning `true` as \"don't second-guess a poisoned type\"), or (b) guard the evaluator to refuse evaluation of any module whose diagnostics contain errors before walking expressions, and document that contract. Related: task 1867 (value_type_kind_matches TypeParam/StructureRef/Geometry verification), task 1893 (Bool arm unit tests), task 1913 (nested is_error). Review followup from task 1912; suggestion S6.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:22:00.193Z",
+        "updatedAt": "2026-04-17T06:29:04.275Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/src/lib.rs"
@@ -40272,7 +40284,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:21:34.661Z"
+        "updatedAt": "2026-04-17T06:10:36.332Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Tighten or remove the source-comment regression guard in viewStateStore.test.ts"
+            ]
+          }
+        }
       },
       {
         "id": "1926",
@@ -40299,11 +40319,16 @@
         "description": "Two review suggestions from Task 1821 on `crates/reify-compiler/src/geometry.rs` (the `all_dispatch_functions_accounted_for` test block around lines 603-755):\n\n1. **Reduce breakdown-comment duplication (lines 657-665).** The doc comment on `EXPECTED_DISPATCH_COUNT` re-enumerates every function name already in `GEOM_ARG_FUNCTIONS` / `NO_GEOM_ARG_FUNCTIONS` / boolean_ops / loft, creating a fourth place to keep in sync. The maintenance rule only mentions updating one list and the constant, so the parenthetical names will silently drift. Fix: drop the parenthetical enumerations and keep only per-category counts (e.g. `- GEOM_ARG_FUNCTIONS   14`), or delete the breakdown entirely — the lists are the single source of truth.\n\n2. **Close the reverse-direction gap (lines 748-754).** The revised assertion still only cross-validates the lists against themselves plus a hand-maintained constant. Nothing touches the actual match arms in `compile_geometry_call`, so an arm added there without a corresponding list entry remains undetected — which is the failure mode the module-level comment (lines 603-609) and the test's doc (lines 714-718) explicitly motivate catching. Fix: add a companion test that scans the source of `compile_geometry_call` via `include_str!(\"geometry.rs\")` plus a simple regex over `\"name\" =>` patterns in the match block, then cross-checks the extracted dispatch set against the four lists. This closes the gap without a procedural macro.\n\nBoth suggestions come from reviewer_comprehensive on Task 1821.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:46:18.722Z"
+        "updatedAt": "2026-04-17T05:53:10.674Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/geometry.rs"
+          ]
+        }
       },
       {
         "id": "1928",
@@ -40314,14 +40339,100 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:51:08.311Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri/src/engine.rs",
+            "gui/src-tauri/src/tests"
+          ]
+        }
+      },
+      {
+        "id": "1929",
+        "title": "Log release-mode warning on duplicate template names in get_entity_tree",
+        "description": "In gui/src-tauri/src/engine.rs `get_entity_tree` (around lines 496-504), the template-name uniqueness invariant is currently enforced only via `debug_assert!`. In release builds, duplicates silently fall back to first-match behavior via `build_sub_node`'s lookup, which could produce silently inconsistent entity trees if a future refactor breaks the compiler's well-formed-module guarantee. Add a release-mode `tracing::warn!` on first duplicate detection so misbehaviour surfaces in logs. Source: reviewer_comprehensive on task 1783 (optional hardening).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:50:41.624Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri/src/engine.rs",
+            "gui/src-tauri/src/tests"
+          ]
+        }
+      },
+      {
+        "id": "1930",
+        "title": "Short-circuit prelude sentinel in offset_to_line_col_fast + doc accuracy",
+        "description": "Follow-up from task 765 review.\n\nProblem: `gui/src-tauri/src/engine.rs:1413` `offset_to_line_col_fast` does NOT short-circuit the `SourceSpan::prelude()` sentinel (offset == u32::MAX). It's the first-label renderer for every diagnostic (engine.rs:1360–1372). For cross-prelude collision warnings the first/only label IS the prelude sentinel, so this path computes `line = line_offsets.len() + 1` (past-last-line) — not an EOF position as `SourceSpan::prelude`'s rustdoc currently claims (`crates/reify-types/src/diagnostics.rs:48-51`). `byte_offset_to_line_col` was fixed in the task-765 diff but the fast variant was not, breaking the \"two convergent implementations agree\" invariant (see `engine_tests.rs:1386 matches_original_every_offset`).\n\nFix (preferred): Add the same early return at the top of `offset_to_line_col_fast`, e.g.\n```\nif offset == u32::MAX as usize { return (1, 1); }\n```\nand extend the cross-validation test so the sentinel is included in the \"two functions agree\" invariant.\n\nAlso update the rustdoc on `SourceSpan::prelude` (`crates/reify-types/src/diagnostics.rs:48-51`) to match actual behaviour once the fast path short-circuits — both paths now return (1,1).\n\nAlternative (not recommended): short-circuit in the caller at `engine.rs:1364` via `label.span.is_prelude()`. This duplicates logic and diverges from the library-level contract.\n\nAcceptance:\n- `offset_to_line_col_fast(..., u32::MAX as usize)` returns (1, 1).\n- Cross-validation test covers the sentinel offset.\n- Rustdoc on `SourceSpan::prelude` describes the actual behaviour of GUI/LSP renderers.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:54:27.222Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types/src/diagnostics.rs",
+            "gui/src-tauri/src/engine.rs",
+            "gui/src-tauri/src/tests"
+          ]
+        }
+      },
+      {
+        "id": "1931",
+        "title": "Guard cross-prelude collision warning against intra-module dups",
+        "description": "Follow-up from task 765 review.\n\nProblem: The cross-prelude collision check at `crates/reify-compiler/src/lib.rs:278-292` fires per-unit using `unit_registry.lookup`. If a single (malformed) prelude module contained two `pub unit foo` declarations, the warning would read `declared in both 'mod_a' and 'mod_a'` — nonsense. In practice `compile()` rejects intra-module duplicates earlier with proper spans, but the diagnostic is still incorrect when it does fire.\n\nFix: Guard the warning emission with\n```\nif existing.source_module.as_deref() != Some(&module_display[..]) { ... }\n```\nso only genuine cross-module collisions emit this warning. Intra-module dups have been (or should have been) reported at module-compile time.\n\nAcceptance:\n- Add a regression test where a single prelude module declares the same pub unit name twice; assert no `declared in both 'X' and 'X'` warning is emitted from `compile_with_prelude`'s seeding loop.\n- Existing cross-module collision tests continue to pass.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:54:28.878Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/unit_registry_tests.rs"
+          ]
+        }
+      },
+      {
+        "id": "1932",
+        "title": "Prelude collision tests: extract helper + pin single-collision count",
+        "description": "Follow-up from task 765 review. Two small test-quality improvements in `crates/reify-compiler/tests/unit_registry_tests.rs`:\n\n1. **De-duplicate boilerplate** (lines 1722-1932): `prelude_module_unit_collision_emits_warning` and `three_prelude_collision_emits_two_chained_warnings` share ~20 lines of boilerplate per prelude module (parse / assert no parse errors / compile / assert no compile errors). Extract a helper like\n   ```rust\n   fn prelude_module(name: &str, factor: f64) -> CompiledModule { ... }\n   ```\n   either in the test file or in `tests/common/mod.rs` (matches the style of existing `common::` helpers), and reuse it across both tests.\n\n2. **Pin the count in the single-collision case** (lines 1775-1785): `prelude_module_unit_collision_emits_warning` currently asserts that *some* warning mentions 'foo', but never pins the *count*. A future refactor that accidentally duplicates warning emission (double-push) would still pass. The three-prelude test already pins the count to 2. Add:\n   ```rust\n   assert_eq!(\n       warnings.iter().filter(|w| w.message.contains(\"foo\")).count(),\n       1,\n       \"expected exactly 1 collision warning, got: {:?}\", warnings\n   );\n   ```\n\nAcceptance: both tests still pass, boilerplate reduced, single-collision count is pinned.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-17T05:51:28.630Z"
+      },
+      {
+        "id": "1933",
+        "title": "Consolidate overlapping Editor debounce tests",
+        "description": "The new 'Editor debounce constant' describe block in gui/src/__tests__/Editor.test.tsx:71-89 overlaps with the existing 'calls bridge.updateSource after 300ms debounce' test at line 110 — both dispatch an edit and assert updateSource fires after the debounce. The unique value of the new test is the (EDITOR_DEBOUNCE_MS-1)ms negative-boundary assertion. Fold the negative-boundary assertion into the existing test and remove the duplicate describe block, OR keep the new test and delete/retitle the older one. Also update the older test's title and inline '// After 300ms debounce' comment to reference EDITOR_DEBOUNCE_MS for consistency.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-17T06:29:53.543Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T05:46:20.068Z",
-      "taskCount": 1923,
-      "completedCount": 1652,
+      "lastModified": "2026-04-17T06:29:53.543Z",
+      "taskCount": 1928,
+      "completedCount": 1657,
       "tags": [
         "master"
       ]

@@ -4,6 +4,8 @@
 
 The orchestrator verify pipeline requires `sccache` on PATH (install via `cargo install sccache`). `orchestrator.yaml` sets `RUSTC_WRAPPER=sccache` and `CARGO_INCREMENTAL=0` to share a rustc cache across worktrees; rationale and design in `~/.claude/plans/playful-hopping-nygaard.md`.
 
+This repo ships its git hooks under `hooks/` rather than `.git/hooks/`. `scripts/setup-dev.sh` configures `git config core.hooksPath hooks` so the post-commit tasks.json ID normalizer (`hooks/post-commit`) runs automatically. Re-run `setup-dev.sh` if you need to re-configure.
+
 ## Memory Usage
 
 ### When to read memory
