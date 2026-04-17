@@ -1244,54 +1244,11 @@ pub(crate) fn compile_entity(
     // Build a lookup table mapping geometry let/param names to their initializer AST
     // expressions. This allows compile_geometry_call to resolve Ident references
     // (let-bound geometry variables) used as arguments to boolean ops.
-    // Also recurses one level into GuardedGroupDecl members so guarded geometry
-    // params (registered into known_geometry_lets by register_guarded_names) are
-    // included.
+    // `collect_geometry_exprs` recurses fully into nested GuardedGroupDecl members
+    // so geometry params at any nesting depth are captured.
     let geometry_lets: HashMap<&str, &reify_syntax::Expr> = {
         let mut map = HashMap::new();
-        for m in structure.members {
-            match m {
-                reify_syntax::MemberDecl::Let(let_decl)
-                    if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) =>
-                {
-                    map.insert(let_decl.name.as_str(), &let_decl.value);
-                }
-                // Solid-typed params with a geometry-call default also contribute
-                // to the lookup table so boolean ops can reference them by name.
-                reify_syntax::MemberDecl::Param(param)
-                    if known_geometry_lets.contains(param.name.as_str()) =>
-                {
-                    if let Some(e) = &param.default {
-                        map.insert(param.name.as_str(), e);
-                    }
-                }
-                // Recurse into guarded groups to capture guarded geometry params/lets.
-                reify_syntax::MemberDecl::GuardedGroup(g) => {
-                    for gm in g.members.iter().chain(g.else_members.iter()) {
-                        match gm {
-                            reify_syntax::MemberDecl::Let(let_decl)
-                                if is_geometry_let(
-                                    &let_decl.value,
-                                    functions,
-                                    &known_geometry_lets,
-                                ) =>
-                            {
-                                map.insert(let_decl.name.as_str(), &let_decl.value);
-                            }
-                            reify_syntax::MemberDecl::Param(param)
-                                if known_geometry_lets.contains(param.name.as_str()) =>
-                            {
-                                if let Some(e) = &param.default {
-                                    map.insert(param.name.as_str(), e);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        collect_geometry_exprs(structure.members, &known_geometry_lets, functions, &mut map);
         map
     };
 
@@ -1755,6 +1712,45 @@ pub(crate) enum PendingBoundCheck {
 /// Check that type arguments satisfy the bounds on type parameters.
 ///
 /// For each type param with bounds, verify that the corresponding type arg
+/// Recursively collect geometry-let and geometry-param initializer expressions
+/// from a slice of `MemberDecl`s into `out`.
+///
+/// Mirrors `register_guarded_names` in guards.rs in its descend-into-GuardedGroup
+/// recursion. The `known` set is the `known_geometry_lets` built by the pre-pass
+/// and `register_guarded_names`; a Param is included iff its name is already in
+/// `known` (meaning the pre-pass already classified it as a geometry param).
+///
+/// Used by `compile_entity`'s third pass to build the `geometry_lets` lookup
+/// table that `compile_geometry_call` uses to resolve Ident references.
+fn collect_geometry_exprs<'a>(
+    members: &'a [reify_syntax::MemberDecl],
+    known: &HashSet<&str>,
+    functions: &[CompiledFunction],
+    out: &mut HashMap<&'a str, &'a reify_syntax::Expr>,
+) {
+    for m in members {
+        match m {
+            reify_syntax::MemberDecl::Let(let_decl)
+                if is_geometry_let(&let_decl.value, functions, known) =>
+            {
+                out.insert(let_decl.name.as_str(), &let_decl.value);
+            }
+            reify_syntax::MemberDecl::Param(param)
+                if known.contains(param.name.as_str()) =>
+            {
+                if let Some(e) = &param.default {
+                    out.insert(param.name.as_str(), e);
+                }
+            }
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                collect_geometry_exprs(&g.members, known, functions, out);
+                collect_geometry_exprs(&g.else_members, known, functions, out);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// declares conformance to all required traits. Forwarded type params
 /// (Type::TypeParam) are skipped — their bounds are enforced at the concrete
 /// instantiation site.
