@@ -40235,7 +40235,12 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-17T05:18:40.548Z"
+        "updatedAt": "2026-04-17T05:18:40.548Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src/lib.rs"
+          ]
+        }
       },
       {
         "id": "1925",
@@ -40269,7 +40274,9 @@
       "completedCount": 1649,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T05:23:40.213Z",
+      "description": "Tasks for master context"
     }
   }
 }
