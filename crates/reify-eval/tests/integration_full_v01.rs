@@ -876,6 +876,47 @@ fn purpose_follow_up_comment_is_precise() {
     );
 }
 
+// ── Test 20: weight_target has its own precise scoped follow-up comment ───────
+
+/// Sibling test that checks the comment SPECIFICALLY ABOVE weight_target
+/// (not just anywhere in the file) mentions both "minimize subject.mass"
+/// as the target shape and cites "task #1904" as the follow-up tracker.
+/// This ensures the weight_target comment is self-contained and precise.
+#[test]
+fn weight_target_precise_follow_up() {
+    let src = source();
+
+    // Locate the weight_target purpose declaration.
+    let weight_target_pos = src
+        .find("purpose weight_target")
+        .expect("'purpose weight_target' must exist in .ri");
+
+    // Restrict to the text BEFORE the purpose declaration (i.e., comments above it).
+    let before_weight_target = &src[..weight_target_pos];
+
+    // The comment above weight_target must cite "task #1904".
+    assert!(
+        before_weight_target.contains("task #1904"),
+        "No 'task #1904' found in the text preceding 'purpose weight_target' — \
+         scoped comment above weight_target must cite task #1904"
+    );
+
+    // The comment above weight_target must mention the target shape "minimize subject.mass".
+    assert!(
+        before_weight_target.contains("minimize subject.mass"),
+        "Target shape 'minimize subject.mass' not found in the text preceding \
+         'purpose weight_target' — scoped comment above weight_target must name the target shape"
+    );
+
+    // The comment above weight_target must also mention "determined(subject.mass)"
+    // so readers know the constraint target shape too.
+    assert!(
+        before_weight_target.contains("determined(subject.mass)"),
+        "Target shape 'determined(subject.mass)' not found in the text preceding \
+         'purpose weight_target' — scoped comment must name both minimize and constraint targets"
+    );
+}
+
 // ── Test 19: constraint def labels ────────────────────────────────────────────
 
 /// Assembly has 2 InRange invocations × 2 predicates = 4 total constraints,
