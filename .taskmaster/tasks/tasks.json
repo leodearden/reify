@@ -38210,7 +38210,13 @@
           "modules": [
             "crates/reify-compiler/src/geometry.rs",
             "crates/reify-compiler/tests/let_scope_tests.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Evaluate chamfer/fillet hardcoded GeomRef::Step(0) vs geom_ref() inconsistency"
+            ]
+          }
         }
       },
       {
@@ -39598,11 +39604,11 @@
         "description": "`add_subtask` (via taskmaster MCP / auto-commit) writes new subtask `id` fields as JSON numbers instead of digit-strings, regressing the normalization invariant that `tests/infra/test_tasks_json_id_types.sh` enforces. Every such regression silently blocks the *next* task's post-merge verify until a steward runs a jq normalization.",
         "details": "Observed failure pattern (2026-04-17, blocking task 1880 post-merge verify):\n- Task 1887 (`01f30780d`) normalized 8 subtask ids to digit-strings and added `tests/infra/test_tasks_json_id_types.sh` as a regression test.\n- Subsequent `add_subtask` calls on tasks 966, 1612, 1680, 1826 re-introduced integer ids, tripping the test.\n- Task 1880 (gui-only) got escalated (esc-1880-62 → esc-1880-64) because its post-merge verify failed on an orthogonal infra test.\n- Steward resolution on task 1880: one-shot jq normalization committed to the branch (see commit `e5a0a3980` on `task/1880`). This only heals the current 8; the next `add_subtask` call will regress again.\n\nRoot cause to investigate:\n- Locate the `add_subtask` code path (likely in the taskmaster MCP wrapper or taskmaster CLI itself — check `scripts/`, `.taskmaster/`, or the MCP server implementation).\n- Likely culprit: subtask-id generation uses an integer counter and serializes without `String()`/`str()` conversion.\n- Verify by instrumenting or by inspecting whether `id` is typed as `str | int` in the task schema.\n\nMemory hints:\n- search(\"taskmaster subtask id serializer\")\n- search(\"tasks.json integer subtask normalization task 1887\")\n- get_episodes for task 1887 to see the normalization diff and the added regression test\n\nAcceptance:\n- After fix, calling `add_subtask` followed by `jq '.master.tasks[].subtasks[]?|.id|type' .taskmaster/tasks/tasks.json | sort -u` returns only `string`.\n- `bash tests/infra/test_tasks_json_id_types.sh` passes immediately after any add_subtask call.\n- Add a dedicated unit test that exercises `add_subtask` and asserts the written id is a JSON string.\n\nModules likely affected: taskmaster MCP server, `.taskmaster/` scripts, or whichever wrapper the fused-memory MCP routes `add_subtask` through.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-16T23:54:41.641Z"
+        "updatedAt": "2026-04-17T00:40:17.677Z"
       },
       {
         "id": "1896",
@@ -39704,9 +39710,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T00:40:00.057Z",
+      "lastModified": "2026-04-17T00:40:17.684Z",
       "taskCount": 1895,
-      "completedCount": 1630,
+      "completedCount": 1631,
       "tags": [
         "master"
       ]
