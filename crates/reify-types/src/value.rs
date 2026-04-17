@@ -36,8 +36,10 @@ pub enum FieldSourceKind {
     Sampled,
     Composed,
     Imported,
-    /// A field produced by `gradient()` — its lambda slot stores the original
-    /// field and the sample handler dispatches to central-difference evaluation.
+    /// A field produced by the language-level `gradient()` operator, yielding
+    /// the gradient of a parent scalar (or vector) field.  The stored `lambda`
+    /// in the associated `Value::Field` holds the original source field; see
+    /// `Value::Field.lambda` for the storage-layout contract.
     Gradient,
     /// A field produced by `divergence()` — its lambda slot stores the original
     /// vector field and the sample handler dispatches to numerical-divergence evaluation.
