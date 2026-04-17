@@ -40621,23 +40621,21 @@
         "description": "Follow-up from task 448 review (esc-448-218, S3): the current `make_poison_literal` debug_assert in crates/reify-compiler/src/expr.rs only checks \"at least one Severity::Error exists in the diagnostics buffer\". Because `diagnostics` is a module-wide Vec that accumulates across the whole compile, this invariant goes near-vacuous after the first error — a poison path that forgot its own push is silently accepted whenever any unrelated earlier error exists. Refactor callers to snapshot `diagnostics.len()` (or a pre-call error-severity count) at the start of each producing function and pass that snapshot into the helper so the assert can verify a NEW error was pushed on this path specifically. Alternatively, document the \"best-effort smoke check\" framing more prominently. Scope-expanding because it touches the helper signature + every caller.",
         "details": "Suggested by reviewer_comprehensive during task-448 review. Deferred (not folded) because S3 requires signature changes across every make_poison_literal caller and is larger than the trivial-fold threshold. Files: crates/reify-compiler/src/expr.rs (helper + 3+ call sites). Reviewer's exact wording preserved in escalation esc-448-218.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-17T13:32:27.196Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-17T13:28:46.841Z",
-      "taskCount": 1937,
+      "lastModified": "2026-04-17T13:32:27.196Z",
+      "taskCount": 1938,
       "completedCount": 1667,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-17T13:32:13.299Z",
-      "description": "Tasks for master context",
-      "updated": "2026-04-17T13:32:13.358Z"
+      ]
     }
   }
 }
