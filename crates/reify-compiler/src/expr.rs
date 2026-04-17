@@ -1004,6 +1004,13 @@ pub(crate) fn compile_expr_guarded(
                 };
                 CompiledExpr::method_call(compiled_obj, member.clone(), vec![], result_type)
             } else {
+                // Anti-cascade (task-448 amend): if the object is already
+                // poisoned, do NOT emit a second "not yet supported" diagnostic
+                // on top of the root-cause error. Short-circuit to Type::Error
+                // silently — the original producer already reported the issue.
+                if compiled_obj.result_type.is_error() {
+                    return CompiledExpr::literal(Value::Undef, Type::Error);
+                }
                 diagnostics.push(
                     Diagnostic::error(format!("member access not yet supported: .{}", member))
                         .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
