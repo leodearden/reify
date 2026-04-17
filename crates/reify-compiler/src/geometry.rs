@@ -619,6 +619,44 @@ pub(crate) fn compile_geometry_call(
     }
 }
 
+/// Detect if a constraint expression matches the count constraint pattern:
+///   `collection_name.count == expr`  or  `expr == collection_name.count`
+/// Returns `(collection_name, count_expr)` where count_expr is the non-.count side.
+pub(crate) fn extract_count_constraint<'a>(
+    expr: &'a reify_syntax::Expr,
+    collection_sub_names: &HashSet<String>,
+) -> Option<(String, &'a reify_syntax::Expr)> {
+    if let reify_syntax::ExprKind::BinOp { op, left, right } = &expr.kind {
+        if op != "==" {
+            return None;
+        }
+        // Check LHS: collection_name.count == expr
+        if let Some(name) = extract_collection_count(left, collection_sub_names) {
+            return Some((name, right));
+        }
+        // Check RHS: expr == collection_name.count
+        if let Some(name) = extract_collection_count(right, collection_sub_names) {
+            return Some((name, left));
+        }
+    }
+    None
+}
+
+/// Check if an expression is `collection_name.count` for a known collection sub.
+pub(crate) fn extract_collection_count(
+    expr: &reify_syntax::Expr,
+    collection_sub_names: &HashSet<String>,
+) -> Option<String> {
+    if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind
+        && member == "count"
+        && let reify_syntax::ExprKind::Ident(name) = &object.kind
+        && collection_sub_names.contains(name.as_str())
+    {
+        return Some(name.clone());
+    }
+    None
+}
+
 // ─── Registry cross-check (task-1733) ────────────────────────────────────────
 //
 // The test below cross-checks the set of function names handled in
@@ -674,14 +712,16 @@ mod tests {
     /// `compile_geometry_call`, spread across the four category lists.
     ///
     /// Breakdown at time of writing:
-    /// - `GEOM_ARG_FUNCTIONS`   14  (translate, rotate, scale, rotate_around, circular_pattern,
-    ///                                linear_pattern, mirror, extrude, revolve, revolve_full,
-    ///                                shell, thicken, draft, sweep)
-    /// - `NO_GEOM_ARG_FUNCTIONS` 13 (box, cylinder, sphere, linear_pattern_2d, arbitrary_pattern,
-    ///                                chamfer, fillet, line_segment, arc, helix, interp, bezier, nurbs)
-    /// - boolean ops             5  (union, intersection, difference, union_all, intersection_all)
-    /// - loft                    1
-    /// Total                    33
+    /// ```text
+    /// GEOM_ARG_FUNCTIONS    14  (translate, rotate, scale, rotate_around, circular_pattern,
+    ///                            linear_pattern, mirror, extrude, revolve, revolve_full,
+    ///                            shell, thicken, draft, sweep)
+    /// NO_GEOM_ARG_FUNCTIONS 13  (box, cylinder, sphere, linear_pattern_2d, arbitrary_pattern,
+    ///                            chamfer, fillet, line_segment, arc, helix, interp, bezier, nurbs)
+    /// boolean ops            5  (union, intersection, difference, union_all, intersection_all)
+    /// loft                   1
+    /// Total                 33
+    /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
     ///   1. Add the function name to exactly one of the four lists in
@@ -772,43 +812,5 @@ mod tests {
              GEOM_ARG_FUNCTIONS, NO_GEOM_ARG_FUNCTIONS, boolean_ops, or loft above"
         );
     }
-}
-
-/// Detect if a constraint expression matches the count constraint pattern:
-///   `collection_name.count == expr`  or  `expr == collection_name.count`
-/// Returns `(collection_name, count_expr)` where count_expr is the non-.count side.
-pub(crate) fn extract_count_constraint<'a>(
-    expr: &'a reify_syntax::Expr,
-    collection_sub_names: &HashSet<String>,
-) -> Option<(String, &'a reify_syntax::Expr)> {
-    if let reify_syntax::ExprKind::BinOp { op, left, right } = &expr.kind {
-        if op != "==" {
-            return None;
-        }
-        // Check LHS: collection_name.count == expr
-        if let Some(name) = extract_collection_count(left, collection_sub_names) {
-            return Some((name, right));
-        }
-        // Check RHS: expr == collection_name.count
-        if let Some(name) = extract_collection_count(right, collection_sub_names) {
-            return Some((name, left));
-        }
-    }
-    None
-}
-
-/// Check if an expression is `collection_name.count` for a known collection sub.
-pub(crate) fn extract_collection_count(
-    expr: &reify_syntax::Expr,
-    collection_sub_names: &HashSet<String>,
-) -> Option<String> {
-    if let reify_syntax::ExprKind::MemberAccess { object, member } = &expr.kind
-        && member == "count"
-        && let reify_syntax::ExprKind::Ident(name) = &object.kind
-        && collection_sub_names.contains(name.as_str())
-    {
-        return Some(name.clone());
-    }
-    None
 }
 

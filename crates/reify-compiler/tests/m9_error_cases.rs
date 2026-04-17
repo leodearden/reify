@@ -14,9 +14,7 @@
 //!   - scc.rs          — duplicate template name (internal; tested via lib.rs path)
 //!   - lib.rs          — duplicate entity definitions, duplicate unit declarations
 
-use reify_compiler::*;
 use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
-use reify_types::*;
 
 // ── Step 1: Trait conformance error tests ─────────────────────────────────────
 

@@ -209,13 +209,13 @@ fn assembly_has_50_plus_subs() {
 /// SteelBeam.mass = volume * density (tolerance 1e-9).
 #[test]
 fn mass_propagation_steel_beam() {
-    assert_mass_equals_volume_times_density(&eval_canonical(), "SteelBeam");
+    assert_mass_equals_volume_times_density(eval_canonical(), "SteelBeam");
 }
 
 /// AluminumPlate.mass = volume * density (tolerance 1e-9).
 #[test]
 fn mass_propagation_aluminum_plate() {
-    assert_mass_equals_volume_times_density(&eval_canonical(), "AluminumPlate");
+    assert_mass_equals_volume_times_density(eval_canonical(), "AluminumPlate");
 }
 
 /// LargeAssembly.total_mass exists and is > 0.

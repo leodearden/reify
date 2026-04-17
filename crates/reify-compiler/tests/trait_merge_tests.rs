@@ -961,7 +961,7 @@ structure def S : TraitA + TraitB {
 
     // At least 1 constraint injected (from TraitA).
     assert!(
-        template.constraints.len() >= 1,
+        !template.constraints.is_empty(),
         "expected at least 1 constraint injected from TraitA, got {}",
         template.constraints.len()
     );
@@ -1064,7 +1064,7 @@ structure def S : HasParam + HasConstraint {
 
     // At least 1 constraint injected (the `x > 0` from HasConstraint).
     assert!(
-        template.constraints.len() >= 1,
+        !template.constraints.is_empty(),
         "expected at least 1 constraint injected from HasConstraint, got {}",
         template.constraints.len()
     );

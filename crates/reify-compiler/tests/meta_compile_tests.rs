@@ -1,7 +1,7 @@
 //! Tests for meta block compilation — `meta { key = "value" }` and `meta.key` access.
 
 use reify_compiler::TopologyTemplate;
-use reify_test_support::{compile_first_template, compile_source};
+use reify_test_support::compile_first_template;
 use reify_types::{CompiledExpr, CompiledExprKind, Severity};
 
 /// Helper: get the default_expr for a value cell by member name.

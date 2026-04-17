@@ -8,7 +8,6 @@
 //! 4e8d65153 (lost in the c88ca9635/3a248e07d regression cluster; see
 //! project_regression_c88ca9635.md).
 
-use reify_compiler::*;
 use reify_test_support::{compile_first_template, compile_source};
 use reify_types::*;
 

@@ -863,15 +863,6 @@ pub(crate) fn compile_with_prelude_refs(
 mod tests {
     use super::*;
 
-    /// Convenience helper: build a bare number-literal expression.
-    /// Used by multiple tests to construct non-geometry arguments.
-    fn num_lit(v: f64) -> reify_syntax::Expr {
-        reify_syntax::Expr {
-            kind: reify_syntax::ExprKind::NumberLiteral(v),
-            span: reify_types::SourceSpan::new(0, 1),
-        }
-    }
-
     #[test]
     fn entity_kind_display() {
         assert_eq!(EntityKind::Structure.to_string(), "structure");
