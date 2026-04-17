@@ -40601,7 +40601,13 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-17T13:13:02.822Z"
+        "updatedAt": "2026-04-17T13:13:02.822Z",
+        "metadata": {
+          "modules": [
+            "scripts/validate_tasks_json.py",
+            "tests/infra/test_tasks_json_schema.sh"
+          ]
+        }
       }
     ],
     "metadata": {
@@ -40611,7 +40617,9 @@
       "completedCount": 1664,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T13:18:23.639Z",
+      "description": "Tasks for master context"
     }
   }
 }
