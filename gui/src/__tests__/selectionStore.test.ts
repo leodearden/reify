@@ -151,6 +151,47 @@ describe('selectionStore', () => {
     });
   });
 
+  describe('rangeSelect', () => {
+    it('replaces selectedEntities with provided paths (dedup preserving first occurrence)', () => {
+      createRoot((dispose) => {
+        const { state, rangeSelect } = createSelectionStore();
+        rangeSelect(['A', 'B', 'A', 'C']);
+        expect(state.selectedEntities).toEqual(['A', 'B', 'C']);
+        dispose();
+      });
+    });
+
+    it('sets selectedEntity to last path (primary=last)', () => {
+      createRoot((dispose) => {
+        const { state, rangeSelect } = createSelectionStore();
+        rangeSelect(['A', 'B', 'C']);
+        expect(state.selectedEntity).toBe('C');
+        dispose();
+      });
+    });
+
+    it('does not change anchorEntity', () => {
+      createRoot((dispose) => {
+        const { state, selectSingle, rangeSelect } = createSelectionStore();
+        selectSingle('X');
+        expect(state.anchorEntity).toBe('X');
+        rangeSelect(['A', 'B']);
+        expect(state.anchorEntity).toBe('X');
+        dispose();
+      });
+    });
+
+    it('empty paths list empties selection and sets primary to null', () => {
+      createRoot((dispose) => {
+        const { state, rangeSelect } = createSelectionStore();
+        rangeSelect([]);
+        expect(state.selectedEntities).toEqual([]);
+        expect(state.selectedEntity).toBeNull();
+        dispose();
+      });
+    });
+  });
+
   it('selectEntity sets selectedEntity', () => {
     createRoot((dispose) => {
       const { state, selectEntity } = createSelectionStore();
