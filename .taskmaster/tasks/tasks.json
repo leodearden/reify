@@ -40426,6 +40426,17 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-17T06:29:53.543Z"
+      },
+      {
+        "id": "1934",
+        "title": "Strengthen make_poison_literal anti-cascade enforcement",
+        "description": "Follow-up to task 448 review. Two related improvements to the Type::Error poison helper in crates/reify-compiler/src/expr.rs:\n\n1) The current `make_poison_literal` debug_assert (lines 21-32) only checks that SOME Severity::Error exists in `diagnostics` — buffer-wide, not call-site-scoped. A forgotten `diagnostics.push(...)` at a new poison producer still passes in debug mode whenever any earlier compile step already emitted an error. Either (a) change the API so callers pass `len_before` and assert `diagnostics[len_before..].iter().any(|d| d.severity == Error)`, or (b) simplify to a plain constructor and drop the misleading invariant claim.\n\n2) Several sibling error-producing arms in MemberAccess/port/meta still emit `CompiledExpr::literal(Value::Undef, Type::Real)` (or Type::String) after pushing a Severity::Error — specifically lines ~867 (unknown member on sub), ~890 (port has no member), ~918 (unknown member on collection sub), ~931 (invalid collection index), ~983 (no meta block), ~992 (unknown meta key). These are exactly the producer sites the new Type::Error contract is meant to cover. Route them through `make_poison_literal(diagnostics)` (or equivalent post-strengthening API) so e.g. `self.sub.unknown + 5.0` stops cascading a type-mismatch, matching the treatment given to `self.member`.\n\nAdd regression tests that assert no second \"type mismatch\" diagnostic fires on expressions consuming these poisoned producers.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -40435,7 +40446,10 @@
       "completedCount": 1657,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-17T06:34:43.010Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-17T06:34:43.047Z"
     }
   }
 }
