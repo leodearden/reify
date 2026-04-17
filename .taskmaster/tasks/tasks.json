@@ -39633,7 +39633,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-16T23:33:20.576Z"
+        "updatedAt": "2026-04-16T23:33:20.576Z",
+        "metadata": {
+          "files": [
+            "tests/infra/test_tasks_json_id_types.sh"
+          ],
+          "modules": [
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": 1895,
