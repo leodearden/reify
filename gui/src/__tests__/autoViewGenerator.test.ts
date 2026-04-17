@@ -186,7 +186,7 @@ describe('generatePurposeViews', () => {
     expect(view.visibility['Root.mesh']).toBe('show');
   });
 
-  it('(c) "manufacturing_ready" heuristic: let Solid/Surface/Curve → "ghost", trait_geometry → "show", containers → "show", Material params → "show"', () => {
+  it('(c) "manufacturing_ready" heuristic: let Solid/Surface/Curve → "ghost", trait_geometry → "show", containers → "show", Material params → "show", non-material params → "ghost"', () => {
     const tree = [
       makeNode({
         entity_path: 'Root',
@@ -197,6 +197,7 @@ describe('generatePurposeViews', () => {
           makeNode({ entity_path: 'Root.edge', kind: 'let', type_name: 'CurveEdge' }),
           makeNode({ entity_path: 'Root.geometry', kind: 'param', trait_geometry: true }),
           makeNode({ entity_path: 'Root.mat', kind: 'param', type_name: 'Material', trait_geometry: false }),
+          makeNode({ entity_path: 'Root.width', kind: 'param', type_name: null, trait_geometry: false }),
           makeNode({ entity_path: 'Root.housing', kind: 'structure' }),
         ],
       }),
@@ -214,8 +215,11 @@ describe('generatePurposeViews', () => {
     // containers → show
     expect(view.visibility['Root']).toBe('show');
     expect(view.visibility['Root.housing']).toBe('show');
-    // Material params → show
+    // Material params → show (distinct from the non-material param below)
     expect(view.visibility['Root.mat']).toBe('show');
+    // Non-material, non-geometry param → ghost (proves the Material branch fires
+    // independently of the final fallback)
+    expect(view.visibility['Root.width']).toBe('ghost');
   });
 
   it('(d) multiple purposes produce multiple views in order', () => {
@@ -225,5 +229,15 @@ describe('generatePurposeViews', () => {
     expect(views[0].id).toBe('auto:purpose:alpha');
     expect(views[1].id).toBe('auto:purpose:beta');
     expect(views[2].id).toBe('auto:purpose:gamma');
+  });
+
+  it('(e) let node with type_name=null → "show" under both generateDefaultView and fallback purpose view (null guard regression)', () => {
+    // Structurally-typed let bindings have no type_name — they must not be hidden.
+    const tree = [makeNode({ entity_path: 'Root.untyped', kind: 'let', type_name: null })];
+    // Default view
+    expect(generateDefaultView(tree).visibility['Root.untyped']).toBe('show');
+    // Generic purpose (falls back to defaultVisibilityFor)
+    const [purposeView] = generatePurposeViews(tree, ['foo']);
+    expect(purposeView.visibility['Root.untyped']).toBe('show');
   });
 });

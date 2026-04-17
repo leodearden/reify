@@ -11,6 +11,8 @@ import type { EntityTreeNode, VisibilityState } from '../types';
  * - `name`: Human-readable label displayed in the UI.
  * - `auto`: True for generated views, false for user-created views.
  * - `modified`: True if the user has made local edits to an auto view.
+ *   NOTE: `regenerateAutoViews` does not yet preserve edits when `modified=true`
+ *   (future work). For now auto-view edits are always transient.
  * - `visibility`: Explicit per-node visibility state keyed by `entity_path`.
  *   For auto views this is a full assignment (every node has an entry).
  *   For user views the map may be sparse; unset paths fall through to
@@ -29,6 +31,21 @@ export interface ViewDefinition {
 // ---------------------------------------------------------------------------
 
 /**
+ * Returns true when a node is a let-binding whose type is a geometry
+ * intermediate (Solid, Surface, or Curve).  Used by both `defaultVisibilityFor`
+ * and `manufacturingReadyVisibilityFor` so the two rules cannot drift.
+ */
+function isLetGeometryType(node: EntityTreeNode): boolean {
+  return (
+    node.kind === 'let' &&
+    node.type_name != null &&
+    (node.type_name.includes('Solid') ||
+      node.type_name.includes('Surface') ||
+      node.type_name.includes('Curve'))
+  );
+}
+
+/**
  * Compute the default visibility state for a single node based on its
  * structural properties. This materialises the same rule that
  * `viewStateStore`'s `defaultRuleFor` uses for walk-up resolution, but
@@ -41,15 +58,7 @@ export interface ViewDefinition {
  */
 export function defaultVisibilityFor(node: EntityTreeNode): VisibilityState {
   if (node.trait_geometry) return 'show';
-  if (
-    node.kind === 'let' &&
-    node.type_name != null &&
-    (node.type_name.includes('Solid') ||
-      node.type_name.includes('Surface') ||
-      node.type_name.includes('Curve'))
-  ) {
-    return 'hidden';
-  }
+  if (isLetGeometryType(node)) return 'hidden';
   return 'show';
 }
 
@@ -57,13 +66,19 @@ export function defaultVisibilityFor(node: EntityTreeNode): VisibilityState {
 // DFS tree walker (shared by all generators)
 // ---------------------------------------------------------------------------
 
+/**
+ * Collect every node in the tree via a stack-based DFS.  Using `pop()` keeps
+ * this O(n) rather than the O(n²) that `shift()` on a plain array would cause
+ * on large assemblies.  Ordering within the returned array doesn't matter
+ * because the callers key results by `entity_path`.
+ */
 function collectAllNodes(nodes: EntityTreeNode[]): EntityTreeNode[] {
   const result: EntityTreeNode[] = [];
-  const queue: EntityTreeNode[] = [...nodes];
-  while (queue.length > 0) {
-    const node = queue.shift()!;
+  const stack: EntityTreeNode[] = [...nodes];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
     result.push(node);
-    queue.push(...node.children);
+    stack.push(...node.children);
   }
   return result;
 }
@@ -116,18 +131,15 @@ function manufacturingReadyVisibilityFor(node: EntityTreeNode): VisibilityState 
   // trait_geometry → show
   if (node.trait_geometry) return 'show';
   // let Solid/Surface/Curve → ghost (still visible as context, not fully hidden)
-  if (
-    node.kind === 'let' &&
-    node.type_name != null &&
-    (node.type_name.includes('Solid') ||
-      node.type_name.includes('Surface') ||
-      node.type_name.includes('Curve'))
-  ) {
-    return 'ghost';
-  }
-  // Material params → show
+  if (isLetGeometryType(node)) return 'ghost';
+  // Material params are specifically kept visible (material assignments matter
+  // for manufacturing output).  Without this branch they would fall through to
+  // the param→ghost rule below, which would incorrectly de-emphasise them.
   if (node.type_name != null && node.type_name.includes('Material')) return 'show';
-  // containers (structure, sub, occurrence, …) → show
+  // Non-geometry, non-material params (dimensions, angles, …) are ghosted so
+  // they don't clutter the manufacturing view.
+  if (node.kind === 'param') return 'ghost';
+  // Containers (structure, sub, occurrence, …) → show.
   return 'show';
 }
 

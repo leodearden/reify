@@ -222,6 +222,13 @@ export function createViewStateStore() {
    *
    * When the view exists its `visibility` map is copied into `state.explicit`
    * so that `getEffectiveVisibility` / `getAllEffective` reflect the view.
+   *
+   * NOTE on null semantics: `ViewDefinition.visibility` only carries concrete
+   * `VisibilityState` values ('show' | 'ghost' | 'hidden') — never `null`.
+   * Activating a view therefore replaces `state.explicit` wholesale and
+   * destroys any prior explicit-null (inherit) markers the user may have set
+   * via `resetToInherit`.  If null/inherit semantics ever need to survive a
+   * view switch they would have to be stored in the `ViewDefinition` itself.
    */
   function setActiveView(viewId: string): void {
     const view = state.views[viewId];
@@ -243,8 +250,23 @@ export function createViewStateStore() {
    * - active is `user:*` and view exists → keep explicit entries for paths that
    *   are still in the tree; leave NEW paths unset so defaultRuleFor handles them.
    * - active references a missing view → fall back to `auto:default`.
+   *
+   * This function calls `setTree(tree)` internally so the internal nodeByPath /
+   * parentByPath maps stay in sync with the tree passed here.  Callers do not
+   * need to call `setTree` separately, though doing so is harmless (idempotent).
+   *
+   * NOTE on the `modified` flag: `ViewDefinition.modified` is tracked in the
+   * type but `regenerateAutoViews` does not yet inspect it.  Auto-view edits
+   * (made via `setVisibility` after switching to an auto view) are therefore
+   * always transient — regenerating will overwrite them.  A future revision
+   * should preserve the user's edits when `modified === true`.
    */
   function regenerateAutoViews(tree: EntityTreeNode[], activePurposes: string[] = []): void {
+    // Keep the internal nodeByPath/parentByPath maps in sync so that
+    // getEffectiveVisibility works correctly after regeneration without
+    // requiring a separate setTree() call from the caller.
+    setTree(tree);
+
     const freshDefault = generateDefaultView(tree);
     const freshAllGeo = generateAllGeometryView(tree);
     const freshPurpose = generatePurposeViews(tree, activePurposes);

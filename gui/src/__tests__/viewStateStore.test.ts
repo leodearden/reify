@@ -1117,6 +1117,34 @@ describe('viewStateStore — defaultRuleFor parity with defaultVisibilityFor (no
 });
 
 // ---------------------------------------------------------------------------
+// regenerateAutoViews — internal setTree contract
+// ---------------------------------------------------------------------------
+
+describe('viewStateStore — regenerateAutoViews — internal setTree contract', () => {
+  it('regenerateAutoViews without a prior setTree call still populates nodeByPath so getEffectiveVisibility works', () => {
+    createRoot((dispose) => {
+      const store = createViewStateStore();
+      // Do NOT call setTree first — regenerateAutoViews should handle it internally.
+      const tree = [
+        makeNode({
+          entity_path: 'Root',
+          kind: 'structure',
+          children: [
+            makeNode({ entity_path: 'Root.geo', kind: 'param', trait_geometry: true }),
+            makeNode({ entity_path: 'Root.body', kind: 'let', type_name: 'SolidBody' }),
+          ],
+        }),
+      ];
+      store.regenerateAutoViews(tree);
+      // Internal maps populated — walk-up and default-rule both work.
+      expect(store.getEffectiveVisibility('Root.geo')).toBe('show');
+      expect(store.getEffectiveVisibility('Root.body')).toBe('hidden');
+      dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integration sanity: generator↔store wiring
 // ---------------------------------------------------------------------------
 
