@@ -341,7 +341,15 @@ describe('median', () => {
   });
 
   it('throws when the input contains NaN', () => {
-    expect(() => median([1, NaN, 3])).toThrow(/NaN/i);
+    expect(() => median([1, NaN, 3])).toThrow(/non-finite/i);
+  });
+
+  it('throws when the input contains +Infinity', () => {
+    expect(() => median([1, Infinity, 3])).toThrow(/non-finite/i);
+  });
+
+  it('throws when the input contains -Infinity', () => {
+    expect(() => median([1, -Infinity, 3])).toThrow(/non-finite/i);
   });
 
   it('returns the single element for a one-element array', () => {
