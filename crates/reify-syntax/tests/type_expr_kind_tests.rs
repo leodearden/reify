@@ -92,3 +92,68 @@ fn type_expr_kind_simple_named() {
     assert_eq!(name, "Force");
     assert!(args.is_empty());
 }
+
+// ── Display behavior tests (step-5) ──────────────────────────────
+//
+// These tests lock down the `Display` format used in diagnostic messages,
+// ensuring the design decision to use `{type_expr}` instead of
+// `{type_expr.name}` preserves readable output for both variants.
+
+fn span() -> reify_types::SourceSpan {
+    reify_types::SourceSpan::new(0, 0)
+}
+
+fn named_te(name: &str, args: Vec<TypeExpr>) -> TypeExpr {
+    TypeExpr {
+        kind: TypeExprKind::Named { name: name.to_owned(), type_args: args },
+        span: span(),
+    }
+}
+
+fn dim_op_te(op: DimOp, left: TypeExpr, right: TypeExpr) -> TypeExpr {
+    TypeExpr {
+        kind: TypeExprKind::DimensionalOp {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        span: span(),
+    }
+}
+
+// (a) Simple named type renders as bare name.
+#[test]
+fn display_simple_named() {
+    let te = named_te("Force", vec![]);
+    assert_eq!(format!("{te}"), "Force");
+}
+
+// (b) Named type with one arg renders as Name<Arg>.
+#[test]
+fn display_named_single_type_arg() {
+    let te = named_te("Box", vec![named_te("T", vec![])]);
+    assert_eq!(format!("{te}"), "Box<T>");
+}
+
+// (c) Named type with two args renders as Name<K, V>.
+#[test]
+fn display_named_two_type_args() {
+    let te = named_te("Map", vec![named_te("K", vec![]), named_te("V", vec![])]);
+    assert_eq!(format!("{te}"), "Map<K, V>");
+}
+
+// (d) DimensionalOp renders as "Left / Right".
+#[test]
+fn display_dimensional_op_div() {
+    let te = dim_op_te(DimOp::Div, named_te("Force", vec![]), named_te("Area", vec![]));
+    assert_eq!(format!("{te}"), "Force / Area");
+}
+
+// (e) Nested DimensionalOp renders flat (no parens), preserving left-to-right order.
+#[test]
+fn display_nested_dimensional_op() {
+    // (Mass * Length) / Time → "Mass * Length / Time"
+    let inner = dim_op_te(DimOp::Mul, named_te("Mass", vec![]), named_te("Length", vec![]));
+    let te = dim_op_te(DimOp::Div, inner, named_te("Time", vec![]));
+    assert_eq!(format!("{te}"), "Mass * Length / Time");
+}
